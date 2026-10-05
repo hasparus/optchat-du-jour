@@ -6,7 +6,7 @@ import { Context, ContextContent, ContextContentHeader, ContextTrigger, kb } fro
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
-import type { NodeView, ViewLine } from "@/lib/protocol";
+import { type NodeView, span, type ViewLine } from "@wire";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 import { ArrowLeftIcon, MessageSquareIcon, RefreshCwIcon } from "lucide-react";
@@ -68,24 +68,21 @@ function Zoom({ at, onOpen, onBack, onShow }: { at: At; onOpen: (next: At) => vo
             <span className="font-mono text-foreground">{name(data)}</span> {data.text ?? "(not summarized yet)"}
           </div>
           <ul className="space-y-1">
-            {data.children.map((c) => {
-              const span = 2 ** c.l;
-              return (
-                <li key={`${c.l}:${c.i}`}>
-                  <button
-                    className="w-full rounded-md border px-2 py-1.5 text-left hover:bg-muted"
-                    data-testid="zoom-child"
-                    onClick={() => {
-                      onOpen({ i: c.i, l: c.l });
-                    }}
-                    type="button"
-                  >
-                    <span className="font-mono text-xs">{`${c.i * span}+${span}`}</span>
-                    <p className={cn("text-sm wrap-break-word", !c.built && "text-muted-foreground italic")}>{c.text ?? "(not summarized yet)"}</p>
-                  </button>
-                </li>
-              );
-            })}
+            {data.children.map((c) => (
+              <li key={`${c.l}:${c.i}`}>
+                <button
+                  className="w-full rounded-md border px-2 py-1.5 text-left hover:bg-muted"
+                  data-testid="zoom-child"
+                  onClick={() => {
+                    onOpen({ i: c.i, l: c.l });
+                  }}
+                  type="button"
+                >
+                  <span className="font-mono text-xs">{name(span(c))}</span>
+                  <p className={cn("text-sm wrap-break-word", !c.built && "text-muted-foreground italic")}>{c.text ?? "(not summarized yet)"}</p>
+                </button>
+              </li>
+            ))}
           </ul>
         </div>
       ) : null}

@@ -6,7 +6,8 @@
 import { EventType } from "@ag-ui/core";
 import { Schema } from "effect";
 import type { SocketLike } from "@/lib/connection";
-import type { Inbound, SessionState } from "@/lib/protocol";
+import type { Inbound } from "@/lib/protocol";
+import type { SessionState } from "@wire";
 
 type Listener = (event: { readonly data: string }) => void;
 

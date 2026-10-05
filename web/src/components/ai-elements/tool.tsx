@@ -65,16 +65,8 @@ export const ToolContent = ({ className, ...props }: ToolContentProps) => (
   />
 );
 
-// the input as logged; pretty-printed when it is JSON
-const pretty = (input: string) => {
-  try {
-    return JSON.stringify(JSON.parse(input), null, 2);
-  } catch {
-    return input;
-  }
-};
-
 export type ToolInputProps = ComponentProps<"div"> & {
+  // the input exactly as logged: highlighted, never re-serialised
   input: string;
 };
 
@@ -82,7 +74,7 @@ export const ToolInput = ({ className, input, ...props }: ToolInputProps) => (
   <div className={cn("space-y-2 overflow-hidden", className)} {...props}>
     <h4 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">Parameters</h4>
     <div className="rounded-md bg-muted/50">
-      <CodeBlock code={pretty(input)} language="json" />
+      <CodeBlock code={input} language="json" />
     </div>
   </div>
 );

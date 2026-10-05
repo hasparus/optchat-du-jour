@@ -1,17 +1,21 @@
 #!/usr/bin/env bun
-// optchat-server for the end-to-end tests: the real server on a fresh OPTCHAT_HOME, serving the
-// built web/dist, with test/fake-claude.ts as `claude` (no model, no network). Every turn runs a
-// tool, then streams its reply slowly enough for a second page to watch it and for a cancel to
-// land. Playwright starts it (playwright.config.ts).
+// optchat-server for the end-to-end tests: the real server on its own data dir, serving the built
+// web/dist, with test/fake-claude.ts as `claude` (no model, no network). Every turn runs a tool,
+// then streams its reply slowly enough for a second page to watch it and for a cancel to land.
+// e2e/fixture.ts starts one per test:
+//   E2E_PORT  the port
+//   E2E_HOME  the data dir (a restart keeps it); a fresh one when unset
+//   E2E_QUICK_SUMMARIES=1  summaries without a `claude` call each, for a test that seeds a long log
 import { BunRuntime } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
+import type { Summarize } from "../../src/compactor.ts";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { serverLayer } from "../../server/app.ts";
 import type { Settings } from "../../src/config.ts";
 
 const root = new URL("../..", import.meta.url).pathname;
-const home = mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
+const home = Bun.env.E2E_HOME ?? mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
 const port = Number(Bun.env.E2E_PORT ?? 7791);
 
 const delta = (text: string) => ({ emit: { event: { delta: { text, type: "text_delta" }, index: 0, type: "content_block_delta" }, type: "stream_event" } });
@@ -43,6 +47,7 @@ const settings: Settings = {
 BunRuntime.runMain(
   Effect.gen(function* () {
     yield* Effect.logInfo(`e2e optchat-server on http://127.0.0.1:${port}, home ${home}`);
-    return yield* Layer.launch(serverLayer({ device: "mini", home, host: "127.0.0.1", port, settings, web: `${root}web/dist` }));
+    const summarize: Summarize | undefined = Bun.env.E2E_QUICK_SUMMARIES ? (job) => Effect.succeed(`summary of ${job.l}:${job.i}`) : undefined;
+    return yield* Layer.launch(serverLayer({ device: "mini", home, host: "127.0.0.1", port, settings, summarize, web: `${root}web/dist` }));
   }),
 );

@@ -16,7 +16,7 @@
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true,
 
-    "paths": { "@/*": ["./src/*"] },
+    "paths": { "@/*": ["./src/*"], "@wire": ["../src/wire.ts"] },
     "types": ["bun", "vite/client", "vite-plugin-pwa/client"]
   },
   "include": ["src", "e2e", "*.ts"]

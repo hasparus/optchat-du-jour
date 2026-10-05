@@ -1,6 +1,7 @@
-// The read-only JSON of /api/* (SPEC "Server, WebSocket API and CLI"), decoded at the boundary.
+// The read-only JSON of /api/* (SPEC "Server, WebSocket API and CLI"), decoded at the boundary with
+// the server's own schemas (src/wire.ts).
+import { Devices, MessagesPage, NodeView, Usage, View } from "@wire";
 import { Schema } from "effect";
-import { Devices, MessagesPage, NodeView, Usage, View } from "./protocol.ts";
 
 async function get<S extends Schema.Top & { readonly DecodingServices: never }>(path: string, schema: S): Promise<S["Type"]> {
   const res = await fetch(path);

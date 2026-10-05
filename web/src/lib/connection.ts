@@ -1,23 +1,20 @@
-// The /ws link (SPEC "Protocol", E15) and our TanStack AI connection adapter over it. TanStack's own
-// webSocket() opens its socket only when this client sends, and gives up when it closes, so a
-// phone that only watches would never see a turn the laptop started (SPEC M2 open question). This
-// one connects at once, reconnects for ever, and hands every decoded frame both to useChat (as
-// AG-UI chunks) and to the session store. The server opens each connection with a snapshot of the
-// log, so a reconnect needs no replay.
-import type { SubscribeConnectionAdapter } from "@tanstack/ai-client";
-import type { StreamChunk } from "@tanstack/ai";
+// The /ws link (SPEC "Protocol", E15). It connects at once, reconnects for ever, and hands every
+// decoded AG-UI event to its listeners (the session store). The server opens each connection with a
+// snapshot of the log, so a reconnect needs no replay. TanStack AI's webSocket() adapter opens its
+// socket only when this client sends, and gives up when it closes, so a phone that only watches
+// would never see a turn the laptop started (SPEC M2 open question).
 import { Option } from "effect";
 import { ABORT, type Inbound, parseFrame, runInput } from "./protocol.ts";
 
 export type LinkStatus = "connecting" | "open" | "closed";
 
 export type Link = {
-  // for useChat({ connection, live: true }); its send() is never used: see `send` below
-  readonly connection: SubscribeConnectionAdapter;
-  // a message: it starts a turn, or joins the running one (forwardedProps.device picks the device)
+  // a message: it starts a turn, or joins the running one (device picks where a new turn runs).
+  // Sent while the link is down, it goes out on the next open: what the user wrote isn't lost.
   readonly send: (text: string, device: string | null) => void;
-  // the user's cancel, for whichever turn runs
-  readonly abort: () => void;
+  // the user's cancel, for whichever turn runs. Only while the link is open: kept for later, it
+  // would cancel whatever turn runs after the reconnect. False when it wasn't sent.
+  readonly abort: () => boolean;
   readonly listen: (listener: (event: Inbound) => void) => () => void;
   readonly onStatus: (listener: (status: LinkStatus) => void) => () => void;
   readonly status: () => LinkStatus;
@@ -39,47 +36,12 @@ export type LinkOptions = {
 
 const MAX_RETRY_MS = 10_000;
 
-// a decoded frame is an AG-UI event as TanStack AI types it (arrays are decoded mutable for this)
-const toChunk = (e: Inbound): StreamChunk => e;
-
-// a push-to-pull pipe: chunks queue until the chat client pulls them, until its signal aborts
-function pipe(signal: AbortSignal | undefined, done: () => void) {
-  const queue: StreamChunk[] = [];
-  let wake: (() => void) | null = null;
-  const push = (chunk: StreamChunk) => {
-    queue.push(chunk);
-    wake?.();
-  };
-  const onAbort = () => wake?.();
-  signal?.addEventListener("abort", onAbort);
-  async function* chunks() {
-    try {
-      while (!signal?.aborted) {
-        const next = queue.shift();
-        if (next) {
-          yield next;
-          continue;
-        }
-        await new Promise<void>((resolve) => {
-          wake = resolve;
-        });
-        wake = null;
-      }
-    } finally {
-      signal?.removeEventListener("abort", onAbort);
-      done();
-    }
-  }
-  return { chunks: chunks(), push };
-}
-
 export function openLink(url: string, options: LinkOptions = {}): Link {
   const open = options.socket ?? ((target: string): SocketLike => new WebSocket(target));
   const firstRetry = options.retryMs ?? 1000;
   const listeners = new Set<(event: Inbound) => void>();
   const statusListeners = new Set<(status: LinkStatus) => void>();
-  const sinks = new Set<(chunk: StreamChunk) => void>();
-  const outbox: string[] = []; // sent while disconnected: delivered on the next open
+  const outbox: string[] = []; // messages sent while disconnected: delivered on the next open
   let socket: SocketLike | null = null;
   let status: LinkStatus = "connecting";
   let retry = firstRetry;
@@ -105,10 +67,13 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
     ws.addEventListener("message", (message) => {
       if (ws !== socket) return;
       const event = parseFrame(message.data);
-      if (Option.isNone(event)) return;
+      if (Option.isNone(event)) {
+        // not an event this client knows: say so, and keep the link (the next snapshot resyncs)
+        // oxlint-disable-next-line no-console -- the only place a malformed frame shows up
+        console.warn("optchat: dropped a frame it can't read", message.data.slice(0, 200));
+        return;
+      }
       for (const l of listeners) l(event.value);
-      const chunk = toChunk(event.value);
-      for (const sink of sinks) sink(chunk);
     });
     ws.addEventListener("close", () => {
       if (ws !== socket) return;
@@ -120,34 +85,18 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
     });
   };
 
-  const write = (frame: string) => {
-    if (socket && status === "open") socket.send(frame);
-    else outbox.push(frame);
-  };
-
   connect();
 
   return {
     abort: () => {
-      write(ABORT);
+      if (!socket || status !== "open") return false;
+      socket.send(ABORT);
+      return true;
     },
     close: () => {
       closed = true;
       clearTimeout(timer);
       socket?.close();
-    },
-    connection: {
-      send: async () => {
-        // useChat's sendMessage queues a message while a run streams and shows it under a client id;
-        // ours goes out at once through Link.send, and comes back as the server logs it
-      },
-      subscribe: (signal) => {
-        const p = pipe(signal, () => {
-          sinks.delete(p.push);
-        });
-        sinks.add(p.push);
-        return p.chunks;
-      },
     },
     listen: (listener) => {
       listeners.add(listener);
@@ -162,7 +111,9 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
       };
     },
     send: (text, device) => {
-      write(runInput(text, device));
+      const frame = runInput(text, device);
+      if (socket && status === "open") socket.send(frame);
+      else outbox.push(frame);
     },
     status: () => status,
   };

@@ -4,10 +4,11 @@
 // switcher is gone: the log has no branches (SPEC "Web UI").
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { code } from "@streamdown/code";
+import type { CodeHighlighterPlugin } from "@streamdown/code";
 import type { ComponentProps } from "react";
 import { memo } from "react";
-import { Streamdown } from "streamdown";
+import { harden } from "rehype-harden";
+import { defaultRehypePlugins, Streamdown, type StreamdownProps } from "streamdown";
 
 export type MessageActionsProps = ComponentProps<"div">;
 
@@ -30,11 +31,45 @@ export const MessageAction = ({ children, label, variant = "ghost", size = "icon
 
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
-const plugins = { code };
+// Streamdown's code highlighting, loaded with the first fenced block rather than with the app:
+// shiki is most of its weight. Until it is in, a block shows as plain text.
+let loaded: CodeHighlighterPlugin | null = null;
+let loading: Promise<CodeHighlighterPlugin> | null = null;
+const loadCode = async () => {
+  loading ??= import("@streamdown/code").then((m) => {
+    loaded = m.code;
+    return m.code;
+  });
+  return loading;
+};
+const lazyCode: CodeHighlighterPlugin = {
+  getSupportedLanguages: () => loaded?.getSupportedLanguages() ?? [],
+  getThemes: () => loaded?.getThemes() ?? ["github-light", "github-dark"],
+  highlight: (options, callback) => {
+    if (loaded) return loaded.highlight(options, callback);
+    void loadCode().then((plugin) => {
+      const result = plugin.highlight(options, callback);
+      if (result) callback?.(result);
+    });
+    return null;
+  },
+  name: "shiki",
+  supportsLanguage: (language) => loaded?.supportsLanguage(language) ?? true,
+  type: "code-highlighter",
+};
+const plugins = { code: lazyCode };
+
+// Model output never makes the phone fetch anything: images are blocked (rehype-harden shows their
+// alt text instead), data: images too. Links stay, behind Streamdown's link check. This replaces
+// Streamdown's own harden step, which allows every image.
+const rehypePlugins: StreamdownProps["rehypePlugins"] = [
+  ...Object.entries(defaultRehypePlugins).flatMap(([name, plugin]) => (name === "harden" ? [] : [plugin])),
+  [harden, { allowDataImages: false, allowedImagePrefixes: [], allowedLinkPrefixes: ["*"], allowedProtocols: ["*"], defaultOrigin: undefined }],
+];
 
 export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (
-    <Streamdown className={cn("size-full *:first:mt-0 *:last:mb-0", className)} plugins={plugins} {...props} />
+    <Streamdown className={cn("size-full *:first:mt-0 *:last:mb-0", className)} plugins={plugins} rehypePlugins={rehypePlugins} {...props} />
   ),
   (prev, next) => prev.children === next.children && prev.isAnimating === next.isAnimating,
 );

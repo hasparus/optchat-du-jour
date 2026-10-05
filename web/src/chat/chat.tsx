@@ -22,17 +22,14 @@ import {
 } from "@/components/ui/message-scroller";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Spinner } from "@/components/ui/spinner";
-import { api } from "@/lib/api";
 import type { Link } from "@/lib/connection";
-import type { Device } from "@/lib/protocol";
-import { entryRows, mergeRows, messageRows, type Row, rowFor } from "@/lib/rows";
+import { visible, withDraft } from "@/lib/log";
+import { entryRows, type Row, rowFor } from "@/lib/rows";
 import { type Marker as StatusMarker, queued, type Session, type SessionStore } from "@/lib/session";
-import { useChat } from "@tanstack/ai-react";
+import type { Device } from "@wire";
 import { AlertCircleIcon, InfoIcon } from "lucide-react";
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatRow, RowBoundary } from "./row";
-
-const PAGE = 100;
 
 function status(s: Session): string | null {
   if (s.status !== "open") return s.status === "connecting" ? "connecting…" : "disconnected; reconnecting…";
@@ -76,34 +73,33 @@ export type ChatProps = {
 };
 
 export function Chat({ link, session, state, devices, target, onTargetShown }: ChatProps) {
-  const { messages } = useChat({ connection: link.connection, live: true });
-  const [older, setOlder] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
   const [device, setDevice] = useState<string | null>(null);
   const { scrollToMessage } = useMessageScroller();
   const top = useRef<HTMLDivElement>(null);
 
-  const rows = mergeRows(older, messageRows(messages));
+  // the entries change when one is logged, the draft with every streamed piece
+  const { base, draft, items: held } = state.log;
+  const items = useMemo(() => visible({ base, items: held }), [base, held]);
+  const rows = useMemo(() => entryRows(withDraft(items, draft)), [items, draft]);
+  const draftKey = draft ? `e${draft.i}` : null;
   const first = rows[0]?.id ?? 0;
   const busy = state.state !== null && state.state.phase !== "idle";
   const waiting = queued(state);
   const line = status(state);
 
-  // one older page, prepended; true while there may be more
+  // one older page, prepended: true while there may be more, null when it couldn't be read
   const loadOlder = useCallback(async () => {
     if (loading || first <= 0) return false;
     setLoading(true);
     try {
-      const page = await api.messages(first, PAGE);
-      const more = entryRows(page.entries);
-      setOlder((rows_) => [...more, ...rows_.filter((r) => r.id >= first)]);
-      return (page.entries[0]?.i ?? 0) > 0;
+      return await session.loadOlder();
     } catch {
-      return false;
+      return null;
     } finally {
       setLoading(false);
     }
-  }, [first, loading]);
+  }, [first, loading, session]);
 
   // the top in view: the page before it
   useEffect(() => {
@@ -122,7 +118,9 @@ export function Chat({ link, session, state, devices, target, onTargetShown }: C
   useEffect(() => {
     if (target === null || loading) return;
     if (rows.length > 0 && first > target) {
-      void loadOlder();
+      void loadOlder().then((more) => {
+        if (more === null) onTargetShown(); // offline: give up rather than retry for ever
+      });
       return;
     }
     const row = rowFor(rows, target);
@@ -131,7 +129,6 @@ export function Chat({ link, session, state, devices, target, onTargetShown }: C
   }, [target, rows, first, loading, loadOlder, scrollToMessage, onTargetShown]);
 
   const lastTool = rows.findLast((r) => r.kind === "tool")?.key;
-  const lastRow = rows.at(-1)?.key;
   const picked = device ?? state.state?.device ?? devices.find((d) => d.local)?.name ?? null;
 
   return (
@@ -157,7 +154,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown }: C
                   <RowBoundary text={row.kind === "tool" ? `${row.name} ${row.args}\n${row.output ?? ""}` : row.text}>
                     <ChatRow
                       row={row}
-                      streaming={busy && row.key === lastRow}
+                      streaming={row.key === draftKey}
                       toolState={row.kind === "tool" && row.output !== null ? "done" : busy && row.key === lastTool ? "running" : "ended"}
                     />
                   </RowBoundary>
@@ -230,6 +227,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown }: C
             <div className="flex items-center gap-1">
               {busy && (
                 <PromptInputStop
+                  disabled={state.status !== "open"}
                   onClick={() => {
                     link.abort();
                   }}

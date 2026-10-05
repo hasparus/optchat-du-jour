@@ -1,15 +1,16 @@
 // AI Elements' Prompt Input (elements.ai-sdk.dev registry), cut to a text composer: a textarea
-// that sends on Enter, a footer for tools, and send and stop buttons (SPEC "Web UI", Chat).
+// that sends on Enter (on a keyboard; on a touch screen Enter is a new line and the send button
+// sends), a footer for tools, and send and stop buttons (SPEC "Web UI", Chat).
 // Attachments, screenshots, referenced sources, the command menu and the AI SDK's ChatStatus are
 // left out: the log holds text only, and sending never waits for a reply.
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "@/components/ui/input-group";
 import { cn } from "@/lib/utils";
 import { CornerDownLeftIcon, SquareIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, KeyboardEvent, SubmitEvent } from "react";
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 
 export type PromptInputProps = Omit<HTMLAttributes<HTMLFormElement>, "onSubmit"> & {
-  // the trimmed text; the form is cleared after
+  // the text as typed, never trimmed; a blank one isn't sent. The form is cleared after
   onSubmit: (text: string) => void;
 };
 
@@ -18,8 +19,8 @@ export const PromptInput = ({ className, onSubmit, children, ...props }: PromptI
     event.preventDefault();
     const form = event.currentTarget;
     const field = form.elements.namedItem("message");
-    const text = field instanceof HTMLTextAreaElement ? field.value.trim() : "";
-    if (!text) return;
+    const text = field instanceof HTMLTextAreaElement ? field.value : "";
+    if (text.trim() === "") return;
     form.reset();
     onSubmit(text);
   };
@@ -36,13 +37,26 @@ export const PromptInputBody = ({ className, ...props }: PromptInputBodyProps) =
 
 export type PromptInputTextareaProps = ComponentProps<typeof InputGroupTextarea>;
 
+// a phone or tablet: no hardware keyboard to expect, so Enter stays a new line
+const COARSE = "(pointer: coarse)";
+const coarse = () => matchMedia(COARSE).matches;
+const onPointerChange = (changed: () => void) => {
+  const query = matchMedia(COARSE);
+  query.addEventListener("change", changed);
+  return () => {
+    query.removeEventListener("change", changed);
+  };
+};
+
 export const PromptInputTextarea = ({ onKeyDown, className, placeholder = "Message", ...props }: PromptInputTextareaProps) => {
   const [composing, setComposing] = useState(false);
+  const touch = useSyncExternalStore(onPointerChange, coarse);
 
-  // Enter sends, Shift-Enter is a new line; not while an input method is composing
+  // Enter sends, Shift-Enter is a new line; not while an input method is composing, and not on a
+  // touch screen, where the send button sends
   const keyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     onKeyDown?.(e);
-    if (e.defaultPrevented || e.key !== "Enter" || e.shiftKey || composing || e.nativeEvent.isComposing) return;
+    if (touch || e.defaultPrevented || e.key !== "Enter" || e.shiftKey || composing || e.nativeEvent.isComposing) return;
     e.preventDefault();
     e.currentTarget.form?.requestSubmit();
   };
@@ -50,7 +64,7 @@ export const PromptInputTextarea = ({ onKeyDown, className, placeholder = "Messa
   return (
     <InputGroupTextarea
       className={cn("field-sizing-content max-h-48 min-h-12", className)}
-      enterKeyHint="send"
+      enterKeyHint={touch ? "enter" : "send"}
       name="message"
       onCompositionEnd={() => {
         setComposing(false);

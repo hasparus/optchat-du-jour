@@ -1,7 +1,7 @@
 // usage.jsonl summed up for the Stats screen (SPEC "Web UI", Stats; E11): calls, tokens and cache
 // hit rate per local day or week, split by role or engine; cold versus warm turns; failovers.
 // Pure, so the screen only draws.
-import type { UsageRecord } from "./protocol.ts";
+import type { UsageRecord } from "@wire";
 
 export type Period = "day" | "week";
 export type Split = "role" | "engine";

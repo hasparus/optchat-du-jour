@@ -9,6 +9,8 @@ import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 
 const server = "127.0.0.1:7700";
+const lazy = (chunk: { readonly isDynamicEntry: boolean; readonly moduleIds: readonly string[] }) =>
+  chunk.isDynamicEntry || chunk.moduleIds.some((id) => id.includes("/@shikijs/") || id.includes("/shiki/"));
 
 export default defineConfig({
   plugins: [
@@ -32,14 +34,28 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // the shell; shiki's grammars load on demand and are cached as they are used
-        globPatterns: ["index.html", "assets/index-*.{js,css}", "*.{png,svg}"],
+        // the shell: everything the page loads at start (assets/, not assets/lazy/). Shiki's
+        // grammars and the stats screen load on demand and are cached as they are used
+        globPatterns: ["index.html", "assets/*.{js,css}", "*.{png,svg}"],
         navigateFallbackDenylist: [/^\/(api|ws|mcp)\b/],
         runtimeCaching: [{ urlPattern: /\/assets\/.*\.js$/, handler: "CacheFirst", options: { cacheName: "chunks" } }],
       },
     }),
   ],
-  resolve: { alias: { "@": fileURLToPath(new URL("src", import.meta.url)) } },
+  build: {
+    rolldownOptions: {
+      // what only an import() loads (shiki and its grammars, the stats screen) goes in
+      // assets/lazy/, out of the service worker's precache
+      output: { chunkFileNames: (chunk) => (lazy(chunk) ? "assets/lazy/[name]-[hash].js" : "assets/[name]-[hash].js") },
+    },
+  },
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL("src", import.meta.url)),
+      // the server's wire contract: schemas and helpers with no node imports (SPEC "Protocol")
+      "@wire": fileURLToPath(new URL("../src/wire.ts", import.meta.url)),
+    },
+  },
   server: {
     proxy: {
       "/api": { changeOrigin: true, headers: { origin: `http://${server}` }, target: `http://${server}` },

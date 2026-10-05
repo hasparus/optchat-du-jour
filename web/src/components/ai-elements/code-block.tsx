@@ -1,13 +1,12 @@
 // AI Elements' Code Block (elements.ai-sdk.dev registry): highlighted code with shiki, plain text
-// until the highlighter has loaded. Used for tool inputs (SPEC "Web UI", Chat). The language
-// picker is left out; a block's language is known.
+// until the highlighter has loaded; shiki itself loads with the first block. Used for tool inputs
+// (SPEC "Web UI", Chat). The language picker is left out; a block's language is known.
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes } from "react";
 import { createContext, memo, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { BundledLanguage, BundledTheme, HighlighterGeneric, ThemedToken } from "shiki";
-import { createHighlighter } from "shiki";
 
 // shiki's font style bit flags
 const ITALIC = 1;
@@ -53,7 +52,8 @@ const cacheKey = (code: string, language: BundledLanguage) => `${language}:${cod
 const highlighter = async (language: BundledLanguage) => {
   const cached = highlighters.get(language);
   if (cached) return cached;
-  const made = createHighlighter({ langs: [language], themes: ["github-light", "github-dark"] });
+  // shiki loads with the first block it highlights, not with the app
+  const made = import("shiki").then(async ({ createHighlighter }) => createHighlighter({ langs: [language], themes: ["github-light", "github-dark"] }));
   highlighters.set(language, made);
   return made;
 };
@@ -82,7 +82,7 @@ const CodeBlockBody = memo(({ tokenized, className }: { tokenized: Tokenized; cl
   const lines = useMemo(() => keyed(tokenized.tokens), [tokenized.tokens]);
   return (
     <pre
-      className={cn("m-0 p-3 text-xs dark:bg-(--shiki-dark-bg)! dark:text-(--shiki-dark)!", className)}
+      className={cn("m-0 p-3 text-xs wrap-break-word whitespace-pre-wrap dark:bg-(--shiki-dark-bg)! dark:text-(--shiki-dark)!", className)}
       style={{ backgroundColor: tokenized.bg, color: tokenized.fg }}
     >
       <code className="font-mono text-xs">
