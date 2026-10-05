@@ -22,6 +22,9 @@ Around that core:
   with its laws (tiling, sizes, merge order, what the pump may offer) proved and checked in CI.
 - **Faster turns.** Turns never wait for cache priming, a warm `claude` process is ready for the
   next turn, and `zoom`/`date` reach the memory over MCP on a WebSocket.
+- **Pictures and short videos.** Attach, paste, drop or shoot them in the web app. The log stays
+  text: each attachment is a marker line with a short caption, the files sit beside the log, and
+  the turn that receives them (and `zoom` later) sends the real images to engines that can see.
 - **Everything measured.** Every model call lands in `usage.jsonl` (engine, cache reads,
   cold/warm, failovers, dollars) and the web app charts it.
 
@@ -29,7 +32,7 @@ All deviations from the gist and the reference, with reasons, are in SPEC's Devi
 
 ## Run
 
-You need Bun, the `claude` CLI logged in on each machine that runs turns, and Tailscale for the
+You need Bun, ffmpeg (for video), the `claude` CLI logged in on each machine that runs turns, and Tailscale for the
 phone and other machines (the server listens on 127.0.0.1 only;
 `tailscale serve --bg --https=443 http://127.0.0.1:7700` publishes it). Edit `optchat.config.ts`
 first: `devices`, `defaultDevice`, `allowedLogins` (your Tailscale login; an empty list refuses
