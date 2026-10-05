@@ -6,7 +6,7 @@ import { Console, Effect } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { loadSettings } from "../src/config.ts";
 import { importOptmem } from "../src/import.ts";
-import { endpointsOf, login } from "../src/openai/auth.ts";
+import { login } from "../src/openai/auth.ts";
 import { SecretsLive } from "../src/secrets.ts";
 import { runRepl } from "./repl.ts";
 import { streamDir } from "../src/paths.ts";
@@ -41,7 +41,7 @@ const openUrl = (url: string) =>
 const loginOpenai = Effect.gen(function* () {
   const root = new URL("..", import.meta.url).pathname;
   const settings = yield* loadSettings(Bun.env.OPTCHAT_CONFIG ?? `${root}optchat.config.ts`);
-  const c = yield* login({ endpoints: endpointsOf(settings.openai), open: openUrl }).pipe(Effect.provide([SecretsLive, FetchHttpClient.layer]));
+  const c = yield* login({ endpoints: settings.openai, open: openUrl }).pipe(Effect.provide([SecretsLive, FetchHttpClient.layer]));
   yield* Console.log(`signed in${c.email === undefined ? "" : ` as ${c.email}`}; the compactor can use your ChatGPT plan`);
 });
 

@@ -19,7 +19,6 @@ import type { Summarize } from "../src/compactor.ts";
 import { NODE, type Settings, loadSettings } from "../src/config.ts";
 import { parseOptmem } from "../src/import.ts";
 import { zoom } from "../src/mcp.ts";
-import { endpointsOf } from "../src/openai/auth.ts";
 import { openAiPlanLayer } from "../src/openai/responses.ts";
 import type { Kind } from "../src/records.ts";
 import { SecretsLive } from "../src/secrets.ts";
@@ -306,7 +305,7 @@ const main = Effect.gen(function* () {
   const settings = yield* loadSettings(Bun.env.OPTCHAT_CONFIG ?? `${root}optchat.config.ts`);
   const messages = yield* readSource(values.from, Number(values.n), Number(values.skip));
   const kinds = values.kinds.split(",").map((k) => Schema.decodeUnknownSync(Schema.Literals(["user", "talk", "tool", "echo", "note"]))(k));
-  const engines = Layer.mergeAll(LocalRunner, openAiPlanLayer(endpointsOf(settings.openai)).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer]))).pipe(
+  const engines = Layer.mergeAll(LocalRunner, openAiPlanLayer(settings.openai).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer]))).pipe(
     Layer.provide(BunServices.layer),
   );
   const rows: Measured[] = [];

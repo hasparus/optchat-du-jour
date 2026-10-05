@@ -1,4 +1,5 @@
 import { Data, Effect, Schema } from "effect";
+import { Endpoints } from "./openai/auth.ts";
 // The gist's constants (gist §1) and the reference's timings (ref §2, §7). Sizes are UTF-8
 // bytes, cache marks are characters. Everything that may differ per machine is in
 // optchat.config.ts instead.
@@ -42,16 +43,8 @@ export const Settings = Schema.Struct({
   defaultDevice: Schema.String,
   allowedLogins: Schema.Array(Schema.String),
   server: Schema.optional(Schema.Struct({ host: Schema.String, port: Schema.Int })),
-  // Sign in with ChatGPT endpoints, each overriding src/openai/auth.ts DEFAULT_ENDPOINTS
-  openai: Schema.optional(
-    Schema.Struct({
-      issuer: Schema.optional(Schema.String),
-      api: Schema.optional(Schema.String),
-      registerClientId: Schema.optional(Schema.String),
-      port: Schema.optional(Schema.Int),
-      agentName: Schema.optional(Schema.String),
-    }),
-  ),
+  // Sign in with ChatGPT endpoints (src/openai/auth.ts): each key left out, or the whole field, decodes to its default
+  openai: Endpoints.pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
 });
 export type Settings = typeof Settings.Type;
 

@@ -57,9 +57,20 @@ export const fileSecrets = (path: string) => {
   });
 };
 
-// `security` runs one command per line from stdin with -i, so a value never shows in argv (ps).
-// Values are stored base64-encoded: nothing in them then needs quoting on that line.
+// `security -i` runs one command per line from stdin, so a value never shows in argv (ps). Values
+// are stored base64-encoded: nothing in them then needs quoting on that line. It reads a line into
+// a fixed buffer of 4096 bytes (go-keyring refuses longer values with ErrSetDataTooBig for the same
+// reason), so a longer line is refused here rather than cut there.
 const SERVICE = "optchat";
+export const SECURITY_LINE_MAX = 4096;
+export const keychainLine = (name: string, value: string): Effect.Effect<string, SecretsError> => {
+  if (!/^[\w.-]+$/.test(name)) return Effect.fail(new SecretsError({ message: `keychain: ${JSON.stringify(name)} is no plain item name` }));
+  const line = `add-generic-password -U -s ${SERVICE} -a ${name} -w ${Buffer.from(value).toString("base64")}\n`;
+  const size = Buffer.byteLength(line);
+  return size < SECURITY_LINE_MAX
+    ? Effect.succeed(line)
+    : Effect.fail(new SecretsError({ message: `keychain: ${name} makes a ${size}-byte line for \`security -i\`, which reads at most ${SECURITY_LINE_MAX - 1}` }));
+};
 const security = (args: readonly string[], stdin?: string) =>
   Effect.tryPromise({
     catch: fail("security"),
@@ -71,25 +82,32 @@ const security = (args: readonly string[], stdin?: string) =>
   });
 const ITEM_NOT_FOUND = 44; // security's exit code for a missing item
 
+const keychainGet = (name: string) =>
+  security(["find-generic-password", "-s", SERVICE, "-a", name, "-w"]).pipe(
+    Effect.flatMap(({ code, err, out }) => {
+      if (code === ITEM_NOT_FOUND) return Effect.succeed(Option.none<string>());
+      if (code !== 0) return Effect.fail(new SecretsError({ message: `keychain: ${err}` }));
+      return Effect.succeed(Option.some(Buffer.from(out, "base64").toString("utf8")));
+    }),
+  );
+
 export const keychainSecrets = Layer.succeed(Secrets)({
-  get: (name) =>
-    security(["find-generic-password", "-s", SERVICE, "-a", name, "-w"]).pipe(
-      Effect.flatMap(({ code, err, out }) => {
-        if (code === ITEM_NOT_FOUND) return Effect.succeed(Option.none());
-        if (code !== 0) return Effect.fail(new SecretsError({ message: `keychain: ${err}` }));
-        return Effect.succeed(Option.some(Buffer.from(out, "base64").toString("utf8")));
-      }),
-    ),
+  get: keychainGet,
   remove: (name) =>
     security(["delete-generic-password", "-s", SERVICE, "-a", name]).pipe(
       Effect.flatMap(({ code, err }) =>
         code === 0 || code === ITEM_NOT_FOUND ? Effect.void : Effect.fail(new SecretsError({ message: `keychain: ${err}` })),
       ),
     ),
+  // `security -i` may exit 0 though the command on its line failed, so a write counts only once
+  // the item reads back the same
   set: (name, value) =>
-    security(["-i"], `add-generic-password -U -s ${SERVICE} -a ${name} -w ${Buffer.from(value).toString("base64")}\n`).pipe(
-      Effect.flatMap(({ code, err }) => (code === 0 ? Effect.void : Effect.fail(new SecretsError({ message: `keychain: ${err}` })))),
-    ),
+    Effect.gen(function* () {
+      const { code, err } = yield* security(["-i"], yield* keychainLine(name, value));
+      const back = yield* keychainGet(name);
+      if (code !== 0 || Option.getOrUndefined(back) !== value)
+        return yield* new SecretsError({ message: `keychain: ${name} was not saved${err ? `: ${err}` : ""}` });
+    }),
 });
 
 // this machine's store: the Keychain on macOS; $OPTCHAT_SECRETS or ~/.config/optchat/secrets.json elsewhere

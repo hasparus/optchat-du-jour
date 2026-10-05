@@ -4,12 +4,12 @@
 // (OpenAI's Sign in with ChatGPT docs, Oct 2026). Error codes from the same docs: 429
 // subscription_sharing_usage_limit_exceeded (the user's weekly per-app cap), 403
 // subscription_sharing_user_not_eligible, 401 subscription_sharing_invalid_user.
-import { Context, Data, Effect, Layer, Schema, Stream } from "effect";
+import { Context, Data, Effect, Layer, Option, Schema, Stream } from "effect";
 import { Sse } from "effect/encoding";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { type EngineError, ModelError, Refusal, UsageLimit } from "../engines/errors.ts";
 import type { Tokens as Usage } from "../usage.ts";
-import { AuthError, type Endpoints, makeTokens } from "./auth.ts";
+import { type Endpoints, type TokenError, makeTokenManager } from "./auth.ts";
 
 // a user message is a list of text parts, so stable context blocks stay byte-stable on the wire
 export type Turn = { readonly role: "user"; readonly parts: readonly string[] } | { readonly role: "assistant"; readonly text: string };
@@ -115,33 +115,42 @@ const onEvent = (model: string) => (r: Read, data: string): Effect.Effect<Read, 
     }
   });
 
-// A stream counts only when it ends in response.completed: one that starts well can still fail.
+// A stream counts only when it ends in response.completed, and ends there: whatever follows (a
+// `data: [DONE]` line, say) is never read. One that starts well can still fail.
 export const readStream = (stream: Stream.Stream<Uint8Array, EngineError>, model: string) =>
   Effect.gen(function* () {
-    const r = yield* stream.pipe(
+    const last = yield* stream.pipe(
       Stream.decodeText(),
       Stream.pipeThroughChannel(Sse.decode()),
-      Stream.runFoldEffect((): Read => ({ done: null, refusal: "", text: "" }), (acc, event) => onEvent(model)(acc, event.data)),
+      Stream.scanEffect((): Read => ({ done: null, refusal: "", text: "" }), (acc, event) => (event.data === "[DONE]" ? Effect.succeed(acc) : onEvent(model)(acc, event.data))),
+      Stream.takeUntil((r) => r.done !== null),
+      Stream.runLast,
       Effect.catchTags({
         Retry: () => Effect.fail(new ModelError({ message: "openai-plan: the stream asked to reconnect" })),
         SchemaError: (e) => Effect.fail(new ModelError({ message: `openai-plan: unexpected stream event: ${e.message}` })),
         SseError: (e) => Effect.fail(new ModelError({ message: `openai-plan: ${e.message}` })),
       }),
     );
-    if (r.refusal) return yield* new Refusal({ message: `openai-plan refused: ${r.refusal.slice(0, 300)}` });
-    if (r.done === null) return yield* new ModelError({ message: "openai-plan: the stream ended without response.completed" });
+    const r = Option.getOrUndefined(last);
+    if (r?.refusal) return yield* new Refusal({ message: `openai-plan refused: ${r.refusal.slice(0, 300)}` });
+    if (!r?.done) return yield* new ModelError({ message: "openai-plan: the stream ended without response.completed" });
     return r.done;
   });
 
-// signed out, or the sign-in can't be renewed: like a spent plan, the next engine takes the call
-const signIn = (err: AuthError) => new UsageLimit({ message: `openai-plan: ${err.message}` });
+// Signed out (nothing saved, or the refresh token refused): like a spent plan, the next engine
+// takes the call. Anything else on the way to a token is reported and retried, not a failover:
+// the endpoint down, a store or secret we can't read, an ID token that isn't ours.
+const tokenFailure = (err: TokenError): EngineError =>
+  err._tag === "NotSignedIn" || err._tag === "GrantRejected"
+    ? new UsageLimit({ message: `openai-plan: ${err.message}` })
+    : new ModelError({ message: `openai-plan: ${err.message}` });
 
-export const openAiPlanLayer = (e: Endpoints) =>
+export const openAiPlanLayer = (e: Endpoints, o: { readonly report?: (message: string) => Effect.Effect<void> } = {}) =>
   Layer.effect(
     OpenAiPlan,
     Effect.gen(function* () {
       const http = yield* HttpClient.HttpClient;
-      const tokens = yield* makeTokens(e);
+      const tokens = yield* makeTokenManager(e, o);
 
       const once = (ask: Ask, token: string) =>
         Effect.gen(function* () {
@@ -163,12 +172,12 @@ export const openAiPlanLayer = (e: Endpoints) =>
       // a 401 refreshes the token once, then counts as signed out
       const respond = (ask: Ask) =>
         Effect.gen(function* () {
-          const c = yield* tokens.current.pipe(Effect.mapError(signIn));
-          return yield* once(ask, c.accessToken).pipe(
+          const token = yield* tokens.current.pipe(Effect.mapError(tokenFailure));
+          return yield* once(ask, token).pipe(
             Effect.catchTag("Unauthorized", () =>
-              tokens.renew(c.accessToken).pipe(
-                Effect.mapError(signIn),
-                Effect.flatMap((fresh) => once(ask, fresh.accessToken)),
+              tokens.renew(token).pipe(
+                Effect.mapError(tokenFailure),
+                Effect.flatMap((fresh) => once(ask, fresh)),
                 Effect.catchTag("Unauthorized", (u) => Effect.fail(new UsageLimit({ message: `openai-plan: still unauthorized after a refresh: ${u.message}` }))),
               ),
             ),

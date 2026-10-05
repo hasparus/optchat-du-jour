@@ -13,7 +13,6 @@ import { LocalRunner, Runner } from "../src/claude/process.ts";
 import type { Summarize } from "../src/compactor.ts";
 import { DeviceOffline } from "../src/engines/errors.ts";
 import { handleMcp, mcpConfig } from "../src/mcp.ts";
-import { endpointsOf } from "../src/openai/auth.ts";
 import { openAiPlanLayer } from "../src/openai/responses.ts";
 import { makePersist } from "../src/persist.ts";
 import { promptFile, systemPrompt } from "../src/prompts.ts";
@@ -260,7 +259,7 @@ export const serverLayer = (o: ServerOptions) =>
   HttpRouter.serve(routes(o)).pipe(
     Layer.provide(BunHttpServer.layer({ hostname: o.host, port: o.port })),
     Layer.provide(LocalRunner),
-    Layer.provide(openAiPlanLayer(endpointsOf(o.settings.openai)).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer]))),
+    Layer.provide(openAiPlanLayer(o.settings.openai).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer]))),
     Layer.provide(BunServices.layer),
   );
 
