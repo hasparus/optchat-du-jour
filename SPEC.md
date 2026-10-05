@@ -165,6 +165,7 @@ export default {
   },
   defaultDevice: "mini",
   allowedLogins: ["<my tailscale login>"],
+  server: { host: "127.0.0.1", port: 7700, publicUrl: "https://<mini>.<tailnet>.ts.net" },
 };
 ```
 
@@ -274,7 +275,7 @@ One chat, one memory, two pairs of hands: the Mini keeps memory and the turn loo
 
 **Device runner (`device/`).** A small Bun daemon, launchd-managed, listening on the tailnet only.
 
-- `POST /spawn` with the args, env and cwd → a WebSocket that carries stdin in and the stream-json events out. It refuses a cwd outside the configured folders.
+- `GET /spawn`, a WebSocket whose first frame carries the args, env and cwd; then stdin goes in and the stream-json events come out, and a last frame says how `claude` exited (`src/claude/wire.ts`). It refuses a cwd outside the configured folders, after resolving symlinks and `..`, and any env but `CLAUDE_CODE_*` and `DISABLE_*`. It only ever runs `claude`, never a shell.
 - Kills children on disconnect, on SIGTERM and after `KILL_GRACE`, mirroring the reference's child registry (ref §5.2).
 - Writes nothing of its own; the master's tools change files on that machine, nothing else.
 - `GET /health` returns the `claude` version, so the server can warn when devices differ (a version change invalidates the cache once, ref §16.8).
@@ -410,6 +411,7 @@ Each milestone ends with `bun test` green, the parity test passing, and a short 
 3. **M2, server and web UI.** AG-UI events over the WebSocket, the Vite app with chat, memory and stats screens, Tailscale serve, launchd, git push. Starts with a one-day spike: two browsers on one turn, one sending a mid-run message, through TanStack AI's WebSocket adapter. Done when I chat from the phone.
 4. **M3, ChatGPT-plan compactor.** `openai-plan` engine, per-level chains, the bake-off. Done when the level cutoff is set from bake-off data.
 5. **M4, MacBook as a device.** Device runner, routing, the device screen. Done when one chat edits files on both machines.
+   - *Built (2026-10-05).* `device/` is the runner: one WebSocket per process (`GET /spawn`, a handshake being a GET; the spawn request is the first frame), JSON frames tagged `Spawn`/`Stdin` in and `Spawned`/`Refused`/`Line`/`Exit` out. A process lives as long as its socket: a disconnect, the daemon's SIGTERM or the end of the request kill its process group, SIGTERM then SIGKILL after `KILL_GRACE` (tested with a child that ignores SIGTERM, and through `device/main.ts` under SIGTERM). Machine auth: the runner listens on `tailscale ip -4` and asks `tailscale whois --json` for each caller, letting in nodes whose MagicDNS name is a configured device URL's host; `OPTCHAT_DEVICE_TRUST=loopback` lets local callers in for development. `RemoteRunner` (`src/claude/remote.ts`) feeds the same `makeClaude` as the local runner. Everything up to the `Spawned` frame (no runner, a refusal, a socket dropped, no answer in 15 s) is `DeviceOffline`, so the chain can fail over; a connection lost after that ends the turn with a `ModelError`, since the turn may have changed files by then. The server's own device keeps the local runner; for others, `--system-prompt-file` is sent inline as `--system-prompt` (same bytes, same cache key), the cwd goes unexpanded so `~` is the device's home, and `--mcp-config` points at `server.publicUrl` with the same secret key (E8). `/api/devices` asks each `/health` with a 2 s timeout and posts an `info` when online devices report different `claude` versions. launchd templates are in `deploy/`. Not done: the web UI's device screen (the `/api/devices` data is there), and a live two-machine run over a real tailnet.
 6. **M5, failover.** Master chain to Sol with our own tool loop (read-only tools first), API-key overflow with a budget. Done when exhausting the Claude limit in a test switches engines without losing a message.
 7. **M6, offline mode.** Streams per device, pull and push around turns, read-only `<chat who=…>` views, `who` on zoom and date, `grep`.
 8. **M7, subagents.** Gist §9 `spawn` and `tell`; restore MASTER's subagent paragraph, which drops D5. D10 stays: background shell tasks still die with the turn.

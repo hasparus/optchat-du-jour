@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  optchat-device as a launchd agent (SPEC "Tailscale, auth and operations"): one on every machine
+  that runs claude for the server. Replace __HOME__ (e.g. /Users/me), __REPO__ (this checkout) and
+  __DEVICE__ (its name in optchat.config.ts devices), then:
+
+    mkdir -p ~/Library/Logs/optchat
+    cp deploy/optchat-device.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/optchat-device.plist
+
+  It listens on this machine's tailnet address (`tailscale ip -4`) at the port of its URL in the
+  config, and lets in only the nodes named by the configured devices' URLs (Tailscale WhoIs). Until
+  Tailscale is up it exits, and launchd starts it again. claude must be logged in as this user.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>optchat-device</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/.bun/bin/bun</string>
+    <string>__REPO__/device/main.ts</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__REPO__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>OPTCHAT_DEVICE</key>
+    <string>__DEVICE__</string>
+    <!-- the CLI inside the Mac app; `tailscale` on PATH also works -->
+    <key>OPTCHAT_TAILSCALE</key>
+    <string>/Applications/Tailscale.app/Contents/MacOS/Tailscale</string>
+    <!-- where claude and git are -->
+    <key>PATH</key>
+    <string>__HOME__/.local/bin:__HOME__/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/optchat/device.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/optchat/device.log</string>
+</dict>
+</plist>
