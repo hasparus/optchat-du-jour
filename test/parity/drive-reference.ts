@@ -6,9 +6,12 @@ const [dir, ref] = [process.argv[2], process.env.REF];
 if (!dir || !ref) throw new Error("usage: REF=<shitty-optchat checkout> drive-reference.ts <data dir>");
 
 type Chat = { close: () => void; log: (kind: string, text: string) => void; mem: { root: unknown[]; tree: Map<string, unknown> }; };
-// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the reference has no types we can import by path
+type Options = { jobs: number; summarize: (job: Parameters<typeof fakeSummary>[0]) => Promise<string> };
+// SAFETY: openChat's signature as the pinned reference commit declares it in src/chat.ts; the import
+// is by path at run time, so there is nothing to type-check it against.
+// oxlint-disable-next-line typescript/no-unsafe-type-assertion
 const { openChat } = (await import(`${ref}/src/chat.ts`)) as {
-  openChat: (dir: string, o: object) => Promise<{ chat: Chat }>;
+  openChat: (dir: string, o: Options) => Promise<{ chat: Chat }>;
 };
 const { chat } = await openChat(dir, { jobs: 1, summarize: async (job: Parameters<typeof fakeSummary>[0]) => fakeSummary(job) });
 

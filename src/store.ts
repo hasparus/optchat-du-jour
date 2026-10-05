@@ -11,7 +11,9 @@ import { refold } from "./view.ts";
 export class StoreError extends Data.TaggedError("StoreError")<{ readonly message: string }> {}
 export class Locked extends Data.TaggedError("Locked")<{ readonly message: string }> {}
 
-const fail = (e: unknown) => new StoreError({ message: e instanceof Error ? e.message : String(e) });
+// a filesystem call, its exception as a StoreError
+const attempt = <A>(f: () => A) =>
+  Effect.try({ catch: (cause) => new StoreError({ message: cause instanceof Error ? cause.message : String(cause) }), try: f });
 
 function write(path: string, text: string) {
   const buf = Buffer.from(text);
@@ -32,13 +34,10 @@ function write(path: string, text: string) {
   }
 }
 
-const append = (dir: string, stream: "main" | "tree", when: Date, record: object) =>
-  Effect.try({
-    catch: fail,
-    try: () => {
-      mkdirSync(`${dir}/chat/${stream}`, { recursive: true });
-      write(`${dir}/chat/${stream}/${dayOf(when)}.jsonl`, `${JSON.stringify(record)}\n`);
-    },
+const append = (dir: string, stream: "main" | "tree", when: Date, record: Entry | Node) =>
+  attempt(() => {
+    mkdirSync(`${dir}/chat/${stream}`, { recursive: true });
+    write(`${dir}/chat/${stream}/${dayOf(when)}.jsonl`, `${JSON.stringify(record)}\n`);
   });
 
 export const appendMessage = (dir: string, m: Entry) => append(dir, "main", new Date(m.date), m);
@@ -56,21 +55,13 @@ export const newMsg = (i: number, kind: Kind, text: string, date = new Date()): 
 export const newNode = (l: number, i: number, text: string): Node => ({ l, i, text, size: bytes(text) });
 /* oxlint-enable perfectionist/sort-objects */
 
-const parse = (line: string): unknown => {
-  try {
-    return JSON.parse(line);
-  } catch {
-    return undefined;
-  }
-};
-
 // every record of one stream; bad lines are skipped and listed in `problems`. Only the lock holder
 // (repair) gives a file without a final newline one; a reader can't tell a torn last line from a
 // write in progress, so it stays quiet about it.
 function readStream<A>(
   dir: string,
   stream: "main" | "tree",
-  decode: (u: unknown) => Option.Option<A>,
+  decode: (line: string) => Option.Option<A>,
   problems: string[],
   repair: boolean,
 ): A[] {
@@ -82,7 +73,7 @@ function readStream<A>(
     const open = text !== "" && !text.endsWith("\n");
     for (const [n, line] of lines.entries()) {
       if (!line) continue;
-      const record = decode(parse(line));
+      const record = decode(line);
       if (Option.isSome(record)) out.push(record.value);
       else if (repair || !open || n < lines.length - 1) problems.push(`${stream}/${f}:${n + 1}: not a valid record, skipped`);
     }
@@ -91,8 +82,8 @@ function readStream<A>(
   return out;
 }
 
-const decodeMsg = Schema.decodeUnknownOption(Msg);
-const decodeNode = Schema.decodeUnknownOption(Node);
+const decodeMsg = Schema.decodeUnknownOption(Schema.fromJsonString(Msg));
+const decodeNode = Schema.decodeUnknownOption(Schema.fromJsonString(Node));
 
 export type Loaded = { readonly mem: Mem; readonly problems: readonly string[] };
 
@@ -100,26 +91,27 @@ export type Loaded = { readonly mem: Mem; readonly problems: readonly string[] }
 // `repair: false` for readers (view, browse, the MCP endpoint): they never write. `view: false`
 // skips the fold.
 export const loadChat = (dir: string, o: { budget?: number; repair?: boolean; view?: boolean } = {}) =>
-  Effect.try({
-    catch: fail,
-    try: (): Loaded => {
-      const mem = newMem(o.budget), problems: string[] = [], repair = o.repair ?? true;
-      const msgs = readStream(dir, "main", decodeMsg, problems, repair).sort((a, b) => a.i - b.i);
-      for (const [k, m] of msgs.entries()) {
-        if (m.i !== k) throw new Error(`chat/main: expected message ${k}, found ${m.i}`);
-        mem.root.push({ ...m, size: bytes(msgText(m)) });
-      }
-      for (const n of readStream(dir, "tree", decodeNode, problems, repair)) setNode(mem, n);
-      if (o.view ?? true) refold(mem);
-      return { mem, problems };
-    },
+  attempt((): Loaded => {
+    const mem = newMem(o.budget), problems: string[] = [], repair = o.repair ?? true;
+    const msgs = readStream(dir, "main", decodeMsg, problems, repair).sort((a, b) => a.i - b.i);
+    for (const [k, m] of msgs.entries()) {
+      if (m.i !== k) throw new Error(`chat/main: expected message ${k}, found ${m.i}`);
+      mem.root.push({ ...m, size: bytes(msgText(m)) });
+    }
+    for (const n of readStream(dir, "tree", decodeNode, problems, repair)) setNode(mem, n);
+    if (o.view ?? true) refold(mem);
+    return { mem, problems };
   });
 
 // One writer per stream (gist §2): listen on `lock` for as long as the scope lives. A socket that
 // answers means a live owner; one that refuses connections was left by a dead one and is taken over.
 export const lock = (dir: string) =>
   Effect.acquireRelease(
-    Effect.tryPromise({ catch: (e) => (e instanceof Locked ? e : fail(e)), try: async () => listenOrTakeOver(dir) }),
+    Effect.tryPromise({
+      catch: (cause) =>
+        cause instanceof Locked ? cause : new StoreError({ message: cause instanceof Error ? cause.message : String(cause) }),
+      try: async () => listenOrTakeOver(dir),
+    }),
     (server) =>
       Effect.sync(() => {
         server.close();

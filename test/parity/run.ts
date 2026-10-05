@@ -4,6 +4,7 @@
 // byte, whichever implementation prints it. REF is the reference checkout at the pinned commit.
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { Schema } from "effect";
 
 const ref = Bun.env.REF;
 if (!ref) throw new Error("set REF to a checkout of gebeer/shitty-optchat at the commit pinned in .github/workflows/ci.yml");
@@ -19,11 +20,16 @@ async function run(args: string[], env: Record<string, string> = {}) {
   return out;
 }
 
+const Rec = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json));
+
 // every record of a stream, `drop` keys left out, in a canonical order
 const records = (dir: string, stream: string, drop: readonly string[] = []) =>
   readdirSync(`${dir}/chat/${stream}`)
     .flatMap((f) => readFileSync(`${dir}/chat/${stream}/${f}`, "utf8").split("\n").filter(Boolean))
-    .map((line) => JSON.stringify(JSON.parse(line, (k, v: unknown) => (drop.includes(k) ? undefined : v))))
+    .map((line) => {
+      const fields = Object.entries(Schema.decodeUnknownSync(Rec)(line)).filter(([k]) => !drop.includes(k));
+      return JSON.stringify(Object.fromEntries(fields));
+    })
     .sort();
 
 const check = (what: string, a: string[] | string, b: string[] | string) => {

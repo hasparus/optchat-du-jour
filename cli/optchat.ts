@@ -27,10 +27,10 @@ const usage = Effect.gen(function* () {
   process.exitCode = cmd === "--help" || cmd === "-h" ? 0 : 2;
 });
 
-const commands: Record<string, Effect.Effect<void, { readonly message: string }>> = { "import-optmem": importNotes, view };
+const command = cmd === "view" ? view : cmd === "import-optmem" ? importNotes : usage;
 
 BunRuntime.runMain(
-  (commands[cmd ?? ""] ?? usage).pipe(
+  command.pipe(
     Effect.matchEffect({
       onFailure: (error) =>
         Console.error(`optchat: ${error.message}`).pipe(Effect.andThen(Effect.sync(() => (process.exitCode = 1)))),
