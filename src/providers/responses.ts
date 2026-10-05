@@ -34,6 +34,10 @@ const turnOf = (item: Item): Turn[] => {
   }
 };
 
+// a reply's output as the next request sends it back (its text, calls and reasoning, in order),
+// for a caller that keeps the Responses API's own conversation (the openai-plan compactor)
+export const turnsOf = (output: readonly Out[]): Turn[] => output.map(itemOf).flatMap(turnOf);
+
 export const responsesProvider = (o: {
   readonly respond: Respond;
   readonly model: string;

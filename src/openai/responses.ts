@@ -14,7 +14,7 @@
 // request; the request end is cached implicitly (`prompt_cache_options` left at its default). A
 // model that refuses the breakpoint field (the reference measured that on the Codex route) gets
 // the request again without it, and is sent none from then on, said once.
-import { Context, Data, Effect, Layer, Schema, Stream } from "effect";
+import { Context, Data, Effect, Layer, Option, Schema, Stream } from "effect";
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
@@ -36,18 +36,6 @@ export type Turn =
   | { readonly role: "assistant"; readonly text: string }
   | { readonly role: "call"; readonly id: string; readonly name: string; readonly arguments: string }
   | { readonly role: "output"; readonly id: string; readonly output: string };
-// a reply's output as the next request sends it back: its text, its calls, its reasoning, in order
-export const turnsOf = (output: readonly Out[]): Turn[] =>
-  output.map((out): Turn => {
-    switch (out.type) {
-      case "text":
-        return { role: "assistant", text: out.text };
-      case "call":
-        return { arguments: out.arguments, id: out.id, name: out.name, role: "call" };
-      case "reasoning":
-        return { item: out.item, role: "reasoning" };
-    }
-  });
 export type FunctionTool = { readonly name: string; readonly description: string; readonly parameters: Schema.Json };
 // what the reply holds, in order: its text, the calls it asks for, and its reasoning items (never
 // shown or logged; only sent back)
@@ -203,9 +191,6 @@ const spentOf = (r: { readonly model?: string | undefined; readonly usage?: type
 
 class Unauthorized extends Data.TaggedError("Unauthorized")<{ readonly message: string }> {}
 const isUnauthorized = (e: Tagged): e is Unauthorized => e._tag === "Unauthorized";
-// a 400 that names prompt_cache_breakpoint: this model takes no explicit breakpoints
-class NoBreakpoints extends Data.TaggedError("NoBreakpoints")<{ readonly message: string }> {}
-const isNoBreakpoints = (e: Tagged): e is NoBreakpoints => e._tag === "NoBreakpoints";
 
 type Read = { readonly text: string; readonly reasoning: number; readonly refusal: string; readonly output: readonly Out[]; readonly done: Reply | null };
 
@@ -294,53 +279,53 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
     const http = yield* HttpClient.HttpClient;
     // the models that refused `prompt_cache_breakpoint`: their requests go without it from then on
     const unmarked = new Set<string>();
-    const once = <E extends Tagged>(ask: Ask<E>, token: string) =>
-      Effect.gen(function* () {
-        const marked = !unmarked.has(ask.model);
-        const req = HttpClientRequest.post(`${o.api}/responses`).pipe(
+    const post = <E extends Tagged>(ask: Ask<E>, token: string, marked: boolean) =>
+      http.execute(
+        HttpClientRequest.post(`${o.api}/responses`).pipe(
           HttpClientRequest.bearerToken(token),
           HttpClientRequest.accept("text/event-stream"),
           HttpClientRequest.bodyText(body(ask, marked), "application/json"),
-        );
-        const res = yield* http.execute(req);
-        if (res.status === 401) return yield* new Unauthorized({ message: (yield* res.text).slice(0, 300) });
+        ),
+      );
+    // A model that refuses the breakpoints (a 400 naming the field) gets the same request again
+    // without them, and none from then on, which the user hears once, rather than failing every
+    // call; gist §8's marks are then off for it.
+    const once = <E extends Tagged>(ask: Ask<E>, token: string) =>
+      Effect.gen(function* () {
+        const marked = !unmarked.has(ask.model);
+        let res = yield* post(ask, token, marked);
+        let raw: string | null = null;
+        if (marked && res.status === 400) {
+          raw = yield* res.text;
+          const refused = Option.getOrUndefined(decodeErrorBody(raw))?.error;
+          if (refused?.param === "prompt_cache_breakpoint" || (refused?.message ?? "").includes("prompt_cache_breakpoint")) {
+            const first = !unmarked.has(ask.model); // a call sent alongside may have been refused already
+            unmarked.add(ask.model);
+            if (first && o.report) yield* o.report(`${o.label}: ${ask.model} refuses prompt_cache_breakpoint (${refused?.message ?? "400"}); its requests go without the view's cache marks`);
+            res = yield* post(ask, token, false);
+            raw = null;
+          }
+        }
+        if (res.status === 401) return yield* new Unauthorized({ message: (raw ?? (yield* res.text)).slice(0, 300) });
         if (res.status !== 200) {
-          const raw = yield* res.text;
-          const parsed = decodeErrorBody(raw);
-          if (parsed._tag === "None") return yield* classify(res.status, null, raw.slice(0, 300), o.label);
-          const { error } = parsed.value;
-          if (marked && res.status === 400 && (error.param === "prompt_cache_breakpoint" || (error.message ?? "").includes("prompt_cache_breakpoint")))
-            return yield* new NoBreakpoints({ message: error.message ?? "prompt_cache_breakpoint refused" });
-          return yield* classify(res.status, error.code, error.message, o.label);
+          const text = raw ?? (yield* res.text);
+          const parsed = decodeErrorBody(text);
+          return yield* parsed._tag === "Some"
+            ? classify(res.status, parsed.value.error.code, parsed.value.error.message, o.label)
+            : classify(res.status, null, text.slice(0, 300), o.label);
         }
         const stream = res.stream.pipe(Stream.mapError((err) => new ModelError({ message: `${o.label}: ${err.message}` })));
         return yield* readStream(stream, ask.model, { label: o.label, onOut: ask.onOut, onText: ask.onText, onThinking: ask.onThinking });
       }).pipe(Effect.catchIf(HttpClientError.isHttpClientError, (err) => Effect.fail(new ModelError({ message: `${o.label}: ${err.message}` }))));
 
-    // a model that refuses the breakpoints gets the same request again without them (gist §8's
-    // marks are then off for it, which the user hears once) rather than failing every call
-    const marksOff = <E extends Tagged>(ask: Ask<E>, token: string) =>
-      once(ask, token).pipe(
-        Effect.catchIf(isNoBreakpoints, (e) =>
-          Effect.gen(function* () {
-            const first = !unmarked.has(ask.model);
-            unmarked.add(ask.model);
-            if (first && o.report) yield* o.report(`${o.label}: ${ask.model} refuses prompt_cache_breakpoint (${e.message}); its requests go without the view's cache marks`);
-            return yield* once(ask, token);
-          }),
-        ),
-        // that retry went without the field, so it can't have been refused for it
-        Effect.catchIf(isNoBreakpoints, (e) => Effect.fail(new ModelError({ message: `${o.label}: ${e.message}` }))),
-      );
-
     // a 401 renews the token once, then counts as signed out
     const respond: Respond = (ask) =>
       Effect.gen(function* () {
         const token = yield* o.bearer.current;
-        return yield* marksOff(ask, token).pipe(
+        return yield* once(ask, token).pipe(
           Effect.catchIf(isUnauthorized, () =>
             o.bearer.renew(token).pipe(
-              Effect.flatMap((fresh) => marksOff(ask, fresh)),
+              Effect.flatMap((fresh) => once(ask, fresh)),
               Effect.catchIf(isUnauthorized, (u) => Effect.fail(new UsageLimit({ message: `${o.label}: still unauthorized after a refresh: ${u.message}` }))),
             ),
           ),
