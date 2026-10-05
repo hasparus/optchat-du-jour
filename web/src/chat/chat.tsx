@@ -1,16 +1,7 @@
 // The Chat screen (SPEC "Web UI", Chat): the log in a MessageScroller, newest last, older entries
 // prepended as the top comes into view; status and errors as markers between rows; the composer
-// with send, cancel and the device picker; messages that wait for the model in a Queue above it.
+// (./composer.tsx); messages that wait for the model in a Queue above it.
 import { Queue, QueueItem, QueueItemContent, QueueItemIndicator, QueueList, QueueSection, QueueSectionContent, QueueSectionLabel, QueueSectionTrigger } from "@/components/ai-elements/queue";
-import {
-  PromptInput,
-  PromptInputBody,
-  PromptInputFooter,
-  PromptInputStop,
-  PromptInputSubmit,
-  PromptInputTextarea,
-  PromptInputTools,
-} from "@/components/ai-elements/prompt-input";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import {
   MessageScroller,
@@ -21,7 +12,6 @@ import {
   useMessageScroller,
   useMessageScrollerScrollable,
 } from "@/components/ui/message-scroller";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Spinner } from "@/components/ui/spinner";
 import type { Link } from "@/lib/connection";
 import { visible } from "@/lib/log";
@@ -30,6 +20,8 @@ import { type Marker as StatusMarker, queued, type Session, type SessionStore } 
 import type { Device } from "@wire";
 import { AlertCircleIcon, InfoIcon } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Uploader } from "@/lib/attach";
+import { Composer } from "./composer";
 import { ChatRow } from "./row";
 
 function status(s: Session): string | null {
@@ -75,9 +67,10 @@ export type ChatProps = {
   // a log index to show (from the Memory screen); done() once it is in view
   readonly target: number | null;
   readonly onTargetShown: () => void;
+  readonly uploader?: Uploader; // tests replace PUT /api/assets
 };
 
-export function Chat({ link, session, state, devices, target, onTargetShown }: ChatProps) {
+export function Chat({ link, session, state, devices, target, onTargetShown, uploader }: ChatProps) {
   const [loading, setLoading] = useState(false);
   const [device, setDevice] = useState<string | null>(null);
   const { scrollToMessage } = useMessageScroller();
@@ -192,13 +185,18 @@ export function Chat({ link, session, state, devices, target, onTargetShown }: C
               </QueueSectionTrigger>
               <QueueSectionContent>
                 <QueueList>
-                  {waiting.map(({ error, text }, k) => (
+                  {waiting.map(({ attachments, error, text }, k) => (
                     // the same text can wait twice; the position tells them apart
                     // oxlint-disable-next-line react/no-array-index-key
                     <QueueItem key={`${k}:${text}`}>
                       <QueueItemIndicator />
                       <div className="min-w-0">
                         <QueueItemContent>{text}</QueueItemContent>
+                        {attachments > 0 && (
+                          <p className="text-xs text-muted-foreground">
+                            + {attachments} {attachments === 1 ? "attachment" : "attachments"}
+                          </p>
+                        )}
                         {error !== null && (
                           <p className="text-xs text-destructive" data-testid="queue-error" role="alert">
                             not logged: {error}
@@ -212,46 +210,17 @@ export function Chat({ link, session, state, devices, target, onTargetShown }: C
             </QueueSection>
           </Queue>
         )}
-        <PromptInput
-          onSubmit={(text) => {
-            session.send(text, device);
-          }}
-        >
-          <PromptInputBody>
-            <PromptInputTextarea aria-label="Message" placeholder={busy ? "Add to the running turn" : "Message"} />
-          </PromptInputBody>
-          <PromptInputFooter>
-            <PromptInputTools>
-              {devices.length > 1 && (
-                <NativeSelect
-                  aria-label="Device"
-                  onChange={(e) => {
-                    setDevice(e.currentTarget.value);
-                  }}
-                  size="sm"
-                  value={picked ?? ""}
-                >
-                  {devices.map((d) => (
-                    <NativeSelectOption key={d.name} value={d.name}>
-                      {d.name}
-                    </NativeSelectOption>
-                  ))}
-                </NativeSelect>
-              )}
-            </PromptInputTools>
-            <div className="flex items-center gap-1">
-              {busy && (
-                <PromptInputStop
-                  disabled={state.status !== "open"}
-                  onClick={() => {
-                    link.abort();
-                  }}
-                />
-              )}
-              <PromptInputSubmit />
-            </div>
-          </PromptInputFooter>
-        </PromptInput>
+        <Composer
+          busy={busy}
+          device={device}
+          devices={devices}
+          link={link}
+          onDevice={setDevice}
+          open={state.status === "open"}
+          picked={picked}
+          session={session}
+          uploader={uploader}
+        />
       </div>
     </div>
   );

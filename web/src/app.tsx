@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { MessageScrollerProvider } from "@/components/ui/message-scroller";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
+import type { Uploader } from "@/lib/attach";
 import type { Link } from "@/lib/connection";
 import type { SessionStore } from "@/lib/session";
 import { useApi } from "@/lib/use-api";
@@ -71,7 +72,7 @@ function ThemeToggle() {
   );
 }
 
-export function App({ link, session }: { link: Link; session: SessionStore }) {
+export function App({ link, session, uploader }: { link: Link; session: SessionStore; uploader?: Uploader }) {
   const state = useSyncExternalStore(session.subscribe, session.get);
   const devices = useApi(api.devices);
   const [tab, setTab] = useState<Tab>("chat");
@@ -112,6 +113,7 @@ export function App({ link, session }: { link: Link; session: SessionStore }) {
             session={session}
             state={state}
             target={target}
+            uploader={uploader}
           />
         </TabsContent>
         <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="memory">

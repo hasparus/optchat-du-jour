@@ -5,7 +5,7 @@ import { MessagesPage } from "@wire";
 import { type Page, expect, test as base } from "@playwright/test";
 import { Schema } from "effect";
 import { type ChildProcess, spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -15,9 +15,14 @@ export const REPLY = "Streamed reply from the fake claude.";
 type LogEntry = MessagesPage["entries"][number];
 const decodePage = Schema.decodeUnknownSync(MessagesPage);
 const decodeAddress = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Number }));
+const decodeRecord = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Struct({ type: Schema.String, pid: Schema.Number, role: Schema.optional(Schema.String), content: Schema.optional(Schema.Json) })),
+);
 
 export type Server = {
   readonly url: string;
+  // every user message the fake claude read, by the role of the call that read it (test/fake-claude.ts)
+  readonly fakeInputs: (role: string) => unknown[];
   // the log as the server holds it
   readonly log: () => Promise<LogEntry[]>;
   // stop the server, log `more` user messages behind its back, start it again on the same port
@@ -89,6 +94,14 @@ async function startServer(seeded: number): Promise<Server & { readonly stop: ()
   };
   let child = await launch();
   return {
+    fakeInputs: (role) => {
+      const records = readFileSync(`${home}/fake.jsonl`, "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => decodeRecord(line));
+      const pids = new Set(records.filter((r) => r.type === "start" && r.role === role).map((r) => r.pid));
+      return records.filter((r) => r.type === "in" && pids.has(r.pid)).map((r) => r.content);
+    },
     log: async () => {
       const res = await fetch(`${url}/api/messages?limit=100000`);
       return [...decodePage(await res.json()).entries];

@@ -74,13 +74,23 @@ export type Inbound = typeof Inbound.Type;
 const decodeFrame = Schema.decodeUnknownOption(Schema.fromJsonString(Inbound));
 export const parseFrame = (frame: string): Option.Option<Inbound> => decodeFrame(frame);
 
+// an uploaded attachment, as a message names it (SPEC "Media")
+export type AttachmentRef = { readonly sha: string; readonly kind: "image" | "video"; readonly mime: string };
+
+// A user message's content: its text, or with attachments AG-UI's parts, the text and then an
+// image or video part per attachment whose source is "asset:<sha256>" (PUT /api/assets stored it)
+const contentOf = (text: string, attachments: readonly AttachmentRef[]) =>
+  attachments.length === 0
+    ? text
+    : [{ text, type: "text" }, ...attachments.map((a) => ({ source: { mimeType: a.mime, type: "url", value: `asset:${a.sha}` }, type: a.kind }))];
+
 // What a client sends: AG-UI's RunAgentInput, whose user message (with its id, which the server
 // acks) is the one to answer, and an abort (server/routes/ws.ts Inbound)
-export const runInput = (text: string, device: string | null, id: string) =>
+export const runInput = (text: string, device: string | null, id: string, attachments: readonly AttachmentRef[] = []) =>
   JSON.stringify({
     context: [],
     forwardedProps: device ? { device } : {},
-    messages: [{ content: text, id, role: "user" }],
+    messages: [{ content: contentOf(text, attachments), id, role: "user" }],
     runId: crypto.randomUUID(),
     state: {},
     threadId: "web",
