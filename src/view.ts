@@ -4,7 +4,7 @@ import { Effect } from "effect";
 import { MARKS } from "./config.ts";
 import * as K from "./kernel.ts";
 import type { Node } from "./records.ts";
-import { built, bytes, type Coord, dayOf, type Entry, getNode, label, type Mem, nodes, setNode, span } from "./tree.ts";
+import { built, bytes, type Coord, dayOf, end, type Entry, getNode, label, type Mem, nodes, setNode } from "./tree.ts";
 
 // an unbuilt line's text: display and fail-safe only, no call ever sees it (gist §6)
 export const PLACEHOLDER = "(not summarized yet: zoom it)";
@@ -23,15 +23,15 @@ export function addMessage(mem: Mem, m: Entry) {
 }
 
 // a node was built: keep it, then fit
-export function addNode(mem: Mem, n: Node) {
-  setNode(mem, n);
+export function addNode(mem: Mem, record: Node): void {
+  setNode(mem, record);
   changed(mem, K.fit(mem, HOLE));
 }
 
-// at load: the view folded from message 0 again
-export function refold(mem: Mem) {
+// at load (and after a bulk import): the view folded from message 0 again
+export const refold = (mem: Mem): void => {
   changed(mem, K.refold(mem, HOLE));
-}
+};
 
 // every line break (LF, CRLF or a lone CR) becomes one space
 export const flat = (s: string) => s.replaceAll(/\r\n|\r|\n/g, " ");
@@ -39,23 +39,21 @@ export const flat = (s: string) => s.replaceAll(/\r\n|\r|\n/g, " ");
 const text = (mem: Mem, l: number, i: number) => getNode(mem, l, i)?.text ?? PLACEHOLDER;
 
 // the view as every call sees it: one id+n|text line per part inside <chat> tags
-export const render = (mem: Mem) =>
-  ["<chat>", ...mem.view.map((c) => `${label(c)}|${flat(text(mem, c.l, c.i))}`), "</chat>"].join("\n");
+export function render(mem: Mem): string {
+  const lines = mem.view.map((c) => `${label(c)}|${flat(text(mem, c.l, c.i))}`);
+  return `<chat>\n${lines.map((line) => `${line}\n`).join("")}</chat>`;
+}
 
-// the text cut into pieces at the last line end before each mark; a mark past the end is
-// skipped (gist §8)
-export function cutBlocks(s: string, marks: readonly number[] = MARKS): string[] {
-  const out: string[] = [];
-  let from = 0;
-  for (const mark of marks) {
-    if (mark >= s.length) break;
-    const cut = s.lastIndexOf("\n", mark - 1) + 1;
-    if (cut <= from) continue;
-    out.push(s.slice(from, cut));
-    from = cut;
-  }
-  out.push(s.slice(from));
-  return out;
+// The view in blocks (gist §8). Each mark inside the text moves back to just after the last
+// line end before it; the text is then sliced at those points. The marks from the first one
+// at or past the end are dropped, and a point that is no further on than the one before adds
+// no block.
+export function cutBlocks(view: string, marks: readonly number[] = MARKS): string[] {
+  const outside = marks.findIndex((mark) => mark >= view.length);
+  const points = (outside === -1 ? marks : marks.slice(0, outside)).map((mark) => view.lastIndexOf("\n", mark - 1) + 1);
+  const starts = [0];
+  for (const p of points) if (p > (starts.at(-1) ?? 0)) starts.push(p);
+  return starts.map((start, k) => view.slice(start, starts[k + 1]));
 }
 
 export const unbuilt = (mem: Mem) => mem.view.filter((c) => !built(mem, c.l, c.i)).length;
@@ -65,15 +63,12 @@ export const viewSize = (mem: Mem) => mem.view.reduce((sum, c) => sum + (getNode
 // the bare text of the view lines that end at or before message `limit`: a compactor call's
 // context (gist §4.2). Rule 3 keeps every one of them built; an unbuilt one is a bug.
 export function context(mem: Mem, limit: number): string[] {
-  const out: string[] = [];
-  for (const c of mem.view) {
-    const { id, n } = span(c);
-    if (id + n > limit) break;
-    const n0 = getNode(mem, c.l, c.i);
-    if (!n0) throw new Error(`rule 3 broken: view line ${label(c)} is unbuilt in a context up to ${limit}`);
-    out.push(flat(n0.text));
-  }
-  return out;
+  const past = mem.view.findIndex((c) => end(c) > limit);
+  return mem.view.slice(0, past === -1 ? mem.view.length : past).map((c) => {
+    const line = getNode(mem, c.l, c.i);
+    if (!line) throw new Error(`rule 3 broken: view line ${label(c)} is unbuilt in a context up to ${limit}`);
+    return flat(line.text);
+  });
 }
 
 // done once every view line is a summary (gist §6). Interrupting it is the user's cancel; it
@@ -101,7 +96,7 @@ const ago = (ms: number) => {
 };
 
 // the two-line header the terminal prints above the view (ref §10)
-export function stats(mem: Mem, now = new Date()): string[] {
+export function stats(mem: Mem, now: Date = new Date()): readonly [string, string] {
   const T = mem.root.length, last = mem.root.at(-1), firstMsg = mem.root[0];
   const chat = firstMsg && last
     ? `optchat: ${T} messages, ${dayOf(new Date(firstMsg.date))} → ${dayOf(new Date(last.date))}, last ${ago(now.getTime() - Date.parse(last.date))}`

@@ -15,17 +15,15 @@ export type Chat = {
   readonly log: (kind: Kind, text: string, extra?: { readonly device?: string }) => Effect.Effect<Entry, StoreError>;
 };
 
-// persist a built node, then add it to memory and refit the view
+// The pump's commit: a node is on disk (fsynced) before memory knows it, so the view never
+// leans on a summary a crash could lose. addNode refits the view.
 export const committer =
   (dir: string, mem: Mem): Commit =>
   (n) =>
-    appendNode(dir, n).pipe(
-      Effect.andThen(
-        Effect.sync(() => {
-          addNode(mem, n);
-        }),
-      ),
-    );
+    Effect.gen(function* () {
+      yield* appendNode(dir, n);
+      addNode(mem, n);
+    });
 
 export const openChat = Effect.fn("openChat")(function* (
   dir: string,
@@ -45,7 +43,8 @@ export const openChat = Effect.fn("openChat")(function* (
       const m = { ...newMsg(mem.root.length, kind, text), ...extra };
       yield* appendMessage(dir, m);
       addMessage(mem, m);
-      yield* pump.kick;
+      // the message is stored: a pump that cannot start now is reported, and log still succeeds
+      yield* pump.nudge;
       return m;
     });
   yield* pump.kick; // catch up: the free nodes and whatever the last run left unbuilt

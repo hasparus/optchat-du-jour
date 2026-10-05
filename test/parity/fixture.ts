@@ -3,7 +3,7 @@
 // the level, the source), so a difference anywhere upstream shows in the view.
 export type Kind = "echo" | "talk" | "tool" | "user";
 export type FixtureMsg = { readonly kind: Kind; readonly text: string };
-export type Job = { readonly ctx: readonly string[]; readonly i: number; readonly l: number; } & (
+export type Job = { readonly ctx: readonly string[]; readonly i: number; readonly l: number } & (
   | { readonly a: string; readonly b: string }
   | { readonly msg: { readonly kind: string; readonly text: string } }
 );

@@ -5,7 +5,7 @@ import { fakeSummary, fixture } from "./fixture.ts";
 const [dir, ref] = [process.argv[2], process.env.REF];
 if (!dir || !ref) throw new Error("usage: REF=<shitty-optchat checkout> drive-reference.ts <data dir>");
 
-type Chat = { close: () => void; log: (kind: string, text: string) => void; mem: { root: unknown[]; tree: Map<string, unknown> }; };
+type Chat = { close: () => void; log: (kind: string, text: string) => void; mem: { root: unknown[]; tree: Map<string, unknown> } };
 type Options = { jobs: number; summarize: (job: Parameters<typeof fakeSummary>[0]) => Promise<string> };
 // SAFETY: openChat's signature as the pinned reference commit declares it in src/chat.ts; the import
 // is by path at run time, so there is nothing to type-check it against.

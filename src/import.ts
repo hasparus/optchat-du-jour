@@ -3,10 +3,11 @@
 import { Data, Effect } from "effect";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { committer } from "./chat.ts";
 import { buildFree } from "./compactor.ts";
-import { appendMessage, loadChat, lock, newMsg } from "./store.ts";
-import { addMessage } from "./view.ts";
+import { appendMessage, appendNode, loadChat, lock, newMsg } from "./store.ts";
+import type { Node } from "./records.ts";
+import { setNode } from "./tree.ts";
+import { refold } from "./view.ts";
 
 export const OPTMEM_LOG = `${homedir()}/.optmem/memory/LOG.txt`;
 
@@ -34,8 +35,10 @@ export function parseOptmem(raw: string): Note[] {
   return notes;
 }
 
-// into an empty chat only, under the lock; the free nodes are built at once, so the chat reads
-// well before the compactor ever runs
+// Into an empty chat only, under the lock. The free nodes are built at once, so the chat reads
+// well before the compactor ever runs. Everything is written first and the view folded once at
+// the end, as the next start would fold it: refitting it after every note and every node made a
+// 10k-note import quadratic.
 export const importOptmem = (dir: string, path = OPTMEM_LOG) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -49,9 +52,16 @@ export const importOptmem = (dir: string, path = OPTMEM_LOG) =>
       for (const note of notes) {
         const m = newMsg(note.n, "note", note.text, note.date);
         yield* appendMessage(dir, m);
-        addMessage(mem, m);
+        mem.root.push(m);
       }
-      yield* buildFree(mem, committer(dir, mem));
+      // saved and kept, not fitted: the fold below sees them all
+      const keep = (n: Node) =>
+        Effect.gen(function* () {
+          yield* appendNode(dir, n);
+          setNode(mem, n);
+        });
+      yield* buildFree(mem, keep);
+      refold(mem);
       return mem;
     }),
   );

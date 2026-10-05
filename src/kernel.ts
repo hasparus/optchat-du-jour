@@ -19,7 +19,7 @@ function array<T>(xs: List<T>): T[] {
 // the sizes of the built nodes above (l, i), nearest first, up to the first unbuilt one
 function ups(mem: Mem, l: number, i: number): number[] {
   const out: number[] = [];
-  for (let j = i >> 1, up = l + 1; ; up++, j >>= 1) {
+  for (let up = l + 1, j = Math.floor(i / 2); ; up++, j = Math.floor(j / 2)) {
     const n = getNode(mem, up, j);
     if (!n) return out;
     out.push(n.size);
@@ -55,12 +55,13 @@ export const append = (mem: Mem, hole: number) => {
 export const refold = (mem: Mem, hole: number) =>
   coords(kernel.refold(mem.budget, list(mem.root.map((m) => msg(mem, m.i, hole)))));
 
-// the first message whose view line is unbuilt, else T (gist §4.1). It reads only where each
-// line starts and whether it is built, so the lines go without sizes or ancestors.
-export function first(mem: Mem) {
-  const ps = mem.view.map((c): Part => ({ $: "Part", built: built(mem, c.l, c.i), i: c.i, l: c.l, size: 0, ups: nil }));
-  return Number(kernel.first(mem.root.length, list(ps)));
-}
+// a view line as kernel.first reads it: where it starts and whether it is built. first never
+// looks at a line's size or ancestors, so they stay empty instead of being looked up.
+const bare = (mem: Mem, c: Coord): Part => ({ $: "Part", built: built(mem, c.l, c.i), i: c.i, l: c.l, size: 0, ups: nil });
+
+// the first message whose view line is unbuilt, else T (gist §4.1)
+export const first = (mem: Mem): number =>
+  Number(kernel.first(mem.root.length, list(mem.view.map((c) => bare(mem, c)))));
 
 // the nodes rule 3 lets the pump start, in its order: level by level, oldest first (gist §4.1)
 export function offers(mem: Mem): Coord[] {
