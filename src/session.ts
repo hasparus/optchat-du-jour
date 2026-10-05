@@ -103,7 +103,8 @@ export const makeSession = (o: {
     const publish = (e: SessionEvent) => PubSub.publish(events, e).pipe(Effect.asVoid);
     const info = (message: string) => publish({ message, type: "info" });
 
-    // every message not logged yet, in the order they came in
+    // every message not logged yet, in the order they came in: the offered ones, then the held
+    // ones; nothing is offered once anything is held, so the log keeps the order they were sent in
     const inbox: Incoming[] = [];
     let seq = 0;
     let phase: Phase = "idle", device = o.defaultDevice, engine: string | null = null;
@@ -121,7 +122,16 @@ export const makeSession = (o: {
     const held = () => inbox.filter((m) => m.state === "held");
     // a message sent for no device, or for the one the turn runs on, may join it; one sent for
     // another waits, and the turn after it runs there (SPEC "Turn and priming")
-    const forThis = (sentFor: string | null) => sentFor === null || sentFor === device;
+    const forThis = (sentFor: string | null, on = device) => sentFor === null || sentFor === on;
+    // The next turn's device and messages: the device of the first held message that has one (sent
+    // for it, or left by a call that ran there), else the default; and the held messages up to the
+    // first one for another device, which waits for the turn after, with all sent after it.
+    const nextTurn = () => {
+      const waiting = held();
+      const on = waiting.find((m) => m.device)?.device ?? o.defaultDevice;
+      const other = waiting.findIndex((m) => !forThis(m.device, on));
+      return { batch: other === -1 ? waiting : waiting.slice(0, other), on };
+    };
     const offered = () => inbox.filter((m) => m.state === "offered");
 
     const state = (): SessionState => ({
@@ -352,16 +362,16 @@ export const makeSession = (o: {
       yield* FiberSet.clear(primes).pipe(Effect.forkIn(scope)); // not waited for: the killed claude may take a moment
       while (held().length > 0) {
         told = null;
-        device = held().findLast((m) => m.device)?.device ?? o.defaultDevice;
-        const on = device;
         if (unbuilt(chat.mem)) {
+          device = nextTurn().on; // shown while it waits; read again after, with what came in meanwhile
           yield* enter("waiting");
           yield* settle(chat.mem);
         }
-        // This turn's messages are the ones held now; their captions are waited for together, briefly,
-        // before any is logged. One that comes in meanwhile is offered to the call below, ahead of any
-        // sent later, so the log keeps the order they were sent in.
-        const batch = held();
+        // This turn's device and messages are read once the summaries are in; their captions are
+        // waited for together, briefly, before any is logged. One that comes in meanwhile waits for
+        // the call below, where it is offered unless it, or one sent before it, is for another device.
+        const { batch, on } = nextTurn();
+        device = on;
         yield* captioned(batch);
         const view = render(chat.mem); // BEFORE the new messages are logged (gist §7)
         yield* enter("running");

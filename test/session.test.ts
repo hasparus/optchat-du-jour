@@ -32,11 +32,11 @@ type Hook = (kind: string, text: string) => Effect.Effect<void>;
 type Disk = { full: boolean; bugs: number; before: Hook | null; after: Hook | null };
 
 // a session over a fresh chat whose log can be made to fail; every event it publishes is kept
-const rig = (engine: TurnEngine | readonly TurnEngine[], o: { readonly commit?: Effect.Effect<void> } = {}) =>
+const rig = (engine: TurnEngine | readonly TurnEngine[], o: { readonly commit?: Effect.Effect<void>; readonly summarize?: Effect.Effect<void> } = {}) =>
   Effect.gen(function* () {
     const dir = mkdtempSync(`${tmpdir()}/oc-`);
     dirs.push(dir);
-    const chat = yield* openChat(dir, { summarize: (job) => Effect.succeed(`summary ${job.l}.${job.i}`) });
+    const chat = yield* openChat(dir, { summarize: (job) => (o.summarize ?? Effect.void).pipe(Effect.as(`summary ${job.l}.${job.i}`)) });
     // bugs: how many of the next writes throw; before and after: a slow disk, around each write
     const disk: Disk = { after: null, bugs: 0, before: null, full: false };
     const log: typeof chat.log = (kind, body, extra) =>
@@ -458,8 +458,9 @@ test("messages a successful call never took are answered by the next turn, on th
       yield* until("the run", () => r.events.some((e) => e.type === "run-started"));
       yield* r.session.input("plain", undefined, "c2");
       yield* r.session.input("on mini", "mini", "c3");
-      yield* until("both turns", () => r.events.filter((e) => e.type === "run-finished").length === 2);
-      expect(turns).toEqual(["go@mac", "plain+on mini@mini"]);
+      yield* until("three turns", () => r.events.filter((e) => e.type === "run-finished").length === 3);
+      // "plain" was left by the mac call: its turn runs there; "on mini" waits for the one after
+      expect(turns).toEqual(["go@mac", "plain@mac", "on mini@mini"]);
       expect(r.log().filter(([k]) => k === "user")).toEqual([
         ["user", "go"],
         ["user", "plain"],
@@ -511,6 +512,80 @@ test("a message sent for another device mid-run is not offered to the call; the 
         ["user", "after it", "mac"],
         ["talk", "reply 2", "mac"],
       ]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+// SPEC "Turn and priming": a turn runs on the device of the first held message that has one, and
+// takes the held messages up to the first one for another device, which waits for the turn after
+test("held messages for two devices run in the order sent, each on its own device", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const turns: string[] = [];
+      const go = { now: false };
+      const engine: TurnEngine = {
+        ref: "fake:x",
+        run: (input, out) =>
+          Effect.gen(function* () {
+            turns.push(`${input.texts.join("+")}@${input.device}`);
+            if (turns.length === 1) yield* until("the go", () => go.now);
+            yield* out.log("talk", `reply ${turns.length}`);
+          }),
+        vision: false,
+        warm: () => Effect.void,
+      };
+      const r = yield* rig(engine);
+      yield* r.session.input("A", undefined, "c1");
+      yield* until("the run", () => turns.length === 1);
+      yield* r.session.input("look there", "mac", "c2");
+      yield* r.session.input("and here", "mini", "c3");
+      go.now = true;
+      yield* until("three turns", () => r.events.filter((e) => e.type === "run-finished").length === 3);
+      expect(turns).toEqual(["A@mini", "look there@mac", "and here@mini"]);
+      expect(r.chat.mem.root.map((m) => [m.text, m.device])).toEqual([
+        ["A", "mini"],
+        ["reply 1", "mini"],
+        ["look there", "mac"],
+        ["reply 2", "mac"],
+        ["and here", "mini"],
+        ["reply 3", "mini"],
+      ]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+// the device is read with the batch, after the wait for summaries: a message for another device
+// sent during that wait does not join the batch
+test("a message for another device sent while the turn waits for summaries gets a turn of its own there", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const turns: string[] = [];
+      const engine: TurnEngine = {
+        ref: "fake:x",
+        run: (input, out) =>
+          Effect.gen(function* () {
+            turns.push(`${input.texts.join("+")}@${input.device}`);
+            yield* out.log("talk", `reply ${turns.length}`);
+          }),
+        vision: false,
+        warm: () => Effect.void,
+      };
+      const gate = { open: true };
+      const r = yield* rig(engine, { summarize: until("the summaries", () => gate.open, 10_000) });
+      yield* r.session.input("A", undefined, "c1");
+      yield* until("the first turn", () => r.idle());
+      // a message over a line's 512 bytes is shown by its summary, which does not come: the turn
+      // after it waits
+      gate.open = false;
+      const long = "B".repeat(600);
+      yield* r.session.input(long, undefined, "c2");
+      yield* until("the second turn", () => r.events.filter((e) => e.type === "run-finished").length === 2);
+      yield* r.session.input("on mini", "mini", "c3");
+      yield* until("the wait for summaries", () => r.session.state().phase === "waiting");
+      yield* r.session.input("on mac", "mac", "c4");
+      gate.open = true;
+      yield* until("four turns", () => r.events.filter((e) => e.type === "run-finished").length === 4);
+      expect(turns).toEqual(["A@mini", `${long}@mini`, "on mini@mini", "on mac@mac"]);
     }).pipe(Effect.scoped),
   );
 });
