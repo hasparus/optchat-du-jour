@@ -112,7 +112,7 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
     openai: { api: `${fake.base}/v1`, issuer: fake.base },
     server: { host: "127.0.0.1", port, publicUrl: `http://localhost:${port}` },
   };
-  const trust = { loopback: true, nodes: [], whois: () => Effect.succeed(Option.none<string>()) };
+  const trust = { _tag: "loopback" } as const;
   const both = Layer.mergeAll(
     deviceLayer({ claude: FAKE, folders: [macbook], host: "127.0.0.1", name: "macbook", port: devicePort, trust }),
     serverLayer({

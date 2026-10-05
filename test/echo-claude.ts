@@ -2,7 +2,8 @@
 // The smallest stand-in for `claude -p --input-format stream-json` that a device runner can spawn:
 // each user message gets an init, a message_start, an assistant text and a result, the text saying
 // what it heard, its pid and its cwd. It exits when stdin closes, except after the message
-// "stubborn": then it ignores SIGTERM and stdin, so only SIGKILL ends it. `--version` prints
+// "stubborn": then it ignores SIGTERM and stdin, so only SIGKILL ends it. "exit 3" makes it write
+// "bye" to stderr and exit with code 3; "die" makes it SIGKILL itself. `--version` prints
 // FAKE_CLAUDE_VERSION.
 import { Option, Schema } from "effect";
 
@@ -30,6 +31,14 @@ let stubborn = false;
 for await (const line of console) {
   if (!line.trim()) continue;
   const heard = lastText(line);
+  if (heard === "exit 3") {
+    await Bun.write(Bun.stderr, "bye\n");
+    process.exit(3);
+  }
+  if (heard === "die") {
+    await Bun.write(Bun.stderr, "dying\n");
+    process.kill(process.pid, "SIGKILL");
+  }
   if (heard === "stubborn") {
     stubborn = true;
     process.on("SIGTERM", () => {

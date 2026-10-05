@@ -15,6 +15,14 @@ import { opening, type Sent, type TurnEngine, type TurnEvents } from "./engine.t
 
 type Ttl = "1h" | "5m";
 
+// where a device's claude runs (E7): its Runner, the folder it starts in (unexpanded for another
+// machine, whose `~` is its own), and the --mcp-config that reaches the server from there (E8)
+export type Placement = {
+  readonly runner: Runner["Service"];
+  readonly cwd: string | undefined;
+  readonly mcpConfig: string;
+};
+
 export type ClaudeCodeTurnOptions = {
   readonly model: string;
   readonly effort: string;
@@ -23,19 +31,15 @@ export type ClaudeCodeTurnOptions = {
   readonly ttl: Ttl; // the TTL of Claude Code's own marks on a turn (E6)
   readonly primeTtl: Ttl; // the TTL of the marks priming writes
   readonly systemFile: string;
-  readonly mcpConfig: string;
-  // where a device's claude runs, in which folder, and the --mcp-config that reaches the server
-  // from there when it isn't `mcpConfig` (E7, E8); DeviceOffline when the device can't be reached
-  readonly runnerFor: (
-    device: string,
-  ) => Effect.Effect<{ readonly runner: Runner["Service"]; readonly cwd?: string; readonly mcpConfig?: string }, DeviceOffline>;
+  // DeviceOffline when the device can't be reached or can't be used
+  readonly runnerFor: (device: string) => Effect.Effect<Placement, DeviceOffline>;
   readonly report: (message: string) => Effect.Effect<void>;
   readonly logUsage: TurnEvents["usage"];
 };
 
 // One argv for the turn and its priming call: any difference between the two would cost the
 // whole view in cache writes (ref §13).
-export const masterArgs = (o: Pick<ClaudeCodeTurnOptions, "effort" | "mcpConfig" | "model" | "permissionMode" | "systemFile" | "tools">) => [
+export const masterArgs = (o: Pick<ClaudeCodeTurnOptions, "effort" | "model" | "permissionMode" | "systemFile" | "tools"> & { readonly mcpConfig: string }) => [
   ...baseArgs({ effort: o.effort, model: o.model, systemFile: o.systemFile, tools: o.tools.join(",") }),
   "--mcp-config",
   o.mcpConfig,
@@ -200,7 +204,7 @@ export const primeMaxAge = (ttl: Ttl) => (ttl === "1h" ? 3_300_000 : 270_000);
 export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
   Effect.gen(function* () {
     // the same argv for a device's turns and primings; only the MCP URL may differ between devices
-    const argsFor = (mcpConfig: string | undefined) => masterArgs({ ...o, mcpConfig: mcpConfig ?? o.mcpConfig });
+    const argsFor = (mcpConfig: string) => masterArgs({ ...o, mcpConfig });
     const env = { CLAUDE_CODE_PROMPT_CACHE_TTL: o.ttl };
 
     const run: TurnEngine["run"] = (input, out, failoverFrom) =>
@@ -287,6 +291,8 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
             failing = false;
             return;
           }
+          // an offline device is the turn's to report: it fails at once, since the runner remembers
+          if (outcome.failure._tag === "DeviceOffline") return;
           if (!failing) yield* o.report(`priming failed, the turn goes on without it: ${outcome.failure.message}`);
           failing = true;
         }),

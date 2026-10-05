@@ -12,7 +12,8 @@
   (the command is in SPEC "Tailscale, auth and operations"; XML comments can't hold its flags).
   It listens on loopback only; `tailscale serve` publishes it to the tailnet. Set server.publicUrl
   in optchat.config.ts to that https://<machine>.<tailnet>.ts.net address, so claude on the other
-  devices reaches zoom and date.
+  devices reaches zoom and date through tailscale serve (the key in the URL and allowedLogins let
+  it in); without it, turns on other devices are refused.
 -->
 <plist version="1.0">
 <dict>

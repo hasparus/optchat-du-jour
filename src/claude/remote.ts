@@ -3,18 +3,38 @@
 // Until the device says claude started, every failure is DeviceOffline, so the master's chain can
 // move on at once (SPEC "Device offline": fail fast, never queue). Closing the scope closes the
 // socket, and the device runner kills the process.
-import { type Cause, Deferred, Duration, Effect, Option, Queue, Schema, Stream } from "effect";
+import { type Cause, Clock, Deferred, Duration, Effect, Option, Queue, Schema, Stream } from "effect";
 import { Socket } from "effect/socket";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { DeviceOffline } from "../engines/errors.ts";
-import { ClaudeError, type Runner, type Spawn, makeClaude } from "./process.ts";
+import { ClaudeError, type Runner, type Spawn, exitText, makeClaude } from "./process.ts";
 import { TOOL_TIMEOUT } from "../tools/files.ts";
 import { Health, type ToDevice, type ToolCall, ToolReply, decodeFromDevice, frame, inbox } from "./wire.ts";
 
-const CONNECT_TIMEOUT = "5 seconds"; // an asleep or unreachable peer on the tailnet hangs rather than refuses
-const SPAWN_TIMEOUT = "15 seconds";
+export type RemoteTimeouts = {
+  readonly connect: Duration.Input; // an asleep or unreachable peer on the tailnet hangs rather than refuses
+  readonly spawn: Duration.Input; // from connecting to the Spawned frame
+  readonly remember: Duration.Input; // how long an unreachable device stays offline without asking again
+};
+const TIMEOUTS: RemoteTimeouts = { connect: "5 seconds", remember: "5 seconds", spawn: "15 seconds" };
 
-export const spawnUrl = (url: string) => {
-  const u = new URL("/spawn", url);
+// `url` with its host resolved to an IPv4 address: the runner listens on `tailscale ip -4` only,
+// and MagicDNS answers AAAA too, which the WebSocket might try first (SPEC "Multi-machine")
+export const ipv4 = (url: string) =>
+  Effect.gen(function* () {
+    const u = new URL(url);
+    if (isIP(u.hostname.replaceAll(/^\[|\]$/g, "")) !== 0) return u;
+    const { address } = yield* Effect.tryPromise({
+      catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
+      try: async () => lookup(u.hostname, { family: 4 }),
+    });
+    u.hostname = address;
+    return u;
+  });
+
+export const spawnUrl = (base: URL) => {
+  const u = new URL("/spawn", base);
   u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
   return u.href;
 };
@@ -33,20 +53,43 @@ const inlineFiles = (args: readonly string[]) =>
     return [...args.slice(0, k), "--system-prompt", text, ...args.slice(k + 2)];
   });
 
-export const remoteRunner = (device: string, url: string): Runner["Service"] => {
+export const remoteRunner = (device: string, url: string, timeouts: Partial<RemoteTimeouts> = {}): Runner["Service"] => {
+  const t = { ...TIMEOUTS, ...timeouts };
   const offline = (why: string) => new DeviceOffline({ message: `${device}: ${why}` });
-  const spawn = Effect.fnUntraced(function* (o: Spawn) {
-    const args = yield* inlineFiles(o.args);
-    const socket = yield* Socket.makeWebSocket(spawnUrl(url), { openTimeout: CONNECT_TIMEOUT }).pipe(
+  // The last time the device could not be reached, and why. A turn's priming finds it offline,
+  // and the turn right after it fails at once with the same verdict instead of waiting again.
+  let unreachable: { readonly until: number; readonly error: DeviceOffline } | null = null;
+  const remember = (error: DeviceOffline) =>
+    Clock.currentTimeMillis.pipe(
+      Effect.tap((now) => Effect.sync(() => (unreachable = { error, until: now + Duration.toMillis(Duration.fromInputUnsafe(t.remember)) }))),
+      Effect.andThen(Effect.fail(error)),
+    );
+
+  const open = Effect.gen(function* () {
+    const base = yield* ipv4(url).pipe(Effect.mapError((e) => offline(`cannot resolve ${url} (${e.message})`)));
+    const socket = yield* Socket.makeWebSocket(spawnUrl(base), { openTimeout: t.connect }).pipe(
       Effect.provide(Socket.layerWebSocketConstructorGlobal),
     );
-    const frames = yield* inbox(socket).pipe(Effect.mapError((e) => offline(`no device runner at ${url} (${e.message})`)));
+    // a WebSocket can't tell a closed port from a 403: either way, nothing to run claude here
+    const frames = yield* inbox(socket).pipe(
+      Effect.mapError((e) => offline(`no device runner at ${url}, or it doesn't let this machine in (${e.message})`)),
+    );
+    unreachable = null;
+    return { frames, socket };
+  }).pipe(Effect.catchTag("DeviceOffline", remember));
+  const connect = Clock.currentTimeMillis.pipe(
+    Effect.flatMap((now) => (unreachable && unreachable.until > now ? Effect.fail(unreachable.error) : open)),
+  );
+
+  const spawn = Effect.fnUntraced(function* (o: Spawn) {
+    const args = yield* inlineFiles(o.args);
+    const { frames, socket } = yield* connect;
     const write = yield* socket.writer;
     const send = (f: ToDevice) => write.write(frame(f));
     yield* send({ _tag: "Spawn", args, cwd: o.cwd, env: { ...o.env } }).pipe(Effect.mapError((e) => offline(e.message)));
 
     const ack = yield* Queue.take(frames).pipe(
-      Effect.timeoutOption(SPAWN_TIMEOUT),
+      Effect.timeoutOption(t.spawn),
       Effect.mapError((e) => offline(`the device runner hung up before claude started (${e.message})`)),
     );
     if (Option.isNone(ack)) return yield* offline("no answer to the spawn request");
@@ -69,10 +112,7 @@ export const remoteRunner = (device: string, url: string): Runner["Service"] => 
         const m = decodeFromDevice(yield* Queue.take(frames));
         if (Option.isNone(m)) continue;
         if (m.value._tag === "Line") yield* Queue.offer(lines, m.value.line);
-        if (m.value._tag !== "Exit") continue;
-        const { code, signal, stderr } = m.value;
-        const err = stderr.trim().slice(-300) || "no error output";
-        return `claude on ${device} ${code === null ? `was killed (${signal ?? "signal"})` : `exited (code ${code})`}: ${err}`;
+        if (m.value._tag === "Exit") return exitText(m.value, device);
       }
     }).pipe(Effect.catch((error) => Effect.succeed(`lost the connection to ${device}: ${error.message}`)));
     yield* pump.pipe(
@@ -87,15 +127,27 @@ export const remoteRunner = (device: string, url: string): Runner["Service"] => 
 
 const decodeHealth = Schema.decodeUnknownEffect(Schema.fromJsonString(Health));
 
-// a device runner's GET /health, None when it doesn't answer within `timeout`
-export const deviceHealth = (url: string, timeout: Duration.Input) =>
-  Effect.tryPromise({
-    catch: (cause) => cause,
-    try: async (signal) => {
-      const response = await fetch(new URL("/health", url), { signal });
-      return response.text();
-    },
-  }).pipe(Effect.flatMap(decodeHealth), Effect.timeout(timeout), Effect.option);
+// What a device runner's GET /health said: who it is and which claude it runs; `refused` when it
+// answered 403, so it is up but doesn't let this machine in (its WhoIs names or this node's name
+// are misconfigured); `offline` when nothing sensible came back within `timeout`.
+export type DeviceHealth =
+  | { readonly _tag: "online"; readonly health: Health }
+  | { readonly _tag: "refused" }
+  | { readonly _tag: "offline" };
+
+export const deviceHealth = (url: string, timeout: Duration.Input): Effect.Effect<DeviceHealth> =>
+  Effect.gen(function* () {
+    const base = yield* ipv4(url);
+    const response = yield* Effect.tryPromise(async (signal) => {
+      const r = await fetch(new URL("/health", base), { signal });
+      return { status: r.status, text: await r.text() };
+    });
+    if (response.status === 403) return { _tag: "refused" } as const;
+    return { _tag: "online", health: yield* decodeHealth(response.text) } as const;
+  }).pipe(
+    Effect.timeout(timeout),
+    Effect.orElseSucceed((): DeviceHealth => ({ _tag: "offline" })),
+  );
 
 const decodeReply = Schema.decodeUnknownEffect(Schema.fromJsonString(ToolReply));
 
@@ -105,16 +157,15 @@ export const remoteTool =
   (device: string, url: string) =>
   (name: string, input: Schema.Json): Effect.Effect<string> => {
     const call: ToolCall = { input, name };
-    return Effect.tryPromise({
-      catch: (cause) => cause,
-      try: async (signal) => {
-        const response = await fetch(new URL("/tool", url), { body: JSON.stringify(call), headers: { "content-type": "application/json" }, method: "POST", signal });
+    return Effect.gen(function* () {
+      const base = yield* ipv4(url);
+      const text = yield* Effect.tryPromise(async (signal) => {
+        const response = await fetch(new URL("/tool", base), { body: JSON.stringify(call), headers: { "content-type": "application/json" }, method: "POST", signal });
         if (!response.ok) throw new Error(`the device runner answered ${response.status}`);
         return response.text();
-      },
+      });
+      return (yield* decodeReply(text)).output;
     }).pipe(
-      Effect.flatMap(decodeReply),
-      Effect.map((r) => r.output),
       Effect.timeout(Duration.sum(Duration.fromInputUnsafe(TOOL_TIMEOUT), Duration.seconds(5))),
       Effect.catch((error) => Effect.succeed(`Error: ${device} did not run ${name}: ${error instanceof Error ? error.message : String(error)}`)),
     );

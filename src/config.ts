@@ -127,6 +127,9 @@ export const loadSettings = (path: string) =>
     const ttls = settings.cache.apiKeyTtls;
     if (ttls.length > 4 || ttls.some((t, k) => t === "1h" && ttls.slice(0, k).includes("5m")))
       return yield* new ConfigError({ message: `${path}: cache.apiKeyTtls takes at most 4 entries, every "1h" before any "5m"` });
+    for (const [name, d] of Object.entries(settings.devices))
+      if (!URL.canParse(d.url) || !["http:", "https:"].includes(new URL(d.url).protocol))
+        return yield* new ConfigError({ message: `${path}: device ${name}'s url ${d.url} is not an http:// URL` });
     if (!(settings.defaultDevice in settings.devices))
       return yield* new ConfigError({ message: `${path}: defaultDevice ${settings.defaultDevice} is not among the devices` });
     return settings;
