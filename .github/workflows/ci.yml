@@ -35,6 +35,9 @@ jobs:
       - name: Lint
         run: bun run lint
 
+      - name: Lint (Effect)
+        run: bun run lint:effect -- --format github-actions
+
       - name: Test
         run: bun run test
 

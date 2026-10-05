@@ -51,6 +51,7 @@ message sent mid-run does.
 ```sh
 bun run build   # typecheck, and the web UI into web/dist
 bun run lint    # oxlint, @hasparus/oxlint-config
+bun run lint:effect   # Effect-aware diagnostics (@effect/language-service)
 bun run test    # also the web UI's tests (web/, happy-dom); no real model is ever called
 bun run parity  # REF=<shitty-optchat checkout>: byte-for-byte against the reference
 bun run proofs  # the kernel's laws (needs bend: sh kernel/install-bend.sh, then ~/.bend/bin on PATH)

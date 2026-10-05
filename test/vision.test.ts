@@ -41,7 +41,7 @@ const until = (what: string, ok: () => boolean, ms = 4000) =>
   Effect.gen(function* () {
     const deadline = Date.now() + ms;
     while (!ok()) {
-      if (Date.now() > deadline) yield* Effect.die(new Error(`timed out waiting for ${what}`));
+      if (Date.now() > deadline) return yield* Effect.die(new Error(`timed out waiting for ${what}`));
       yield* Effect.sleep("5 millis");
     }
   });

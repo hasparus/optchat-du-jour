@@ -15,7 +15,9 @@
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true,
 
-    "types": ["bun"]
+    "types": ["bun"],
+
+    "plugins": [{ "name": "@effect/language-service" }]
   },
   "include": ["*.ts", "src", "cli", "server", "device", "test", "dev"]
 }

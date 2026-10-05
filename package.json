@@ -8,12 +8,14 @@
     "postinstall": "bun --filter '@hasparus/oxlint-config' build",
     "build": "tsc -p . && bun --filter optchat-web build",
     "lint": "oxlint --deny-warnings --disable-nested-config",
+    "lint:effect": "effect-language-service diagnostics --project tsconfig.json --strict --severity error,warning",
     "test": "bun test --pass-with-no-tests && bun --filter '@hasparus/oxlint-config' test && bun --filter optchat-web test",
     "kernel": "cd kernel && bend kernel.bend -o kernel.mjs",
     "proofs": "cd kernel && bend PROOF.bend",
     "parity": "bun test/parity/run.ts"
   },
   "devDependencies": {
+    "@effect/language-service": "0.87.3",
     "@hasparus/oxlint-config": "workspace:*",
     "@oxlint/plugins": "1.78.0",
     "@types/bun": "1.4.2",

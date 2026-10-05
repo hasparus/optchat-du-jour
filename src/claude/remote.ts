@@ -3,7 +3,7 @@
 // Until the device says claude started, every failure is DeviceOffline, so the master's chain can
 // move on at once (SPEC "Device offline": fail fast, never queue). Closing the scope closes the
 // socket, and the device runner kills the process.
-import { type Cause, Clock, Deferred, Duration, Effect, Option, Queue, Schema, Stream } from "effect";
+import { type Cause, Clock, Data, Deferred, Duration, Effect, Option, Queue, Schema, Stream } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { Socket } from "effect/socket";
 import { lookup } from "node:dns/promises";
@@ -20,6 +20,8 @@ export type RemoteTimeouts = {
 };
 const TIMEOUTS: RemoteTimeouts = { connect: "5 seconds", remember: "5 seconds", spawn: "15 seconds" };
 
+class ResolveError extends Data.TaggedError("ResolveError")<{ readonly message: string }> {}
+
 // `url` with its host resolved to an IPv4 address: the runner listens on `tailscale ip -4` only,
 // and MagicDNS answers AAAA too, which the WebSocket might try first (SPEC "Multi-machine")
 export const ipv4 = (url: string) =>
@@ -27,7 +29,7 @@ export const ipv4 = (url: string) =>
     const u = new URL(url);
     if (isIP(u.hostname.replaceAll(/^\[|\]$/g, "")) !== 0) return u;
     const { address } = yield* Effect.tryPromise({
-      catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
+      catch: (cause) => new ResolveError({ message: cause instanceof Error ? cause.message : String(cause) }),
       try: async () => lookup(u.hostname, { family: 4 }),
     });
     u.hostname = address;
