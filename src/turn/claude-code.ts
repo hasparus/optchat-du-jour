@@ -24,7 +24,11 @@ export type ClaudeCodeTurnOptions = {
   readonly primeTtl: Ttl; // the TTL of the marks priming writes
   readonly systemFile: string;
   readonly mcpConfig: string;
-  readonly runnerFor: (device: string) => Effect.Effect<{ readonly runner: Runner["Service"]; readonly cwd?: string }, DeviceOffline>;
+  // where a device's claude runs, in which folder, and the --mcp-config that reaches the server
+  // from there when it isn't `mcpConfig` (E7, E8); DeviceOffline when the device can't be reached
+  readonly runnerFor: (
+    device: string,
+  ) => Effect.Effect<{ readonly runner: Runner["Service"]; readonly cwd?: string; readonly mcpConfig?: string }, DeviceOffline>;
   readonly report: (message: string) => Effect.Effect<void>;
   readonly logUsage: TurnEvents["usage"];
 };
@@ -195,15 +199,16 @@ export const primeMaxAge = (ttl: Ttl) => (ttl === "1h" ? 3_300_000 : 270_000);
 
 export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
   Effect.gen(function* () {
-    const args = masterArgs(o);
+    // the same argv for a device's turns and primings; only the MCP URL may differ between devices
+    const argsFor = (mcpConfig: string | undefined) => masterArgs({ ...o, mcpConfig: mcpConfig ?? o.mcpConfig });
     const env = { CLAUDE_CODE_PROMPT_CACHE_TTL: o.ttl };
 
     const run: TurnEngine["run"] = (input, out, failoverFrom) =>
       Effect.gen(function* () {
-        const { cwd, runner } = yield* o.runnerFor(input.device);
+        const { cwd, mcpConfig, runner } = yield* o.runnerFor(input.device);
         const claude = yield* runner
-          .spawn({ args, cwd, env })
-          .pipe(Effect.mapError((e) => new ModelError({ message: e.message })));
+          .spawn({ args: argsFor(mcpConfig), cwd, env })
+          .pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(new ModelError({ message: e.message })))); // DeviceOffline fails over
         const started = yield* Clock.currentTimeMillis;
         // the view exactly as priming cut it, with no marks: Claude Code's own marks are on (D2)
         yield* claude.send([...cutBlocks(input.view).map(text), text(input.texts.join("\n\n"))]);
@@ -241,10 +246,10 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
 
     const primeOnce = (view: string, device: string) =>
       Effect.gen(function* () {
-        const { cwd, runner } = yield* o.runnerFor(device);
+        const { cwd, mcpConfig, runner } = yield* o.runnerFor(device);
         const claude = yield* runner
-          .spawn({ args, cwd, env: { ...env, DISABLE_PROMPT_CACHING: "1" } })
-          .pipe(Effect.mapError((e) => new ModelError({ message: e.message })));
+          .spawn({ args: argsFor(mcpConfig), cwd, env: { ...env, DISABLE_PROMPT_CACHING: "1" } })
+          .pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(new ModelError({ message: e.message })))); // DeviceOffline fails over
         const started = yield* Clock.currentTimeMillis;
         const marked = cutBlocks(view).map((t): Block => ({ cache_control: { ttl: o.primeTtl, type: "ephemeral" }, text: t, type: "text" }));
         yield* claude.send([...marked, text("ok")]);

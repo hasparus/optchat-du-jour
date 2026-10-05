@@ -4,6 +4,7 @@
 import { Context, Data, Effect, Layer, Option, Queue, Ref, type Scope, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { KILL_GRACE } from "../config.ts";
+import type { DeviceOffline } from "../engines/errors.ts";
 import { type Block, type Event, type Result, parseEvent } from "./events.ts";
 
 export class ClaudeError extends Data.TaggedError("ClaudeError")<{ readonly message: string }> {}
@@ -25,9 +26,10 @@ export type Spawn = {
   readonly cwd?: string;
 };
 
+// DeviceOffline: a device runner could not be reached or would not start claude (SPEC "Device offline")
 export class Runner extends Context.Service<
   Runner,
-  { readonly spawn: (o: Spawn) => Effect.Effect<Claude, ClaudeError, Scope.Scope> }
+  { readonly spawn: (o: Spawn) => Effect.Effect<Claude, ClaudeError | DeviceOffline, Scope.Scope> }
 >()("optchat/Runner") {}
 
 const userMessage = (blocks: readonly Block[]) =>
@@ -76,14 +78,25 @@ export const makeClaude = Effect.fnUntraced(function* (o: {
   } satisfies Claude;
 });
 
-// `claude` on this machine; OPTCHAT_CLAUDE names another binary (the tests' fake), read at spawn time
+// the binary a Runner on this machine spawns; OPTCHAT_CLAUDE names another (the tests' fake)
+export const claudeBinary = () => Bun.env.OPTCHAT_CLAUDE ?? "claude";
+
+// `claude --version`, e.g. "2.1.3 (Claude Code)"; null when it can't be run (SPEC "Multi-machine", /health)
+export const claudeVersion = (binary: string) =>
+  ChildProcessSpawner.ChildProcessSpawner.use((spawner) => spawner.string(ChildProcess.make(binary, ["--version"], { stdin: "ignore" }))).pipe(
+    Effect.timeout("10 seconds"),
+    Effect.map((out) => out.trim() || null),
+    Effect.orElseSucceed(() => null),
+  );
+
+// `claude` on this machine, read at spawn time
 export const LocalRunner = Layer.effect(
   Runner,
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const spawn = Effect.fnUntraced(function* (o: Spawn) {
       const stdin = yield* Queue.unbounded<string>();
-      const command = ChildProcess.make(Bun.env.OPTCHAT_CLAUDE ?? "claude", [...o.args], {
+      const command = ChildProcess.make(claudeBinary(), [...o.args], {
         cwd: o.cwd,
         env: { ...o.env },
         extendEnv: true,

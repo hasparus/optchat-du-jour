@@ -4,3 +4,6 @@ import { homedir } from "node:os";
 
 export const HOME = Bun.env.OPTCHAT_HOME ?? `${homedir()}/.optchat`;
 export const streamDir = (device: string) => Bun.env.OPTCHAT_DIR ?? `${HOME}/streams/${device}`;
+
+// a configured folder ("~/repos") on this machine
+export const expandHome = (path: string) => path.replace(/^~(?=\/|$)/, homedir());
