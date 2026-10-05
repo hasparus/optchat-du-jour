@@ -14,8 +14,7 @@
 // Local processes (the REPL, `claude`'s MCP client, curl) send no Origin and are let through on
 // loopback, as long as nothing forwarded them.
 import { Option } from "effect";
-
-const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+import { LOOPBACK } from "../src/http.ts";
 
 export type Caller = {
   readonly remoteAddress: Option.Option<string>;

@@ -17,7 +17,7 @@ export default defineConfig({
   ignorePatterns: [...ignorePatterns, "vendor", "kernel/kernel.mjs"],
   overrides: [
     ...overrides,
-    // scripts whose output is their report
+    // a script whose output is its report
     { files: ["test/parity/**"], rules: { "no-console": "off" } },
     // shadcn's registry components import React as a namespace, which this rule reads as importing
     // PropsWithChildren; none of them use it

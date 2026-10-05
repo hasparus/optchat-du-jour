@@ -3,27 +3,33 @@
 // the web UI) and / (the built web UI).
 import { BunHttpServer, BunServices } from "@effect/platform-bun";
 import { Effect, Layer, Option, Predicate, PubSub, Schema } from "effect";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+import { FetchHttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { openChat } from "../src/chat.ts";
 import { type Settings, MASTER_TOOLS } from "../src/config.ts";
-import { LocalRunner, Runner } from "../src/claude/process.ts";
+import { LocalRunner, Runner, claudeBinary, claudeVersion } from "../src/claude/process.ts";
+import { remoteRunner } from "../src/claude/remote.ts";
 import type { Summarize } from "../src/compactor.ts";
+import type { Down } from "../src/engines/chain.ts";
 import { DeviceOffline } from "../src/engines/errors.ts";
 import { handleMcp, mcpConfig, openNode } from "../src/mcp.ts";
+import { forbidden, mount } from "../src/http.ts";
+import { expandHome } from "../src/paths.ts";
 import { makePersist } from "../src/persist.ts";
 import { promptFile, systemPrompt } from "../src/prompts.ts";
 import { makeSession, type SessionEvent } from "../src/session.ts";
+import { openAiPlanLayer } from "../src/openai/responses.ts";
+import { SecretsLive } from "../src/secrets.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
 import { getNode, localTime, span } from "../src/tree.ts";
-import { claudeCodeTurn } from "../src/turn/claude-code.ts";
+import { type Placement, claudeCodeTurn } from "../src/turn/claude-code.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
 import { type UsageRecord, logUsage, readUsage } from "../src/usage.ts";
 import { PLACEHOLDER, render, viewSize } from "../src/view.ts";
 import { type AgUiEvent, openStream } from "./agui.ts";
 import { allowed, policyFor } from "./auth.ts";
+import { deviceStatuses, versionWarning } from "./devices.ts";
 
 export type ServerOptions = {
   readonly home: string; // ~/.optchat: streams/, usage.jsonl, instructions.md, its own git repo
@@ -36,7 +42,6 @@ export type ServerOptions = {
   readonly window?: number; // log entries in a client's first snapshot
 };
 
-const expand = (path: string) => path.replace(/^~(?=\/|$)/, homedir());
 
 // What a client sends: AG-UI's RunAgentInput (its user messages not seen before are the ones to answer), or an abort
 const TextPart = Schema.Struct({ text: Schema.optional(Schema.String), type: Schema.String });
@@ -82,10 +87,7 @@ const NodeAt = Schema.Struct({
   i: Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   l: Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ maximum: 52, minimum: 0 })),
 });
-const forbidden = HttpServerResponse.text("forbidden", { status: 403 });
 const json = (body: Schema.Json) => HttpServerResponse.jsonUnsafe(body);
-// HttpRouter.use, renamed: the React hooks rule takes any `use(` call for a hook
-const mount = HttpRouter.use;
 
 export const routes = (o: ServerOptions) =>
   mount((router) =>
@@ -101,15 +103,34 @@ export const routes = (o: ServerOptions) =>
       const events = yield* PubSub.unbounded<SessionEvent>();
       const report = (message: string) => Effect.logInfo(message).pipe(Effect.andThen(PubSub.publish(events, { message, type: "info" })), Effect.asVoid);
       const usage = (record: UsageRecord) => logUsage(usagePath, record).pipe(Effect.flatMap((e) => (e ? report(e) : Effect.void)));
-      const summarize = o.summarize ?? (yield* makeSummarize({ device: o.device, log: usage, report, settings }));
-      const chat = yield* openChat(stream, { report, summarize });
+      // built here so that a refresh token it can't save is told to the clients, not only logged
+      const plan = yield* Layer.build(openAiPlanLayer(settings.openai, { report }).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer])));
+      // a failover notice also changes the state's `down`, for clients that connect later
+      let tellState: Effect.Effect<void> = Effect.void;
+      const compactor = o.summarize
+        ? { down: (): readonly Down[] => [], summarize: o.summarize }
+        : yield* makeSummarize({ device: o.device, log: usage, report: (m) => report(m).pipe(Effect.andThen(tellState)), settings }).pipe(Effect.provide(plan));
+      const chat = yield* openChat(stream, { report, summarize: compactor.summarize });
 
       const systemFile = yield* promptFile(systemPrompt(o.home));
-      const mcp = mcpConfig(`http://127.0.0.1:${o.port}/mcp?key=${secret}`);
-      const runnerFor = (device: string) =>
-        device === o.device
-          ? Effect.succeed({ cwd: settings.devices[device]?.folders[0] ? expand(settings.devices[device].folders[0]) : undefined, runner: local })
-          : Effect.fail(new DeviceOffline({ message: `${device} has no device runner yet` }));
+      // Where each device's claude runs (E7): this machine's own Runner, or that device's runner
+      // over the tailnet. A claude elsewhere reaches /mcp through `tailscale serve` at
+      // server.publicUrl (E8); without it, turns there are refused rather than handed the
+      // loopback URL and its key, which no other machine can use.
+      const mcpAt = (base: string) => mcpConfig(`${base.replace(/\/$/, "")}/mcp?key=${secret}`);
+      const { publicUrl } = settings.server ?? {};
+      const placements = new Map<string, Effect.Effect<Placement, DeviceOffline>>();
+      const unreachable: string[] = [];
+      for (const [name, d] of Object.entries(settings.devices)) {
+        const folder = d.folders[0];
+        if (name === o.device)
+          placements.set(name, Effect.succeed({ cwd: folder === undefined ? undefined : expandHome(folder), mcpConfig: mcpAt(`http://127.0.0.1:${o.port}`), runner: local }));
+        else if (publicUrl === undefined) {
+          unreachable.push(name);
+          placements.set(name, Effect.fail(new DeviceOffline({ message: `${name}: server.publicUrl is not set, so claude there could not reach zoom and date` })));
+        } else placements.set(name, Effect.succeed({ cwd: folder, mcpConfig: mcpAt(publicUrl), runner: remoteRunner(name, d.url) })); // `~` is the device's home: it expands it
+      }
+      const runnerFor = (device: string) => placements.get(device) ?? Effect.fail(new DeviceOffline({ message: `${device} is not a configured device` }));
       const engines: TurnEngine[] = [];
       for (const ref of settings.master.chain) {
         const [engine, model = ""] = ref.split(/:(.*)/s);
@@ -118,7 +139,6 @@ export const routes = (o: ServerOptions) =>
           yield* claudeCodeTurn({
             effort: settings.master.effort,
             logUsage: usage,
-            mcpConfig: mcp,
             model,
             permissionMode: settings.master.permissionMode,
             primeTtl: settings.cache.primeTtl,
@@ -134,13 +154,20 @@ export const routes = (o: ServerOptions) =>
       const session = yield* makeSession({
         chat,
         commit: Effect.suspend(() => persist(o.home, `chore(chat): ${chat.mem.root.length} messages`)),
+        compactorDown: compactor.down,
         defaultDevice: settings.defaultDevice,
         devices: Object.keys(settings.devices),
         engines,
         events,
         logUsage: usage,
       });
+      tellState = session.tell;
       for (const p of chat.problems) yield* report(p);
+      if (unreachable.length > 0) {
+        const notice = `server.publicUrl is not set: turns on ${unreachable.join(", ")} are refused, since claude there could not reach zoom and date`;
+        yield* Effect.logWarning(notice);
+        yield* report(notice);
+      }
 
       // every request, on every route, passes the same check first (server/auth.ts has the threat model)
       const policy = policyFor(o.port, settings.allowedLogins, settings.server?.publicUrl);
@@ -261,10 +288,21 @@ export const routes = (o: ServerOptions) =>
       );
 
       yield* router.add("GET", "/api/usage", Effect.sync(() => json(readUsage(usagePath))));
+      // which devices answer and which claude they run (./devices.ts)
+      const localVersion = yield* Effect.cachedWithTTL(claudeVersion(claudeBinary()), "10 minutes");
+      let warned = "";
       yield* router.add(
         "GET",
         "/api/devices",
-        Effect.sync(() => json(Object.entries(settings.devices).map(([name, d]) => ({ folders: d.folders, local: name === o.device, name, url: d.url })))),
+        Effect.gen(function* () {
+          const list = yield* deviceStatuses({ devices: settings.devices, localVersion, self: o.device });
+          const warning = versionWarning(list);
+          if (warning && warning.key !== warned) {
+            warned = warning.key;
+            yield* report(warning.message);
+          }
+          return json(list);
+        }),
       );
 
       // the built web UI; any other path is the app's (it has no router), except a missing file

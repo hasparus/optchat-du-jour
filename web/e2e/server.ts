@@ -13,6 +13,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { serverLayer } from "../../server/app.ts";
 import type { Settings } from "../../src/config.ts";
+import { DEFAULT_ENDPOINTS } from "../../src/openai/endpoints.ts";
 
 const root = new URL("../..", import.meta.url).pathname;
 const home = Bun.env.E2E_HOME ?? mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
@@ -36,6 +37,7 @@ Object.assign(process.env, {
 });
 
 const settings: Settings = {
+  openai: DEFAULT_ENDPOINTS,
   allowedLogins: [],
   cache: { apiKeyTtls: ["1h"], claudeCodeTtl: "1h", primeTtl: "1h" },
   compactor: { byLevel: [{ chain: ["claude-code:sonnet"], from: 0 }], effort: "medium" },

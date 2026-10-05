@@ -18,7 +18,8 @@ import { COMPACT_FILE, SCALE } from "../src/prompts.ts";
 import { makeSession, type SessionEvent } from "../src/session.ts";
 import { openStream } from "../server/agui.ts";
 import { newMsg } from "../src/store.ts";
-import { blocks, claudeCodeCompactor, retryText } from "../src/summarize/claude-code.ts";
+import { blocks, claudeCodeCompactor } from "../src/summarize/claude-code.ts";
+import { retryText } from "../src/summarize/step.ts";
 import { built, bytes, dayOf, getNode } from "../src/tree.ts";
 import { cap, claudeCodeTurn, masterArgs } from "../src/turn/claude-code.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
@@ -263,12 +264,11 @@ const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
     const options = {
       effort: "high",
       logUsage: (r: UsageRecord) => Effect.sync(() => usage.push(r)),
-      mcpConfig: mcpConfig("http://127.0.0.1:9/mcp?key=k"),
       model: "opus",
       permissionMode: "bypassPermissions",
       primeTtl: "1h" as const,
       report: (m: string) => Effect.sync(() => reports.push(m)),
-      runnerFor: () => Effect.succeed({ runner }),
+      runnerFor: () => Effect.succeed({ cwd: undefined, mcpConfig: mcpConfig("http://127.0.0.1:9/mcp?key=k"), runner }),
       systemFile: "/dev/null",
       tools: MASTER_TOOLS,
       ttl: "1h" as const,
@@ -539,7 +539,7 @@ test("priming sends the turn's argv and the turn's view blocks with marks, plus 
       yield* r.session.input("hello");
       yield* r.finished(1);
       expect(r.usage.map((u) => u.role)).toEqual(["prime", "turn"]);
-      expect(masterArgs(r.options)).toContain("--replay-user-messages");
+      expect(masterArgs({ ...r.options, mcpConfig: "{}" })).toContain("--replay-user-messages");
     }),
   );
   const [prime] = f.of("prime"), [turn] = f.of("turn");

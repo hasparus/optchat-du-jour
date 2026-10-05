@@ -1,17 +1,16 @@
 // The claude-code compactor engine (ref §7 layout A, gist §4.2-§4.4, E5/E6/E11): one `claude -p`
 // per node, no tools, our own cache marks on the context, and the size retries in the same
 // conversation until the line fits in NODE bytes or TRIES are spent.
-import { Clock, Duration, Effect } from "effect";
+import { Duration, Effect } from "effect";
 import { baseArgs } from "../claude/args.ts";
 import type { Block } from "../claude/events.ts";
 import { Runner } from "../claude/process.ts";
 import type { Job } from "../compactor.ts";
-import { CALL_TIMEOUT, NODE, TRIES } from "../config.ts";
+import { CALL_TIMEOUT } from "../config.ts";
 import { type EngineError, fromResult, ModelError } from "../engines/errors.ts";
-import { COMPACT_FILE, SCALE } from "../prompts.ts";
-import { bytes } from "../tree.ts";
-import { isCold, tokensOf, type UsageRecord } from "../usage.ts";
-import { cutBlocks, flat } from "../view.ts";
+import { COMPACT_FILE } from "../prompts.ts";
+import { tokensOf, type UsageRecord } from "../usage.ts";
+import { type Try, contextBlocks, sizeRetries, step } from "./step.ts";
 
 export type CompactorOptions = {
   readonly model: string;
@@ -22,40 +21,12 @@ export type CompactorOptions = {
   readonly timeout?: Duration.Input; // CALL_TIMEOUT
 };
 
-// what the gist's step block says above the message or the two lines (gist §4.2)
-export function step(job: Job): string {
-  const scale = `For scale, this line is exactly ${NODE} bytes:\n${SCALE}\n\n`;
-  if ("msg" in job) return `${scale}Compress this message into one line, in at most ${NODE} bytes:\n${job.msg.kind}: ${job.msg.text}`;
-  return `${scale}Merge these two lines into one, in at most ${NODE} bytes:\n${flat(job.a)}\n${flat(job.b)}`;
-}
-
-// The user message of a call (layout A): the context as <chat>, bare lines, </chat>, cut at
-// MARKS with a mark on every piece, then the step, unmarked. The pieces stay byte-stable from
-// one call to the next, so the next call reads them from the cache.
+// The user message of a call (layout A): the context pieces (step.ts), each with our mark, then
+// the step, unmarked. The pieces stay byte-stable from one call to the next, so the next call
+// reads them from the cache.
 export function blocks(job: Job, ttl: "1h" | "5m"): Block[] {
-  const chat = ["<chat>", ...job.ctx, "</chat>"].join("\n");
-  const context = cutBlocks(chat).map((piece): Block => ({ cache_control: { ttl, type: "ephemeral" }, text: piece, type: "text" }));
+  const context = contextBlocks(job).map((text): Block => ({ cache_control: { ttl, type: "ephemeral" }, text, type: "text" }));
   return [...context, { text: step(job), type: "text" }];
-}
-
-// the first `limit` bytes of a line, never ending inside a UTF-8 character (gist §4.3)
-export function cut(line: string, limit = NODE): string {
-  const raw = Buffer.from(line, "utf8");
-  if (raw.length <= limit) return line;
-  let end = limit;
-  while (end > 0 && ((raw[end] ?? 0) & 0b1100_0000) === 0b1000_0000) end--; // a continuation byte: back up to its start
-  return raw.subarray(0, end).toString("utf8");
-}
-
-// the gist's retry message, word for word (gist §4.3)
-export const retryText = (line: string) =>
-  `That line is ${bytes(line)} bytes; the limit is ${NODE}. It must end where it is cut here:\n${cut(line)}| ← LIMIT`;
-
-// the shortest try in bytes; the first of equals
-function shortest(tries: readonly string[]): string {
-  let best = tries[0] ?? "";
-  for (const t of tries) if (bytes(t) < bytes(best)) best = t;
-  return best;
 }
 
 export const claudeCodeCompactor = (o: CompactorOptions) =>
@@ -66,39 +37,20 @@ export const claudeCodeCompactor = (o: CompactorOptions) =>
     const env = { CLAUDE_CODE_PROMPT_CACHE_TTL: o.ttl, DISABLE_PROMPT_CACHING: "1" };
     const timeout = o.timeout ?? CALL_TIMEOUT;
 
+    // the transport: one process per node, each try a message into it, its result the answer
     const call = (job: Job, failoverFrom: string | null) =>
       Effect.gen(function* () {
         const claude = yield* runner.spawn({ args, env }).pipe(Effect.mapError((e) => new ModelError({ message: e.message })));
-        const tries: string[] = [];
-        let message: readonly Block[] = blocks(job, o.ttl);
-        for (;;) {
-          const sent = yield* Clock.currentTimeMillis;
-          yield* claude.send(message);
-          const result = yield* claude.result.pipe(Effect.mapError((e) => new ModelError({ message: e.message })));
-          const usage = tokensOf(result.usage);
-          yield* o.log({
-            attempt: tries.length + 1,
-            auth: "claude-max",
-            cold: isCold(usage),
-            date: new Date(yield* Clock.currentTimeMillis).toISOString(),
-            device: o.device ?? null,
-            engine: "claude-code",
-            failoverFrom,
-            level: job.l,
-            model: claude.model() ?? null,
-            ms: (yield* Clock.currentTimeMillis) - sent,
-            role: "compact",
-            usage,
+        const ask = (t: Try) =>
+          Effect.gen(function* () {
+            yield* claude.send(t.retry === null ? blocks(job, o.ttl) : [{ text: t.retry.text, type: "text" }]);
+            const result = yield* claude.result.pipe(Effect.mapError((e) => new ModelError({ message: e.message })));
+            const usage = tokensOf(result.usage), model = claude.model() ?? null;
+            if (result.is_error || result.stop_reason === "refusal")
+              return yield* fromResult(result.result ?? `the call ended with ${result.subtype ?? "an error"}`, result.stop_reason, { model, usage });
+            return { model, text: result.result ?? "", usage };
           });
-          if (result.is_error || result.stop_reason === "refusal")
-            return yield* fromResult(result.result ?? `the call ended with ${result.subtype ?? "an error"}`, result.stop_reason);
-          const answer = result.result?.trim() ?? "";
-          if (answer === "") return yield* new ModelError({ message: "the compactor answered with an empty line" });
-          tries.push(answer);
-          const fits = bytes(answer) <= NODE;
-          if (fits || tries.length === TRIES) return shortest(tries);
-          message = [{ text: retryText(answer), type: "text" }];
-        }
+        return yield* sizeRetries({ ask, auth: "claude-max", device: o.device, engine: "claude-code", failoverFrom, job, log: o.log });
       }).pipe(
         Effect.scoped, // the process ends with the node
         Effect.timeoutOrElse({
