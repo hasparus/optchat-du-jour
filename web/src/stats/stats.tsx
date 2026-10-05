@@ -63,11 +63,11 @@ function Stacked({ title, data, field, names }: { title: string; data: readonly 
           <BarChart data={[...data]}>
             <CartesianGrid vertical={false} />
             <XAxis dataKey="period" tickLine={false} />
-            <YAxis tickFormatter={(v: number) => compact.format(v)} tickLine={false} width={36} />
+            <YAxis allowDecimals={field === "tokens"} tickFormatter={(v: number) => compact.format(v)} tickLine={false} width={36} />
             <ChartTooltip content={<ChartTooltipContent />} />
             <ChartLegend content={<ChartLegendContent />} />
             {names.map((n) => (
-              <Bar dataKey={`${field}.${n}`} fill={`var(--color-${n})`} key={n} name={n} radius={2} stackId="a" />
+              <Bar dataKey={`${field}.${n}`} fill={`var(--color-${n})`} key={n} name={n} radius={2} stackId="a" stroke="var(--background)" strokeWidth={2} />
             ))}
           </BarChart>
         </ChartContainer>
@@ -117,7 +117,7 @@ export function Stats() {
                   <CartesianGrid vertical={false} />
                   <XAxis dataKey="period" tickLine={false} />
                   <YAxis domain={[0, 1]} tickFormatter={(v: number) => pct(v)} tickLine={false} width={36} />
-                  <ChartTooltip content={<ChartTooltipContent />} />
+                  <ChartTooltip content={<ChartTooltipContent valueFormatter={pct} />} />
                   <Line dataKey="hitRate" dot={{ r: 4 }} stroke="var(--color-hitRate)" strokeWidth={2} type="monotone" />
                 </LineChart>
               </ChartContainer>
@@ -135,8 +135,8 @@ export function Stats() {
                   <YAxis allowDecimals={false} tickLine={false} width={36} />
                   <ChartTooltip content={<ChartTooltipContent />} />
                   <ChartLegend content={<ChartLegendContent />} />
-                  <Bar dataKey="warm" fill="var(--color-warm)" radius={2} stackId="t" />
-                  <Bar dataKey="cold" fill="var(--color-cold)" radius={2} stackId="t" />
+                  <Bar dataKey="warm" fill="var(--color-warm)" radius={2} stackId="t" stroke="var(--background)" strokeWidth={2} />
+                  <Bar dataKey="cold" fill="var(--color-cold)" radius={2} stackId="t" stroke="var(--background)" strokeWidth={2} />
                 </BarChart>
               </ChartContainer>
             </CardContent>

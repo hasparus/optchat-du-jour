@@ -30,7 +30,7 @@ import { type Marker as StatusMarker, queued, type Session, type SessionStore } 
 import { useChat } from "@tanstack/ai-react";
 import { AlertCircleIcon, InfoIcon } from "lucide-react";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { ChatRow } from "./row";
+import { ChatRow, RowBoundary } from "./row";
 
 const PAGE = 100;
 
@@ -138,7 +138,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown }: C
     <div className="flex min-h-0 flex-1 flex-col">
       <MessageScroller className="min-h-0 flex-1">
         <MessageScrollerViewport aria-label="Chat" preserveScrollOnPrepend>
-          <MessageScrollerContent className="gap-4 px-4 py-4">
+          <MessageScrollerContent className="gap-4 p-4">
             <div className="flex justify-center" ref={top}>
               {first > 0 && (
                 <button className="text-xs text-muted-foreground underline" disabled={loading} onClick={() => void loadOlder()} type="button">
@@ -154,11 +154,13 @@ export function Chat({ link, session, state, devices, target, onTargetShown }: C
             {rows.map((row, k) => (
               <Fragment key={row.key}>
                 <MessageScrollerItem data-log-index={row.id} messageId={row.key} scrollAnchor={row.kind === "user"}>
-                  <ChatRow
-                    row={row}
-                    streaming={busy && row.key === lastRow}
-                    toolState={row.kind === "tool" && row.output !== null ? "done" : busy && row.key === lastTool ? "running" : "ended"}
-                  />
+                  <RowBoundary text={row.kind === "tool" ? `${row.name} ${row.args}\n${row.output ?? ""}` : row.text}>
+                    <ChatRow
+                      row={row}
+                      streaming={busy && row.key === lastRow}
+                      toolState={row.kind === "tool" && row.output !== null ? "done" : busy && row.key === lastTool ? "running" : "ended"}
+                    />
+                  </RowBoundary>
                 </MessageScrollerItem>
                 {markersAfter(state.markers, rows, k).map((m) => (
                   <StatusRow key={`k${m.key}`} marker={m} />

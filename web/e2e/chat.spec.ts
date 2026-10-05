@@ -26,6 +26,9 @@ test("a message gets a reply that streams in, after its tool call", async ({ pag
   await expect(page.getByTestId("status")).toContainText("running");
   await expect(page.getByText(REPLY)).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("status")).toBeHidden();
+  // the tool row opens to its input and output
+  await page.getByText(/^Bash/).click();
+  await expect(page.getByText("notes.md")).toBeVisible();
 });
 
 test("a turn started on one page streams into another", async ({ browser }) => {

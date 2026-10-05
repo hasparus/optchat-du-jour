@@ -10,9 +10,9 @@ async function get<S extends Schema.Top & { readonly DecodingServices: never }>(
 
 export const api = {
   // log entries before message `before`, oldest first
-  messages: (before: number, limit = 100) => get(`/api/messages?before=${before}&limit=${limit}`, MessagesPage),
-  view: () => get("/api/view", View),
-  node: (l: number, i: number) => get(`/api/node?l=${l}&i=${i}`, NodeView),
-  usage: () => get("/api/usage", Usage),
-  devices: () => get("/api/devices", Devices),
+  messages: async (before: number, limit = 100) => get(`/api/messages?before=${before}&limit=${limit}`, MessagesPage),
+  view: async () => get("/api/view", View),
+  node: async (l: number, i: number) => get(`/api/node?l=${l}&i=${i}`, NodeView),
+  usage: async () => get("/api/usage", Usage),
+  devices: async () => get("/api/devices", Devices),
 };

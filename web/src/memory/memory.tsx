@@ -33,7 +33,7 @@ function Line({ line, onOpen }: { line: ViewLine; onOpen: () => void }) {
 }
 
 function Zoom({ at, onOpen, onBack, onShow }: { at: At; onOpen: (next: At) => void; onBack: () => void; onShow: (i: number) => void }) {
-  const read = useCallback(() => api.node(at.l, at.i), [at.l, at.i]);
+  const read = useCallback(async () => api.node(at.l, at.i), [at.l, at.i]);
   const { data, error } = useApi<NodeView>(read);
   return (
     <div className="space-y-3" data-testid="zoom">

@@ -1,5 +1,6 @@
 // Builds the web UI into web/dist, which optchat-server serves at / (SPEC "Web UI", E2). `bun run
-// dev` proxies /ws and /api to a server on 127.0.0.1:7700. Installable as a PWA; the service
+// dev` proxies /ws and /api to a server on 127.0.0.1:7700, as that server's own origin (it refuses
+// cross-origin requests). Installable as a PWA; the service
 // worker caches the app shell only, never the API.
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
@@ -39,5 +40,10 @@ export default defineConfig({
     }),
   ],
   resolve: { alias: { "@": fileURLToPath(new URL("src", import.meta.url)) } },
-  server: { proxy: { "/api": `http://${server}`, "/ws": { target: `ws://${server}`, ws: true } } },
+  server: {
+    proxy: {
+      "/api": { changeOrigin: true, headers: { origin: `http://${server}` }, target: `http://${server}` },
+      "/ws": { changeOrigin: true, headers: { origin: `http://${server}` }, target: `ws://${server}`, ws: true },
+    },
+  },
 });

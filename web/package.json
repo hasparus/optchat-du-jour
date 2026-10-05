@@ -8,7 +8,7 @@
     "build": "tsc -p . && vite build",
     "typecheck": "tsc -p .",
     "test": "bun test",
-    "e2e": "playwright test"
+    "e2e": "vite build && playwright test"
   },
   "dependencies": {
     "@ag-ui/core": "1.0.0",
@@ -17,7 +17,6 @@
     "@tanstack/ai": "0.64.0",
     "@tanstack/ai-client": "0.36.1",
     "@tanstack/ai-react": "0.29.4",
-    "ansi-to-react": "6.2.6",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "effect": "4.0.1",

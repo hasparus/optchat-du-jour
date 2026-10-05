@@ -5,7 +5,7 @@
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "@/components/ui/input-group";
 import { cn } from "@/lib/utils";
 import { CornerDownLeftIcon, SquareIcon } from "lucide-react";
-import type { ComponentProps, FormEvent, HTMLAttributes, KeyboardEvent } from "react";
+import type { ComponentProps, HTMLAttributes, KeyboardEvent, SubmitEvent } from "react";
 import { useState } from "react";
 
 export type PromptInputProps = Omit<HTMLAttributes<HTMLFormElement>, "onSubmit"> & {
@@ -14,7 +14,7 @@ export type PromptInputProps = Omit<HTMLAttributes<HTMLFormElement>, "onSubmit">
 };
 
 export const PromptInput = ({ className, onSubmit, children, ...props }: PromptInputProps) => {
-  const submit = (event: FormEvent<HTMLFormElement>) => {
+  const submit = (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = event.currentTarget;
     const field = form.elements.namedItem("message");

@@ -50,7 +50,7 @@ const highlighters = new Map<string, Promise<HighlighterGeneric<BundledLanguage,
 const cache = new Map<string, Tokenized>();
 const cacheKey = (code: string, language: BundledLanguage) => `${language}:${code.length}:${code.slice(0, 100)}:${code.slice(-100)}`;
 
-const highlighter = (language: BundledLanguage) => {
+const highlighter = async (language: BundledLanguage) => {
   const cached = highlighters.get(language);
   if (cached) return cached;
   const made = createHighlighter({ langs: [language], themes: ["github-light", "github-dark"] });
@@ -154,7 +154,7 @@ export type CodeBlockCopyButtonProps = ComponentProps<typeof Button> & {
 
 export const CodeBlockCopyButton = ({ timeout = 2000, children, className, ...props }: CodeBlockCopyButtonProps) => {
   const [isCopied, setIsCopied] = useState(false);
-  const timeoutRef = useRef(0);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { code } = useContext(CodeBlockContext);
 
   const copy = async () => {
@@ -162,7 +162,7 @@ export const CodeBlockCopyButton = ({ timeout = 2000, children, className, ...pr
     try {
       await navigator.clipboard.writeText(code);
       setIsCopied(true);
-      timeoutRef.current = window.setTimeout(() => {
+      timeoutRef.current = setTimeout(() => {
         setIsCopied(false);
       }, timeout);
     } catch {
@@ -172,7 +172,7 @@ export const CodeBlockCopyButton = ({ timeout = 2000, children, className, ...pr
 
   useEffect(
     () => () => {
-      window.clearTimeout(timeoutRef.current);
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
     },
     [],
   );

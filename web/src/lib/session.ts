@@ -2,6 +2,7 @@
 // view size, queued mid-run messages), status markers from CUSTOM info and RUN_ERROR, whether the
 // model is thinking, and the messages sent from here that the log doesn't hold yet. The messages
 // themselves are useChat's; this is everything else the AG-UI events carry.
+import { EventType } from "@ag-ui/core";
 import { Option, type Schema } from "effect";
 import type { Link, LinkStatus } from "./connection.ts";
 import { type Inbound, parseState, type SessionState } from "./protocol.ts";
@@ -73,7 +74,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
 
   const event = (e: Inbound) => {
     switch (e.type) {
-      case "MESSAGES_SNAPSHOT": {
+      case EventType.MESSAGES_SNAPSHOT: {
         users.clear();
         lastIndex = -1;
         for (const m of e.messages) seen(m.id);
@@ -81,47 +82,47 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
         set({ thinking: false });
         return;
       }
-      case "STATE_SNAPSHOT":
+      case EventType.STATE_SNAPSHOT:
         applyState({ ...e.snapshot });
         return;
-      case "STATE_DELTA": {
+      case EventType.STATE_DELTA: {
         const next = { ...raw };
         for (const op of e.delta) next[op.path.slice(1)] = op.value;
         applyState(next);
         return;
       }
-      case "TEXT_MESSAGE_START":
+      case EventType.TEXT_MESSAGE_START:
         seen(e.messageId);
         if (e.role === "user") users.add(e.messageId);
         return;
-      case "TEXT_MESSAGE_CONTENT":
+      case EventType.TEXT_MESSAGE_CONTENT:
         if (users.has(e.messageId)) logged(e.messageId, e.delta);
         else if (s.thinking) set({ thinking: false });
         return;
-      case "TEXT_MESSAGE_END":
+      case EventType.TEXT_MESSAGE_END:
         users.delete(e.messageId);
         return;
-      case "TOOL_CALL_START":
+      case EventType.TOOL_CALL_START:
         if (e.parentMessageId !== undefined) seen(e.parentMessageId);
         if (s.thinking) set({ thinking: false });
         return;
-      case "TOOL_CALL_RESULT":
+      case EventType.TOOL_CALL_RESULT:
         seen(e.messageId);
         return;
-      case "RUN_FINISHED":
+      case EventType.RUN_FINISHED:
         set({ thinking: false });
         return;
-      case "RUN_ERROR":
+      case EventType.RUN_ERROR:
         set({ thinking: false });
         mark(e.message, "error");
         return;
-      case "CUSTOM":
+      case EventType.CUSTOM:
         if (e.name === "info") mark(e.value, "info");
         else if (e.name === "thinking") set({ thinking: true });
         return;
-      case "RUN_STARTED":
-      case "TOOL_CALL_ARGS":
-      case "TOOL_CALL_END":
+      case EventType.RUN_STARTED:
+      case EventType.TOOL_CALL_ARGS:
+      case EventType.TOOL_CALL_END:
         return;
     }
   };

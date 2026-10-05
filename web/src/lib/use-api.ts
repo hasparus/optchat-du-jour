@@ -9,16 +9,17 @@ export function useApi<A>(read: () => Promise<A>): Loaded<A> {
   const [round, setRound] = useState(0);
   useEffect(() => {
     let live = true;
-    read().then(
-      (value) => {
+    const load = async () => {
+      try {
+        const value = await read();
         if (!live) return;
         setData(value);
         setError(null);
-      },
-      (error_: unknown) => {
+      } catch (error_) {
         if (live) setError(error_ instanceof Error ? error_.message : String(error_));
-      },
-    );
+      }
+    };
+    void load();
     return () => {
       live = false;
     };

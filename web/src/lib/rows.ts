@@ -52,11 +52,11 @@ export function messageRows(messages: readonly UIMessage[]): Row[] {
     }
     const results = new Map<string, string>();
     for (const p of m.parts) if (p.type === "tool-result") results.set(p.toolCallId, Array.isArray(p.content) ? "" : p.content);
-    m.parts.forEach((p, j) => {
+    for (const [j, p] of m.parts.entries()) {
       const key = `m${m.id}.${j}`;
       if (p.type === "text" && p.content) out.push({ id, key, kind: "talk", text: p.content });
       if (p.type === "tool-call") out.push({ args: p.arguments, id, key, kind: "tool", name: p.name, output: results.get(p.id) ?? null });
-    });
+    }
   }
   return out;
 }

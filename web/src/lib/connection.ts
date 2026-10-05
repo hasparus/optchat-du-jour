@@ -24,8 +24,16 @@ export type Link = {
   readonly close: () => void;
 };
 
+// the part of a WebSocket the link uses; the server sends text frames only
+export type SocketLike = {
+  addEventListener(type: "open" | "close", listener: () => void): void;
+  addEventListener(type: "message", listener: (event: { readonly data: string }) => void): void;
+  send(frame: string): void;
+  close(): void;
+};
+
 export type LinkOptions = {
-  readonly WebSocketImpl?: typeof WebSocket;
+  readonly socket?: (url: string) => SocketLike; // tests replace the WebSocket
   readonly retryMs?: number; // the first reconnect delay; it doubles up to 10 s
 };
 
@@ -66,13 +74,13 @@ function pipe(signal: AbortSignal | undefined, done: () => void) {
 }
 
 export function openLink(url: string, options: LinkOptions = {}): Link {
-  const Impl = options.WebSocketImpl ?? WebSocket;
+  const open = options.socket ?? ((target: string): SocketLike => new WebSocket(target));
   const firstRetry = options.retryMs ?? 1000;
   const listeners = new Set<(event: Inbound) => void>();
   const statusListeners = new Set<(status: LinkStatus) => void>();
   const sinks = new Set<(chunk: StreamChunk) => void>();
   const outbox: string[] = []; // sent while disconnected: delivered on the next open
-  let socket: WebSocket | null = null;
+  let socket: SocketLike | null = null;
   let status: LinkStatus = "connecting";
   let retry = firstRetry;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -86,7 +94,7 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
   const connect = () => {
     if (closed) return;
     setStatus("connecting");
-    const ws = new Impl(url);
+    const ws = open(url);
     socket = ws;
     ws.addEventListener("open", () => {
       if (ws !== socket) return;
@@ -94,9 +102,9 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
       setStatus("open");
       for (const frame of outbox.splice(0)) ws.send(frame);
     });
-    ws.addEventListener("message", (message: MessageEvent<string>) => {
+    ws.addEventListener("message", (message) => {
       if (ws !== socket) return;
-      const event = parseFrame(String(message.data));
+      const event = parseFrame(message.data);
       if (Option.isNone(event)) return;
       for (const l of listeners) l(event.value);
       const chunk = toChunk(event.value);
@@ -134,7 +142,9 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
         // ours goes out at once through Link.send, and comes back as the server logs it
       },
       subscribe: (signal) => {
-        const p = pipe(signal, () => sinks.delete(p.push));
+        const p = pipe(signal, () => {
+          sinks.delete(p.push);
+        });
         sinks.add(p.push);
         return p.chunks;
       },

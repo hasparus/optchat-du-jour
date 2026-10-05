@@ -8,7 +8,7 @@ import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Message, MessageContent, MessageHeader } from "@/components/ui/message";
 import type { Row } from "@/lib/rows";
 import { CodeIcon, TextIcon } from "lucide-react";
-import { useState } from "react";
+import { Component, type ReactNode, useState } from "react";
 
 const oneLine = (s: string, max = 80) => {
   const flat = s.replaceAll(/\s+/g, " ").trim();
@@ -43,6 +43,17 @@ function Reply({ text, streaming }: { text: string; streaming: boolean }) {
       </MessageContent>
     </Message>
   );
+}
+
+// a row that fails to render shows its text as logged, and the rest of the chat stays up
+export class RowBoundary extends Component<{ readonly text: string; readonly children: ReactNode }, { readonly failed: boolean }> {
+  override state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  override render() {
+    return this.state.failed ? <pre className="font-mono text-xs wrap-break-word whitespace-pre-wrap">{this.props.text}</pre> : this.props.children;
+  }
 }
 
 export function ChatRow({ row, streaming, toolState }: { row: Row; streaming: boolean; toolState: ToolState }) {

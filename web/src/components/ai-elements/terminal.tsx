@@ -1,9 +1,9 @@
-// AI Elements' Terminal (elements.ai-sdk.dev registry): a tool's output as a terminal, ANSI colours
-// kept. Used for `echo` entries (SPEC "Web UI", Chat). The clear button is left out: the log is
-// append-only.
+// AI Elements' Terminal (elements.ai-sdk.dev registry): a tool's output as a terminal. Used for
+// `echo` entries (SPEC "Web UI", Chat). The clear button is left out: the log is append-only. The
+// registry's ansi-to-react is too: its CommonJS default export doesn't survive Vite's build, so
+// escape sequences are dropped instead of drawn as colours.
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import Ansi from "ansi-to-react";
 import { CheckIcon, CopyIcon, TerminalIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes } from "react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
@@ -13,6 +13,11 @@ type TerminalContextType = {
   isStreaming: boolean;
   autoScroll: boolean;
 };
+
+// CSI and OSC sequences, and the other C0/C1 controls but newline and tab
+// oxlint-disable-next-line no-control-regex -- matching control characters is the point
+const ESCAPES = /\u001B\[[0-?]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)|[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g;
+export const plainText = (s: string) => s.replaceAll(ESCAPES, "");
 
 const TerminalContext = createContext<TerminalContextType>({ autoScroll: true, isStreaming: false, output: "" });
 
@@ -47,14 +52,14 @@ export type TerminalCopyButtonProps = ComponentProps<typeof Button> & {
 
 export const TerminalCopyButton = ({ timeout = 2000, children, className, ...props }: TerminalCopyButtonProps) => {
   const [isCopied, setIsCopied] = useState(false);
-  const timeoutRef = useRef(0);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { output } = useContext(TerminalContext);
 
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(output);
       setIsCopied(true);
-      timeoutRef.current = window.setTimeout(() => {
+      timeoutRef.current = setTimeout(() => {
         setIsCopied(false);
       }, timeout);
     } catch {
@@ -64,7 +69,7 @@ export const TerminalCopyButton = ({ timeout = 2000, children, className, ...pro
 
   useEffect(
     () => () => {
-      window.clearTimeout(timeoutRef.current);
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
     },
     [],
   );
@@ -96,10 +101,10 @@ export const TerminalContent = ({ className, children, ...props }: TerminalConte
   }, [output, autoScroll]);
 
   return (
-    <div className={cn("max-h-96 overflow-auto p-3 font-mono text-xs leading-relaxed", className)} ref={containerRef} {...props}>
+    <div className={cn("max-h-96 overflow-auto p-3 font-mono text-xs/relaxed", className)} ref={containerRef} {...props}>
       {children ?? (
         <pre className="wrap-break-word whitespace-pre-wrap">
-          <Ansi>{output}</Ansi>
+          {plainText(output)}
           {isStreaming && <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-zinc-100" />}
         </pre>
       )}

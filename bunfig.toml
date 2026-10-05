@@ -1,3 +1,3 @@
 [test]
-# the vendored package's suite runs with its own config (see the test script)
-pathIgnorePatterns = ["vendor/**"]
+# the vendored package's suite and the web UI's run with their own configs (see the test script)
+pathIgnorePatterns = ["vendor/**", "web/**"]

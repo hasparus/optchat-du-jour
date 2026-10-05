@@ -15,20 +15,20 @@ export type ToolState = "running" | "done" | "ended";
 export type ToolProps = ComponentProps<typeof Collapsible>;
 
 export const Tool = ({ className, ...props }: ToolProps) => (
-  <Collapsible className={cn("group not-prose w-full rounded-md border", className)} {...props} />
+  <Collapsible className={cn("group w-full rounded-md border", className)} {...props} />
 );
 
-const statusLabels: Record<ToolState, string> = {
+const statusLabels = {
   done: "Completed",
   ended: "No output",
   running: "Running",
-};
+} satisfies Record<ToolState, string>;
 
-const statusIcons: Record<ToolState, ReactNode> = {
+const statusIcons = {
   done: <CheckCircleIcon className="size-4 text-green-600" />,
   ended: <MinusCircleIcon className="size-4 text-muted-foreground" />,
   running: <ClockIcon className="size-4 animate-pulse" />,
-};
+} satisfies Record<ToolState, ReactNode>;
 
 export const getStatusBadge = (status: ToolState) => (
   <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">

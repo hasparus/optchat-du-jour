@@ -5,17 +5,19 @@ import { createRoot } from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
 import { App } from "./app";
 import { openLink } from "./lib/connection";
+import { makeSession } from "./lib/session";
 import "./index.css";
 
 const ws = new URL("/ws", location.href);
 ws.protocol = location.protocol === "https:" ? "wss:" : "ws:";
 const link = openLink(ws.href);
+const session = makeSession(link); // for the page's lifetime, so no event falls between renders
 
 const root = document.querySelector("#root");
 if (root) {
   createRoot(root).render(
     <StrictMode>
-      <App link={link} />
+      <App link={link} session={session} />
     </StrictMode>,
   );
 }
