@@ -22,7 +22,7 @@ import { claudeCodeTurn } from "../src/turn/claude-code.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
 import { type UsageRecord, logUsage, readUsage } from "../src/usage.ts";
 import { PLACEHOLDER, render, viewSize } from "../src/view.ts";
-import { type AgUiEvent, makeTranslator, snapshot } from "./agui.ts";
+import { type AgUiEvent, openStream } from "./agui.ts";
 import { allowed, policyFor } from "./auth.ts";
 
 export type ServerOptions = {
@@ -131,8 +131,8 @@ export const routes = (o: ServerOptions) =>
           const write = yield* socket.writer;
           const send = (events: readonly AgUiEvent[]) => Effect.forEach(events, (e) => write.write(JSON.stringify(e)), { discard: true });
           const live = yield* PubSub.subscribe(session.events); // before the snapshot, so nothing falls between
-          const translate = makeTranslator(thread, session.state());
-          yield* send(snapshot(chat.mem.root.slice(-(o.window ?? 200)), session.state()));
+          const { first, translate } = openStream({ entries: chat.mem.root, live: session.live(), state: session.state(), thread, window: o.window ?? 200 });
+          yield* send(first);
           yield* session.primeSoon;
           yield* PubSub.take(live).pipe(
             Effect.flatMap((e) => send(translate(e))),
@@ -189,7 +189,7 @@ export const routes = (o: ServerOptions) =>
             budget: chat.mem.budget,
             lines: chat.mem.view.map((c) => {
               const node = getNode(chat.mem, c);
-              const { id, n } = span(c);
+              const { n, id } = span(c);
               const from = chat.mem.root[id], to = chat.mem.root[id + n - 1];
               return {
                 built: node !== undefined,

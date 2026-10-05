@@ -26,11 +26,13 @@ export type SessionState = {
 
 export type SessionEvent =
   | { readonly type: "logged"; readonly entry: Entry; readonly runId: string | null }
-  // `at`: the log index the reply's talk entry will get, taken when the delta is published
-  | { readonly type: "text"; readonly delta: string; readonly runId: string; readonly at: number }
+  // `at`: the log index the reply's talk entry will get, taken when the delta is published;
+  // `offset`: where the delta starts in that reply's text so far
+  | { readonly type: "text"; readonly delta: string; readonly runId: string; readonly at: number; readonly offset: number }
   | { readonly type: "thinking"; readonly tokens: number; readonly runId: string }
   | { readonly type: "run-started"; readonly runId: string }
-  | { readonly type: "run-finished"; readonly runId: string; readonly error: string | null }
+  // every run-started gets exactly one, also after a cancel; `logged`: the log's length by then
+  | { readonly type: "run-finished"; readonly runId: string; readonly error: string | null; readonly logged: number }
   | { readonly type: "info"; readonly message: string }
   | { readonly type: "usage"; readonly record: UsageRecord }
   | { readonly type: "state"; readonly state: SessionState };
@@ -44,7 +46,11 @@ export type Session = {
   readonly state: () => SessionState;
   // a client connected: a message usually follows, so prime the view (SPEC "Turn and priming")
   readonly primeSoon: Effect.Effect<void>;
+  // the run going on, and the reply it is streaming (not logged yet), for a client joining now
+  readonly live: () => LiveRun | null;
 };
+
+export type LiveRun = { readonly runId: string; readonly reply: { readonly at: number; readonly text: string } | null };
 
 // "/on macbook ..." picks the device for that turn; the text stays as typed
 export const deviceOf = (text: string, devices: readonly string[]) => {
@@ -91,8 +97,39 @@ export const makeSession = (o: {
     const tell = Effect.suspend(() => publish({ state: state(), type: "state" }));
     const enter = (p: Phase) => Effect.suspend(() => ((phase = p), tell));
 
+    // the run whose RUN_STARTED went out, and the text it is streaming at log index `at`
+    let current: { runId: string; reply: { at: number; text: string } | null } | null = null;
+    const live = (): LiveRun | null => current && { reply: current.reply && { ...current.reply }, runId: current.runId };
+
     const log = (kind: Entry["kind"], text: string, runId: string | null, on: string | null) =>
-      chat.log(kind, text, on ? { device: on } : {}).pipe(Effect.tap((entry) => publish({ entry, runId, type: "logged" })));
+      chat.log(kind, text, on ? { device: on } : {}).pipe(
+        Effect.tap((entry) =>
+          Effect.suspend(() => {
+            if (current) current.reply = null; // the streamed text is logged now, or was left behind
+            return publish({ entry, runId, type: "logged" });
+          }),
+        ),
+      );
+
+    // live reply text: buffered for clients that join mid-reply, each delta with its place in it
+    const stream = (delta: string, runId: string) =>
+      Effect.suspend(() => {
+        const at = chat.mem.root.length;
+        if (current && current.reply?.at !== at) current.reply = { at, text: "" };
+        const offset = current?.reply?.text.length ?? 0;
+        if (current?.reply) current.reply.text += delta;
+        return publish({ at, delta, offset, runId, type: "text" });
+      });
+
+    // the one end of a run: published before anything else is logged, so a reply left open
+    // (a cancel, a crash) is closed before its log index goes to another entry
+    const endRun = (error: string | null) =>
+      Effect.suspend(() => {
+        if (!current) return Effect.void;
+        const { runId } = current;
+        current = null;
+        return publish({ error, logged: chat.mem.root.length, runId, type: "run-finished" });
+      });
 
     // the view changed (a message, a node): once it has been quiet for PRIME_IDLE and no turn runs,
     // prime it in the background. One fiber debounces every change, so bursts start one timer.
@@ -160,10 +197,11 @@ export const makeSession = (o: {
         const out: TurnEvents = {
           info,
           log: (kind, text) => log(kind, text, runId, on).pipe(Effect.asVoid),
-          text: (delta) => publish({ at: chat.mem.root.length, delta, runId, type: "text" }),
+          text: (delta) => stream(delta, runId),
           thinking: (tokens) => publish({ runId, tokens, type: "thinking" }),
           usage: (record) => o.logUsage(record).pipe(Effect.andThen(publish({ record, type: "usage" }))),
         };
+        current = { reply: null, runId };
         yield* publish({ runId, type: "run-started" });
         yield* tell;
         const result = yield* failover(
@@ -184,12 +222,14 @@ export const makeSession = (o: {
             sent = [];
             const leftover = [...untaken, ...(closed ? yield* Queue.clear(closed) : [])].map((text) => ({ device: on, text }));
             // after a result they get a fresh call with a new view; after a failure they stay in the log, unanswered
-            if (result._tag === "Success") queue.unshift(...leftover);
-            else {
+            if (result._tag === "Success") {
+              queue.unshift(...leftover);
+              yield* endRun(null);
+            } else {
               yield* info(failureText(result.failure));
+              yield* endRun(result.failure.message);
               yield* logUnanswered(leftover);
             }
-            yield* publish({ error: result._tag === "Success" ? null : result.failure.message, runId, type: "run-finished" });
           }),
         );
       }
@@ -199,6 +239,7 @@ export const makeSession = (o: {
     // sees idle sees the commit. A message that came in while the loop wound down starts it again.
     const afterLoop = Effect.gen(function* () {
       engine = null;
+      yield* endRun("the turn stopped"); // a run the loop left without an end (a defect)
       const failed = yield* o.commit;
       if (failed) yield* info(`git: ${failed}`);
       yield* Effect.suspend(() => {
@@ -220,8 +261,10 @@ export const makeSession = (o: {
       steer = null;
       return Effect.gen(function* () {
         const more = pending ? yield* Queue.clear(pending) : [];
+        const inRun = current !== null;
+        yield* endRun("cancelled"); // the run's end says it
         yield* logUnanswered([...left, ...more.map((text) => ({ device, text }))]);
-        yield* info("cancelled");
+        if (!inRun) yield* info("cancelled"); // before any run started: waiting or priming
       });
     });
 
@@ -258,7 +301,7 @@ export const makeSession = (o: {
       !primer || running || !allBuilt(chat.mem) ? Effect.void : primer(render(chat.mem), o.defaultDevice).pipe(Effect.forkIn(scope), Effect.asVoid),
     );
 
-    return { cancel, events, input, primeSoon, state };
+    return { cancel, events, input, live, primeSoon, state };
   });
 
 const failureText = (e: EngineError | StoreError) => {

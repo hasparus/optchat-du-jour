@@ -56,8 +56,9 @@ const GIT_TIMEOUT = "2 minutes";
 
 const save = (dir: string, message: string) =>
   Effect.gen(function* () {
+    // created first if missing (a fresh machine): git needs a directory to run in
     yield* files(dir, () => {
-      mkdirSync(dir, { recursive: true });
+      mkdirSync(dir, { mode: 0o700, recursive: true });
     });
     const has = (name: string) => existsSync(join(dir, name));
     // its own repo even inside another one, so `add -A` never reaches past the data dir
@@ -69,7 +70,7 @@ const save = (dir: string, message: string) =>
       });
     yield* must(dir, ["add", "-A"]);
     if (yield* staged(dir)) yield* must(dir, ["commit", "-q", "--no-verify", "-m", message]);
-    const remotes = (yield* must(dir, ["remote"])).out.split("\n").filter(Boolean);
+    const remotes = (yield* must(dir, ["remote"])).out.split("\n").filter((name) => name !== "");
     const remote = remotes.includes("origin") ? "origin" : remotes[0];
     // also when nothing new was committed: a push that failed last time goes out now
     if (remote) yield* must(dir, ["push", "-q", remote, "HEAD"]);

@@ -124,7 +124,7 @@ export function makeScreen(o: ScreenOptions) {
     }
     busy = st.phase !== "idle";
     // idle comes after the loop committed: whatever of ours it logged has had its answer, or had
-    // its turn cancelled (a cancel ends a run without RUN_FINISHED)
+    // its turn cancelled before it began (waiting or priming: no run, so no run end)
     if (!busy) logging = 0;
     if (st.phase === "waiting" && st.waiting !== shownWaiting && st.waiting > 0) note(`waiting for ${st.waiting} summaries…`);
     shownWaiting = st.phase === "waiting" ? st.waiting : -1;
