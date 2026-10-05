@@ -1,15 +1,16 @@
 #!/usr/bin/env bun
 // The `optchat` command. With no argument it is the REPL, a client of optchat-server ($OPTCHAT_URL,
 // default http://127.0.0.1:7700). The rest run once and exit: `view` reads the data dir without
-// taking the lock, `import-optmem` fills an empty chat from OptMem's notes, `login openai` signs in
-// to the ChatGPT plan and `key anthropic|openai` saves an API key, both into Secrets.
+// taking the lock, `import-optmem` fills an empty chat from OptMem's notes, `login openai` signs
+// in with ChatGPT for the openai-plan engine and `key anthropic|openai` saves an API key for the
+// api-key engine, both into Secrets.
 import { BunRuntime } from "@effect/platform-bun";
 import { Cause, Console, Data, Effect, Predicate } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { loadSettings } from "../src/config.ts";
 import { importOptmem } from "../src/import.ts";
-import { endpointsOf, login } from "../src/openai/auth.ts";
 import { KEY_SECRETS } from "../src/apikey/clients.ts";
+import { login } from "../src/openai/auth.ts";
 import { Secrets, SecretsLive } from "../src/secrets.ts";
 import { runRepl } from "./repl.ts";
 import { streamDir } from "../src/paths.ts";
@@ -45,7 +46,7 @@ const openUrl = (url: string) =>
 const loginOpenai = Effect.gen(function* () {
   const root = new URL("..", import.meta.url).pathname;
   const settings = yield* loadSettings(Bun.env.OPTCHAT_CONFIG ?? `${root}optchat.config.ts`);
-  const c = yield* login({ endpoints: endpointsOf(settings.openai), open: openUrl }).pipe(Effect.provide([SecretsLive, FetchHttpClient.layer]));
+  const c = yield* login({ endpoints: settings.openai, open: openUrl }).pipe(Effect.provide([SecretsLive, FetchHttpClient.layer]));
   yield* Console.log(`signed in${c.email === undefined ? "" : ` as ${c.email}`}; the compactor can use your ChatGPT plan`);
 });
 

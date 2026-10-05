@@ -1,10 +1,13 @@
 // What every compactor engine sends (SPEC "Compactor calls", gist §4.2–§4.3), whatever carries it:
-// the context as <chat> and bare view lines cut at MARKS, the step under it, and the retry text
-// for a line over NODE. Engine-neutral and pure; the engines add only their transport and marks.
+// the context as <chat> and bare view lines cut at MARKS, the step under it, the retry text for a
+// line over NODE, and the size retries themselves. The engines add only their transport and marks.
+import { Clock, Effect } from "effect";
 import type { Job } from "../compactor.ts";
-import { MARKS, NODE } from "../config.ts";
+import { MARKS, NODE, TRIES } from "../config.ts";
+import { type EngineError, ModelError } from "../engines/errors.ts";
 import { SCALE } from "../prompts.ts";
 import { bytes } from "../tree.ts";
+import { type Tokens, type UsageRecord, isCold } from "../usage.ts";
 import { cutBlocks, flat } from "../view.ts";
 
 // The context pieces: <chat>, the bare lines, </chat>, cut at the marks. No ids anywhere: shown
@@ -33,14 +36,67 @@ export const retryText = (line: string) =>
   `That line is ${bytes(line)} bytes; the limit is ${NODE}. It must end where it is cut here:\n${cut(line)}| ← LIMIT`;
 
 // done once the last try fits or the tries run out
-export const enough = (tries: readonly string[], limit: number) => {
+const enough = (tries: readonly string[]) => {
   const last = tries.at(-1);
-  return last !== undefined && (bytes(last) <= NODE || tries.length >= limit);
+  return last !== undefined && (bytes(last) <= NODE || tries.length >= TRIES);
 };
 
 // the node's text: the shortest try in bytes, the first of equals (gist §4.3)
-export function shortest(tries: readonly string[]): string {
+function shortest(tries: readonly string[]): string {
   let best = tries[0] ?? "";
   for (const t of tries) if (bytes(t) < bytes(best)) best = t;
   return best;
 }
+
+// One try: the first message (attempt 1), or the retry text that answers the line before it.
+export type Try = { readonly attempt: number; readonly retry: { readonly line: string; readonly text: string } | null };
+export type Answer = { readonly text: string; readonly usage: Tokens; readonly model: string | null; readonly dollars?: number };
+
+// The size retries (gist §4.3), for any engine: ask, log what the try cost, and retry in the same
+// conversation until the line fits or TRIES are spent; the shortest try wins. Every try that
+// reports usage gets its usage.jsonl line (E11), a failed one too when the engine knows its cost.
+export const sizeRetries = (o: {
+  readonly job: Job;
+  readonly engine: UsageRecord["engine"];
+  readonly auth: UsageRecord["auth"];
+  readonly device?: string | undefined; // where the call runs (the server's own machine)
+  readonly failoverFrom: string | null;
+  readonly log: (record: UsageRecord) => Effect.Effect<void>;
+  readonly ask: (t: Try) => Effect.Effect<Answer, EngineError>;
+}): Effect.Effect<string, EngineError> =>
+  Effect.gen(function* () {
+    const tries: string[] = [];
+    let retry: Try["retry"] = null;
+    for (;;) {
+      const attempt = tries.length + 1;
+      const sent = yield* Clock.currentTimeMillis;
+      const record = (usage: Tokens, model: string | null, dollars?: number) =>
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis;
+          const line: UsageRecord = {
+            attempt,
+            auth: o.auth,
+            cold: isCold(usage),
+            date: new Date(now).toISOString(),
+            device: o.device ?? null,
+            engine: o.engine,
+            failoverFrom: o.failoverFrom,
+            level: o.job.l,
+            model,
+            ms: now - sent,
+            role: "compact",
+            usage,
+          };
+          yield* o.log(dollars === undefined ? line : { ...line, dollars });
+        });
+      const answer: Answer = yield* o.ask({ attempt, retry }).pipe(
+        Effect.tapError((e) => (e._tag !== "DeviceOffline" && e.spent !== undefined ? record(e.spent.usage, e.spent.model) : Effect.void)),
+      );
+      yield* record(answer.usage, answer.model, answer.dollars);
+      const line = answer.text.trim();
+      if (!line) return yield* new ModelError({ message: "the compactor answered with an empty line" });
+      tries.push(line);
+      if (enough(tries)) return shortest(tries);
+      retry = { line, text: retryText(line) };
+    }
+  });

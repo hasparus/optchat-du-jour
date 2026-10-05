@@ -8,19 +8,21 @@
 //     --chain "luna=openai-plan:gpt-6-luna" --chain "split=0:openai-plan:gpt-6-luna;3:openai-plan:gpt-6.1-sol" \
 //     --chain "sonnet=claude-code:sonnet" --out bakeoff.json
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Console, type Duration, Effect, Layer, Schema } from "effect";
+import { Console, Context, Duration, Effect, Layer, Option, Result, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { parseArgs } from "node:util";
+import { makeBudget } from "../src/apikey/budget.ts";
+import { ApiKeys, apiKeysLayer } from "../src/apikey/clients.ts";
 import { openChat } from "../src/chat.ts";
 import { LocalRunner } from "../src/claude/process.ts";
 import type { Summarize } from "../src/compactor.ts";
-import { NODE, type Settings, loadSettings } from "../src/config.ts";
+import { NODE, type Settings, loadSettings, parseRef } from "../src/config.ts";
 import { parseOptmem } from "../src/import.ts";
 import { zoom } from "../src/mcp.ts";
-import { endpointsOf } from "../src/openai/auth.ts";
 import { openAiPlanLayer } from "../src/openai/responses.ts";
+import { HOME } from "../src/paths.ts";
 import type { Kind } from "../src/records.ts";
 import { SecretsLive } from "../src/secrets.ts";
 import { loadChat } from "../src/store.ts";
@@ -32,10 +34,8 @@ import { render, settle } from "../src/view.ts";
 export type Message = { readonly kind: Kind; readonly text: string };
 export type Contender = { readonly name: string; readonly byLevel: Settings["compactor"]["byLevel"] };
 
-const EngineRef = Schema.String.check(Schema.isPattern(/^(claude-code|openai-plan|api-key):.+$/));
-const decodeRef = Schema.decodeUnknownSync(EngineRef);
-
-// "name=ref,ref" for one chain at every level, or "name=0:ref,ref;3:ref,ref" per level
+// "name=ref,ref" for one chain at every level, or "name=0:ref,ref;3:ref,ref" per level; each ref
+// one this build runs as a compactor
 export function parseContender(spec: string): Contender {
   const eq = spec.indexOf("=");
   if (eq <= 0) throw new Error(`--chain ${spec}: expected name=chain`);
@@ -44,7 +44,11 @@ export function parseContender(spec: string): Contender {
     .split(";")
     .map((part) => {
       const m = /^(\d+):(?=[a-z])/.exec(part);
-      const refs = (m ? part.slice(m[0].length) : part).split(",").map((r) => decodeRef(r.trim()));
+      const refs = (m ? part.slice(m[0].length) : part).split(",").map((r) => {
+        const parsed = parseRef("compactor", r.trim());
+        if (Result.isFailure(parsed)) throw new Error(`--chain ${spec}: ${parsed.failure}`);
+        return r.trim();
+      });
       const [first, ...rest] = refs;
       if (first === undefined) throw new Error(`--chain ${spec}: an empty chain`);
       return { chain: [first, ...rest] as const, from: m ? Number(m[1]) : 0 };
@@ -66,41 +70,68 @@ export const readSource = (path: string, n: number, skip = 0) =>
       .map((note): Message => ({ kind: "note", text: note.text }));
   });
 
-export type Replayed = { readonly contender: Contender; readonly dir: string; readonly mem: Mem; readonly records: readonly UsageRecord[]; readonly reports: readonly string[] };
-
-const complete = (mem: Mem) => {
-  for (const c of nodes(mem.root.length)) if (!built(mem, c)) return false;
-  return true;
+// A usage record with the node whose call it was ("l.i"): the pump's retries, the chain's
+// failovers and every size retry of one node all land on the same key.
+export type Logged = UsageRecord & { readonly node: string | null };
+export type Replayed = {
+  readonly contender: Contender;
+  readonly dir: string;
+  readonly mem: Mem;
+  readonly records: readonly Logged[];
+  readonly reports: readonly string[];
+  readonly logged: number; // messages logged before the deadline
+  readonly unbuilt: readonly string[]; // nodes ("l.i") still unbuilt when the replay ended
 };
 
+// the node the current compactor call is for, read where its usage is logged
+const CurrentNode = Context.Reference<string | null>("bakeoff/CurrentNode", { defaultValue: () => null });
+
+const unbuiltOf = (mem: Mem) => [...nodes(mem.root.length)].filter((c) => !built(mem, c)).map((c) => `${c.l}.${c.i}`);
+
 // One contender: log each message as a live chat would, wait until the view is summarized (a
-// turn waits for that too, gist §6), then let the pump finish every node.
+// turn waits for that too, gist §6), then let the pump finish every node. At the deadline it
+// stops where it is and says what is left: a failing engine retries forever (gist rule 3).
 export const replay = <R>(o: {
   readonly contender: Contender;
   readonly messages: readonly Message[];
   readonly summarizeFor: (contender: Contender, log: (r: UsageRecord) => Effect.Effect<void>, report: (m: string) => Effect.Effect<void>) => Effect.Effect<Summarize, never, R>;
   readonly poll?: Duration.Input;
   readonly budget?: number; // a smaller view than VIEW, to make a short replay fold
+  readonly deadline?: Duration.Input; // 2 hours
+  readonly retry?: Duration.Input; // the pump's, RETRY
 }) =>
   Effect.scoped(
     Effect.gen(function* () {
       const dir = mkdtempSync(`${tmpdir()}/bake-`);
-      const records: UsageRecord[] = [], reports: string[] = [];
+      const records: Logged[] = [], reports: string[] = [];
       const report = (m: string) => Effect.sync(() => void reports.push(m));
       const log = (r: UsageRecord) =>
         Effect.gen(function* () {
-          records.push(r);
+          records.push({ ...r, node: yield* CurrentNode });
           const failed = yield* logUsage(`${dir}/usage.jsonl`, r);
           if (failed) yield* report(failed);
         });
       const summarize = yield* o.summarizeFor(o.contender, log, report);
-      const chat = yield* openChat(dir, { budget: o.budget, report, summarize });
-      for (const m of o.messages) {
-        yield* chat.log(m.kind, m.text);
-        yield* settle(chat.mem);
-      }
-      while (!complete(chat.mem)) yield* Effect.sleep(o.poll ?? "200 millis");
-      return { contender: o.contender, dir, mem: chat.mem, records, reports } satisfies Replayed;
+      const chat = yield* openChat(dir, {
+        budget: o.budget,
+        report,
+        retry: o.retry,
+        summarize: (job) => summarize(job).pipe(Effect.provideService(CurrentNode, `${job.l}.${job.i}`)),
+      });
+      let logged = 0;
+      const deadline = o.deadline ?? "2 hours";
+      const finished = yield* Effect.gen(function* () {
+        for (const m of o.messages) {
+          yield* chat.log(m.kind, m.text);
+          logged++;
+          yield* settle(chat.mem);
+        }
+        while (unbuiltOf(chat.mem).length > 0) yield* Effect.sleep(o.poll ?? "200 millis");
+      }).pipe(Effect.timeoutOption(deadline));
+      const unbuilt = unbuiltOf(chat.mem);
+      if (Option.isNone(finished))
+        yield* report(`deadline (${Duration.format(Duration.fromInputUnsafe(deadline))}): ${logged} of ${o.messages.length} messages logged, ${unbuilt.length} nodes unbuilt`);
+      return { contender: o.contender, dir, logged, mem: chat.mem, records, reports, unbuilt } satisfies Replayed;
     }),
   );
 
@@ -109,17 +140,15 @@ export const replay = <R>(o: {
 
 const quantile = (sorted: readonly number[], q: number) => sorted[Math.min(sorted.length - 1, Math.ceil(q * sorted.length) - 1)] ?? 0;
 
-// Tries per model-built node, from the usage records alone: a call that took k tries logged
-// attempts 1..k, so the calls with at least k tries are the records with attempt k.
-export function retries(records: readonly UsageRecord[]) {
-  const atLeast = new Map<number, number>();
-  for (const r of records) if (r.role === "compact") atLeast.set(r.attempt, (atLeast.get(r.attempt) ?? 0) + 1);
-  const tries: number[] = [];
-  for (const [k, count] of atLeast) for (let j = 0; j < count - (atLeast.get(k + 1) ?? 0); j++) tries.push(k);
-  tries.sort((a, b) => a - b);
+// Model calls per node that needed any: every logged try for the node, whichever engine made it,
+// size retries, failed tries, the pump's retries and the calls after a failover alike.
+export function triesPerNode(records: readonly Logged[]) {
+  const per = new Map<string, number>();
+  for (const r of records) if (r.role === "compact" && r.node !== null) per.set(r.node, (per.get(r.node) ?? 0) + 1);
+  const tries = [...per.values()].sort((a, b) => a - b);
   let sum = 0;
   for (const t of tries) sum += t;
-  return { calls: tries.length, mean: tries.length > 0 ? sum / tries.length : 0, p95: quantile(tries, 0.95) };
+  return { max: tries.at(-1) ?? 0, mean: tries.length > 0 ? sum / tries.length : 0, nodes: tries.length, p95: quantile(tries, 0.95) };
 }
 
 // model calls and tokens per replayed message, failovers, and dollars where a record has them
@@ -256,9 +285,10 @@ export const findability = <R>(mem: Mem, qs: readonly Question[], answer: Answer
     return { asked: qs.length, found, share: qs.length > 0 ? found / qs.length : 0 };
   });
 
-export const measure = <R>(r: Replayed, messages: readonly Message[], o: { readonly questions: number; readonly answerer: Answerer<R>; readonly kinds?: readonly Kind[] }) =>
+export const measure = <R>(r: Replayed, all: readonly Message[], o: { readonly questions: number; readonly answerer: Answerer<R>; readonly kinds?: readonly Kind[] }) =>
   Effect.gen(function* () {
     const kinds: readonly Kind[] = o.kinds ?? ["user"];
+    const messages = all.slice(0, r.logged);
     return {
       contender: r.contender.name,
       cost: cost(r.records, messages.length),
@@ -268,7 +298,8 @@ export const measure = <R>(r: Replayed, messages: readonly Message[], o: { reado
       nodes: r.mem.tree.size,
       overLimit: overLimit(r.mem),
       reports: r.reports.length,
-      retries: retries(r.records),
+      tries: triesPerNode(r.records),
+      unbuilt: r.unbuilt.length,
       wordsKept: wordsKept(r.mem, [0, 2, 3], kinds),
     };
   });
@@ -277,21 +308,27 @@ export type Measured = Effect.Success<ReturnType<typeof measure>>;
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
 export const table = (rows: readonly Measured[]) =>
   [
-    "contender | tries mean / p95 | over 512 | calls/msg | in / cached / out tokens per msg | failovers | words kept L0 / L2 / L3 (quoted) | findable",
+    "contender | tries per node mean / p95 | over 512 | unbuilt | calls/msg | in / cached / out tokens per msg | failovers | words kept L0 / L2 / L3 (quoted) | findable",
     ...rows.map((m) => {
       const t = m.cost.tokensPerMessage;
       const kept = m.wordsKept.map((w) => pct(w.quoted)).join(" / ");
-      return `${m.contender} | ${m.retries.mean.toFixed(2)} / ${m.retries.p95} | ${m.overLimit} | ${m.cost.callsPerMessage.toFixed(2)} | ${Math.round(t.input)} / ${Math.round(t.cacheRead)} / ${Math.round(t.output)} | ${m.cost.failovers} | ${kept} | ${pct(m.findability.share)} of ${m.findability.asked}`;
+      return `${m.contender} | ${m.tries.mean.toFixed(2)} / ${m.tries.p95} | ${m.overLimit} | ${m.unbuilt} | ${m.cost.callsPerMessage.toFixed(2)} | ${Math.round(t.input)} / ${Math.round(t.cacheRead)} / ${Math.round(t.output)} | ${m.cost.failovers} | ${kept} | ${pct(m.findability.share)} of ${m.findability.asked}`;
     }),
   ].join("\n");
 
 // ---------------------------------------------------------------------------------------------
 // The command: real engines, from this repo's optchat.config.ts
 
+// a whole number of at least `min`, or null
+const count = (raw: string, min: number) => (/^\d+$/.test(raw) && Number(raw) >= min ? Number(raw) : null);
+const USAGE =
+  "usage: bun dev/bakeoff.ts --from <data dir | LOG.txt> --chain name=chain [--chain …] [--n 500] [--skip 0] [--kinds user] [--questions 50] [--deadline 120 (minutes)] [--out file.json]";
+
 const main = Effect.gen(function* () {
   const { values } = parseArgs({
     options: {
       chain: { multiple: true, type: "string" },
+      deadline: { default: "120", type: "string" }, // minutes per contender
       from: { type: "string" },
       kinds: { default: "user", type: "string" },
       n: { default: "500", type: "string" },
@@ -300,27 +337,38 @@ const main = Effect.gen(function* () {
       skip: { default: "0", type: "string" },
     },
   });
-  if (values.from === undefined || !existsSync(values.from) || !values.chain?.length)
-    return yield* Console.error("usage: bun dev/bakeoff.ts --from <data dir | LOG.txt> --chain name=chain [--chain …] [--n 500] [--skip 0] [--kinds user] [--questions 50] [--out file.json]");
+  const n = count(values.n, 1), skip = count(values.skip, 0), questionCount = count(values.questions, 0), deadline = count(values.deadline, 1);
+  if (values.from === undefined || !existsSync(values.from) || !values.chain?.length || n === null || skip === null || questionCount === null || deadline === null)
+    return yield* Console.error(USAGE);
+  const { chain } = values;
+  const contenders = Result.try({ catch: (e) => (e instanceof Error ? e.message : String(e)), try: () => chain.map(parseContender) });
+  if (Result.isFailure(contenders)) return yield* Console.error(`${contenders.failure}\n${USAGE}`);
   const root = new URL("..", import.meta.url).pathname;
   const settings = yield* loadSettings(Bun.env.OPTCHAT_CONFIG ?? `${root}optchat.config.ts`);
-  const messages = yield* readSource(values.from, Number(values.n), Number(values.skip));
+  const messages = yield* readSource(values.from, n, skip);
   const kinds = values.kinds.split(",").map((k) => Schema.decodeUnknownSync(Schema.Literals(["user", "talk", "tool", "echo", "note"]))(k));
-  const engines = Layer.mergeAll(LocalRunner, openAiPlanLayer(endpointsOf(settings.openai)).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer]))).pipe(
+  const engines = Layer.mergeAll(LocalRunner, openAiPlanLayer(settings.openai, { report: (m) => Console.error(m) }).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer]))).pipe(
     Layer.provide(BunServices.layer),
   );
+  // api-key contenders: the real keys, and every call counted against the month's budget like the server's
+  const clients = Context.get(yield* Layer.build(apiKeysLayer(settings.apiKey).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer]))), ApiKeys);
+  const budget = makeBudget({ monthly: settings.apiKey?.monthlyBudget ?? 0, report: (m) => Console.error(m), usagePath: `${HOME}/usage.jsonl` });
   const rows: Measured[] = [];
-  for (const contender of values.chain.map(parseContender)) {
+  for (const contender of contenders.success) {
     yield* Console.error(`${contender.name}: replaying ${messages.length} messages`);
     const replayed = yield* replay({
       contender,
+      deadline: Duration.minutes(deadline),
       messages,
-      summarizeFor: (c, log, report) => makeSummarize({ log, report, settings: { ...settings, compactor: { ...settings.compactor, byLevel: c.byLevel } } }),
+      summarizeFor: (c, log, report) => makeSummarize({ apiKey: { budget, clients }, log: (r) => budget.note(r).pipe(Effect.andThen(log(r))), report, settings: { ...settings, compactor: { ...settings.compactor, byLevel: c.byLevel } } }).pipe(
+          Effect.map((m) => m.summarize),
+        ),
     }).pipe(Effect.provide(engines));
-    rows.push(yield* measure(replayed, messages, { answerer: lexicalAnswerer, kinds, questions: Number(values.questions) }));
+    for (const r of replayed.reports) yield* Console.error(`${contender.name}: ${r}`);
+    rows.push(yield* measure(replayed, messages, { answerer: lexicalAnswerer, kinds, questions: questionCount }));
   }
   yield* Console.log(table(rows));
   if (values.out !== undefined) writeFileSync(values.out, `${JSON.stringify(rows, null, 2)}\n`);
 });
 
-if (import.meta.main) BunRuntime.runMain(main);
+if (import.meta.main) BunRuntime.runMain(Effect.scoped(main));

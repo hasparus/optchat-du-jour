@@ -28,6 +28,12 @@ const Inbound = Schema.Union([
   Schema.Struct({ type: Schema.Literal("RUN_ERROR"), message: Schema.String }),
   Schema.Struct({ type: Schema.Literal("CUSTOM"), name: Schema.Literal("info"), value: Schema.String }),
   Schema.Struct({ type: Schema.Literal("CUSTOM"), name: Schema.Literal("thinking") }),
+  // a message from a client (its id) is log entry messageId, or could not be logged
+  Schema.Struct({
+    type: Schema.Literal("CUSTOM"),
+    name: Schema.Literal("ack"),
+    value: Schema.Struct({ clientId: Schema.String, messageId: Schema.NullOr(Schema.String), error: Schema.NullOr(Schema.String) }),
+  }),
   Schema.Struct({ type: Schema.Literal("STATE_SNAPSHOT"), snapshot: Schema.Record(Schema.String, Schema.Json) }),
   Schema.Struct({
     type: Schema.Literal("STATE_DELTA"),
@@ -43,7 +49,7 @@ const ViewLines = Schema.Struct({ lines: Schema.Array(Schema.Struct({ id: Schema
 const decodeView = Schema.decodeUnknownOption(ViewLines);
 
 export type Action =
-  | { readonly type: "send"; readonly text: string }
+  | { readonly type: "send"; readonly text: string; readonly id: string } // id: the AG-UI message id
   | { readonly type: "abort" | "exit" | "suspend" };
 
 export type ScreenOptions = {
@@ -72,8 +78,10 @@ export function makeScreen(o: ScreenOptions) {
   let state: Record<string, Schema.Json> = {};
   let shownWaiting = -1;
   let headerShown = false;
-  const mine: string[] = []; // sent from here, not logged yet: their user events are not shown again
+  const mine: string[] = []; // the ids of messages sent from here, not acked yet
+  const own = new Set<string>(); // the log ids of messages sent from here: not shown again
   let logging = 0; // sent from here and logged, their run not over yet
+  let failed = 0; // sent from here, and the server could not log them
   let offline = false; // the connection is down and the user has been told so
   const users = new Set<string>(); // the ids of user messages being logged
 
@@ -124,26 +132,33 @@ export function makeScreen(o: ScreenOptions) {
     }
     busy = st.phase !== "idle";
     // idle comes after the loop committed: whatever of ours it logged has had its answer, or had
-    // its turn cancelled (a cancel ends a run without RUN_FINISHED)
+    // its turn cancelled before it began (waiting or priming: no run, so no run end)
     if (!busy) logging = 0;
     if (st.phase === "waiting" && st.waiting !== shownWaiting && st.waiting > 0) note(`waiting for ${st.waiting} summaries…`);
     shownWaiting = st.phase === "waiting" ? st.waiting : -1;
     showPrompt();
   };
 
-  // a user message was logged: shown unless it is one sent from here, which is on screen already
-  const logged = (text: string) => {
-    const at = mine.indexOf(text);
-    if (at === -1) note(`> ${row(clean(text))}`);
-    else {
-      mine.splice(at, 1);
+  // the server says what became of a message: one sent from here is logged (and so not shown
+  // again when its user entry follows) or could not be, and counts as answered with an error
+  const acked = (clientId: string, messageId: string | null, error: string | null) => {
+    const at = mine.indexOf(clientId);
+    if (at === -1) return;
+    mine.splice(at, 1);
+    if (messageId !== null) {
+      own.add(messageId);
       logging++;
+      return;
     }
+    failed++;
+    note(`not logged: ${clean(error ?? "")}`);
   };
 
-  const sent = (text: string) => {
-    mine.push(text);
+  const sent = (text: string): Action => {
+    const id = crypto.randomUUID();
+    mine.push(id);
     busy = true;
+    return { id, text, type: "send" };
   };
 
   return {
@@ -158,6 +173,11 @@ export function makeScreen(o: ScreenOptions) {
       return mine.length + logging;
     },
 
+    // messages sent from here that the server could not log
+    get failed() {
+      return failed;
+    },
+
     // the last view lines, before the socket's first state
     intro(lines: readonly string[], total: number) {
       if (total > lines.length) note(`… ${total - lines.length} earlier view lines (optchat view)`);
@@ -170,13 +190,15 @@ export function makeScreen(o: ScreenOptions) {
           if (e.role === "user") users.add(e.messageId);
           return;
         case "TEXT_MESSAGE_CONTENT":
-          if (users.has(e.messageId)) logged(e.delta);
-          else {
+          if (users.has(e.messageId)) {
+            if (!own.has(e.messageId)) note(`> ${row(clean(e.delta))}`); // from another client
+          } else {
             thinking = false;
             print(clean(e.delta));
           }
           return;
         case "TEXT_MESSAGE_END":
+          own.delete(e.messageId);
           if (users.delete(e.messageId)) return;
           if (!atLineStart) print("\n");
           return;
@@ -203,6 +225,7 @@ export function makeScreen(o: ScreenOptions) {
           return;
         case "CUSTOM":
           if (e.name === "info") note(clean(e.value));
+          else if (e.name === "ack") acked(e.value.clientId, e.value.messageId, e.value.error);
           else if (!thinking) {
             thinking = true;
             note("thinking…");
@@ -225,8 +248,7 @@ export function makeScreen(o: ScreenOptions) {
       const t = text.trim();
       if (!t) return null;
       line(`> ${t}`);
-      sent(t);
-      return { text: t, type: "send" };
+      return sent(t);
     },
 
     key(k: Key): Action | null {
@@ -263,8 +285,7 @@ export function makeScreen(o: ScreenOptions) {
             showPrompt();
             return null;
           }
-          sent(text);
-          return { text, type: "send" };
+          return sent(text);
         }
         case "interrupt":
           if (busy) {
@@ -301,6 +322,7 @@ export function makeScreen(o: ScreenOptions) {
     disconnected(retrying: boolean) {
       busy = false;
       mine.length = 0;
+      own.clear();
       logging = 0;
       users.clear();
       if (offline) return;
@@ -334,11 +356,11 @@ export type ReplOptions = {
   readonly stdout?: NodeJS.WriteStream;
 };
 
-const runInput = (text: string) =>
+const runInput = (text: string, id: string) =>
   JSON.stringify({
     context: [],
     forwardedProps: {},
-    messages: [{ content: text, id: crypto.randomUUID(), role: "user" }],
+    messages: [{ content: text, id, role: "user" }],
     runId: crypto.randomUUID(),
     state: {},
     threadId: "repl",
@@ -416,15 +438,15 @@ export const runRepl = (o: ReplOptions) =>
         process.off("SIGCONT", onCont);
         resume(failure === undefined ? Effect.succeed("ended") : Effect.fail(new ReplError({ message: failure })));
       };
-      // piped: the input is all sent and all answered
+      // piped: the input is all sent and all answered; one the server could not log is an error
       const finishedPiping = () => {
-        if (ended && screen.unanswered === 0) done();
+        if (ended && screen.unanswered === 0) done(screen.failed > 0 ? `${screen.failed} message(s) could not be logged` : undefined);
       };
       const act = (a: Action | null) => {
         if (!a) return;
         switch (a.type) {
           case "send":
-            send(runInput(a.text));
+            send(runInput(a.text, a.id));
             return;
           case "abort":
             send(JSON.stringify({ type: "abort" }));
@@ -474,7 +496,7 @@ export const runRepl = (o: ReplOptions) =>
       // backing off, until the server is back.
       const lost = () => {
         if (!tty) {
-          if (ended && screen.unanswered === 0) done();
+          if (ended && screen.unanswered === 0) finishedPiping();
           else if (everOpen) done(`the connection to ${o.url} closed with ${screen.unanswered} message(s) unanswered`);
           else done(`cannot reach the server at ${o.url}`);
           return;

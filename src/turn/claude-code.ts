@@ -1,7 +1,7 @@
 // The claude-code turn engine (ref §4-§6, gist §7, E6/E7): one `claude -p` per turn on the
 // turn's device, the view without cache marks then the new texts, the stream mapped to the log,
 // and the process killed at the first result. Priming writes the same view blocks to the cache
-// first, with our own marks, and is killed as soon as the API has accepted the request.
+// first, with our own marks; that call ends at message_start, once the API has taken the request.
 import { Clock, Effect, Option, Queue, Semaphore } from "effect";
 import { baseArgs } from "../claude/args.ts";
 import type { Assistant, Block, Event, Init, StreamEvent, Usage, User } from "../claude/events.ts";

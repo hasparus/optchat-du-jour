@@ -5,13 +5,14 @@
 // taken after the tool results, before the next request. Fake claude, fake Responses API.
 import { afterAll, expect, test } from "bun:test";
 import { Effect, Layer, Option, Schema } from "effect";
+import { FetchHttpClient } from "effect/http";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { deviceLayer } from "../device/runner.ts";
 import { serverLayer } from "../server/app.ts";
 import { CompactError } from "../src/compactor.ts";
 import type { Settings } from "../src/config.ts";
-import { type Credentials, SECRET } from "../src/openai/auth.ts";
+import { login } from "../src/openai/auth.ts";
 import { memorySecrets } from "../src/secrets.ts";
 import { readUsage } from "../src/usage.ts";
 import { fakeOpenAi } from "./fake-openai.ts";
@@ -71,7 +72,7 @@ const client = async (url: string) => {
     ws.addEventListener("open", resolve, { once: true });
   });
   const send = (text: string, device = "macbook") => {
-    ws.send(JSON.stringify({ forwardedProps: { device }, messages: [{ content: text, role: "user" }] }));
+    ws.send(JSON.stringify({ forwardedProps: { device }, messages: [{ content: text, id: crypto.randomUUID(), role: "user" }] }));
   };
   const ended = () => events.filter((e) => e.type === "RUN_FINISHED" || e.type === "RUN_ERROR");
   const infos = () => events.flatMap((e) => (e.name === "info" && Schema.is(Schema.String)(e.value) ? [e.value] : []));
@@ -88,16 +89,10 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
   Bun.env.FAKE_CLAUDE_SCRIPT = `${home}/script.json`;
   writeFileSync(Bun.env.FAKE_CLAUDE_SCRIPT, JSON.stringify({ turn: [[{ result: { is_error: true, text: "Claude AI usage limit reached|1760000000" } }]] }));
 
-  fake.state.access = "plan-token";
-  const credentials: Credentials = {
-    accessToken: "plan-token",
-    clientId: fake.issued,
-    expiresAt: Date.now() + 3_600_000,
-    hostId: "urn:uuid:test",
-    idToken: "x.e30.sig",
-    refreshToken: "r",
-    subject: "user-1",
-  };
+  // signed in to the fake ChatGPT, as `optchat login openai` does
+  const secrets = memorySecrets({});
+  const endpoints = { agentName: "optchat-test", api: `${fake.base}/v1`, issuer: fake.base, port: freePort(), registerClientId: "dynamic_agent_client" };
+  await Effect.runPromise(login({ endpoints, open: (url) => Effect.promise(async () => void (await fetch(url))) }).pipe(Effect.provide([secrets, FetchHttpClient.layer])));
   const port = freePort(), devicePort = freePort();
   const settings: Settings = {
     allowedLogins: [],
@@ -109,7 +104,7 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
       mini: { folders: [mini], url: "http://127.0.0.1:9" },
     },
     master: { chain: ["claude-code:opus", "openai-plan:gpt-sol"], effort: "high", permissionMode: "bypassPermissions" },
-    openai: { api: `${fake.base}/v1`, issuer: fake.base },
+    openai: endpoints,
     server: { host: "127.0.0.1", port, publicUrl: `http://localhost:${port}` },
   };
   const trust = { _tag: "loopback" } as const;
@@ -120,7 +115,7 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
       home,
       host: "127.0.0.1",
       port,
-      secrets: memorySecrets({ [SECRET]: JSON.stringify(credentials) }),
+      secrets,
       settings,
       summarize: () => Effect.fail(new CompactError({ message: "no compactor in this test" })),
     }),

@@ -263,7 +263,7 @@ const usageOf = (start: ApiUsage | null, end: ApiUsage | null) => {
 export const readMessages = (stream: Stream.Stream<Uint8Array, EngineError>, ask: MessagesAsk) =>
   Effect.gen(function* () {
     const init: Read = { blocks: [], done: false, end: null, model: ask.model, start: null, stop: null };
-    const r = yield* sseFold("api-key: anthropic", stream, init, onEvent(ask.onText));
+    const r = yield* sseFold("api-key: anthropic", stream, init, onEvent(ask.onText), (state) => state.done);
     if (r.stop === "refusal") return yield* new Refusal({ message: "api-key: anthropic refused this request (stop_reason: refusal)" });
     if (!r.done) return yield* new ModelError({ message: "api-key: anthropic: the stream ended without message_stop" });
     return { items: r.blocks.flatMap(itemOf), model: r.model, ...usageOf(r.start, r.end) } satisfies MessagesReply;

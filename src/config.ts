@@ -1,7 +1,9 @@
 // The gist's constants (gist §1) and the reference's timings (ref §2, §7). Sizes are UTF-8
 // bytes, cache marks are characters. Everything that may differ per machine is in
 // optchat.config.ts instead.
-import { Data, Effect, Schema } from "effect";
+import { Data, Effect, Result, Schema } from "effect";
+import { Endpoints } from "./openai/endpoints.ts";
+import { Engine } from "./usage.ts";
 
 // a summary line's target size, and the most a free node may hold
 export const NODE = 512;
@@ -31,8 +33,8 @@ export const TOOL_ROUNDS = 40;
 
 const Ttl = Schema.Literals(["1h", "5m"]);
 const Effort = Schema.Literals(["low", "medium", "high", "xhigh", "max"]);
-// "engine:model", e.g. "claude-code:opus"
-const EngineRef = Schema.String.check(Schema.isPattern(/^(claude-code|openai-plan|api-key):.+$/));
+// "engine:model", e.g. "claude-code:opus"; parseRef says whether this build runs it as a role
+const EngineRef = Schema.String.check(Schema.isPattern(new RegExp(`^(${Engine.literals.join("|")}):.+$`)));
 const Chain = Schema.NonEmptyArray(EngineRef);
 // dollars per million tokens (SPEC "Usage and cost tracking"); cache writes per TTL, Anthropic only
 const Price = Schema.Struct({
@@ -72,16 +74,8 @@ export const Settings = Schema.Struct({
       openaiUrl: Schema.optional(Schema.String),
     }),
   ),
-  // Sign in with ChatGPT endpoints, each overriding src/openai/auth.ts DEFAULT_ENDPOINTS
-  openai: Schema.optional(
-    Schema.Struct({
-      issuer: Schema.optional(Schema.String),
-      api: Schema.optional(Schema.String),
-      registerClientId: Schema.optional(Schema.String),
-      port: Schema.optional(Schema.Int),
-      agentName: Schema.optional(Schema.String),
-    }),
-  ),
+  // Sign in with ChatGPT endpoints (src/openai/endpoints.ts): each key left out, or the whole field, decodes to its default
+  openai: Endpoints.pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
 });
 export type Settings = typeof Settings.Type;
 
@@ -96,13 +90,25 @@ export class ConfigError extends Data.TaggedError("ConfigError")<{ readonly mess
 export const IMPLEMENTED = {
   compactor: ["claude-code", "openai-plan", "api-key"],
   master: ["claude-code", "openai-plan", "api-key"],
-} as const satisfies Record<string, readonly string[]>;
+} as const satisfies Record<string, readonly (typeof Engine.Type)[]>;
+export type Role = keyof typeof IMPLEMENTED;
+export type Ref<R extends Role> = { readonly engine: (typeof IMPLEMENTED)[R][number]; readonly model: string };
 
 // "api-key:anthropic/claude-opus-5-5" → the provider and its model id
 export const API_KEY_REF = /^api-key:(anthropic|openai)\/(.+)$/;
 export const apiKeyRef = (ref: string) => {
   const m = API_KEY_REF.exec(ref);
   return m?.[1] === "anthropic" || m?.[1] === "openai" ? { model: m[2] ?? "", provider: m[1] } : null;
+};
+
+// "engine:model" for a role: an engine this build runs as that role, and a model
+export const parseRef = <R extends Role>(role: R, ref: string): Result.Result<Ref<R>, string> => {
+  const [name = "", model = ""] = ref.split(/:(.*)/s);
+  const engine = IMPLEMENTED[role].find((e) => e === name);
+  if (model === "") return Result.fail(`engine ${ref}: expected engine:model`);
+  if (engine === undefined) return Result.fail(`engine ${ref} is not implemented yet as a ${role}`);
+  if (engine === "api-key" && !apiKeyRef(ref)) return Result.fail(`${ref} must be api-key:anthropic/<model> or api-key:openai/<model>`);
+  return Result.succeed({ engine, model });
 };
 
 const decodeSettings = Schema.decodeUnknownEffect(Settings);
@@ -118,17 +124,15 @@ export const loadSettings = (path: string) =>
     const settings = yield* decodeSettings(module).pipe(
       Effect.mapError((e) => new ConfigError({ message: `${path}: ${e.message}` })),
     );
-    const roles = [
-      { built: IMPLEMENTED.master, refs: settings.master.chain, role: "master" },
-      { built: IMPLEMENTED.compactor, refs: settings.compactor.byLevel.flatMap((b) => b.chain), role: "compactor" },
+    const roles: readonly { readonly refs: readonly string[]; readonly role: Role }[] = [
+      { refs: settings.master.chain, role: "master" },
+      { refs: settings.compactor.byLevel.flatMap((b) => b.chain), role: "compactor" },
     ];
-    for (const { built, refs, role } of roles)
-      for (const ref of refs)
-        if (!built.some((engine) => ref.startsWith(`${engine}:`)))
-          return yield* new ConfigError({ message: `${path}: engine ${ref} is not implemented yet as a ${role}` });
-    for (const ref of [...settings.master.chain, ...settings.compactor.byLevel.flatMap((b) => b.chain)])
-      if (ref.startsWith("api-key:") && !apiKeyRef(ref))
-        return yield* new ConfigError({ message: `${path}: ${ref} must be api-key:anthropic/<model> or api-key:openai/<model>` });
+    for (const { refs, role } of roles)
+      for (const ref of refs) {
+        const parsed = parseRef(role, ref);
+        if (Result.isFailure(parsed)) return yield* new ConfigError({ message: `${path}: ${parsed.failure}` });
+      }
     // Anthropic takes at most 4 marks, and 1-hour entries must come before 5-minute ones
     const ttls = settings.cache.apiKeyTtls;
     if (ttls.length > 4 || ttls.some((t, k) => t === "1h" && ttls.slice(0, k).includes("5m")))

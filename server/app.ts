@@ -2,29 +2,29 @@
 // and their HTTP face on one port: /ws (AG-UI), /mcp (zoom and date), /api/* (read-only JSON for
 // the web UI) and / (the built web UI).
 import { BunHttpServer, BunServices } from "@effect/platform-bun";
-import { Effect, Layer, Option, Predicate, PubSub, Schema } from "effect";
+import { Context, Effect, Layer, Option, Predicate, PubSub, Result, Schema } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 import { existsSync } from "node:fs";
 import { openChat } from "../src/chat.ts";
-import { type Settings, MASTER_TOOLS } from "../src/config.ts";
+import { type Settings, MASTER_TOOLS, parseRef } from "../src/config.ts";
 import { LocalRunner, Runner, claudeBinary, claudeVersion } from "../src/claude/process.ts";
 import { remoteRunner, remoteTool } from "../src/claude/remote.ts";
 import { makeBudget } from "../src/apikey/budget.ts";
 import { ApiKeys, apiKeysLayer } from "../src/apikey/clients.ts";
 import type { Summarize } from "../src/compactor.ts";
+import type { Down } from "../src/engines/chain.ts";
 import { DeviceOffline } from "../src/engines/errors.ts";
-import { handleMcp, mcpConfig } from "../src/mcp.ts";
+import { handleMcp, mcpConfig, openNode } from "../src/mcp.ts";
 import { forbidden, mount } from "../src/http.ts";
-import { endpointsOf } from "../src/openai/auth.ts";
-import { OpenAiPlan, openAiPlanLayer } from "../src/openai/responses.ts";
+import { openAiPlanLayer } from "../src/openai/responses.ts";
 import { expandHome } from "../src/paths.ts";
 import { makePersist } from "../src/persist.ts";
 import { promptFile, systemPrompt } from "../src/prompts.ts";
-import { makeSession } from "../src/session.ts";
+import { makeSession, type SessionEvent } from "../src/session.ts";
 import { type Secrets, SecretsLive } from "../src/secrets.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
-import { children, getNode, localTime, span } from "../src/tree.ts";
+import { getNode, localTime, span } from "../src/tree.ts";
 import { type Placement, claudeCodeTurn } from "../src/turn/claude-code.ts";
 import { toolBox } from "../src/tools/box.ts";
 import { type FileTools, makeFileTools } from "../src/tools/files.ts";
@@ -33,7 +33,7 @@ import type { TurnEngine } from "../src/turn/engine.ts";
 import { openAiPlanTurn } from "../src/turn/openai-plan.ts";
 import { type UsageRecord, logUsage, readUsage } from "../src/usage.ts";
 import { PLACEHOLDER, render, viewSize } from "../src/view.ts";
-import { type AgUiEvent, makeTranslator, snapshot } from "./agui.ts";
+import { type AgUiEvent, openStream } from "./agui.ts";
 import { allowed, policyFor } from "./auth.ts";
 import { deviceStatuses, versionWarning } from "./devices.ts";
 
@@ -50,9 +50,13 @@ export type ServerOptions = {
 };
 
 
-// What a client sends: AG-UI's RunAgentInput (the newest user message is the one to answer), or an abort
+// What a client sends: AG-UI's RunAgentInput (its user messages not seen before are the ones to answer), or an abort
 const TextPart = Schema.Struct({ text: Schema.optional(Schema.String), type: Schema.String });
-const InboundMessage = Schema.Struct({ content: Schema.optional(Schema.Union([Schema.String, Schema.Array(TextPart)])), role: Schema.String });
+const InboundMessage = Schema.Struct({
+  content: Schema.optional(Schema.Union([Schema.String, Schema.Array(TextPart)])),
+  id: Schema.String,
+  role: Schema.String,
+});
 const Inbound = Schema.Union([
   Schema.Struct({ type: Schema.Literal("abort") }),
   Schema.Struct({
@@ -62,15 +66,34 @@ const Inbound = Schema.Union([
 ]);
 const decodeInbound = Schema.decodeUnknownOption(Schema.fromJsonString(Inbound));
 
-const lastUserText = (messages: readonly (typeof InboundMessage.Type)[]) => {
-  const content = messages.findLast((x) => x.role === "user")?.content ?? "";
-  return Predicate.isString(content) ? content : content.map((p) => p.text ?? "").join("");
+const textOf = ({ content = "" }: typeof InboundMessage.Type) => (Predicate.isString(content) ? content : content.map((p) => p.text ?? "").join(""));
+
+// how many message ids a connection remembers
+const SEEN = 1000;
+
+// The user messages of each RunAgentInput on one connection that it has not sent before: a client
+// that sends the whole history every time must not have old texts answered again. An id that is a
+// log index names an entry the server sent (message ids are log indexes, server/agui.ts).
+const unseen = (logged: () => number) => {
+  const seen = new Set<string>();
+  return (messages: readonly (typeof InboundMessage.Type)[]) =>
+    messages.filter(({ id, role }) => {
+      if (role !== "user" || seen.has(id) || (/^\d+$/.test(id) && Number(id) < logged())) return false;
+      seen.add(id);
+      for (const old of seen) {
+        if (seen.size <= SEEN) break;
+        seen.delete(old); // the oldest first
+      }
+      return true;
+    });
 };
 
 const Before = Schema.Struct({ before: Schema.optional(Schema.NumberFromString), limit: Schema.optional(Schema.NumberFromString) });
-const NodeAt = Schema.Struct({ i: Schema.NumberFromString, l: Schema.NumberFromString });
-
-const logReport = (message: string) => Effect.logInfo(message);
+// a node's level and index: integers, and a level whose span 2^l is still a safe integer
+const NodeAt = Schema.Struct({
+  i: Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  l: Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ maximum: 52, minimum: 0 })),
+});
 const json = (body: Schema.Json) => HttpServerResponse.jsonUnsafe(body);
 
 export const routes = (o: ServerOptions) =>
@@ -83,17 +106,26 @@ export const routes = (o: ServerOptions) =>
       const secret = crypto.randomUUID();
       const local = yield* Runner;
 
-      let report = logReport;
+      // every client is told what goes wrong, and so is the server's own log (no client may be connected)
+      const events = yield* PubSub.unbounded<SessionEvent>();
+      const report = (message: string) => Effect.logInfo(message).pipe(Effect.andThen(PubSub.publish(events, { message, type: "info" })), Effect.asVoid);
       // the api-key engine's monthly budget sees every record before usage.jsonl does
-      const budget = makeBudget({ monthly: settings.apiKey?.monthlyBudget ?? 0, report: (m) => report(m), usagePath });
+      const budget = makeBudget({ monthly: settings.apiKey?.monthlyBudget ?? 0, report, usagePath });
       const usage = (record: UsageRecord) =>
         budget.note(record).pipe(
           Effect.andThen(logUsage(usagePath, record)),
           Effect.flatMap((e) => (e ? report(e) : Effect.void)),
         );
-      const clients = yield* ApiKeys;
-      const summarize = o.summarize ?? (yield* makeSummarize({ apiKey: { budget, clients }, device: o.device, log: usage, report: (m) => report(m), settings }));
-      const chat = yield* openChat(stream, { report: (m) => report(m), summarize });
+      // built here so that a refresh token it can't save is told to the clients, not only logged
+      const outside = Layer.mergeAll(o.secrets ?? SecretsLive, FetchHttpClient.layer);
+      const plan = yield* Layer.build(openAiPlanLayer(settings.openai, { report }).pipe(Layer.provide(outside)));
+      const clients = Context.get(yield* Layer.build(apiKeysLayer(settings.apiKey).pipe(Layer.provide(outside))), ApiKeys);
+      // a failover notice also changes the state's `down`, for clients that connect later
+      let tellState: Effect.Effect<void> = Effect.void;
+      const compactor = o.summarize
+        ? { down: (): readonly Down[] => [], summarize: o.summarize }
+        : yield* makeSummarize({ apiKey: { budget, clients }, device: o.device, log: usage, report: (m) => report(m).pipe(Effect.andThen(tellState)), settings }).pipe(Effect.provide(plan));
+      const chat = yield* openChat(stream, { report, summarize: compactor.summarize });
 
       const instructions = systemPrompt(o.home); // one text for every engine and device (gist §7.2)
       const systemFile = yield* promptFile(instructions);
@@ -128,39 +160,49 @@ export const routes = (o: ServerOptions) =>
           folders: settings.devices[device]?.folders ?? [],
           mem: chat.mem,
         });
-      const plan = yield* OpenAiPlan;
       const engines: TurnEngine[] = [];
       for (const ref of settings.master.chain) {
-        const [engine, model = ""] = ref.split(/:(.*)/s);
+        const parsed = parseRef("master", ref);
+        // loadSettings refuses such a chain first
+        if (Result.isFailure(parsed)) return yield* Effect.die(new Error(parsed.failure));
+        const { engine, model } = parsed.success;
         const { effort } = settings.master;
-        if (engine === "openai-plan") engines.push(yield* openAiPlanTurn({ effort, instructions, model, toolsFor }).pipe(Effect.provideService(OpenAiPlan, plan)));
-        if (engine === "api-key") engines.push(apiKeyTurn({ budget, clients, effort, instructions, ref, settings, toolsFor }));
-        if (engine !== "claude-code") continue;
-        engines.push(
-          yield* claudeCodeTurn({
-            effort: settings.master.effort,
-            logUsage: usage,
-            model,
-            permissionMode: settings.master.permissionMode,
-            primeTtl: settings.cache.primeTtl,
-            report: (m) => report(m),
-            runnerFor,
-            systemFile,
-            tools: settings.master.tools ?? MASTER_TOOLS,
-            ttl: settings.cache.claudeCodeTtl,
-          }),
-        );
+        switch (engine) {
+          case "openai-plan":
+            engines.push(yield* openAiPlanTurn({ effort, instructions, model, toolsFor }).pipe(Effect.provide(plan)));
+            break;
+          case "api-key":
+            engines.push(apiKeyTurn({ budget, clients, effort, instructions, ref, settings, toolsFor }));
+            break;
+          case "claude-code":
+            engines.push(
+              yield* claudeCodeTurn({
+                effort,
+                logUsage: usage,
+                model,
+                permissionMode: settings.master.permissionMode,
+                primeTtl: settings.cache.primeTtl,
+                report,
+                runnerFor,
+                systemFile,
+                tools: settings.master.tools ?? MASTER_TOOLS,
+                ttl: settings.cache.claudeCodeTtl,
+              }),
+            );
+        }
       }
-      const persist = yield* makePersist;
+      const persist = yield* makePersist(report);
       const session = yield* makeSession({
         chat,
         commit: Effect.suspend(() => persist(o.home, `chore(chat): ${chat.mem.root.length} messages`)),
+        compactorDown: compactor.down,
         defaultDevice: settings.defaultDevice,
         devices: Object.keys(settings.devices),
         engines,
+        events,
         logUsage: usage,
       });
-      report = (message) => PubSub.publish(session.events, { message, type: "info" }).pipe(Effect.asVoid);
+      tellState = session.tell;
       for (const p of chat.problems) yield* report(p);
       if (unreachable.length > 0) {
         const notice = `server.publicUrl is not set: turns on ${unreachable.join(", ")} are refused, since claude there could not reach zoom and date`;
@@ -182,21 +224,25 @@ export const routes = (o: ServerOptions) =>
           const write = yield* socket.writer;
           const send = (events: readonly AgUiEvent[]) => Effect.forEach(events, (e) => write.write(JSON.stringify(e)), { discard: true });
           const live = yield* PubSub.subscribe(session.events); // before the snapshot, so nothing falls between
-          const translate = makeTranslator(thread, session.state());
-          yield* send(snapshot(chat.mem.root.slice(-(o.window ?? 200)), session.state()));
+          const { first, translate } = openStream({ entries: chat.mem.root, live: session.live(), state: session.state(), thread, window: o.window ?? 200 });
+          yield* send(first);
           yield* session.primeSoon;
           yield* PubSub.take(live).pipe(
             Effect.flatMap((e) => send(translate(e))),
             Effect.forever,
             Effect.forkScoped,
           );
+          const fresh = unseen(() => chat.mem.root.length);
           const pull = yield* Socket.readerString(socket);
           yield* pull.pipe(
             Effect.flatMap((frames) =>
               Effect.forEach(frames, (frame) =>
                 Option.match(decodeInbound(frame), {
                   onNone: () => Effect.void,
-                  onSome: (m) => ("messages" in m ? session.input(lastUserText(m.messages), m.forwardedProps?.device) : session.cancel),
+                  onSome: (m) =>
+                    "messages" in m
+                      ? Effect.forEach(fresh(m.messages), (x) => session.input(textOf(x), m.forwardedProps?.device, x.id), { discard: true })
+                      : session.cancel,
                 }),
               ),
             ),
@@ -240,7 +286,7 @@ export const routes = (o: ServerOptions) =>
             budget: chat.mem.budget,
             lines: chat.mem.view.map((c) => {
               const node = getNode(chat.mem, c);
-              const { id, n } = span(c);
+              const { n, id } = span(c);
               const from = chat.mem.root[id], to = chat.mem.root[id + n - 1];
               return {
                 built: node !== undefined,
@@ -260,25 +306,24 @@ export const routes = (o: ServerOptions) =>
         ),
       );
 
-      // one node and its two children, down to the message (the memory browser's zoom)
+      // one node and its two children, down to the message (the memory browser's zoom, as mcp.ts opens it)
       yield* router.add("GET", "/api/node", () =>
         Effect.gen(function* () {
           const { i, l } = yield* HttpServerRequest.schemaSearchParams(NodeAt);
           const { id, n } = span({ i, l });
-          if (l === 0) {
-            const m = chat.mem.root[i];
-            return m ? json({ id, kind: m.kind, l, i, n, text: m.text, date: localTime(m.date) }) : HttpServerResponse.empty({ status: 404 });
+          const found = openNode(chat.mem, id, n);
+          if (!found) return HttpServerResponse.empty({ status: 404 });
+          if ("message" in found) {
+            const m = found.message;
+            return json({ id, kind: m.kind, l, i, n, text: m.text, date: localTime(m.date) });
           }
           return json({
-            children: children({ i, l }).map((c) => {
-              const half = getNode(chat.mem, c);
-              return { built: half !== undefined, i: c.i, l: c.l, text: half?.text ?? null };
-            }),
+            children: found.halves.map((h) => ({ built: h.node !== undefined, i: h.at.i, l: h.at.l, text: h.node?.text ?? null })),
             id,
             l,
             i,
             n,
-            text: getNode(chat.mem, { i, l })?.text ?? null,
+            text: found.node?.text ?? null,
           });
         }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
       );
@@ -317,14 +362,10 @@ export const routes = (o: ServerOptions) =>
     }),
   );
 
-export const serverLayer = (o: ServerOptions) => {
-  const outside = Layer.mergeAll(o.secrets ?? SecretsLive, FetchHttpClient.layer);
-  return HttpRouter.serve(routes(o)).pipe(
-    Layer.provide(BunHttpServer.layer({ hostname: o.host, port: o.port })),
+export const serverLayer = (o: ServerOptions) =>
+  HttpRouter.serve(routes(o)).pipe(
+    // on SIGTERM, open sockets (a web page's /ws) are closed at once instead of waited for
+    Layer.provide(BunHttpServer.layer({ disablePreemptiveShutdown: true, hostname: o.host, port: o.port })),
     Layer.provide(LocalRunner),
-    Layer.provide(openAiPlanLayer(endpointsOf(o.settings.openai)).pipe(Layer.provide(outside))),
-    Layer.provide(apiKeysLayer(o.settings.apiKey).pipe(Layer.provide(outside))),
     Layer.provide(BunServices.layer),
   );
-};
-

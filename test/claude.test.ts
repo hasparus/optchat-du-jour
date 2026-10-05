@@ -2,6 +2,7 @@
 // retries, the turn through the session, and priming. Every test runs the fake, never `claude`,
 // and every fake a test started must be gone when it ends.
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
+import { type AGUIEvent, EventType } from "@ag-ui/core";
 import { BunServices } from "@effect/platform-bun";
 import { type Duration, Effect, Layer, PubSub, Schema, type Scope } from "effect";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -15,14 +16,16 @@ import { MASTER_TOOLS } from "../src/config.ts";
 import { mcpConfig } from "../src/mcp.ts";
 import { COMPACT_FILE, SCALE } from "../src/prompts.ts";
 import { makeSession, type SessionEvent } from "../src/session.ts";
+import { openStream } from "../server/agui.ts";
 import { newMsg } from "../src/store.ts";
-import { blocks, claudeCodeCompactor, retryText } from "../src/summarize/claude-code.ts";
+import { blocks, claudeCodeCompactor } from "../src/summarize/claude-code.ts";
+import { retryText } from "../src/summarize/step.ts";
 import { built, bytes, dayOf, getNode } from "../src/tree.ts";
 import { cap, claudeCodeTurn, masterArgs } from "../src/turn/claude-code.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
 import type { UsageRecord } from "../src/usage.ts";
 
-const FAKE = `${import.meta.dir}/fake-claude.ts`;
+const FAKE_BIN = `${import.meta.dir}/fake-claude.ts`;
 
 const dirs: string[] = [];
 const tmp = () => {
@@ -33,7 +36,7 @@ const tmp = () => {
 
 // a test that could spawn `claude` spawns the fake; between tests a stray spawn runs /bin/false
 beforeEach(() => {
-  Bun.env.OPTCHAT_CLAUDE = FAKE;
+  Bun.env.OPTCHAT_CLAUDE = FAKE_BIN;
 });
 
 // what the fake writes to its log (see its header)
@@ -59,8 +62,8 @@ const decodeRec = Schema.decodeUnknownSync(Schema.fromJsonString(Rec));
 const fakes: { log: string }[] = [];
 const records = (log: string): Rec[] => {
   if (!existsSync(log)) return [];
-  const lines = readFileSync(log, "utf8").split("\n");
-  return lines.flatMap((line) => (line === "" ? [] : [decodeRec(line)]));
+  const text = readFileSync(log, "utf8");
+  return text.split("\n").flatMap((line) => (line === "" ? [] : [decodeRec(line)]));
 };
 
 // a process is running: it exists, and it is not a zombie (/proc/PID/stat, state after the name)
@@ -406,13 +409,54 @@ test("a cancel kills the call and logs what it never took as unanswered user mes
       yield* r.session.input("never mind");
       yield* until("the mid-run message on stdin", () => f.of("turn")[0]?.ins.length === 2);
       yield* r.session.cancel;
-      yield* until("the end of the loop", () => r.session.state().phase === "idle" && r.infos().includes("cancelled"));
+      yield* until("the end of the loop", () => r.session.state().phase === "idle" && r.events.some((e) => e.type === "run-finished" && e.error === "cancelled"));
       expect(r.log()).toEqual([
         ["user", "first"],
         ["talk", "working on it"],
         ["user", "never mind"],
       ]);
       expect(r.session.state().queued).toEqual([]);
+    }),
+  );
+});
+
+test("a cancel mid-reply ends the run, and a client sees the partial closed before the next message takes its index", async () => {
+  const delta = { event: { delta: { text: "Hello, I was ", type: "text_delta" }, type: "content_block_delta" }, type: "stream_event" };
+  const f = scripted({ turn: [[{ emit: delta }, { hang: true }], [{ text: "fresh answer" }]] });
+  await run(
+    f,
+    Effect.gen(function* () {
+      const r = yield* rig(f);
+      yield* r.session.input("first");
+      yield* until("the partial reply", () => r.session.live()?.reply?.text === "Hello, I was ");
+      // a client that connects now gets the reply so far
+      const sub = yield* PubSub.subscribe(r.session.events);
+      const { first, translate } = openStream({ entries: r.chat.mem.root, live: r.session.live(), state: r.session.state(), thread: "mini", window: 50 });
+      const seen: AGUIEvent[] = [...first];
+      yield* PubSub.take(sub).pipe(
+        Effect.tap((e) => Effect.sync(() => seen.push(...translate(e)))),
+        Effect.forever,
+        Effect.forkScoped,
+      );
+      expect(seen.flatMap((e) => (e.type === EventType.TEXT_MESSAGE_CONTENT ? [[e.messageId, e.delta]] : []))).toEqual([["1", "Hello, I was "]]);
+
+      yield* r.session.cancel;
+      yield* r.session.input("next");
+      yield* r.finished(2);
+      expect(r.log()).toEqual([
+        ["user", "first"],
+        ["user", "next"],
+        ["talk", "fresh answer"],
+      ]);
+      expect(r.events.flatMap((e) => (e.type === "run-finished" ? [e.error] : []))).toEqual(["cancelled", null]);
+      yield* until("the client's last snapshot", () => seen.filter((e) => e.type === EventType.MESSAGES_SNAPSHOT).length === 3);
+      const at = (ok: (e: AGUIEvent) => boolean) => seen.findIndex(ok);
+      const closed = at((e) => e.type === EventType.TEXT_MESSAGE_END && e.messageId === "1");
+      const next = at((e) => e.type === EventType.TEXT_MESSAGE_START && e.messageId === "1" && e.role === "user");
+      const resync = seen.findIndex((e, k) => k > closed && e.type === EventType.MESSAGES_SNAPSHOT);
+      expect(closed).toBeGreaterThan(-1);
+      expect(resync).toBeGreaterThan(closed);
+      expect(next).toBeGreaterThan(resync);
     }),
   );
 });

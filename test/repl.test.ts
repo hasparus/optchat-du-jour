@@ -1,7 +1,7 @@
 // The REPL's screen: what reaches the terminal when the server's events and the user's keys interleave.
 import { describe, expect, test } from "bun:test";
 import { Option } from "effect";
-import { type Inbound, makeScreen, parseInbound } from "../cli/repl.ts";
+import { type Action, type Inbound, makeScreen, parseInbound } from "../cli/repl.ts";
 
 const IDLE = { budget: 128_000, device: "mini", messages: 3, phase: "idle", viewBytes: 1000, waiting: 0 } satisfies Record<string, string | number>;
 
@@ -16,6 +16,13 @@ function screen(tty = true) {
   };
   return { feed, out: () => out, s };
 }
+// the server's word that a message sent from here (its client id) is log entry `id`, or was not logged
+const ack = (clientId: string, id: string | null, error: string | null = null): Inbound => ({
+  name: "ack",
+  type: "CUSTOM",
+  value: { clientId, error, messageId: id },
+});
+const idOf = (a: Action | null) => (a?.type === "send" ? a.id : "");
 const said = (id: string, role: string, text: string): Inbound[] => [
   { messageId: id, role, type: "TEXT_MESSAGE_START" },
   { delta: text, messageId: id, type: "TEXT_MESSAGE_CONTENT" },
@@ -23,15 +30,16 @@ const said = (id: string, role: string, text: string): Inbound[] => [
 ];
 
 describe("repl screen", () => {
-  test("a message typed here is not shown twice; one from another client is", () => {
+  test("a message typed here is not shown twice; one from another client is, even with the same text", () => {
     const t = screen();
     t.feed({ snapshot: IDLE, type: "STATE_SNAPSHOT" });
     for (const ch of "hello") t.s.key({ text: ch, type: "text" });
-    expect(t.s.key({ type: "enter" })).toEqual({ text: "hello", type: "send" });
+    const sent = t.s.key({ type: "enter" });
+    expect(sent).toMatchObject({ text: "hello", type: "send" });
     const before = t.out();
-    t.feed(...said("3", "user", "hello"), ...said("4", "user", "from the phone"), ...said("5", "assistant", "hi"));
+    t.feed(...said("3", "user", "hello"), ack(idOf(sent), "4"), ...said("4", "user", "hello"), ...said("5", "user", "from the phone"), ...said("6", "assistant", "hi"));
     const after = t.out().slice(before.length);
-    expect(after).not.toContain("hello");
+    expect(after.match(/> hello\n/g)).toHaveLength(1); // the phone's "hello" at 3; ours at 4 is on screen already
     expect(after).toContain("> from the phone\n");
     expect(after).toContain("hi\n");
   });
@@ -64,7 +72,7 @@ describe("repl screen", () => {
   test("piped: each line is a message, echoed", () => {
     const t = screen(false);
     t.feed({ snapshot: IDLE, type: "STATE_SNAPSHOT" });
-    expect(t.s.submit("  first ")).toEqual({ text: "first", type: "send" });
+    expect(t.s.submit("  first ")).toMatchObject({ text: "first", type: "send" });
     expect(t.s.submit("")).toBeNull();
     expect(t.out()).toContain("> first\n");
     expect(t.out()).not.toContain("> \n");
@@ -73,21 +81,32 @@ describe("repl screen", () => {
 
   test("piped: a message is answered when the run that logged it ends, not when the server says idle", () => {
     const t = screen(false);
-    t.s.submit("slow one");
+    const slow = idOf(t.s.submit("slow one"));
     t.feed({ snapshot: IDLE, type: "STATE_SNAPSHOT" }); // the server has not read it yet
     expect(t.s.unanswered).toBe(1);
-    t.feed(...said("3", "user", "slow one"), { type: "RUN_STARTED" });
+    t.feed(ack(slow, "3"), ...said("3", "user", "slow one"), { type: "RUN_STARTED" });
     expect(t.s.unanswered).toBe(1);
     t.feed(...said("4", "assistant", "done"), { type: "RUN_FINISHED" });
     expect(t.s.unanswered).toBe(0);
 
-    // cancelled from another client: logged unanswered, no run end, then the session goes idle
-    t.s.submit("never answered");
+    // cancelled from another client before its run began: logged unanswered, no run end, then idle
+    const never = idOf(t.s.submit("never answered"));
     t.feed({ delta: [{ op: "replace", path: "/phase", value: "priming" }], type: "STATE_DELTA" });
-    t.feed(...said("5", "user", "never answered"));
+    t.feed(ack(never, "5"), ...said("5", "user", "never answered"));
     expect(t.s.unanswered).toBe(1);
     t.feed({ delta: [{ op: "replace", path: "/phase", value: "idle" }], type: "STATE_DELTA" });
     expect(t.s.unanswered).toBe(0);
+    expect(t.s.failed).toBe(0);
+  });
+
+  test("piped: a message the server could not log counts as answered, with an error", () => {
+    const t = screen(false);
+    const lost = idOf(t.s.submit("lost"));
+    t.feed({ snapshot: IDLE, type: "STATE_SNAPSHOT" });
+    t.feed({ name: "info", type: "CUSTOM", value: "error: disk full" }, ack(lost, null, "disk full"));
+    expect(t.s.unanswered).toBe(0);
+    expect(t.s.failed).toBe(1);
+    expect(t.out()).toContain("not logged: disk full\n");
   });
 
   test("a lost connection is told once, and so is its return", () => {

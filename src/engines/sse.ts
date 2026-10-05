@@ -1,7 +1,9 @@
 // A streamed model reply, read event by event (SPEC "Engines"): both the Responses API and
 // Anthropic's Messages API stream server-sent events whose data is one JSON object with a `type`.
-// The engine folds them into its reply; a stream that breaks is a ModelError named after it.
-import { Effect, Schema, Stream } from "effect";
+// The engine folds them into its reply and the stream ends where it says it is done: whatever
+// follows (a `data: [DONE]` line, say) is never read. A stream that breaks is a ModelError named
+// after it.
+import { Effect, Option, Schema, Stream } from "effect";
 import { Sse } from "effect/encoding";
 import { type EngineError, ModelError } from "./errors.ts";
 
@@ -10,14 +12,18 @@ export const sseFold = <S>(
   stream: Stream.Stream<Uint8Array, EngineError>,
   init: S,
   step: (state: S, data: string) => Effect.Effect<S, EngineError | Schema.SchemaError>,
+  done: (state: S) => boolean,
 ) =>
   stream.pipe(
     Stream.decodeText(),
     Stream.pipeThroughChannel(Sse.decode()),
-    Stream.runFoldEffect(
+    Stream.scanEffect(
       () => init,
-      (acc, event) => step(acc, event.data),
+      (acc, event) => (event.data === "[DONE]" ? Effect.succeed(acc) : step(acc, event.data)),
     ),
+    Stream.takeUntil(done),
+    Stream.runLast,
+    Effect.map(Option.getOrElse(() => init)),
     Effect.catchTags({
       Retry: () => Effect.fail(new ModelError({ message: `${label}: the stream asked to reconnect` })),
       SchemaError: (e) => Effect.fail(new ModelError({ message: `${label}: unexpected stream event: ${e.message}` })),

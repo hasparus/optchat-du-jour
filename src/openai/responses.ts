@@ -8,10 +8,11 @@
 // function_call items out, function_call_output items back in the next request.
 import { Context, Data, Effect, Layer, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
-import { type EngineError, ModelError, Refusal, UsageLimit } from "../engines/errors.ts";
+import { type EngineError, ModelError, Refusal, type Spent, UsageLimit } from "../engines/errors.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
 import type { Tokens as Usage } from "../usage.ts";
-import { AuthError, type Endpoints, makeTokens } from "./auth.ts";
+import { type TokenError, makeTokenManager } from "./auth.ts";
+import type { Endpoints } from "./endpoints.ts";
 
 // The conversation as sent. A user message is a list of text parts, so stable context blocks stay
 // byte-stable on the wire; a function call and its output are items of their own (our tool loop).
@@ -106,8 +107,12 @@ const doneItem = json(
   }),
 );
 const completed = json(Schema.Struct({ response: Schema.Struct({ model: Schema.optional(Schema.String), usage: Schema.optional(Schema.NullOr(ApiUsage)) }) }));
-const failed = json(Schema.Struct({ response: Schema.Struct({ error: Schema.optional(Schema.NullOr(ApiError)) }) }));
-const incomplete = json(Schema.Struct({ response: Schema.Struct({ incomplete_details: Schema.optional(Schema.NullOr(Schema.Struct({ reason: Schema.optional(Schema.String) }))) }) }));
+// a response that ended badly may still say what it cost
+const Ended = { model: Schema.optional(Schema.String), usage: Schema.optional(Schema.NullOr(ApiUsage)) };
+const failed = json(Schema.Struct({ response: Schema.Struct({ ...Ended, error: Schema.optional(Schema.NullOr(ApiError)) }) }));
+const incomplete = json(
+  Schema.Struct({ response: Schema.Struct({ ...Ended, incomplete_details: Schema.optional(Schema.NullOr(Schema.Struct({ reason: Schema.optional(Schema.String) }))) }) }),
+);
 const errorEvent = json(Schema.Struct({ code: Schema.optional(Schema.NullOr(Schema.String)), message: Schema.optional(Schema.String), error: Schema.optional(ApiError) }));
 const ErrorBody = Schema.Struct({ error: ApiError });
 const decodeErrorBody = Schema.decodeUnknownOption(Schema.fromJsonString(ErrorBody));
@@ -116,10 +121,10 @@ const decodeErrorBody = Schema.decodeUnknownOption(Schema.fromJsonString(ErrorBo
 const LIMIT = /usage_limit|rate_limit|insufficient_quota|not_eligible|quota/;
 
 // `label` names the engine in the message: openai-plan, or api-key for a key's calls
-export const classify = (status: number | null, code: string | null | undefined, message: string | undefined, label = "openai-plan"): EngineError => {
+export const classify = (status: number | null, code: string | null | undefined, message: string | undefined, label = "openai-plan", spent?: Spent): EngineError => {
   const text = `${label}: ${[status, code, message].filter((x) => x !== null && x !== undefined && x !== "").join(" ")}`;
-  if (status === 429 || (code !== null && code !== undefined && LIMIT.test(code))) return new UsageLimit({ message: text });
-  return new ModelError({ message: text });
+  if (status === 429 || (code !== null && code !== undefined && LIMIT.test(code))) return new UsageLimit({ message: text, spent });
+  return new ModelError({ message: text, spent });
 };
 
 export const usageOf = (u: typeof ApiUsage.Type | null | undefined): Usage => {
@@ -127,6 +132,9 @@ export const usageOf = (u: typeof ApiUsage.Type | null | undefined): Usage => {
   // OpenAI counts cached tokens inside input_tokens; ours keeps them apart, as Anthropic does
   return { cacheRead: cached, cacheWrite: 0, input: (u?.input_tokens ?? 0) - cached, output: u?.output_tokens ?? 0 };
 };
+
+const spentOf = (r: { readonly model?: string | undefined; readonly usage?: typeof ApiUsage.Type | null | undefined }, model: string): Spent | undefined =>
+  r.usage ? { model: r.model ?? model, usage: usageOf(r.usage) } : undefined;
 
 class Unauthorized extends Data.TaggedError("Unauthorized")<{ readonly message: string }> {}
 
@@ -158,12 +166,13 @@ const onEvent = (o: { readonly model: string; readonly label: string; readonly o
         return { ...r, done: { model: response.model ?? o.model, output, text: r.text, usage: usageOf(response.usage) } };
       }
       case "response.failed": {
-        const { error } = (yield* failed(data)).response;
-        return yield* classify(null, error?.code, error?.message ?? "response.failed", o.label);
+        const { response } = yield* failed(data);
+        return yield* classify(null, response.error?.code, response.error?.message ?? "response.failed", o.label, spentOf(response, o.model));
       }
       case "response.incomplete": {
-        const reason = (yield* incomplete(data)).response.incomplete_details?.reason ?? "no reason given";
-        return yield* new ModelError({ message: `${o.label}: incomplete response (${reason})` });
+        const { response } = yield* incomplete(data);
+        const reason = response.incomplete_details?.reason ?? "no reason given";
+        return yield* new ModelError({ message: `${o.label}: incomplete response (${reason})`, spent: spentOf(response, o.model) });
       }
       case "error": {
         const e = yield* errorEvent(data);
@@ -174,22 +183,23 @@ const onEvent = (o: { readonly model: string; readonly label: string; readonly o
     }
   });
 
-// A stream counts only when it ends in response.completed: one that starts well can still fail.
-export const readStream = (stream: Stream.Stream<Uint8Array, EngineError>, o: { readonly model: string; readonly label?: string; readonly onText?: Ask["onText"] }) =>
+// A stream counts only when it ends in response.completed, and ends there: whatever follows (a
+// `data: [DONE]` line, say) is never read. One that starts well can still fail.
+export const readStream = (stream: Stream.Stream<Uint8Array, EngineError>, model: string, o: { readonly label?: string; readonly onText?: Ask["onText"] } = {}) =>
   Effect.gen(function* () {
     const label = o.label ?? "openai-plan";
     const init: Read = { done: null, output: [], refusal: "", text: "" };
-    const r = yield* sseFold(label, stream, init, onEvent({ label, model: o.model, onText: o.onText }));
-    if (r.refusal) return yield* new Refusal({ message: `${label} refused: ${r.refusal.slice(0, 300)}` });
+    const r = yield* sseFold(label, stream, init, onEvent({ label, model, onText: o.onText }), (state) => state.done !== null);
+    if (r.refusal) return yield* new Refusal({ message: `${label} refused: ${r.refusal.slice(0, 300)}`, spent: r.done ? { model: r.done.model, usage: r.done.usage } : undefined });
     if (r.done === null) return yield* new ModelError({ message: `${label}: the stream ended without response.completed` });
     return r.done;
   });
 
 // How a client authenticates: a bearer token now, and a fresh one after a 401 with `stale`.
-// UsageLimit when there is none: signed out, no key, the chain moves on.
+// UsageLimit when there is none (signed out, no key): the chain moves on.
 export type Bearer = {
-  readonly current: Effect.Effect<string, UsageLimit>;
-  readonly renew: (stale: string) => Effect.Effect<string, UsageLimit>;
+  readonly current: Effect.Effect<string, EngineError>;
+  readonly renew: (stale: string) => Effect.Effect<string, EngineError>;
 };
 
 // The Responses API at `api` (…/v1) with `bearer`: the plan's tokens or an API key (SPEC "Engines").
@@ -213,7 +223,7 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
             : classify(res.status, null, raw.slice(0, 300), o.label);
         }
         const stream = res.stream.pipe(Stream.mapError((err) => new ModelError({ message: `${o.label}: ${err.message}` })));
-        return yield* readStream(stream, { label: o.label, model: ask.model, onText: ask.onText });
+        return yield* readStream(stream, ask.model, { label: o.label, onText: ask.onText });
       }).pipe(Effect.catchTag("HttpClientError", (err) => Effect.fail(new ModelError({ message: `${o.label}: ${err.message}` }))));
 
     // a 401 renews the token once, then counts as signed out
@@ -232,26 +242,24 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
     return respond;
   });
 
-// signed out, or the sign-in can't be renewed: like a spent plan, the next engine takes the call
-const signIn = (err: AuthError) => new UsageLimit({ message: `openai-plan: ${err.message}` });
+// Signed out (nothing saved, or the refresh token refused): like a spent plan, the next engine
+// takes the call. Anything else on the way to a token is reported and retried, not a failover:
+// the endpoint down, a store or secret we can't read, an ID token that isn't ours.
+const tokenFailure = (err: TokenError): EngineError =>
+  err._tag === "NotSignedIn" || err._tag === "GrantRejected"
+    ? new UsageLimit({ message: `openai-plan: ${err.message}` })
+    : new ModelError({ message: `openai-plan: ${err.message}` });
 
-export const openAiPlanLayer = (e: Endpoints) =>
+export const openAiPlanLayer = (e: Endpoints, o: { readonly report?: (message: string) => Effect.Effect<void> } = {}) =>
   Layer.effect(
     OpenAiPlan,
     Effect.gen(function* () {
-      const tokens = yield* makeTokens(e);
+      const tokens = yield* makeTokenManager(e, o);
       const respond = yield* makeResponses({
         api: e.api,
         bearer: {
-          current: tokens.current.pipe(
-            Effect.map((c) => c.accessToken),
-            Effect.mapError(signIn),
-          ),
-          renew: (stale) =>
-            tokens.renew(stale).pipe(
-              Effect.map((c) => c.accessToken),
-              Effect.mapError(signIn),
-            ),
+          current: tokens.current.pipe(Effect.mapError(tokenFailure)),
+          renew: (stale) => tokens.renew(stale).pipe(Effect.mapError(tokenFailure)),
         },
         label: "openai-plan",
       });

@@ -10,12 +10,16 @@ export type Call = { readonly name: string; readonly arguments: string };
 export type Answer =
   | { readonly text?: string; readonly calls?: readonly Call[]; readonly cached?: number; readonly gate?: Promise<unknown> }
   | { readonly status: number; readonly code: string } // an HTTP error with an OpenAI error body
-  | { readonly failed: string }; // the stream starts, then response.failed
+  | { readonly failed: string } // the stream starts, then response.failed, with usage
+  | { readonly incomplete: string }; // the stream starts, then response.incomplete, with usage
 
 export type Seen = { readonly token: string; readonly body: string };
 
 const b64 = (s: string) => Buffer.from(s).toString("base64url");
-const jwt = (claims: Readonly<Record<string, string>>) => `${b64('{"alg":"none"}')}.${b64(JSON.stringify(claims))}.sig`;
+// About the size of the real ones: a few hundred bytes of claims, a 2 KB JWT all told
+const PAD = "p".repeat(1200);
+const jwt = (claims: Readonly<Record<string, string | number>>) => `${b64('{"alg":"RS256","kid":"fake"}')}.${b64(JSON.stringify({ ...claims, pad: PAD }))}.${"s".repeat(342)}`;
+const hours = (n: number) => Math.floor(Date.now() / 1000) + n * 3600;
 type Json = string | number | boolean | null | readonly Json[] | { readonly [key: string]: Json };
 const sse = (event: { readonly type: string; readonly [key: string]: Json }) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 const json = (body: Json, status = 200) => Response.json(body, { status });
@@ -25,6 +29,8 @@ export type FakeState = {
   refresh: string;
   refreshes: number;
   reject: boolean; // every API call gets a 401, whatever the token
+  tokenStatus: number | null; // the token endpoint answers this status and nothing else
+  refreshSub: string | null; // a refresh also returns an ID token for this subject
   script: Answer[];
   readonly seen: Seen[];
   authorizeParams: URLSearchParams | null;
@@ -32,13 +38,14 @@ export type FakeState = {
 
 export function fakeOpenAi() {
   const issued = "oaiapp_fake";
-  const state: FakeState = { access: "", authorizeParams: null, refresh: "", refreshes: 0, reject: false, script: [], seen: [] };
+  const state: FakeState = { access: "", authorizeParams: null, refresh: "", refreshSub: null, refreshes: 0, reject: false, script: [], seen: [], tokenStatus: null };
   let counter = 0;
   const pending = new Map<string, { challenge: string; nonce: string; redirect: string }>();
+  const iss = (): string => `http://127.0.0.1:${server.port ?? 0}`;
   const fresh = () => {
     counter += 1;
-    state.access = `access-${counter}`;
-    state.refresh = `refresh-${counter}`;
+    state.access = jwt({ aud: "https://api.openai.com/v1", exp: hours(1), iss: iss(), n: counter, sub: "user-1" });
+    state.refresh = `rt_${counter}_${"r".repeat(500)}`;
   };
 
   const server = Bun.serve({
@@ -57,6 +64,7 @@ export function fakeOpenAi() {
       }
       if (url.pathname === "/api/accounts/oauth/token") {
         const form = new URLSearchParams(await req.text());
+        if (state.tokenStatus !== null) return new Response("upstream down", { status: state.tokenStatus });
         if (form.get("client_id") !== issued) return json({ error: "invalid_client" }, 401);
         if (form.get("grant_type") === "authorization_code") {
           const p = pending.get(form.get("code") ?? "");
@@ -65,13 +73,14 @@ export function fakeOpenAi() {
             return json({ error: "invalid_grant" }, 400);
           pending.delete(form.get("code") ?? "");
           fresh();
-          const idToken = jwt({ aud: issued, email: "me@example.com", iss: `http://127.0.0.1:${server.port ?? 0}`, nonce: p.nonce, sub: "user-1" });
+          const idToken = jwt({ aud: issued, email: "me@example.com", exp: hours(1), iss: iss(), nonce: p.nonce, sub: "user-1" });
           return json({ access_token: state.access, expires_in: 3600, id_token: idToken, refresh_token: state.refresh, scope: "chatgpt.tokens.use.direct email offline_access openid profile resource.invoke", token_type: "Bearer" });
         }
         if (form.get("grant_type") === "refresh_token" && form.get("refresh_token") === state.refresh) {
           state.refreshes += 1;
           fresh();
-          return json({ access_token: state.access, expires_in: 3600, refresh_token: state.refresh, token_type: "Bearer" });
+          const body = { access_token: state.access, expires_in: 3600, refresh_token: state.refresh, token_type: "Bearer" };
+          return json(state.refreshSub === null ? body : { ...body, id_token: jwt({ aud: issued, exp: hours(1), iss: iss(), sub: state.refreshSub }) });
         }
         return json({ error: "invalid_grant" }, 400);
       }
@@ -84,10 +93,13 @@ export function fakeOpenAi() {
         if ("gate" in answer) await answer.gate;
         if ("status" in answer) return json({ error: { code: answer.code, message: "limit" } }, answer.status);
         type Event = Parameters<typeof sse>[0];
+        const usage = { input_tokens: 1000, input_tokens_details: { cached_tokens: 0 }, output_tokens: 7 };
         const events: Event[] =
           "failed" in answer
-            ? [{ type: "response.created" }, { response: { error: { code: answer.failed, message: "stopped" } }, type: "response.failed" }]
-            : [
+            ? [{ type: "response.created" }, { response: { error: { code: answer.failed, message: "stopped" }, usage }, type: "response.failed" }]
+            : "incomplete" in answer
+              ? [{ type: "response.created" }, { response: { incomplete_details: { reason: answer.incomplete }, model: "fake-luna", usage }, type: "response.incomplete" }]
+              : [
                 { type: "response.created" },
                 ...[...(answer.text ?? "").match(/.{1,40}/gsu) ?? []].map((delta) => ({ delta, type: "response.output_text.delta" })),
                 ...(answer.text ? [{ item: { content: [{ text: answer.text, type: "output_text" }], type: "message" }, type: "response.output_item.done" }] : []),

@@ -10,6 +10,7 @@ import { makeBudget } from "../src/apikey/budget.ts";
 import { ApiKeys, KEY_SECRETS, apiKeysLayer } from "../src/apikey/clients.ts";
 import type { Job } from "../src/compactor.ts";
 import { type Settings, loadSettings } from "../src/config.ts";
+import { DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 import { memorySecrets } from "../src/secrets.ts";
 import { newMsg } from "../src/store.ts";
 import { apiKeyCompactor } from "../src/summarize/api-key.ts";
@@ -37,6 +38,7 @@ const settings = (monthlyBudget: number): Settings => ({
   defaultDevice: "mini",
   devices: { mini: { folders: [], url: "http://127.0.0.1:9" } },
   master: { chain: [REF], effort: "high", permissionMode: "bypassPermissions" },
+  openai: DEFAULT_ENDPOINTS,
 });
 
 const clients = Effect.runSync(
