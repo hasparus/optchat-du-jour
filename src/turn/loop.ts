@@ -58,7 +58,9 @@ export const toolLoop = (o: {
   const run: TurnEngine["run"] = (input, out, failoverFrom) => {
     // Each item is logged as it completes, so live text after it streams under the next log index.
     // A log that refuses is remembered, not failed on at once: the reply goes on streaming (it is
-    // being paid for), its usage is recorded, and then the turn fails with the refusal.
+    // being paid for), its usage is recorded, and then the turn fails with the refusal. Its live
+    // text stops at the refusal, though: a delta no log entry will ever hold would show on clients
+    // as a reply the chat does not have.
     // `open`: tool entries logged and not answered with an echo yet
     const track: Track = { open: 0, refused: null };
     const logged = (item: Item): Effect.Effect<void> => {
@@ -73,6 +75,7 @@ export const toolLoop = (o: {
             : Effect.void;
       return write.pipe(Effect.catch((error: StoreError) => Effect.sync(() => void (track.refused = error))));
     };
+    const live = (delta: string) => (track.refused === null ? out.text(delta) : Effect.void);
     const answer = (text: string) => out.log("echo", text).pipe(Effect.tap(() => Effect.sync(() => void track.open--)));
     // A turn that ends early (the provider failed, a cancel) leaves no tool entry without its echo,
     // as the last round does not either.
@@ -111,7 +114,7 @@ export const toolLoop = (o: {
           });
         const final = round >= rounds;
         const reply = yield* o.provider
-          .call({ final, history, instructions: o.instructions, onItem: logged, onText: out.text, onThinking: out.thinking, tools: box.defs })
+          .call({ final, history, instructions: o.instructions, onItem: logged, onText: live, onThinking: out.thinking, tools: box.defs })
           .pipe(Effect.result);
         // what the call cost is recorded first, whether it failed or the log refused its items
         if (reply._tag === "Success") yield* record(reply.success);
