@@ -3,7 +3,7 @@
 // same conversation: with `store: false` nothing is kept server-side, so each try re-sends the
 // whole input, the earlier tries and the retry texts. No cache marks: OpenAI caches a stable
 // prefix by itself, and the context blocks come first and never change within a node.
-import { Duration, Effect } from "effect";
+import { Clock, Duration, Effect } from "effect";
 import { readFileSync } from "node:fs";
 import type { Job } from "../compactor.ts";
 import { CALL_TIMEOUT, TRIES } from "../config.ts";
@@ -11,7 +11,7 @@ import { type EngineError, ModelError } from "../engines/errors.ts";
 import { OpenAiPlan, type Turn } from "../openai/responses.ts";
 import { COMPACT_FILE } from "../prompts.ts";
 import { type UsageRecord, isCold } from "../usage.ts";
-import { contextBlocks, enough, retryText, shortest, stepText } from "./step.ts";
+import { contextBlocks, enough, retryText, shortest, step } from "./step.ts";
 
 export type OpenAiPlanCompactorOptions = {
   readonly model: string;
@@ -20,7 +20,7 @@ export type OpenAiPlanCompactorOptions = {
   readonly timeout?: Duration.Input;
 };
 
-export const firstInput = (job: Job): Turn => ({ parts: [...contextBlocks(job), stepText(job)], role: "user" });
+export const firstInput = (job: Job): Turn => ({ parts: [...contextBlocks(job), step(job)], role: "user" });
 
 export const openAiPlanCompactor = (o: OpenAiPlanCompactorOptions) =>
   Effect.gen(function* () {
@@ -33,27 +33,26 @@ export const openAiPlanCompactor = (o: OpenAiPlanCompactorOptions) =>
         const input: Turn[] = [firstInput(job)];
         const tries: string[] = [];
         for (;;) {
-          const t0 = Date.now();
+          const sent = yield* Clock.currentTimeMillis;
           const reply = yield* plan.respond({ effort: o.effort, input, instructions, model: o.model });
           yield* o.log({
             attempt: tries.length + 1,
             auth: "chatgpt-pro",
             cold: isCold(reply.usage),
-            date: new Date().toISOString(),
+            date: new Date(yield* Clock.currentTimeMillis).toISOString(),
             device: null,
             engine: "openai-plan",
             failoverFrom,
             level: job.l,
             model: reply.model,
-            ms: Date.now() - t0,
+            ms: (yield* Clock.currentTimeMillis) - sent,
             role: "compact",
             usage: reply.usage,
           });
           const line = reply.text.trim();
           if (!line) return yield* new ModelError({ message: "openai-plan: empty reply" });
           tries.push(line);
-          const [first, ...rest] = tries;
-          if (first !== undefined && enough(tries, TRIES)) return shortest([first, ...rest]);
+          if (enough(tries, TRIES)) return shortest(tries);
           input.push({ role: "assistant", text: line }, { parts: [retryText(line)], role: "user" });
         }
       });

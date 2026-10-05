@@ -1,16 +1,19 @@
-// zoom and date (gist §7.1, ref §9) as an MCP server over HTTP (E8), answered from the server's
-// memory; it never takes the lock. JSON-RPC requests in, JSON responses out (MCP's streamable HTTP
-// transport allows a plain JSON reply), no sessions, no server-sent events.
+// zoom and date (gist §7.1, ref §9) as an MCP server over HTTP (E8): one JSON-RPC message per
+// POST, answered from the server's memory. It only reads; the lock stays with the chat.
 import { Option, Schema } from "effect";
 import { address } from "./kernel.ts";
-import { type Mem, getNode, localTime, msgText } from "./tree.ts";
+import { getNode, label, localTime, type Mem } from "./tree.ts";
 import { flat } from "./view.ts";
 
-// the gist's tool descriptions, verbatim; no property descriptions (ref §9)
+// The descriptions are the gist's, word for word; the input schemas carry no descriptions (ref §9).
 export const TOOLS = [
   {
     description: "Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole.",
-    inputSchema: { properties: { id: { type: "integer" }, n: { type: "integer" } }, required: ["id", "n"], type: "object" },
+    inputSchema: {
+      properties: { id: { type: "integer" }, n: { type: "integer" } },
+      required: ["id", "n"],
+      type: "object",
+    },
     name: "zoom",
   },
   {
@@ -18,79 +21,135 @@ export const TOOLS = [
     inputSchema: { properties: { id: { type: "integer" } }, required: ["id"], type: "object" },
     name: "date",
   },
-];
+] as const;
 
-const label = (id: unknown, n: unknown) => `No line ${String(id)}+${String(n)}.`;
+// what the model asked for, shown back as it was written
+const shown = (x: Schema.Json | undefined) => (x === undefined ? "undefined" : JSON.stringify(x));
+const noLine = (id: number | string, n: number | string) => `No line ${id}+${n}.`;
 
+// Line id+n opened into its two halves, or for n = 1 the message itself, whole. A merge that is
+// not built yet is no line at all; a single message always opens, since the view tells the model
+// to zoom a line that has no summary yet.
 export function zoom(mem: Mem, id: number, n: number): string {
   const c = address(id, n, mem.root.length);
-  if (!c) return label(id, n);
-  const m = mem.root[c.i];
-  if (c.l === 0) return m ? `${id}+0|${msgText(m)}` : label(id, n); // whole, newlines kept; built or not
-  const [a, b] = [getNode(mem, c.l - 1, 2 * c.i), getNode(mem, c.l - 1, 2 * c.i + 1)];
-  if (!getNode(mem, c.l, c.i) || !a || !b) return label(id, n);
-  const half = n / 2;
-  return `${id}+${half}|${flat(a.text)}\n${id + half}+${half}|${flat(b.text)}`;
+  if (!c) return noLine(id, n);
+  if (c.l === 0) {
+    const m = mem.root[id];
+    return m ? `${id}+0|${m.kind}: ${m.text}` : noLine(id, n);
+  }
+  if (!getNode(mem, c.l, c.i)) return noLine(id, n);
+  const halves = [
+    { i: 2 * c.i, l: c.l - 1 },
+    { i: 2 * c.i + 1, l: c.l - 1 },
+  ];
+  const lines: string[] = [];
+  for (const h of halves) {
+    const built = getNode(mem, h.l, h.i);
+    if (!built) return noLine(id, n); // a parent is only built after its children; this is a broken tree
+    lines.push(`${label(h)}|${flat(built.text)}`);
+  }
+  return lines.join("\n");
 }
 
-export const date = (mem: Mem, id: number) => {
+// the local date and time of message id, "YYYY-MM-DD HH:MM"
+export function date(mem: Mem, id: number): string {
   const m = Number.isSafeInteger(id) && id >= 0 ? mem.root[id] : undefined;
   return m ? localTime(m.date) : `No message ${id}.`;
-};
+}
 
+// ---------------------------------------------------------------------------------------------
+// JSON-RPC 2.0, the subset Claude Code uses: initialize, ping, tools/list, tools/call.
+
+const Id = Schema.Union([Schema.String, Schema.Number, Schema.Null]);
+type Id = typeof Id.Type;
 const Request = Schema.Struct({
-  id: Schema.optional(Schema.Union([Schema.String, Schema.Number, Schema.Null])),
-  method: Schema.String,
-  params: Schema.optional(
-    Schema.Struct({
-      arguments: Schema.optional(Schema.Struct({ id: Schema.optional(Schema.Number), n: Schema.optional(Schema.Number) })),
-      name: Schema.optional(Schema.String),
-      protocolVersion: Schema.optional(Schema.String),
-    }),
-  ),
+  id: Schema.optional(Id),
+  jsonrpc: Schema.optional(Schema.String),
+  method: Schema.optional(Schema.String),
+  params: Schema.optional(Schema.Json),
 });
 const decodeRequest = Schema.decodeUnknownOption(Schema.fromJsonString(Request));
 
-type Reply = { readonly status: number; readonly body: string | null };
-const json = (id: string | number | null, payload: object): Reply => ({ body: JSON.stringify({ id, jsonrpc: "2.0", ...payload }), status: 200 });
+const Initialize = Schema.Struct({ protocolVersion: Schema.optional(Schema.String) });
+const decodeInitialize = Schema.decodeUnknownOption(Initialize);
+const Call = Schema.Struct({ arguments: Schema.optional(Schema.Record(Schema.String, Schema.Json)), name: Schema.String });
+const decodeCall = Schema.decodeUnknownOption(Call);
+// zoom and date take integers; zoom() and date() check the rest
+const decodeZoom = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.Number, n: Schema.Number }));
+const decodeDate = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.Number }));
 
-// one JSON-RPC message in, the HTTP answer out; a notification gets 202 and no body
-export function handleMcp(mem: Mem, body: string): Reply {
-  const parsed = decodeRequest(body);
-  if (Option.isNone(parsed)) return json(null, { error: { code: -32_700, message: "parse error" } });
-  const req = parsed.value;
-  if (req.id === undefined) return { body: null, status: 202 };
-  const id = req.id;
-  switch (req.method) {
-    case "initialize":
-      return json(id, {
-        result: {
-          capabilities: { tools: {} },
-          protocolVersion: req.params?.protocolVersion ?? "2025-06-18",
-          serverInfo: { name: "optchat", version: "1" },
-        },
-      });
-    case "ping":
-      return json(id, { result: {} });
-    case "tools/list":
-      return json(id, { result: { tools: TOOLS } });
-    case "tools/call": {
-      const args = req.params?.arguments;
-      const text =
-        req.params?.name === "zoom"
-          ? zoom(mem, args?.id ?? Number.NaN, args?.n ?? Number.NaN)
-          : req.params?.name === "date"
-            ? date(mem, args?.id ?? Number.NaN)
-            : null;
-      if (text === null) return json(id, { result: { content: [{ text: `unknown tool ${String(req.params?.name)}`, type: "text" }], isError: true } });
-      return json(id, { result: { content: [{ text, type: "text" }] } });
-    }
+// what the server says it speaks when the client names no version
+const FALLBACK_PROTOCOL = "2025-06-18";
+
+type Reply = { readonly status: number; readonly body: string | null };
+type ToolResult = { readonly content: readonly { readonly type: "text"; readonly text: string }[]; readonly isError?: true };
+
+type Initialized = {
+  readonly capabilities: { readonly tools: Record<string, never> };
+  readonly protocolVersion: string;
+  readonly serverInfo: { readonly name: string; readonly version: string };
+};
+type Result = Initialized | ToolResult | { readonly tools: typeof TOOLS } | Record<string, never>;
+
+const respond = (id: Id, result: Result): Reply => ({ body: JSON.stringify({ id, jsonrpc: "2.0", result }), status: 200 });
+const failure = (id: Id, code: number, message: string, status = 200): Reply => ({
+  body: JSON.stringify({ error: { code, message }, id, jsonrpc: "2.0" }),
+  status,
+});
+const answer = (text: string): ToolResult => ({ content: [{ text, type: "text" }] });
+const refuse = (text: string): ToolResult => ({ content: [{ text, type: "text" }], isError: true });
+
+function call(mem: Mem, params: Schema.Json | undefined): ToolResult {
+  const found = decodeCall(params);
+  if (Option.isNone(found)) return refuse("tools/call needs a tool name.");
+  const { arguments: args = {}, name } = found.value;
+  switch (name) {
+    case "zoom":
+      return answer(
+        Option.match(decodeZoom(args), {
+          onNone: () => noLine(shown(args.id), shown(args.n)),
+          onSome: ({ id, n }) => zoom(mem, id, n),
+        }),
+      );
+    case "date":
+      return answer(
+        Option.match(decodeDate(args), {
+          onNone: () => `No message ${shown(args.id)}.`,
+          onSome: ({ id }) => date(mem, id),
+        }),
+      );
     default:
-      return json(id, { error: { code: -32_601, message: `method not found: ${req.method}` } });
+      return refuse(`There is no tool named ${name}.`);
   }
 }
 
-// the --mcp-config every claude gets: generated once per device, identical for priming and turns.
-// The server name stays `optchat`, so the tools are mcp__optchat__zoom and mcp__optchat__date
-// everywhere; only the URL differs, and the URL is not sent to the model.
+// One POSTed message in, the HTTP status and body out. A notification (no id) or a client's
+// response gets 202 and no body, as MCP's HTTP transport asks.
+export function handleMcp(mem: Mem, body: string): Reply {
+  const found = decodeRequest(body);
+  if (Option.isNone(found)) return failure(null, -32_700, "Parse error: one JSON-RPC message per request", 400);
+  const { id, method, params } = found.value;
+  if (id === undefined || method === undefined) return { body: null, status: 202 };
+  switch (method) {
+    case "initialize": {
+      const asked = Option.getOrUndefined(decodeInitialize(params ?? {}))?.protocolVersion;
+      return respond(id, {
+        capabilities: { tools: {} },
+        protocolVersion: asked ?? FALLBACK_PROTOCOL,
+        serverInfo: { name: "optchat", version: "1.0.0" },
+      });
+    }
+    case "ping":
+      return respond(id, {});
+    case "tools/list":
+      return respond(id, { tools: TOOLS });
+    case "tools/call":
+      return respond(id, call(mem, params));
+    default:
+      return failure(id, -32_601, `Method not found: ${method}`);
+  }
+}
+
+// The --mcp-config JSON. Built once per device and passed to the turn and the priming call alike:
+// it is part of the cached tool list, and the name `optchat` makes the tools mcp__optchat__*.
 export const mcpConfig = (url: string) => JSON.stringify({ mcpServers: { optchat: { type: "http", url } } });
