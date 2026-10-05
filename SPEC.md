@@ -203,7 +203,7 @@ interface CompactEngine {
 }
 ```
 
-(With Effect these become services returning `Effect`s; interruption replaces `signal`.)
+(With Effect these become services returning `Effect`s; interruption replaces `signal`. As built, `steer` is gone too: the session offers mid-run messages on the call's input and the engine reports each one it took, `src/turn/engine.ts`.)
 
 | Engine | Auth | Used for | Notes |
 | --- | --- | --- | --- |
