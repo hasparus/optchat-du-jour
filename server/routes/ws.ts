@@ -31,12 +31,18 @@ const SEEN = 1000;
 
 // The user messages of each RunAgentInput on one connection that it has not sent before: a client
 // that sends the whole history every time must not have old texts answered again. An id that is a
-// log index names an entry the server sent (message ids are log indexes, server/agui.ts).
-export const unseen = (logged: () => number) => {
+// log index names an entry the server sent (message ids are log indexes, server/agui.ts) when that
+// entry is a user message with the same text; any other id, numeric or not, is the client's own.
+export const unseen = (entries: readonly Entry[]) => {
   const seen = new Set<string>();
+  const logged = (id: string, text: string) => {
+    const entry = /^\d+$/.test(id) ? entries[Number(id)] : undefined;
+    return entry?.kind === "user" && entry.text === text;
+  };
   return (messages: readonly InboundMessage[]) =>
-    messages.filter(({ id, role }) => {
-      if (role !== "user" || seen.has(id) || (/^\d+$/.test(id) && Number(id) < logged())) return false;
+    messages.filter((m) => {
+      const { id } = m;
+      if (m.role !== "user" || seen.has(id) || logged(id, textOf(m))) return false;
       seen.add(id);
       for (const old of seen) {
         if (seen.size <= SEEN) break;
@@ -64,7 +70,7 @@ export const wsRoute = (
         Effect.forever,
         Effect.forkScoped,
       );
-      const fresh = unseen(() => o.entries.length);
+      const fresh = unseen(o.entries);
       const pull = yield* Socket.readerString(socket);
       yield* pull.pipe(
         Effect.flatMap((frames) =>

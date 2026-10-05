@@ -264,12 +264,17 @@ test("a client that resends the whole history has only its new messages answered
   await web.until((es) => finished(es) === 1);
   web.ws.send(run([...history, { content: REPLY, id: "5", role: "assistant" }, { content: "fourth", id: "h2", role: "user" }]));
   await web.until((es) => finished(es) === 2);
+  // a client's own id may look like a log index: it names an old message only when that entry is
+  // a user message with the same text ("3" is the server's reply)
+  web.ws.send(run([{ content: "fifth", id: "3", role: "user" }]));
+  await web.until((es) => finished(es) === 3);
   web.ws.close();
-  expect(texts(web.events)).toEqual(["third", REPLY, "fourth", REPLY]);
+  expect(texts(web.events)).toEqual(["third", REPLY, "fourth", REPLY, "fifth", REPLY]);
   const acks = web.events.flatMap((e) => (e.type === "CUSTOM" && e.name === "ack" ? [[e.value.clientId, e.value.messageId]] : []));
   expect(acks).toEqual([
     ["h1", "4"],
     ["h2", "6"],
+    ["3", "8"],
   ]);
 }, 20_000);
 
