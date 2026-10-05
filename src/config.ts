@@ -24,6 +24,11 @@ export const CALL_TIMEOUT = "5 minutes";
 export const KILL_GRACE = "5 seconds";
 export const PRIME_TIMEOUT = "30 seconds";
 export const PRIME_IDLE = "1 second";
+// warm claude processes (E18): one kept this long at most, then replaced; one that dies while
+// idle is replaced after WARM_RETRY, at most WARM_TRIES times in a row
+export const WARM_MAX_AGE = "30 minutes";
+export const WARM_RETRY = "2 seconds";
+export const WARM_TRIES = 3;
 // requests one turn of our own tool loop may make (openai-plan, api-key); the last one may not
 // call tools, so the turn ends with an answer (M5)
 export const TOOL_ROUNDS = 40;
@@ -32,6 +37,10 @@ export const TOOL_ROUNDS = 40;
 // cache TTLs, devices, who may connect.
 
 const Ttl = Schema.Literals(["1h", "5m"]);
+// How claude reaches /mcp (E8). "ws" is a type Claude Code's config schema takes but does not
+// document (probed on 2.1.289: it connects, with subprotocol "mcp" and no Origin); "http" is.
+export const McpTransport = Schema.Literals(["ws", "http"]);
+export type McpTransport = typeof McpTransport.Type;
 const Effort = Schema.Literals(["low", "medium", "high", "xhigh", "max"]);
 // "engine:model", e.g. "claude-code:opus"; parseRef says whether this build runs it as a role
 const EngineRef = Schema.String.check(Schema.isPattern(new RegExp(`^(${Engine.literals.join("|")}):.+$`)));
@@ -61,8 +70,11 @@ export const Settings = Schema.Struct({
   devices: Schema.Record(Schema.String, Schema.Struct({ url: Schema.String, folders: Schema.Array(Schema.String) })),
   defaultDevice: Schema.String,
   allowedLogins: Schema.Array(Schema.String),
-  // publicUrl: the server as the tailnet reaches it (`tailscale serve`), for claude on other devices
-  server: Schema.optional(Schema.Struct({ host: Schema.String, port: Schema.Int, publicUrl: Schema.optional(Schema.String) })),
+  // publicUrl: the server as the tailnet reaches it (`tailscale serve`), for claude on other devices;
+  // mcpTransport: how claude reaches zoom and date, "ws" unless set (E8)
+  server: Schema.optional(
+    Schema.Struct({ host: Schema.String, port: Schema.Int, publicUrl: Schema.optional(Schema.String), mcpTransport: Schema.optional(McpTransport) }),
+  ),
   // the api-key engine (overflow): a price per "provider/model" (e.g. "anthropic/claude-opus-5-5"),
   // the dollars it may spend per calendar month, and the API bases (tests point them at fakes)
   apiKey: Schema.optional(

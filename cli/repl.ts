@@ -4,7 +4,7 @@
 import { Data, Effect, Option, Schema } from "effect";
 import { type Key, makeKeys } from "./keys.ts";
 
-const Phase = Schema.Literals(["idle", "priming", "running", "waiting"]);
+const Phase = Schema.Literals(["idle", "running", "waiting"]);
 const State = Schema.Struct({
   phase: Phase,
   device: Schema.String,
@@ -132,7 +132,7 @@ export function makeScreen(o: ScreenOptions) {
     }
     busy = st.phase !== "idle";
     // idle comes after the loop committed: whatever of ours it logged has had its answer, or had
-    // its turn cancelled before it began (waiting or priming: no run, so no run end)
+    // its turn cancelled before it began (waiting for summaries: no run, so no run end)
     if (!busy) logging = 0;
     if (st.phase === "waiting" && st.waiting !== shownWaiting && st.waiting > 0) note(`waiting for ${st.waiting} summaries…`);
     shownWaiting = st.phase === "waiting" ? st.waiting : -1;

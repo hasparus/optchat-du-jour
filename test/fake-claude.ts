@@ -31,6 +31,17 @@
 // Roles the script leaves out: a turn answers "ok", a priming call is accepted (message_start)
 // and waits, a compactor call answers a short line.
 //
+// FAKE_CLAUDE_BOOT: milliseconds it takes to start, before it reads any message (claude's own
+// boot is ~1.3 s; dev/latency.ts uses this).
+//
+// Its init event lists each server --mcp-config names as connected, without dialling it. For one
+// of type "ws" (E8):
+//   FAKE_CLAUDE_NO_WS=1          the config is rejected: it exits 1 as it starts, before reading
+//                                stdin or any init, saying "Error: Invalid MCP configuration:" on
+//                                stderr, as Claude Code does with a config its schema refuses
+//   FAKE_CLAUDE_WS_STATUS=s      init lists it with status s (e.g. failed, pending), or leaves it
+//                                out with s = absent, as a claude that skips an unknown type does
+//
 // It exits when stdin closes, also while it hangs or waits, and on SIGTERM.
 import * as Schema from "effect/Schema";
 import { appendFileSync, existsSync, readFileSync, writeSync } from "node:fs";
@@ -73,6 +84,7 @@ const Script = Schema.Struct({
   turn: Schema.optional(Schema.Array(Call)),
 });
 const Input = Schema.fromJsonString(Schema.Struct({ message: Schema.optional(Schema.Struct({ content: Schema.optional(Schema.Json) })) }));
+const McpConfig = Schema.fromJsonString(Schema.Struct({ mcpServers: Schema.optional(Schema.Record(Schema.String, Schema.Struct({ type: Schema.optional(Schema.String) }))) }));
 
 type Role = "compact" | "prime" | "turn";
 type Json = Schema.Json;
@@ -117,6 +129,9 @@ const callIndex = earlier();
 const shown = { CLAUDE_CODE_PROMPT_CACHE_TTL: env.CLAUDE_CODE_PROMPT_CACHE_TTL ?? null, DISABLE_PROMPT_CACHING: env.DISABLE_PROMPT_CACHING ?? null };
 record({ argv, call: callIndex, cwd: process.cwd(), env: shown, role, type: "start" });
 
+const servers = Object.entries(Schema.decodeUnknownSync(McpConfig)(flag("--mcp-config") ?? "{}").mcpServers ?? {});
+const overWs = servers.filter(([, c]) => c.type === "ws").map(([name]) => name);
+
 const calls = script[role] ?? [];
 const call = calls[Math.min(callIndex, calls.length - 1)] ?? DEFAULTS[role];
 const isReply = Schema.is(Reply);
@@ -130,6 +145,11 @@ const quit = (code: number) => {
 process.on("SIGTERM", () => {
   quit(143);
 });
+
+if (env.FAKE_CLAUDE_NO_WS === "1" && overWs.length > 0) {
+  writeSync(2, `Error: Invalid MCP configuration:\n${overWs.map((name) => `mcpServers.${name}: Does not adhere to MCP server configuration schema`).join("\n")}\n`);
+  quit(1);
+}
 
 const emit = (event: Json) => {
   writeSync(1, `${JSON.stringify(event)}\n`);
@@ -222,13 +242,16 @@ async function play(reply: Reply): Promise<boolean> {
   return true;
 }
 
+if (env.FAKE_CLAUDE_BOOT) await Bun.sleep(Number(env.FAKE_CLAUDE_BOOT)); // messages wait in `inbox`
+
 let initSent = false;
 for (let k = 0; ; k++) {
   await unused();
   const content = inbox[used++] ?? null;
   if (!initSent) {
     initSent = true;
-    const mcp = argv.includes("--mcp-config") ? [{ name: "optchat", status: "connected" }] : [];
+    const wsStatus = env.FAKE_CLAUDE_WS_STATUS ?? "connected";
+    const mcp = servers.flatMap(([name, c]) => (c.type === "ws" ? (wsStatus === "absent" ? [] : [{ name, status: wsStatus }]) : [{ name, status: "connected" }]));
     emit({ mcp_servers: mcp, model, subtype: "init", tools: [], type: "system" });
   }
   if (replaying) replay(content);

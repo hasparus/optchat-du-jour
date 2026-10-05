@@ -1,6 +1,6 @@
 // optchat-server (SPEC "Server, WebSocket API and CLI"): the memory, the compactor, the turn loop,
-// and their HTTP face on one port: /ws (AG-UI), /mcp (zoom and date), /api/* (read-only JSON for
-// the web UI) and / (the built web UI).
+// and their HTTP face on one port: /ws (AG-UI), /mcp (zoom and date, over a WebSocket or POST),
+// /api/* (read-only JSON for the web UI) and / (the built web UI).
 import { BunHttpServer, BunServices } from "@effect/platform-bun";
 import { Context, Effect, Layer, Option, Predicate, PubSub, Result, Schema } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -8,14 +8,15 @@ import { Socket } from "effect/socket";
 import { existsSync } from "node:fs";
 import { openChat } from "../src/chat.ts";
 import { type Settings, MASTER_TOOLS, parseRef } from "../src/config.ts";
-import { LocalRunner, Runner, claudeBinary, claudeVersion } from "../src/claude/process.ts";
+import { Runner, claudeBinary, claudeVersion } from "../src/claude/process.ts";
 import { remoteRunner, remoteTool } from "../src/claude/remote.ts";
+import { WarmLocalRunner } from "../src/claude/warm.ts";
 import { makeBudget } from "../src/apikey/budget.ts";
 import { ApiKeys, apiKeysLayer } from "../src/apikey/clients.ts";
 import type { Summarize } from "../src/compactor.ts";
 import type { Down } from "../src/engines/chain.ts";
 import { DeviceOffline } from "../src/engines/errors.ts";
-import { handleMcp, mcpConfig, openNode } from "../src/mcp.ts";
+import { handleMcp, mcpConfig, mcpTransports, openNode } from "../src/mcp.ts";
 import { forbidden, mount } from "../src/http.ts";
 import { openAiPlanLayer } from "../src/openai/responses.ts";
 import { expandHome } from "../src/paths.ts";
@@ -132,19 +133,28 @@ export const routes = (o: ServerOptions) =>
       // Where each device's claude runs (E7): this machine's own Runner, or that device's runner
       // over the tailnet. A claude elsewhere reaches /mcp through `tailscale serve` at
       // server.publicUrl (E8); without it, turns there are refused rather than handed the
-      // loopback URL and its key, which no other machine can use.
-      const mcpAt = (base: string) => mcpConfig(`${base.replace(/\/$/, "")}/mcp?key=${secret}`);
+      // loopback URL and its key, which no other machine can use. Each device dials /mcp over a
+      // WebSocket until its claude is seen not to connect that way (E8).
+      const transports = mcpTransports(settings.server?.mcpTransport ?? "ws", report);
+      const place = (name: string, cwd: string | undefined, base: string, runner: Runner["Service"]) =>
+        Effect.sync(
+          (): Placement => ({
+            cwd,
+            mcpConfig: mcpConfig(`${base.replace(/\/$/, "")}/mcp?key=${secret}`, transports.of(name)),
+            mcpSeen: (seen) => transports.seen(name, seen),
+            runner,
+          }),
+        );
       const { publicUrl } = settings.server ?? {};
       const placements = new Map<string, Effect.Effect<Placement, DeviceOffline>>();
       const unreachable: string[] = [];
       for (const [name, d] of Object.entries(settings.devices)) {
         const folder = d.folders[0];
-        if (name === o.device)
-          placements.set(name, Effect.succeed({ cwd: folder === undefined ? undefined : expandHome(folder), mcpConfig: mcpAt(`http://127.0.0.1:${o.port}`), runner: local }));
+        if (name === o.device) placements.set(name, place(name, folder === undefined ? undefined : expandHome(folder), `http://127.0.0.1:${o.port}`, local));
         else if (publicUrl === undefined) {
           unreachable.push(name);
           placements.set(name, Effect.fail(new DeviceOffline({ message: `${name}: server.publicUrl is not set, so claude there could not reach zoom and date` })));
-        } else placements.set(name, Effect.succeed({ cwd: folder, mcpConfig: mcpAt(publicUrl), runner: remoteRunner(name, d.url) })); // `~` is the device's home: it expands it
+        } else placements.set(name, place(name, folder, publicUrl, remoteRunner(name, d.url))); // `~` is the device's home: it expands it
       }
       const runnerFor = (device: string) => placements.get(device) ?? Effect.fail(new DeviceOffline({ message: `${device} is not a configured device` }));
       // the read-only tools of an engine with its own loop (M5): this machine's in-process, another
@@ -253,17 +263,43 @@ export const routes = (o: ServerOptions) =>
         }).pipe(Effect.scoped, Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
       );
 
-      // MCP over HTTP (E8). tailscale serve hides the peer, so the URL carries a secret, made at startup
+      // MCP (E8), over a WebSocket (a GET that upgrades) or one POST per message. tailscale serve
+      // hides the peer, so the URL carries a secret, made at startup
+      const keyed = (request: HttpServerRequest.HttpServerRequest) => new URL(request.url, "http://x").searchParams.get("key") === secret;
       yield* router.add("POST", "/mcp", (request) =>
         Effect.gen(function* () {
-          if (new URL(request.url, "http://x").searchParams.get("key") !== secret) return forbidden;
+          if (!keyed(request)) return forbidden;
           const reply = handleMcp(chat.mem, yield* request.text);
           return reply.body === null
             ? HttpServerResponse.empty({ status: reply.status })
             : HttpServerResponse.text(reply.body, { contentType: "application/json", status: reply.status });
         }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
       );
-      yield* router.add("GET", "/mcp", HttpServerResponse.empty({ status: 405 }));
+      // one JSON-RPC message per text frame each way; Bun answers the "mcp" subprotocol claude asks for
+      yield* router.add("GET", "/mcp", (request) =>
+        Effect.gen(function* () {
+          if (request.headers.upgrade?.toLowerCase() !== "websocket") return HttpServerResponse.empty({ status: 405 });
+          if (!keyed(request)) return forbidden;
+          const socket = yield* request.upgrade;
+          const write = yield* socket.writer;
+          const pull = yield* Socket.readerString(socket);
+          yield* pull.pipe(
+            Effect.flatMap((frames) =>
+              Effect.forEach(
+                frames,
+                (frame) => {
+                  const reply = handleMcp(chat.mem, frame);
+                  return reply.body === null ? Effect.void : write.write(reply.body);
+                },
+                { discard: true },
+              ),
+            ),
+            Effect.forever,
+            Effect.ignore, // the socket closed
+          );
+          return HttpServerResponse.empty();
+        }).pipe(Effect.scoped, Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
+      );
 
       yield* router.add("GET", "/api/state", Effect.sync(() => json(session.state())));
 
@@ -368,6 +404,6 @@ export const serverLayer = (o: ServerOptions) =>
   HttpRouter.serve(routes(o)).pipe(
     // on SIGTERM, open sockets (a web page's /ws) are closed at once instead of waited for
     Layer.provide(BunHttpServer.layer({ disablePreemptiveShutdown: true, hostname: o.host, port: o.port })),
-    Layer.provide(LocalRunner),
+    Layer.provide(WarmLocalRunner),
     Layer.provide(BunServices.layer),
   );

@@ -1,6 +1,6 @@
 // End to end: optchat-server as a process with a fake `claude`, two clients on its /ws (a raw
-// socket and the REPL with piped stdin), the master's MCP endpoint, the data dir's git commits,
-// and who the server lets in.
+// socket and the REPL with piped stdin), the master's MCP endpoint over a WebSocket and over HTTP,
+// the data dir's git commits, who the server lets in, and the warm processes it leaves behind (none).
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { Option, Schema } from "effect";
 import { spawnSync } from "node:child_process";
@@ -66,6 +66,20 @@ const fakeStarts = () =>
   readFileSync(env.FAKE_CLAUDE_LOG, "utf8")
     .split("\n")
     .flatMap((line) => Option.toArray(decodeStart(line)));
+const running = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+// the URL in the master's --mcp-config
+const mcpUrl = () => {
+  const turn = fakeStarts().find((s) => s.role === "turn");
+  const config = turn?.argv[turn.argv.indexOf("--mcp-config") + 1] ?? "";
+  return Schema.decodeUnknownSync(McpConfig)(config).mcpServers.optchat.url;
+};
 
 // a /ws client that keeps every event it gets
 function client() {
@@ -98,10 +112,8 @@ test("a turn over /ws streams to every client; the REPL is one of them; the mast
   await web.until((es) => finished(es) === 1);
   expect(texts(web.events)).toEqual(["hello", REPLY]);
 
-  // the master got an --mcp-config whose server answers zoom over HTTP with the logged message
-  const turn = fakeStarts().find((s) => s.role === "turn");
-  const config = turn?.argv[turn.argv.indexOf("--mcp-config") + 1] ?? "";
-  const { url } = Schema.decodeUnknownSync(McpConfig)(config).mcpServers.optchat;
+  // the master got an --mcp-config whose server answers zoom with the logged message; over HTTP here
+  const url = mcpUrl().replace(/^ws/, "http");
   const call = { id: 1, jsonrpc: "2.0", method: "tools/call", params: { arguments: { id: 0, n: 1 }, name: "zoom" } };
   const zoom = await fetch(url, { body: JSON.stringify(call), headers: { "content-type": "application/json" }, method: "POST" });
   expect(await zoom.text()).toContain("0+0|user: hello");
@@ -132,6 +144,58 @@ test("a turn over /ws streams to every client; the REPL is one of them; the mast
     await Bun.sleep(50);
   }
 }, 30_000);
+
+// whether a WebSocket to /mcp opens, as claude dials it
+const mcpOpens = async (target: string, headers: Record<string, string> = {}) => {
+  const socket = new WebSocket(target, { headers, protocols: ["mcp"] });
+  const { promise, resolve } = Promise.withResolvers<boolean>();
+  socket.addEventListener("open", () => {
+    resolve(true);
+  });
+  socket.addEventListener("error", () => {
+    resolve(false);
+  });
+  const ok = await promise;
+  socket.close();
+  return ok;
+};
+
+test("/mcp over a WebSocket: one JSON-RPC message per frame each way; a wrong key, a foreign Origin or no upgrade is refused", async () => {
+  const url = mcpUrl();
+  expect(url).toStartWith(`ws://127.0.0.1:${port}/mcp?key=`);
+  // as claude dials it: subprotocol "mcp", no Origin
+  const ws = new WebSocket(url, { protocols: ["mcp"] });
+  const replies: unknown[] = [];
+  ws.addEventListener("message", (m) => {
+    replies.push(JSON.parse(String(m.data)));
+  });
+  await new Promise((resolve, reject) => {
+    ws.addEventListener("open", resolve);
+    ws.addEventListener("error", reject);
+  });
+  expect(ws.protocol).toBe("mcp");
+  const rpc = (body: Record<string, Schema.Json>) => {
+    ws.send(JSON.stringify({ jsonrpc: "2.0", ...body }));
+  };
+  rpc({ id: 1, method: "initialize", params: { capabilities: {}, clientInfo: { name: "claude-code" }, protocolVersion: "2025-06-18" } });
+  rpc({ method: "notifications/initialized" }); // no reply
+  rpc({ id: 2, method: "tools/list" });
+  rpc({ id: 3, method: "tools/call", params: { arguments: { id: 0, n: 1 }, name: "zoom" } });
+  const end = Date.now() + 5000;
+  while (replies.length < 3 && Date.now() < end) await Bun.sleep(10);
+  ws.close();
+  expect(replies).toMatchObject([
+    { id: 1, result: { protocolVersion: "2025-06-18", serverInfo: { name: "optchat" } } },
+    { id: 2, result: { tools: [{ name: "zoom" }, { name: "date" }] } },
+    { id: 3, result: { content: [{ text: "0+0|user: hello", type: "text" }] } },
+  ]);
+
+  expect(await mcpOpens(url.replace(/key=[^&]+/, "key=wrong"))).toBe(false);
+  expect(await mcpOpens(url, { origin: "https://evil.example" })).toBe(false);
+  expect(await mcpOpens(url, { origin: base })).toBe(true);
+  const plain = await fetch(url.replace(/^ws/, "http")); // a GET that does not upgrade
+  expect(plain.status).toBe(405);
+});
 
 test("a piped REPL that cannot reach the server says so and exits non-zero", async () => {
   const nowhere = `http://127.0.0.1:${port + 1}`;
@@ -225,18 +289,14 @@ test("/api/node takes a level and an index that are non-negative integers, and k
 test("the server stops at once with a client still connected, and leaves no claude behind", async () => {
   const web = client(); // a web page left open: its socket must not hold the shutdown
   await web.opened;
+  // the next turn's and priming's claude wait, started ahead (E18)
+  const end = Date.now() + 5000;
+  while (fakeStarts().filter((s) => running(s.pid)).length < 2 && Date.now() < end) await Bun.sleep(20);
+  expect(new Set(fakeStarts().flatMap((s) => (running(s.pid) ? [s.role] : [])))).toEqual(new Set(["turn", "prime"]));
   const asked = Date.now();
   server.kill("SIGTERM");
   expect(await server.exited).toBeDefined();
   expect(Date.now() - asked).toBeLessThan(5000);
   await Bun.sleep(200);
-  const alive = fakeStarts().filter((s) => {
-    try {
-      process.kill(s.pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
-  });
-  expect(alive).toEqual([]);
+  expect(fakeStarts().filter((s) => running(s.pid))).toEqual([]);
 });

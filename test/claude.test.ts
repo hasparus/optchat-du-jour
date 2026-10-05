@@ -1,19 +1,21 @@
 // The claude-code engines against the fake `claude` (ref §10): the compactor's request and its
-// retries, the turn through the session, and priming. Every test runs the fake, never `claude`,
-// and every fake a test started must be gone when it ends.
+// retries, the turn through the session, priming (E17), warm processes (E18) and the MCP
+// transport's fallback (E8). Every test runs the fake, never `claude`, and every fake a test
+// started must be gone when it ends.
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { type AGUIEvent, EventType } from "@ag-ui/core";
 import { BunServices } from "@effect/platform-bun";
-import { type Duration, Effect, Layer, PubSub, Schema, type Scope } from "effect";
+import { type Duration, Effect, Fiber, Layer, PubSub, Schema, type Scope } from "effect";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
 import { baseArgs } from "../src/claude/args.ts";
 import type { Block } from "../src/claude/events.ts";
-import { LocalRunner, Runner } from "../src/claude/process.ts";
+import { ClaudeError, LocalRunner, Runner, type Spawn } from "../src/claude/process.ts";
+import { type WarmOptions, warmRunner } from "../src/claude/warm.ts";
 import { CompactError, type Job } from "../src/compactor.ts";
 import { MASTER_TOOLS } from "../src/config.ts";
-import { mcpConfig } from "../src/mcp.ts";
+import { type McpSeen, mcpConfig, mcpTransports } from "../src/mcp.ts";
 import { COMPACT_FILE, SCALE } from "../src/prompts.ts";
 import { makeSession, type SessionEvent } from "../src/session.ts";
 import { openStream } from "../server/agui.ts";
@@ -94,7 +96,7 @@ afterAll(() => {
 type Script = { turn?: unknown[]; prime?: unknown[]; compact?: unknown[] };
 
 // a fake with its script, and a Runner that starts it with that script and its own log
-function scripted(script: Script = {}) {
+function scripted(script: Script = {}, extraEnv: Record<string, string> = {}) {
   const dir = tmp();
   const f = { log: `${dir}/fake.jsonl`, script: `${dir}/plan.json` };
   writeFileSync(f.script, JSON.stringify(script));
@@ -106,7 +108,8 @@ function scripted(script: Script = {}) {
       return {
         // the variables optchat sets are passed even when empty, so this shell's own can't leak in
         spawn: (o: Parameters<typeof base.spawn>[0]) =>
-          base.spawn({ ...o, env: { CLAUDE_CODE_PROMPT_CACHE_TTL: "", DISABLE_PROMPT_CACHING: "", ...o.env, FAKE_CLAUDE_LOG: f.log, FAKE_CLAUDE_SCRIPT: f.script } }),
+          base.spawn({ ...o, env: { CLAUDE_CODE_PROMPT_CACHE_TTL: "", DISABLE_PROMPT_CACHING: "", ...o.env, ...extraEnv, FAKE_CLAUDE_LOG: f.log, FAKE_CLAUDE_SCRIPT: f.script } }),
+        warm: () => Effect.void,
       };
     }),
   ).pipe(Layer.provide(LocalRunner), Layer.provide(BunServices.layer));
@@ -251,6 +254,7 @@ type RigOptions = {
   readonly idle?: Duration.Input;
   readonly seed?: number;
   readonly commit?: Effect.Effect<string | null>;
+  readonly warm?: WarmOptions; // the fake behind a pool of warm processes
 };
 
 const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
@@ -259,27 +263,38 @@ const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
     // free level-0 lines; a few short ones make every node free, so nothing changes the view later
     if (o.seed) seedNotes(dir, o.seed, o.seed > 8 ? 480 : 40);
     const chat = yield* openChat(dir, { summarize: (job) => Effect.succeed(`summary ${job.l}.${job.i}`) });
-    const runner = yield* Runner;
+    const base = yield* Runner;
+    const runner = o.warm ? yield* warmRunner(base, o.warm) : base;
     const reports: string[] = [], usage: UsageRecord[] = [];
+    const report = (m: string) => Effect.sync(() => reports.push(m));
+    // two devices on this machine: mini in the default folder, other in its own
+    const other = tmp();
+    const transports = mcpTransports("ws", report);
     const options = {
       effort: "high",
       logUsage: (r: UsageRecord) => Effect.sync(() => usage.push(r)),
       model: "opus",
       permissionMode: "bypassPermissions",
       primeTtl: "1h" as const,
-      report: (m: string) => Effect.sync(() => reports.push(m)),
-      runnerFor: () => Effect.succeed({ cwd: undefined, mcpConfig: mcpConfig("http://127.0.0.1:9/mcp?key=k"), runner }),
+      report,
+      runnerFor: (device: string) =>
+        Effect.sync(() => ({
+          cwd: device === "other" ? other : undefined,
+          mcpConfig: mcpConfig("http://127.0.0.1:9/mcp?key=k", transports.of(device)),
+          mcpSeen: (seen: McpSeen) => transports.seen(device, seen),
+          runner,
+        })),
       systemFile: "/dev/null",
       tools: MASTER_TOOLS,
       ttl: "1h" as const,
     };
     const engine = yield* claudeCodeTurn(options);
-    const engines: TurnEngine[] = [o.prime ? engine : { ref: engine.ref, run: engine.run }];
+    const engines: TurnEngine[] = [o.prime ? engine : { ref: engine.ref, run: engine.run, warm: engine.warm }];
     const session = yield* makeSession({
       chat,
       commit: o.commit ?? Effect.succeed(null),
       defaultDevice: "mini",
-      devices: ["mini"],
+      devices: ["mini", "other"],
       engines,
       idle: o.idle ?? "1 hour",
       logUsage: (r) => Effect.sync(() => usage.push(r)),
@@ -295,7 +310,7 @@ const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
       until(`${n} finished runs`, () => events.filter((e) => e.type === "run-finished").length >= n && session.state().phase === "idle");
     const log = () => chat.mem.root.map((m) => [m.kind, m.text]);
     const infos = () => events.flatMap((e) => (e.type === "info" ? [e.message] : []));
-    return { chat, events, finished, infos, log, options, reports, session, usage };
+    return { chat, events, finished, infos, log, options, other, reports, session, usage };
   });
 
 test("a turn's stream becomes the log in order: talk, tool, a capped echo; thinking only as its size", async () => {
@@ -536,6 +551,8 @@ test("priming sends the turn's argv and the turn's view blocks with marks, plus 
     f,
     Effect.gen(function* () {
       const r = yield* rig(f, { prime: true, seed: 120 });
+      yield* r.session.primeSoon; // a client connects
+      yield* until("the priming", () => r.usage.some((u) => u.role === "prime"));
       yield* r.session.input("hello");
       yield* r.finished(1);
       expect(r.usage.map((u) => u.role)).toEqual(["prime", "turn"]);
@@ -575,22 +592,41 @@ test("an idle view is primed once in the background, and not again while it is f
   );
 });
 
-test("a cancel during the turn's own priming ends the wait at once; the priming call finishes in the background", async () => {
-  const f = scripted({ prime: [[{ sleep: 600 }, { text: "x" }]] });
+test("a turn never primes first, nor waits for a priming in flight: it stops it and answers at once (E17)", async () => {
+  // this priming would take 10 s to be accepted
+  const f = scripted({ prime: [[{ sleep: 10_000 }, { text: "x" }]] });
   await run(
     f,
     Effect.gen(function* () {
       const r = yield* rig(f, { prime: true, seed: 3 });
+      const phases: string[] = [];
+      const sub = yield* PubSub.subscribe(r.session.events);
+      yield* PubSub.take(sub).pipe(
+        Effect.tap((e) => Effect.sync(() => (e.type === "state" ? phases.push(e.state.phase) : 0))),
+        Effect.forever,
+        Effect.forkScoped,
+      );
+      yield* r.session.primeSoon; // a client connects
+      yield* until("the priming call", () => f.of("prime")[0]?.ins.length === 1);
+      const asked = Date.now();
       yield* r.session.input("hello");
-      yield* until("the priming call", () => r.session.state().phase === "priming" && f.of("prime").length === 1);
-      yield* r.session.cancel;
-      yield* until("idle", () => r.session.state().phase === "idle");
-      expect(r.usage).toEqual([]); // the priming has not been accepted yet
-      expect(r.log().slice(3)).toEqual([["user", "hello"]]);
-      yield* until("the priming's usage", () => r.usage.some((u) => u.role === "prime"));
-      expect(f.of("turn")).toHaveLength(0);
+      yield* until("the answer", () => r.log().some(([kind]) => kind === "talk"), 2000);
+      expect(Date.now() - asked).toBeLessThan(2000);
+      yield* r.finished(1);
+      // the priming was stopped: its claude is gone, it logged no usage, and no phase waited for it
+      const pid = f.of("prime")[0]?.pid ?? 0;
+      yield* until("the priming's claude to end", () => !alive(pid));
+      expect(r.usage.map((u) => u.role)).toEqual(["turn"]);
+      expect(r.log().slice(3)).toEqual([
+        ["user", "hello"],
+        ["talk", "ok"],
+      ]);
+      yield* until("the idle state to reach a client", () => phases.includes("idle"));
+      expect(new Set(phases)).toEqual(new Set(["running", "idle"]));
+      expect(r.reports).toEqual([]); // a stopped priming is no failure
     }),
   );
+  expect(f.of("prime")).toHaveLength(1);
 });
 
 test("priming that keeps failing is reported a single time, and every turn still runs", async () => {
@@ -598,11 +634,14 @@ test("priming that keeps failing is reported a single time, and every turn still
   await run(
     f,
     Effect.gen(function* () {
-      const r = yield* rig(f, { prime: true, seed: 3 });
+      const r = yield* rig(f, { idle: "40 millis", prime: true, seed: 3 });
       yield* r.session.input("a");
       yield* r.finished(1);
+      yield* until("the priming after the first turn", () => f.of("prime").length === 1 && r.reports.length === 1);
       yield* r.session.input("b");
       yield* r.finished(2);
+      yield* until("the priming after the second turn", () => f.of("prime").length === 2);
+      yield* Effect.sleep("100 millis");
       expect(r.log().slice(3)).toEqual([
         ["user", "a"],
         ["talk", "ok"],
@@ -615,4 +654,314 @@ test("priming that keeps failing is reported a single time, and every turn still
   );
   expect(f.of("prime")).toHaveLength(2);
   expect(f.of("turn")).toHaveLength(2);
+});
+
+// warm processes (E18)
+
+// the turn processes that got a message, and those that never did
+const served = (f: ReturnType<typeof scripted>) => f.of("turn").filter((t) => t.ins.length > 0);
+const idleTurns = (f: ReturnType<typeof scripted>) => f.of("turn").filter((t) => t.ins.length === 0);
+
+test("the next turn and priming get processes started while idle; each one handed out is replaced", async () => {
+  const f = scripted();
+  await run(
+    f,
+    Effect.gen(function* () {
+      const r = yield* rig(f, { prime: true, seed: 3, warm: {} });
+      // at startup: one turn and one priming process, waiting on stdin
+      yield* until("the warm processes", () => f.of("turn").length === 1 && f.of("prime").length === 1);
+      const [early] = f.of("turn");
+      yield* Effect.sleep("100 millis");
+      expect(f.of("turn").length + f.of("prime").length).toBe(2); // one each, no more
+      yield* r.session.input("hello");
+      yield* r.finished(1);
+      // it was answered by the process started before the message, and a new one waits for the next
+      expect(served(f).map((t) => t.pid)).toEqual([early?.pid ?? -1]);
+      yield* until("the replacement", () => idleTurns(f).length === 1);
+      // priming takes its warm process too, and a fresh one replaces it
+      const warmPrime = f.of("prime")[0]?.pid;
+      yield* r.session.primeSoon;
+      yield* until("the priming", () => r.usage.some((u) => u.role === "prime"));
+      expect(f.of("prime").find((p) => p.ins.length > 0)?.pid).toBe(warmPrime ?? -1);
+      yield* until("the priming's replacement", () => f.of("prime").filter((p) => p.ins.length === 0).length === 1);
+      yield* r.session.input("again");
+      yield* r.finished(2);
+      expect(served(f)).toHaveLength(2);
+      expect(r.log().slice(3).map(([kind]) => kind)).toEqual(["user", "talk", "user", "talk"]);
+    }),
+  );
+  // the scope's end killed the ones still waiting: afterEach checks none is left
+});
+
+test("a warm process that dies while idle is never handed out", async () => {
+  const f = scripted();
+  await run(
+    f,
+    Effect.gen(function* () {
+      const r = yield* rig(f, { seed: 3, warm: { retry: "1 hour" } });
+      yield* until("the warm turn process", () => f.of("turn").length === 1);
+      const dead = f.of("turn")[0]?.pid ?? 0;
+      process.kill(dead, "SIGKILL");
+      yield* until("it to die", () => !alive(dead));
+      yield* Effect.sleep("50 millis");
+      yield* r.session.input("hello");
+      yield* r.finished(1);
+      expect(r.log().slice(3)).toEqual([
+        ["user", "hello"],
+        ["talk", "ok"],
+      ]);
+      expect(served(f).map((t) => t.pid)).not.toContain(dead);
+      expect(r.infos()).toEqual([]);
+    }),
+  );
+});
+
+test("a turn in another folder starts fresh, and the warm process stays unused for the next one", async () => {
+  const f = scripted();
+  await run(
+    f,
+    Effect.gen(function* () {
+      const r = yield* rig(f, { seed: 3, warm: {} });
+      yield* until("the warm turn process", () => f.of("turn").length === 1);
+      const warm = f.of("turn")[0];
+      yield* r.session.input("/on other look there");
+      yield* r.finished(1);
+      // a fresh process in the other folder took it; the warm one still waits, untouched
+      const [there] = served(f);
+      expect(there?.cwd).toBe(r.other);
+      expect(there?.pid).not.toBe(warm?.pid);
+      expect(alive(warm?.pid ?? 0)).toBe(true);
+      expect(warm && f.of("turn").find((t) => t.pid === warm.pid)?.ins).toEqual([]);
+    }),
+  );
+  // the scope's end killed the warm one too: afterEach checks none is left
+});
+
+// a spawn to expect, by model
+const expected = (model: string) => ({ args: ["-p", "--model", model], env: { CLAUDE_CODE_PROMPT_CACHE_TTL: "1h" } });
+
+test("a pool keeps one process per expected spawn, and closes one no longer expected", async () => {
+  const f = scripted();
+  const idleWith = (model: string) => f.of("turn").filter((t) => t.argv?.includes(model) === true && t.ins.length === 0 && alive(t.pid));
+  await run(
+    f,
+    Effect.gen(function* () {
+      const pool = yield* warmRunner(yield* Runner);
+      yield* pool.warm([expected("opus"), expected("opus")]); // the same spawn twice: one process
+      yield* until("the opus process", () => idleWith("opus").length === 1);
+      const opus = idleWith("opus")[0]?.pid ?? 0;
+      yield* pool.warm([expected("opus")]); // named again: kept, not restarted
+      yield* Effect.sleep("100 millis");
+      expect(f.of("turn").map((t) => t.pid)).toEqual([opus]);
+      // the next turn is expected on another model now: the stale process is killed, a new one started
+      yield* pool.warm([expected("sonnet")]);
+      yield* until("the stale process to end", () => !alive(opus));
+      yield* until("the sonnet process", () => idleWith("sonnet").length === 1);
+      expect(f.of("turn")).toHaveLength(2);
+    }),
+  );
+});
+
+// a spawn whose process ends as it starts, before reading stdin: the fake rejecting a ws MCP config
+const dying = { ...expected("opus"), args: [...expected("opus").args, "--mcp-config", mcpConfig("http://127.0.0.1:9/mcp")] };
+// when each start showed up in the log, polled
+const startTimes = (f: ReturnType<typeof scripted>) => {
+  const at: number[] = [];
+  const poll = Effect.sync(() => {
+    while (at.length < f.of("turn").length) at.push(Date.now());
+  });
+  return { at, poll: poll.pipe(Effect.andThen(Effect.sleep("5 millis")), Effect.forever, Effect.forkScoped) };
+};
+
+test("a process that keeps dying while idle is restarted after the retry delay, WARM_TRIES times in a row at most", async () => {
+  const f = scripted({}, { FAKE_CLAUDE_NO_WS: "1" });
+  const times = startTimes(f);
+  await run(
+    f,
+    Effect.gen(function* () {
+      yield* times.poll;
+      const pool = yield* warmRunner(yield* Runner, { retry: "250 millis", tries: 2 });
+      yield* pool.warm([dying]);
+      yield* until("three starts", () => f.of("turn").length === 3);
+      yield* Effect.sleep("600 millis");
+      expect(f.of("turn")).toHaveLength(3); // the first one and two more: then it gives up
+      const [t0 = 0, t1 = 0, t2 = 0] = times.at;
+      expect(t1 - t0).toBeGreaterThanOrEqual(200);
+      expect(t2 - t1).toBeGreaterThanOrEqual(200);
+      // a spawn that starts claude again gets a new keeper, with its tries to spend again
+      yield* Effect.scoped(Effect.flatMap(pool.spawn(dying), (claude) => claude.ended));
+      yield* until("the new keeper's starts", () => f.of("turn").length === 7);
+      yield* Effect.sleep("600 millis");
+      expect(f.of("turn")).toHaveLength(7);
+    }),
+  );
+}, 10_000);
+
+test("a process that won't start counts as a death: retried with the same delay and cap", async () => {
+  const f = scripted();
+  let failures = 2;
+  const attempts: number[] = [];
+  await run(
+    f,
+    Effect.gen(function* () {
+      const base = yield* Runner;
+      const flaky = {
+        spawn: (o: Spawn) =>
+          Effect.suspend(() => {
+            attempts.push(Date.now());
+            if (failures <= 0) return base.spawn(o);
+            failures -= 1;
+            return Effect.fail(new ClaudeError({ message: "cannot start claude" }));
+          }),
+        warm: base.warm,
+      };
+      const pool = yield* warmRunner(flaky, { retry: "150 millis", tries: 3 });
+      yield* pool.warm([expected("opus")]);
+      yield* until("the process", () => f.of("turn").filter((t) => alive(t.pid)).length === 1);
+      expect(attempts).toHaveLength(3);
+      expect((attempts[2] ?? 0) - (attempts[0] ?? 0)).toBeGreaterThanOrEqual(250);
+      // one that never starts: tries + 1 attempts, then none
+      failures = Number.POSITIVE_INFINITY;
+      yield* pool.warm([expected("sonnet")]);
+      yield* until("the attempts", () => attempts.length === 3 + 4);
+      yield* Effect.sleep("400 millis");
+      expect(attempts).toHaveLength(7);
+    }),
+  );
+});
+
+test("a process older than maxAge is replaced by a new one, and killed", async () => {
+  const f = scripted();
+  await run(
+    f,
+    Effect.gen(function* () {
+      const pool = yield* warmRunner(yield* Runner, { maxAge: "200 millis" });
+      yield* pool.warm([expected("opus")]);
+      yield* until("three generations", () => f.of("turn").length >= 3, 3000);
+      const old = f.of("turn").slice(0, 2);
+      yield* until("the old ones to end", () => old.every((t) => !alive(t.pid)));
+      expect(f.of("turn").every((t) => t.ins.length === 0)).toBe(true);
+      // the one handed out is a live one
+      const claude = yield* pool.spawn(expected("opus"));
+      yield* claude.send([{ text: "hi", type: "text" }]);
+      yield* claude.result;
+      expect(f.of("turn").filter((t) => t.ins.length > 0).map((t) => alive(t.pid))).toEqual([true]);
+    }),
+  );
+});
+
+test("a spawn interrupted while it takes a warm process leaves none behind", async () => {
+  const f = scripted();
+  await run(
+    f,
+    Effect.gen(function* () {
+      const pool = yield* warmRunner(yield* Runner, { retry: "1 hour" });
+      yield* pool.warm([expected("opus")]);
+      for (let k = 0; k < 12; k++) {
+        yield* until("a warm process", () => f.of("turn").some((t) => alive(t.pid) && t.ins.length === 0));
+        yield* Effect.sleep("30 millis");
+        const taking = yield* Effect.forkChild(Effect.scoped(pool.spawn(expected("opus"))));
+        for (let y = 0; y < k; y++) yield* Effect.yieldNow;
+        yield* Fiber.interrupt(taking);
+      }
+      // every process taken went with its caller's scope; only the one waiting in the slot is left
+      yield* until("one process left", () => f.of("turn").filter((t) => alive(t.pid)).length === 1);
+      yield* Effect.sleep("200 millis");
+      expect(f.of("turn").filter((t) => alive(t.pid))).toHaveLength(1);
+    }),
+  );
+});
+
+// the MCP transport (E8)
+
+const configOf = (argv: readonly string[] | undefined) => argv?.[argv.indexOf("--mcp-config") + 1] ?? "";
+const overHttp = (t: { readonly argv?: readonly string[] | undefined }) => configOf(t.argv).includes('"type":"http"');
+
+test("a claude that lists optchat over ws as failed moves its device to http, said once; the next calls use http", async () => {
+  const f = scripted({}, { FAKE_CLAUDE_WS_STATUS: "failed" });
+  await run(
+    f,
+    Effect.gen(function* () {
+      const r = yield* rig(f, { prime: true, seed: 3 });
+      yield* r.session.primeSoon; // priming is the first call: its init shows it
+      yield* until("the fallback", () => r.reports.length === 1);
+      expect(r.reports[0]).toBe("zoom and date over WebSocket did not work for claude on mini (MCP server optchat is failed); trying HTTP there from now on");
+      yield* r.session.input("hello");
+      yield* r.finished(1);
+      expect(r.infos()).toEqual([]); // the turn had zoom and date
+      expect(r.reports).toHaveLength(1);
+    }),
+  );
+  expect(configOf(f.of("prime")[0]?.argv)).toContain('"type":"ws"');
+  expect(configOf(f.of("turn")[0]?.argv)).toContain('"type":"http","url":"http://127.0.0.1:9/mcp?key=k"');
+});
+
+test("a claude that rejects the ws config and ends before init moves its device to http, and warm processes start for http", async () => {
+  const f = scripted({}, { FAKE_CLAUDE_NO_WS: "1" });
+  await run(
+    f,
+    Effect.gen(function* () {
+      const r = yield* rig(f, { prime: true, seed: 3, warm: { retry: "1 hour" } });
+      // the warm ws processes die as they start; priming starts one more, which dies before init
+      yield* r.session.primeSoon;
+      yield* until("the fallback", () => r.reports.length === 2);
+      expect(r.reports[0]).toBe(
+        "zoom and date over WebSocket did not work for claude on mini (its MCP config was rejected: claude exited (code 1): Error: Invalid MCP configuration:\nmcpServers.optchat: Does not adhere to MCP server configuration schema); trying HTTP there from now on",
+      );
+      expect(r.reports[1]).toStartWith("priming failed, the turn goes on without it: claude exited (code 1): Error: Invalid MCP configuration");
+      // the device was warmed again: a turn and a priming process over http wait for the next calls
+      yield* until("warm http processes", () => f.of("turn").some((t) => overHttp(t) && alive(t.pid)) && f.of("prime").some((p) => overHttp(p) && alive(p.pid)));
+      const ready = f.of("turn").find(overHttp);
+      yield* r.session.input("hello");
+      yield* r.finished(1);
+      expect(served(f).map((t) => t.pid)).toEqual([ready?.pid ?? -1]);
+      expect(r.log().slice(3)).toEqual([
+        ["user", "hello"],
+        ["talk", "ok"],
+      ]);
+      expect(r.reports).toHaveLength(2);
+    }),
+  );
+});
+
+test("a turn whose claude rejects the ws config fails; the device moves to http and the next turn runs", async () => {
+  const f = scripted({}, { FAKE_CLAUDE_NO_WS: "1" });
+  await run(
+    f,
+    Effect.gen(function* () {
+      const r = yield* rig(f, { seed: 3 });
+      yield* r.session.input("a");
+      yield* r.finished(1);
+      expect(r.infos()[0]).toStartWith("error: claude exited (code 1): Error: Invalid MCP configuration");
+      expect(r.reports).toHaveLength(1);
+      yield* r.session.input("b");
+      yield* r.finished(2);
+      expect(r.log().slice(3)).toEqual([
+        ["user", "a"],
+        ["user", "b"],
+        ["talk", "ok"],
+      ]);
+    }),
+  );
+  expect(f.of("turn").map((t) => configOf(t.argv).includes('"type":"ws"'))).toEqual([true, false]);
+});
+
+test("pending or needs-auth keep ws: the turn says it has no zoom or date, the transport stays", async () => {
+  for (const status of ["pending", "needs-auth"]) {
+    const f = scripted({}, { FAKE_CLAUDE_WS_STATUS: status });
+    await run(
+      f,
+      Effect.gen(function* () {
+        const r = yield* rig(f, { seed: 3 });
+        for (const [k, text] of ["a", "b"].entries()) {
+          yield* r.session.input(text);
+          yield* r.finished(k + 1);
+        }
+        const notice = `no zoom or date in this turn: MCP server optchat is ${status}`;
+        expect(r.infos()).toEqual([notice, notice]);
+        expect(r.reports).toEqual([]);
+      }),
+    );
+    expect(f.of("turn").map((t) => configOf(t.argv).includes('"type":"ws"'))).toEqual([true, true]);
+  }
 });

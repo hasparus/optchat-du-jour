@@ -46,4 +46,7 @@ export type TurnEngine = {
   readonly run: (input: TurnInput, out: TurnEvents, failoverFrom: string | null) => Effect.Effect<void, EngineError | StoreError>;
   // writes the view to the prompt cache ahead of a turn on `device`; never fails
   readonly prime?: (view: string, device: string) => Effect.Effect<void>;
+  // the session is idle: get ready for the next turn and priming on `device` (E18); never fails.
+  // Only claude-code has anything to get ready; the others return at once.
+  readonly warm: (device: string) => Effect.Effect<void>;
 };

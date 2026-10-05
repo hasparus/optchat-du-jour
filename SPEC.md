@@ -140,6 +140,7 @@ The gist's constants stay fixed; everything new is configuration. Sizes are UTF-
 | `MARKS` | 50,000 / 80,000 / 100,000 chars | gist §1 |
 | `PRIME_MAX_AGE` | 270 s with 5 min TTL; 3,300 s with 1 h TTL | ref §2, adjusted for E6 |
 | `PRIME_TIMEOUT`, `PRIME_IDLE`, `KILL_GRACE` | 30 s, 1 s, 5 s | ref §2 |
+| `WARM_MAX_AGE`, `WARM_RETRY`, `WARM_TRIES` | 30 min, 2 s, 3 | ours (E18) |
 | `CALL_TIMEOUT` | 5 min per compactor call | ref §7 |
 
 Configuration lives in `optchat.config.ts`, typed, in the repo:
@@ -220,12 +221,12 @@ interface CompactEngine {
 
 ## Turn and priming
 
-The `claude-code` turn is ref §4–§6 unchanged, except for the cache TTL (E6) and where the process runs (E7).
+The `claude-code` turn is ref §4–§6 unchanged, except for the cache TTL (E6), where the process runs (E7), that it never waits for priming (E17), and that its process may have been started ahead (E18).
 
 1. Wait for `settle()`; on cancel, log the queued texts as unanswered `user` messages.
 2. Render the view **before** logging the new messages.
-3. `await prime(view)`, a no-op when the same view was primed recently.
-4. Log each queued text as `user`, then spawn the master on the chosen device: the base flags of ref §4 plus `--mcp-config` and `--replay-user-messages`.
+3. Stop any priming still in flight, without waiting for it; never prime first (E17).
+4. Log each queued text as `user`, then spawn the master on the chosen device: the base flags of ref §4 plus `--mcp-config` and `--replay-user-messages`. On the Mini this is usually the warm process started for exactly this spawn (E18).
 5. Send one user message: the view cut into up to 4 blocks at 50k / 80k / 100k characters, **no cache marks**, then the texts joined by a blank line.
 6. Map stream events to the log as in ref §5.3: text → `talk`, tool_use → `tool`, tool_result → `echo` (capped at `CAP`), later replays → `user`. Never log thinking.
 7. Kill the process at the first `result`; requeue mid-run messages that were never replayed. Commit the data dir. The session reports `idle` only once the commit is done, and a message that arrives while the loop winds down starts it again.
@@ -233,12 +234,29 @@ The `claude-code` turn is ref §4–§6 unchanged, except for the cache TTL (E6)
 As built, where we differ from ref §5.2:
 
 - A refusal or an `is_error` result ends the turn like a crash: mid-run messages the call never took are logged as unanswered `user` messages, where the reference requeues them after any `result`. A refused or failed call says nothing about the next one, and the user sees the messages and the error together; the chain (E4) decides whether another engine takes over.
-- A cancel during the turn's own priming ends the wait at once and logs the queued texts unanswered; the priming call itself runs to `message_start` in the background (ref §6), so the next turn can still use it.
+- A cancel before the run starts (while waiting for summaries) logs the queued texts unanswered. There is no wait for priming to cancel (E17).
 - A blank message is ignored: it starts no turn and logs no empty `user` entry.
 
 The system prompt is MASTER + VIEW_DOC + `instructions.md`, written once at startup, byte-identical across calls and devices: no dates, cwd or git status (gist §7.2). MASTER keeps the reference's D5 and D10 edits until subagents land (M7).
 
-**Priming.** As ref §6: a call with the master's exact flags plus `DISABLE_PROMPT_CACHING=1`, carrying the same view blocks with our own marks, killed at `message_start`. Re-prime in the background 1 s after the view settles while idle, and also when a web client connects, since a message usually follows.
+**Priming.** As ref §6: a call with the master's exact flags plus `DISABLE_PROMPT_CACHING=1`, carrying the same view blocks with our own marks, killed at `message_start`. It runs only while the session is idle: in the background 1 s after the view settles, and when a web client connects, since a message usually follows. That idle priming is what makes turns warm. A turn never waits for it (E17), where ref §6 and gist §8 have the turn await it:
+
+- The same view was primed within `PRIME_MAX_AGE`: the turn reads it from the cache.
+- A priming is in flight: the turn starts at once and the priming is stopped (its fiber interrupted, its `claude` killed; it logs no usage and reports no failure). Its request would race the turn's own, which writes the same prefix anyway, so letting it finish would write the view twice; killed before `message_start`, and often before its request leaves `claude`, it costs less or nothing (whether a request killed after it was sent counts against the plan is still open, see M1 below). The next idle priming writes the marks for the next view.
+- Nothing was primed: the turn just runs, and its own request writes the cache, with Claude Code's mark at its end rather than ours at the view's cut points; the idle priming after the turn writes those for the next view.
+
+Measured on claude 2.1.289 with Sonnet and a small view: a turn sent while its view was being primed showed "priming" for 2.6 s (a fresh `claude -p`: ~1.3 s to boot, ~1.2 s to `message_start`) before its own ~2.0 s to the first text. Waiting can't shorten the time to the first token; it only spares one cache write, which on the plan is quota, not latency. So the session has no "priming" phase any more: a turn is `waiting` (for summaries) or `running`.
+
+**Warm processes (E18).** Most of a turn's first second is `claude` booting: spawned and sent a message at once, it reaches `system/init` in ~1.3 s; started ahead and idle on stdin, in ~0.1 s. So the Mini's Runner (`src/claude/warm.ts`) keeps one process started ahead for each of the next two spawns, the master's turn and its priming (which differ only by `DISABLE_PROMPT_CACHING=1`). The engine names them when the session starts and whenever it goes idle. A spawn byte-identical in args, env and cwd gets the warm process and a replacement starts at once in the background; any other spawn starts fresh. The rules:
+
+- At most one process per spawn, and only for the two spawns named last. The session names those of the first engine in the master's chain, on the default device; a failover link's turn, a turn on another device and one in another folder start fresh. When the two spawns change (the lead's model or system prompt file, the device's MCP transport), the stale processes close.
+- One that dies while idle is noticed (its output closes), never handed out, and replaced after `WARM_RETRY`, at most `WARM_TRIES` times in a row, so a broken `claude` doesn't restart forever; one that fails to start counts the same. A spawn that starts it fresh again gives it `WARM_TRIES` more.
+- Each spawn has a keeper fiber that starts its process, holds it in a one-process slot and waits until it is taken, dies or grows old. A caller takes it out of the slot and ties it to its own scope in one uninterruptible step, so an interrupted caller can't leave it running.
+- One older than `WARM_MAX_AGE` is replaced, so no turn runs on the login, settings and feature flags a process read hours ago. Claude Code may also update itself between a process's start and its use; that turn runs on the version it started with, which is accepted (a version change costs one cache rewrite anyway, ref §16.8).
+- Every warm process belongs to a scope under the server's: shutting down kills them all, like any running turn.
+- Other devices (RemoteRunner), the compactor (8 jobs at once, not worth it) and the API engines spawn on demand.
+
+Each idle `claude -p` holds about 200 MB, so the Mini keeps ~400 MB for this. It also opens its MCP connection to `/mcp` at boot, so a turn doesn't wait for that either. Measured with `dev/latency.ts` (same machine, 3 turns each, 8 s idle between them): the median time from send to the first assistant text went from 1,990 ms to 1,160 ms, and to `RUN_FINISHED` from 3,125 ms to 2,218 ms.
 
 **Cache TTL (E6).** The reference forces 5-minute entries (`CLAUDE_CODE_PROMPT_CACHE_TTL=5m`) to follow gist §8. On the subscription we keep Claude Code's default 1-hour marks instead, and priming writes `ttl: "1h"` marks. Every mark in a request then has the same TTL, which avoids Anthropic's ordering error (1-hour entries must precede 5-minute ones). Reason: on the plan there's no per-token bill, and phone chats with gaps over 5 minutes would otherwise rewrite the whole view on almost every turn. The variable is set per spawned process; my normal Claude Code settings stay untouched.
 
@@ -267,14 +285,16 @@ Per engine:
 | User's words kept | How often a quoted user sentence survives 2 and 3 levels up |
 | Findability | Questions generated from raw messages; an agent with only that tree and zoom must find the answers |
 
-## zoom and date over HTTP
+## zoom and date over MCP
 
-The server exposes `zoom` and `date` as an HTTP MCP server at `/mcp` on the tailnet, so a `claude -p` on any device reaches the same memory (E8, replacing the reference's stdio server, D8).
+The server exposes `zoom` and `date` as an MCP server at `/mcp` on the tailnet, so a `claude -p` on any device reaches the same memory (E8, replacing the reference's stdio server, D8).
+
+- **Transport:** a WebSocket by default, one JSON-RPC 2.0 message per text frame each way (`GET /mcp` that upgrades); also one message per `POST /mcp`. Claude Code documents only `stdio`, `sse` and `http` for `--mcp-config`, but its config schema also takes `{"type": "ws", "url", "headers"?}`, and it connects with subprotocol `mcp` and no `Origin` (probed on 2.1.289: connected, and a real turn called `zoom` over it). A warm process (E18) opens the socket at boot and keeps it, so a turn's tool calls go over a connection already open. Because the type is undocumented, each device falls back by itself, and while on ws watches every `claude` there (priming usually comes first) for one of these: its `system/init` lists `optchat` as `failed`, or leaves it out (2.1.289 skips an entry whose type it doesn't know, with a warning on stderr only when that is a terminal); or it ends before any `system/init` because its config was rejected (Claude Code checks `--mcp-config` against its schema as it starts and exits with `Error: Invalid MCP configuration:` on stderr; 2.1.42 does that for any entry its schema refuses); or it ends before `system/init` twice in a row for any reason. `pending` and `needs-auth` say nothing about the type and change nothing. That device's calls then use the `http` form, the user is told once (in words that allow for the other cause of `failed`, a server it couldn't reach), and its warm processes (E18) are started again with the new config. `server.mcpTransport: "http"` turns ws off. Which transport is used changes nothing the model is sent, so not the cache either.
 
 - **Behaviour:** exactly ref §9 and gist §7.1, with the gist's tool descriptions verbatim. `zoom(id, n)` validates integers, `n` a power of 2, `id % n == 0`, `id + n ≤ T`, the node built; otherwise `No line id+n.` `zoom(id, 1)` returns `id+0|kind: text` in full and works for any existing message. `date(id)` returns local time as `2026-10-04 14:03`, or `No message N.`
 - **Read-only:** answers from the server's in-memory tree; never takes the lock.
-- **Cache stability:** the `--mcp-config` JSON is generated once per device and is identical for priming and real turns. The server name stays `optchat`, so the tool names (`mcp__optchat__zoom`, `mcp__optchat__date`) and the cached tool list are the same on every device; only the URL differs, and the URL isn't sent to the model.
-- **Auth:** a `claude` on another device calls `/mcp` at `server.publicUrl`, that is through `tailscale serve`, which hides the caller's address and adds its owner's login. So WhoIs plays no part: the guard is the secret key in the URL (made at startup, sent only inside `--mcp-config`) plus the `allowedLogins` check every route has. A `claude` on the Mini calls the loopback URL with the same key. Without `server.publicUrl` the server refuses turns on other devices rather than hand them a loopback URL and its key.
+- **Cache stability:** the `--mcp-config` JSON is the same for a device's priming and real turns. The server name stays `optchat`, so the tool names (`mcp__optchat__zoom`, `mcp__optchat__date`) and the cached tool list are the same on every device; only the URL differs, and the URL isn't sent to the model.
+- **Auth:** a `claude` on another device calls `/mcp` at `server.publicUrl`, that is through `tailscale serve`, which hides the caller's address and adds its owner's login. So WhoIs plays no part: the guard is the secret key in the URL (made at startup, sent only inside `--mcp-config`) plus the `allowedLogins` check every route has. Over either transport: the WebSocket's upgrade request passes the same Host, Origin and login checks as any request (`server/auth.ts`) and needs the same key. A `claude` on the Mini calls the loopback URL with the same key. Without `server.publicUrl` the server refuses turns on other devices rather than hand them a loopback URL and its key.
 - **Offline mode (M6):** gains `who`, plus `grep(regex, who)`, as in Intrepidus.
 
 ## Multi-machine
@@ -292,7 +312,7 @@ One chat, one memory, two pairs of hands: the Mini keeps memory and the turn loo
 
 **Routing.** Each turn picks a device: an explicit picker in the UI, a `/on macbook` prefix, or the default device. The choice is stored as an extra `device` field on that turn's log entries, which readers ignore, as pi-optchat does with its `origin` field. The user's text is never changed; the tool calls' paths already show the compactor where work happened.
 
-**Device offline.** The turn fails fast with a clear notice in the UI and in the log; the failover chain may then run it on another engine with read-only tools. Never queue silently. The server remembers an unreachable device for 5 s, so the priming before a turn and the turn itself wait for it once and report it once.
+**Device offline.** The turn fails fast with a clear notice in the UI and in the log; the failover chain may then run it on another engine with read-only tools. Never queue silently. The server remembers an unreachable device for 5 s, so a priming and the turn right after it wait for it once and report it once.
 
 **Offline mode (M6).** If the Mini is unreachable, the MacBook runs a local server on `streams/macbook/` and pushes to the shared git remote. The Mini pulls before each turn and shows that stream read-only. Two streams means two chats until the user merges them; that is accepted, as in Intrepidus.
 
@@ -312,7 +332,7 @@ The reference's session object (`createSession` in ref `turn.ts`) moves into the
 | Live reply text, then the `talk` entry | `TEXT_MESSAGE_START` / `CONTENT` / `END` | Message id = the entry's log index `i` |
 | A `tool` entry | `TOOL_CALL_START` / `ARGS` / `END` | Tool name and JSON input |
 | An `echo` entry | `TOOL_CALL_RESULT` | The capped text, as logged |
-| Waiting for summaries, priming, device, engine, view size | `STATE_DELTA` | One shared state object |
+| Waiting for summaries, running, device, engine, view size | `STATE_DELTA` | One shared state object |
 | Usage records, failovers, errors, refusals, device offline | `CUSTOM` (`usage`, `info`) | Shown in the status line and the stats screen |
 | Thinking | `CUSTOM` (`thinking`) | Token count only; thinking text is never sent |
 | The turn ends | `RUN_FINISHED` or `RUN_ERROR`, then `MESSAGES_SNAPSHOT` | Exactly one per `RUN_STARTED`, also on a cancel (`RUN_ERROR` "cancelled"), before anything else is logged; the open reply is closed first. The snapshot resyncs every client to the log, so a reply cut off before its `talk` entry disappears before its index goes to the next entry |
@@ -406,7 +426,7 @@ Our changes on top of the reference's D1–D10, which all still apply except D8 
 | E5 | Compactor engine chosen per tree level; Luna and Sol on the ChatGPT plan | Sonnet, medium effort, via `claude -p` (ref §7) | Compaction is most of the cost; low levels are mostly tool noise |
 | E6 | 1-hour cache entries on the subscription; priming marks `ttl: "1h"` | 5-minute entries only (gist §8, ref §4) | No per-token bill on the plan; phone chats with gaps would mostly be cold |
 | E7 | `claude -p` runs on the device that has the files, through a device runner | Local process (ref §5) | MacBook repos with one shared memory |
-| E8 | zoom and date over HTTP MCP on the tailnet | stdio MCP (D8) | Reachable from every device |
+| E8 | zoom and date over MCP on the tailnet, a WebSocket by default (Claude Code's undocumented `ws` type), HTTP per device as the fallback | stdio MCP (D8) | Reachable from every device; one connection a warm process opens at boot instead of a request per call |
 | E9 | Tailscale identity is the only auth | Local terminal only | One user, private network |
 | E10 | Data repo pushed to a private remote after each commit | Local git only | Backup; sync in offline mode |
 | E11 | Extra fields in `usage.jsonl`, one line per call that reports usage | `{date, kind, model, usage}` | Cost per role, engine, level, cold or warm |
@@ -415,6 +435,8 @@ Our changes on top of the reference's D1–D10, which all still apply except D8 
 | E14 | Fold kernel in Bend 2, compiled to JavaScript, with proved laws | TypeScript, tested only on synthetic merges (ref §16.8) | The fold is where OptChat's subtle bugs live; proofs on every edit instead of a few tests |
 | E15 | The WebSocket speaks AG-UI events; the web UI is our own session store over them, with shadcn chat components and AI Elements | Terminal output only (ref §10) | A standard protocol for multi-client turns and offline UI fixtures; TanStack AI's client didn't fit a server-owned log (M2), so the store over the same events is ours |
 | E16 | Non-Claude master turns run our own tool loop with read-only tools (Read, Glob, Grep on the device; zoom and date from memory); a failover mid-turn hands the next engine what the first logged | `claude -p` and its tools only (D1) | A fallback turn can answer from files and memory without being able to change them; nothing logged is repeated or lost |
+| E17 | A turn never waits for priming: it stops one in flight and never primes first; priming runs only while idle | The turn awaits `prime(view)` (ref §6, gist §8) | Measured: the wait (2.6 s on a fresh `claude`) never shortens the time to the first token; it only spares one cache write, i.e. plan quota |
+| E18 | One warm `claude` per expected spawn (the master's turn and priming on the Mini), handed out only to a byte-identical spawn | A fresh process per call (ref §5) | `claude`'s boot is ~1.3 s of each turn; measured median time to first text 1,990 → 1,160 ms |
 
 ## Milestones
 

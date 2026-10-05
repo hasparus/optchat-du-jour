@@ -1,7 +1,7 @@
 // zoom and date as the model reaches them: JSON-RPC over the /mcp handler (gist §7.1, ref §9, E8).
 import { expect, test } from "bun:test";
-import { Schema } from "effect";
-import { handleMcp, mcpConfig } from "../src/mcp.ts";
+import { Effect, Schema } from "effect";
+import { handleMcp, type McpSeen, mcpConfig, mcpTransports } from "../src/mcp.ts";
 import { newMsg } from "../src/store.ts";
 import { type Mem, newMem } from "../src/tree.ts";
 import { addMessage, addNode } from "../src/view.ts";
@@ -79,7 +79,57 @@ test("zoom and date over JSON-RPC: the handshake, the verbatim tools, a zoom dow
 
   expect(rpc(mem, "resources/list").error?.code).toBe(-32_601);
   expect(handleMcp(mem, "{not json").status).toBe(400);
-  expect(JSON.parse(mcpConfig("http://127.0.0.1:7700/mcp?key=k"))).toEqual({
+});
+
+test("--mcp-config is ws unless http is asked for", () => {
+  expect(JSON.parse(mcpConfig("http://127.0.0.1:7700/mcp?key=k"))).toEqual({ mcpServers: { optchat: { type: "ws", url: "ws://127.0.0.1:7700/mcp?key=k" } } });
+  expect(JSON.parse(mcpConfig("https://mini.example.ts.net/mcp?key=k"))).toEqual({ mcpServers: { optchat: { type: "ws", url: "wss://mini.example.ts.net/mcp?key=k" } } });
+  expect(JSON.parse(mcpConfig("http://127.0.0.1:7700/mcp?key=k", "http"))).toEqual({
     mcpServers: { optchat: { type: "http", url: "http://127.0.0.1:7700/mcp?key=k" } },
   });
+});
+
+test("a device falls back to http, said once, on optchat failed or left out, or on its config rejected before init", async () => {
+  const said: string[] = [];
+  const t = mcpTransports("ws", (m) => Effect.sync(() => said.push(m)));
+  const seen = async (device: string, s: McpSeen) => Effect.runPromise(t.seen(device, s));
+  expect([t.of("mini"), t.of("macbook")]).toEqual(["ws", "ws"]);
+  // statuses that say nothing about the type
+  for (const status of ["connected", "pending", "needs-auth"]) expect(await seen("mini", { status })).toBe(false);
+  expect(t.of("mini")).toBe("ws");
+
+  expect(await seen("macbook", { status: "failed" })).toBe(true);
+  expect(await seen("macbook", { status: "failed" })).toBe(false); // already on http
+  expect([t.of("mini"), t.of("macbook")]).toEqual(["ws", "http"]);
+  expect(said).toEqual(["zoom and date over WebSocket did not work for claude on macbook (MCP server optchat is failed); trying HTTP there from now on"]);
+
+  expect(await seen("tablet", { status: "not listed" })).toBe(true); // a claude that skips a type it doesn't know
+  const rejected = "claude exited (code 1): Error: Invalid MCP configuration:\nmcpServers.optchat: Does not adhere to MCP server configuration schema";
+  expect(await seen("phone", { ended: rejected })).toBe(true);
+  expect(said.slice(1)).toEqual([
+    "zoom and date over WebSocket did not work for claude on tablet (MCP server optchat is not listed); trying HTTP there from now on",
+    `zoom and date over WebSocket did not work for claude on phone (its MCP config was rejected: ${rejected}); trying HTTP there from now on`,
+  ]);
+
+  // configured to http: nothing to fall back from
+  const plain = mcpTransports("http", (m) => Effect.sync(() => said.push(m)));
+  expect(await Effect.runPromise(plain.seen("mini", { status: "failed" }))).toBe(false);
+  expect(plain.of("mini")).toBe("http");
+  expect(said).toHaveLength(3);
+});
+
+test("an unexplained end before init moves a device only when it happens twice in a row", async () => {
+  const said: string[] = [];
+  const t = mcpTransports("ws", (m) => Effect.sync(() => said.push(m)));
+  const seen = async (s: McpSeen) => Effect.runPromise(t.seen("mini", s));
+  const crash = { ended: "claude was killed (SIGKILL): no error output" };
+  expect(await seen(crash)).toBe(false);
+  expect(await seen({ status: "connected" })).toBe(false); // an init in between: the count starts over
+  expect(await seen(crash)).toBe(false);
+  expect(t.of("mini")).toBe("ws");
+  expect(await seen(crash)).toBe(true);
+  expect(t.of("mini")).toBe("http");
+  expect(said).toEqual([
+    "zoom and date over WebSocket did not work for claude on mini (it ended twice in a row before starting: claude was killed (SIGKILL): no error output); trying HTTP there from now on",
+  ]);
 });

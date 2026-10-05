@@ -36,8 +36,6 @@ function status(s: Session): string | null {
   switch (s.state?.phase) {
     case "waiting":
       return `waiting for ${s.state.waiting} summaries…`;
-    case "priming":
-      return "priming the cache…";
     case "running":
       return s.thinking ? "thinking…" : `running on ${s.state.device}${s.state.engine ? ` (${s.state.engine})` : ""}`;
     case "idle":

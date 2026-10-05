@@ -12,7 +12,9 @@
 //      itself, not with us, but its requests carry its own name in Host. So Host must be one of
 //      the names this server answers to: the loopback names with our port, or the public URL.
 // Local processes (the REPL, `claude`'s MCP client, curl) send no Origin and are let through on
-// loopback, as long as nothing forwarded them.
+// loopback, as long as nothing forwarded them. Both WebSockets, /ws and /mcp's, pass this same
+// check on their upgrade request; a browser sends its Origin there too (way 2). /mcp also needs
+// the per-start key in its URL, over either transport (E8).
 import { Option } from "effect";
 import { LOOPBACK } from "../src/http.ts";
 

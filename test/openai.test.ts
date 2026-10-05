@@ -169,6 +169,7 @@ const fakeRunner = (spawned: Spawn[]) =>
         const result = JSON.stringify({ is_error: false, result: "user: written by sonnet", subtype: "success", type: "result", usage: { input_tokens: 10, output_tokens: 5 } });
         return yield* makeClaude({ exit: Effect.succeed("ended"), lines: Stream.fromQueue(stdin).pipe(Stream.map(() => result)), stdin });
       }),
+    warm: () => Effect.void,
   });
 
 const settings = (byLevel: Settings["compactor"]["byLevel"]): Settings => ({
