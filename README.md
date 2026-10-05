@@ -9,13 +9,13 @@ one endless chat whose history is its memory, kept as a binary summary tree.
 - A terminal REPL and a phone-first web app (chat, memory browser, usage stats, devices;
   installable as a PWA), both clients of one server over a WebSocket speaking AG-UI.
 - Turns run where the files are: the server hands each `claude` call to a small runner on that
-  machine. Tailscale identity is the only auth.
-- Failover from Claude Code to the ChatGPT plan to an API key with a monthly budget, without
-  losing a message. The compactor's engine is set per tree level.
-- The view fold is a [Bend 2](https://github.com/bendlang/bend) kernel with its tiling, size and
-  pump laws proved.
-- A turn never waits for cache priming. A `claude` process spawned ahead of time takes it, and
-  `zoom`/`date` reach the memory over MCP on a WebSocket.
+  machine. Your Tailscale login is the only identity.
+- The chat fails over from Claude Code to the ChatGPT plan to an API key with a monthly budget,
+  without losing a message. The compactor has its own chain per tree level.
+- The view fold is a [Bend 2](https://github.com/bendlang/bend) kernel, with proofs of its tiling,
+  sizes, fit's merges and the pump's offers.
+- A turn never waits for cache priming. On the server's machine an idle `claude` is already
+  started, so the turn skips its boot. `zoom` and `date` go over MCP on a WebSocket.
 - Pictures and short videos from the web app. The log keeps one captioned marker line per
   attachment; models that take images get the images, in the turn and from `zoom`.
 - `usage.jsonl` records every model call (engine, cache reads, cold/warm, failovers, dollars), and
