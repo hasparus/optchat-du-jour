@@ -1,6 +1,6 @@
 // The session (ref §5.2, E1): the one turn loop the server owns. Messages queue up and start a
 // turn; a message sent while a turn runs is steered into it. Every client sees the same events.
-import { type Duration, Effect, Fiber, PubSub, Queue, type Scope } from "effect";
+import { type Duration, Effect, Fiber, Option, PubSub, Queue, type Scope } from "effect";
 import { PRIME_IDLE } from "./config.ts";
 import type { Chat } from "./chat.ts";
 import { failover } from "./engines/chain.ts";
@@ -88,23 +88,22 @@ export const makeSession = (o: {
     const log = (kind: Entry["kind"], text: string, runId: string | null, on: string | null) =>
       chat.log(kind, text, on ? { device: on } : {}).pipe(Effect.tap((entry) => publish({ entry, runId, type: "logged" })));
 
-    // the view changed (a message, a node): quiet and idle for PRIME_IDLE, prime it in the background
+    // the view changed (a message, a node): once it has been quiet for PRIME_IDLE and no turn runs,
+    // prime it in the background. One fiber debounces every change, so bursts start one timer.
     const primer = o.engines[0]?.prime;
-    let idleTimer: Fiber.Fiber<void> | null = null;
     const scope = yield* Effect.scope;
-    const primeLater = Effect.suspend(() => {
-      if (!primer) return Effect.void;
-      const previous = idleTimer;
-      return Effect.gen(function* () {
-        if (previous) yield* Fiber.interrupt(previous);
-        idleTimer = yield* Effect.sleep(o.idle ?? PRIME_IDLE).pipe(
-          Effect.andThen(
-            Effect.suspend(() => (loop || !allBuilt(chat.mem) ? Effect.void : primer(render(chat.mem), o.defaultDevice))),
-          ),
-          Effect.forkIn(scope),
-        );
-      });
-    });
+    const changes = yield* Queue.sliding<true>(1);
+    const primeLater = Queue.offer(changes, true);
+    if (primer) {
+      const quiet = o.idle ?? PRIME_IDLE;
+      yield* Effect.gen(function* () {
+        yield* Queue.take(changes);
+        while (Option.isSome(yield* Queue.take(changes).pipe(Effect.timeoutOption(quiet)))) {
+          // changed again within PRIME_IDLE: wait for quiet from here
+        }
+        if (!loop && allBuilt(chat.mem)) yield* primer(render(chat.mem), o.defaultDevice);
+      }).pipe(Effect.forever, Effect.forkIn(scope));
+    }
     const onViewChange = () => {
       Effect.runFork(Effect.andThen(tell, primeLater));
     };
