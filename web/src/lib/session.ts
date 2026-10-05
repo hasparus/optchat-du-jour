@@ -1,6 +1,6 @@
 // The session as this client sees it (SPEC "Web UI", Chat; "Protocol"): the log (log.ts: entries
-// by log index and the reply streaming in), the server's state (phase, device, view size, queued
-// mid-run messages), status markers from CUSTOM info and RUN_ERROR, whether the model is thinking,
+// by log index and the reply streaming in), the server's state (phase, device, view size, the
+// messages it holds unlogged), status markers from CUSTOM info and RUN_ERROR, whether the model is thinking,
 // and the messages sent from here that the log doesn't hold yet. Every AG-UI event and every page of
 // /api/messages comes through here; the screens only draw it.
 import { type Kind, logIndex, SessionState } from "@wire";
@@ -50,19 +50,19 @@ const initial: Session = { log: emptyLog, markers: [], pending: [], state: null,
 
 export type Queued = { readonly text: string; readonly error: string | null };
 
-// What waits for the model: the server's untaken mid-run messages, then ours it hasn't logged. A
-// mid-run message of ours is in both lists until its ack: the server's copy stands for it.
+// What waits for the model: every message the server holds unlogged, then ours it doesn't hold
+// yet. A message of ours the server holds is one entry, told by its client id, not its text: the
+// server's copy stands for it, with its error if the log refused it.
 export function queued(s: Session): Queued[] {
-  const out: Queued[] = (s.state?.queued ?? []).map((text) => ({ error: null, text }));
-  const left = [...(s.state?.queued ?? [])];
-  for (const p of s.pending) {
-    const at = left.indexOf(p.text);
-    if (at === -1) out.push({ error: p.error, text: p.text });
-    else {
-      left.splice(at, 1);
-      if (p.error !== null) out[at] = { error: p.error, text: p.text };
-    }
+  const ours = new Map(s.pending.map((p) => [p.id, p]));
+  const held = new Set<string>();
+  const out: Queued[] = [];
+  for (const m of s.state?.pending ?? []) {
+    const mine = m.clientId === null ? undefined : ours.get(m.clientId);
+    if (mine) held.add(mine.id);
+    out.push({ error: mine?.error ?? null, text: m.text });
   }
+  for (const p of s.pending) if (!held.has(p.id)) out.push({ error: p.error, text: p.text });
   return out;
 }
 
@@ -139,19 +139,12 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
     if (at !== -1) set({ pending: s.pending.toSpliced(at, 1) });
   };
   // After a reconnect: a message sent on a connection that dropped, which the log doesn't hold and
-  // the server doesn't hold either (not among its queued), may have been lost with the socket. It
-  // is marked so, and stays in the queue; the log taking it later clears it as above.
+  // the server doesn't hold either (its id is not among the state's pending), may have been lost
+  // with the socket. It is marked so, and stays in the queue; the log taking it later clears it as
+  // above.
   const unsent = () => {
-    const queuedThere = [...(s.state?.queued ?? [])];
-    const marked = s.pending.map((p) => {
-      if (p.conn >= conns || p.error !== null) return p;
-      const k = queuedThere.indexOf(p.text);
-      if (k !== -1) {
-        queuedThere.splice(k, 1);
-        return p;
-      }
-      return { ...p, error: UNSENT };
-    });
+    const there = new Set((s.state?.pending ?? []).map((m) => m.clientId));
+    const marked = s.pending.map((p) => (p.conn >= conns || p.error !== null || there.has(p.id) ? p : { ...p, error: UNSENT }));
     if (marked.some((p, k) => p !== s.pending[k])) set({ pending: marked });
   };
   const setLog = (log: Log) => {

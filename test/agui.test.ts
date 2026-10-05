@@ -7,7 +7,7 @@ import type { LiveRun, SessionEvent, SessionState } from "../src/session.ts";
 import { newMsg } from "../src/store.ts";
 import type { Entry } from "../src/tree.ts";
 
-const STATE: SessionState = { budget: 128_000, device: "mini", down: [], engine: null, messages: 1, phase: "running", queued: [], viewBytes: 100, waiting: 0 };
+const STATE: SessionState = { budget: 128_000, device: "mini", down: [], engine: null, messages: 1, phase: "running", pending: [], viewBytes: 100, waiting: 0 };
 
 function connect(entries: Entry[], live: LiveRun | null = null) {
   const { first, translate } = openStream({ entries, live, state: STATE, thread: "mini", window: 50 });

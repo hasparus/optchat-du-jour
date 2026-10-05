@@ -6,9 +6,6 @@ import type { Settings } from "../src/config.ts";
 import { deviceHealth } from "../src/claude/remote.ts";
 import type { Device } from "../src/wire.ts";
 
-// what /api/devices says of a device (src/wire.ts Device)
-export type DeviceStatus = Device;
-
 const HEALTH_TIMEOUT = "2 seconds";
 
 // every configured device, asked at once; this machine's version comes from `localVersion`
@@ -16,7 +13,7 @@ export const deviceStatuses = <R>(o: {
   readonly devices: Settings["devices"];
   readonly self: string;
   readonly localVersion: Effect.Effect<string | null, never, R>;
-}): Effect.Effect<DeviceStatus[], never, R> =>
+}): Effect.Effect<Device[], never, R> =>
   Effect.forEach(
     Object.entries(o.devices),
     ([name, d]) =>
@@ -34,7 +31,7 @@ export const deviceStatuses = <R>(o: {
 // The warning to give when the online devices run different claude versions, with the key that
 // says whether it was given already: the set of versions, so a device going offline and coming
 // back doesn't repeat it, and only a new version does.
-export const versionWarning = (list: readonly DeviceStatus[]): { readonly key: string; readonly message: string } | null => {
+export const versionWarning = (list: readonly Device[]): { readonly key: string; readonly message: string } | null => {
   const online = list.filter((d) => d.status === "online" && d.claudeVersion !== null);
   const versions = [...new Set(online.map((d) => d.claudeVersion ?? ""))].toSorted((a, b) => a.localeCompare(b));
   if (versions.length < 2) return null;

@@ -51,7 +51,7 @@ const Item = Schema.Struct({
 });
 const Body = Schema.Struct({ instructions: Schema.String, input: Schema.Array(Item), tools: Schema.Array(Schema.Struct({ name: Schema.String })), tool_choice: Schema.String });
 const decodeBody = Schema.decodeUnknownSync(Schema.fromJsonString(Body));
-const Queued = Schema.Struct({ queued: Schema.Array(Schema.String) });
+const Pending = Schema.Struct({ pending: Schema.Array(Schema.Struct({ text: Schema.String })) });
 const Down = Schema.Array(Schema.Struct({ ref: Schema.String, reason: Schema.String }));
 const DownOp = Schema.Struct({ path: Schema.Literal("/down"), value: Down });
 const Snapshot = Schema.Struct({ down: Down });
@@ -134,7 +134,7 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
     const response = await fetch(`http://127.0.0.1:${port}${path}`);
     return response.text();
   };
-  const queued = async () => Schema.decodeUnknownSync(Schema.fromJsonString(Queued))(await get("/api/state")).queued;
+  const queued = async () => Schema.decodeUnknownSync(Schema.fromJsonString(Pending))(await get("/api/state")).pending.map((m) => m.text);
   const log = async () => Schema.decodeUnknownSync(Schema.fromJsonString(Entries))(await get("/api/messages")).entries.map((e) => [e.kind, e.text]);
 
   await Effect.runPromise(

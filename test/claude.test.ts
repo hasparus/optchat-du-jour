@@ -385,7 +385,7 @@ test("a message sent while a tool runs is taken at the tool boundary and logged 
         ["user", "second"],
         ["talk", "Both done."],
       ]);
-      expect(r.session.state().queued).toEqual([]);
+      expect(r.session.state().pending).toEqual([]);
     }),
   );
   const [call] = f.of("turn");
@@ -433,7 +433,7 @@ test("a cancel kills the call and logs what it never took as unanswered user mes
         ["talk", "working on it"],
         ["user", "never mind"],
       ]);
-      expect(r.session.state().queued).toEqual([]);
+      expect(r.session.state().pending).toEqual([]);
     }),
   );
 });

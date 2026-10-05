@@ -238,11 +238,11 @@ describe("session", () => {
     const { server, session } = await setup();
     session.send("old", null); // the same text as an entry already logged: still pending, by id
     expect(waiting(session)).toEqual(["old"]);
-    server.play(state({ phase: "running", queued: ["old"] }));
+    server.play(state({ phase: "running", pending: [{ clientId: idOf(server, 0), text: "old" }] }));
     expect(waiting(session)).toEqual(["old"]); // the server's copy and ours are one message
     server.play(ack("someone else's", 1)); // another client's message: not ours
     expect(waiting(session)).toEqual(["old"]);
-    server.play(ack(idOf(server, 0), 1), ...said(1, "user", "old"), state({ queued: [] }));
+    server.play(ack(idOf(server, 0), 1), ...said(1, "user", "old"), state({ pending: [] }));
     expect(waiting(session)).toEqual([]);
   });
 
@@ -298,20 +298,35 @@ describe("session", () => {
   });
 
   test("a message sent on a connection that dropped is kept, marked, unless the log or the server's queue has it", async () => {
-    let queuedThere: readonly string[] = [];
-    const server = fakeServer(() => [snapshot([{ kind: "user", text: "old" }]), { snapshot: { ...IDLE, messages: 1, queued: queuedThere }, type: EventType.STATE_SNAPSHOT }]);
+    let heldThere: readonly { readonly clientId: string | null; readonly text: string }[] = [];
+    const server = fakeServer(() => [snapshot([{ kind: "user", text: "old" }]), { snapshot: { ...IDLE, messages: 1, pending: heldThere }, type: EventType.STATE_SNAPSHOT }]);
     const link = openLink("ws://x/ws", { retryMs: 1, socket: server.socket });
     const session = makeSession(link);
     await tick();
     session.send("in flight", null);
     session.send("held there", null);
-    queuedThere = ["held there"]; // the server had it, mid-run, when the socket dropped
+    heldThere = [{ clientId: idOf(server, 1), text: "held there" }]; // the server had it, in any state of its inbox, when the socket dropped
     server.drop();
     await tick(20);
     expect(waiting(session)).toEqual(["held there", `in flight (${UNSENT})`]);
     // the log takes it after all: it is gone from the queue
     server.play(...said(1, "user", "in flight"));
     expect(waiting(session)).toEqual(["held there"]);
+  });
+
+  test("after a reconnect the server's copy is told by the client id, not the text: of two equal texts only the lost one is marked", async () => {
+    let heldThere: readonly { readonly clientId: string | null; readonly text: string }[] = [];
+    const server = fakeServer(() => [snapshot([{ kind: "user", text: "old" }]), { snapshot: { ...IDLE, messages: 1, pending: heldThere }, type: EventType.STATE_SNAPSHOT }]);
+    const link = openLink("ws://x/ws", { retryMs: 1, socket: server.socket });
+    const session = makeSession(link);
+    await tick();
+    session.send("same", null);
+    session.send("same", null);
+    heldThere = [{ clientId: idOf(server, 1), text: "same" }]; // held while it waited for summaries: the second one only
+    server.drop();
+    await tick(20);
+    expect(session.get().pending.map((p) => p.error)).toEqual([UNSENT, null]);
+    expect(waiting(session)).toEqual(["same", `same (${UNSENT})`]);
   });
 
   test("a status marker goes after the last entry the run's snapshot holds, not after a cut-off reply's index", async () => {
@@ -346,12 +361,12 @@ describe("session", () => {
       delta: [
         { op: "move", path: "/device" },
         { op: "replace", path: "/phase", value: "running" },
-        { op: "replace", path: "/queued/0", value: "x" },
+        { op: "replace", path: "/pending/0", value: "x" },
       ],
       type: EventType.STATE_DELTA,
     });
     expect(session.get().state?.phase).toBe("running");
-    expect(session.get().state?.queued).toEqual([]);
+    expect(session.get().state?.pending).toEqual([]);
     expect(warn).toHaveBeenCalledTimes(2);
   });
 

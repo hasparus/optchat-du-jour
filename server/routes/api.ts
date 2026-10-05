@@ -19,6 +19,7 @@ const NodeAt = Schema.Struct({
   l: Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ maximum: 52, minimum: 0 })),
 });
 const badRequest = () => HttpServerResponse.empty({ status: 400 });
+const serverError = () => HttpServerResponse.empty({ status: 500 });
 
 export const apiRoutes = (
   router: HttpRouter.HttpRouter,
@@ -38,11 +39,14 @@ export const apiRoutes = (
     // the log, a page at a time, newest last; `before` is a message id
     yield* router.add("GET", "/api/messages", () =>
       Effect.gen(function* () {
-        const q = yield* HttpServerRequest.schemaSearchParams(Before);
+        // a query that doesn't parse is the client's mistake (400); a body that doesn't encode is ours (500)
+        const query = yield* HttpServerRequest.schemaSearchParams(Before).pipe(Effect.result);
+        if (query._tag === "Failure") return badRequest();
+        const q = query.success;
         const end = Math.min(q.before ?? mem.root.length, mem.root.length);
         const start = Math.max(0, end - (q.limit ?? 100));
-        return yield* HttpServerResponse.schemaJson(MessagesPage)({ entries: mem.root.slice(start, end), total: mem.root.length });
-      }).pipe(Effect.orElseSucceed(badRequest)),
+        return yield* HttpServerResponse.schemaJson(MessagesPage)({ entries: mem.root.slice(start, end), total: mem.root.length }).pipe(Effect.orElseSucceed(serverError));
+      }),
     );
 
     // what the model sees: each view line with its range, dates and size (SPEC "Web UI", Memory)
@@ -71,13 +75,15 @@ export const apiRoutes = (
           size: viewSize(mem),
           text: render(mem),
         }),
-      ).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 500 }))),
+      ).pipe(Effect.orElseSucceed(serverError)),
     );
 
     // one node and its two children, down to the message (the memory browser's zoom, as mcp.ts opens it)
     yield* router.add("GET", "/api/node", () =>
       Effect.gen(function* () {
-        const { i, l } = yield* HttpServerRequest.schemaSearchParams(NodeAt);
+        const at = yield* HttpServerRequest.schemaSearchParams(NodeAt).pipe(Effect.result);
+        if (at._tag === "Failure") return badRequest();
+        const { i, l } = at.success;
         const { id, n } = span({ i, l });
         const found = openNode(mem, id, n);
         if (!found) return HttpServerResponse.empty({ status: 404 });
@@ -92,14 +98,14 @@ export const apiRoutes = (
                 n,
                 text: found.node?.text ?? null,
               };
-        return yield* HttpServerResponse.schemaJson(NodeView)(node);
-      }).pipe(Effect.orElseSucceed(badRequest)),
+        return yield* HttpServerResponse.schemaJson(NodeView)(node).pipe(Effect.orElseSucceed(serverError));
+      }),
     );
 
     yield* router.add(
       "GET",
       "/api/usage",
-      Effect.suspend(() => HttpServerResponse.schemaJson(Usage)(readUsage(o.usagePath))).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 500 }))),
+      Effect.suspend(() => HttpServerResponse.schemaJson(Usage)(readUsage(o.usagePath))).pipe(Effect.orElseSucceed(serverError)),
     );
 
     // which devices answer and which claude they run (../devices.ts)
@@ -116,6 +122,6 @@ export const apiRoutes = (
           yield* o.report(warning.message);
         }
         return yield* HttpServerResponse.schemaJson(Devices)(list);
-      }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 500 }))),
+      }).pipe(Effect.orElseSucceed(serverError)),
     );
   });

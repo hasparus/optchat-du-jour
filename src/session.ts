@@ -57,15 +57,16 @@ export const deviceOf = (text: string, devices: readonly string[]) => {
   return m?.[1] && devices.includes(m[1]) ? m[1] : null;
 };
 
-// A message from a client, the session's until it is logged: waiting for a turn ("queued"), or
-// offered to the running call, which may take it (it is logged then) or leave it (it comes back
-// "queued" when the call ends). Each carries the id its client sent it with, so its ack names it.
+// A message from a client, the session's until it is logged: "held" for a turn, or "offered" to
+// the running call, which may take it (it is logged then) or leave it (it comes back "held" when
+// the call ends). Each carries the id its client sent it with, so its ack names it. (The state
+// clients see lists all of them as `pending`.)
 type Incoming = {
   readonly seq: number; // the order messages came in
   readonly text: string;
   device: string | null; // the device it was sent for; one a call left gets that call's device
   readonly clientId: string | null;
-  state: "queued" | "offered";
+  state: "held" | "offered";
 };
 
 export const makeSession = (o: {
@@ -97,8 +98,10 @@ export const makeSession = (o: {
     // the loop stopped on an error (the log refused, or a defect), why, and the last message in by
     // then: those wait for a newer message instead of starting the loop again at once
     let halted: { readonly why: string; readonly upTo: number } | null = null;
+    // the store's refusal the turn's result said already, so the stop it may lead to does not say it twice
+    let told: string | null = null;
 
-    const queued = () => inbox.filter((m) => m.state === "queued");
+    const held = () => inbox.filter((m) => m.state === "held");
     const offered = () => inbox.filter((m) => m.state === "offered");
 
     const state = (): SessionState => ({
@@ -108,7 +111,7 @@ export const makeSession = (o: {
       engine,
       messages: chat.mem.root.length,
       phase,
-      queued: offered().map((m) => m.text),
+      pending: inbox.map((m) => ({ clientId: m.clientId, text: m.text })),
       viewBytes: viewSize(chat.mem),
       waiting: unbuilt(chat.mem),
     });
@@ -128,27 +131,35 @@ export const makeSession = (o: {
     const ack = (m: Incoming, at: number | null, error: string | null) =>
       m.clientId === null ? Effect.void : publish({ at, clientId: m.clientId, error, type: "ack" });
 
-    const log = (kind: Entry["kind"], text: string, runId: string | null, on: string | null) =>
+    // A write and its bookkeeping are one step a cancel cannot split: an entry in the log is
+    // always known to the session, never half-told.
+    const log = (kind: Entry["kind"], text: string, on: string | null) =>
       chat.log(kind, text, on ? { device: on } : {}).pipe(
         Effect.tap(() =>
           Effect.sync(() => {
             if (current) current.reply = null; // the streamed text is logged now, or was left behind
           }),
         ),
+        Effect.uninterruptible,
       );
     const published = (runId: string | null) => (entry: Entry) => publish({ entry, runId, type: "logged" });
+    // an entry of the turn's engine: written and published, or neither is cut short by a cancel
+    const logPublished = (kind: Entry["kind"], text: string, runId: string | null, on: string | null) =>
+      log(kind, text, on).pipe(Effect.flatMap(published(runId)), Effect.uninterruptible);
 
     // A message becomes a user entry, on device `on` or else the one it was sent for. It leaves the
     // inbox only once it is in the log, so a failure finds it logged or still there, and its
-    // client is told which entry it is before the entry goes out.
+    // client is told which entry it is before the entry goes out. Uninterruptible: a cancel
+    // between the write and the inbox would log it twice.
     const logMessage = (m: Incoming, runId: string | null, on: string | null) =>
-      log("user", m.text, runId, on ?? m.device).pipe(
+      log("user", m.text, on ?? m.device).pipe(
         Effect.tap((entry) =>
           Effect.suspend(() => {
             inbox.splice(inbox.indexOf(m), 1);
             return ack(m, entry.i, null).pipe(Effect.andThen(published(runId)(entry)));
           }),
         ),
+        Effect.uninterruptible,
       );
     // these messages, in order, logged unanswered (gist §7: nothing is lost)
     const logEach = (ms: readonly Incoming[]) => Effect.forEach(ms, (m) => logMessage(m, null, null), { discard: true });
@@ -214,24 +225,24 @@ export const makeSession = (o: {
     chat.mem.listeners.add(onViewChange);
     yield* Effect.addFinalizer(() => Effect.sync(() => chat.mem.listeners.delete(onViewChange)));
 
-    // the queued messages, logged for a turn on `on`; uninterruptible, so a cancel finds each logged
-    // or queued. One that comes in meanwhile waits for the next turn.
+    // the held messages, logged for a turn on `on`; uninterruptible, so a cancel finds each logged
+    // or held. One that comes in meanwhile waits for the next turn.
     const logQueued = (on: string) =>
       Effect.gen(function* () {
         const entries: Entry[] = [];
-        for (const m of queued()) entries.push(yield* logMessage(m, null, on));
+        for (const m of held()) entries.push(yield* logMessage(m, null, on));
         return { runId: String(entries[0]?.i ?? chat.mem.root.length), texts: entries.map((e) => e.text) };
       }).pipe(Effect.uninterruptible);
 
     // The call is over: nothing more is offered to it, and what it was offered and never took is
-    // queued again, on the call's device unless it was sent for one.
+    // held again, on the call's device unless it was sent for one.
     const giveBack = (on: string) =>
       Effect.sync(() => {
         accepting = false;
         offerTo = null;
         const left = offered();
         for (const m of left) {
-          m.state = "queued";
+          m.state = "held";
           m.device ??= on;
         }
         return left;
@@ -254,8 +265,9 @@ export const makeSession = (o: {
 
     const turn = Effect.gen(function* () {
       yield* FiberSet.clear(primes).pipe(Effect.forkIn(scope)); // not waited for: the killed claude may take a moment
-      while (queued().length > 0) {
-        device = queued().findLast((m) => m.device)?.device ?? o.defaultDevice;
+      while (held().length > 0) {
+        told = null;
+        device = held().findLast((m) => m.device)?.device ?? o.defaultDevice;
         const on = device;
         if (unbuilt(chat.mem)) {
           yield* enter("waiting");
@@ -268,7 +280,7 @@ export const makeSession = (o: {
         accepting = true;
         const out: TurnEvents = {
           info,
-          log: (kind, text) => log(kind, text, runId, on).pipe(Effect.flatMap(published(runId))),
+          log: (kind, text) => logPublished(kind, text, runId, on),
           text: (delta) => stream(delta, runId),
           thinking: (tokens) => publish({ runId, tokens, type: "thinking" }),
           took: (taken) =>
@@ -303,6 +315,7 @@ export const makeSession = (o: {
             // it is logged, unanswered
             const left = yield* giveBack(on);
             if (result._tag === "Success") return yield* endRun(null);
+            told = result.failure._tag === "StoreError" ? result.failure.message : null;
             yield* info(failureText(result.failure));
             yield* endRun(result.failure.message);
             yield* logEach(left);
@@ -345,9 +358,11 @@ export const makeSession = (o: {
         yield* giveBack(device);
         const inRun = current !== null;
         yield* endRun(why); // the run's end says it
+        const already = told === why;
+        told = null;
         if (!cancelled) {
           halted = { upTo: seq, why };
-          yield* info(`error: ${why}`);
+          if (!already) yield* info(`error: ${why}`);
         }
         if (Option.isSome(refused)) return; // the log refuses: they stay in the inbox
         yield* logEach([...inbox]);
@@ -372,7 +387,7 @@ export const makeSession = (o: {
       Effect.gen(function* () {
         if (text.trim() === "") return; // nothing to answer: no turn, no empty user entry
         const picked = on && o.devices.includes(on) ? on : deviceOf(text, o.devices);
-        const m: Incoming = { clientId: clientId ?? null, device: picked, seq: ++seq, state: accepting ? "offered" : "queued", text };
+        const m: Incoming = { clientId: clientId ?? null, device: picked, seq: ++seq, state: accepting ? "offered" : "held", text };
         inbox.push(m);
         if (m.state === "offered") {
           if (offerTo) Queue.offerUnsafe(offerTo, { seq: m.seq, text });

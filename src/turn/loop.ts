@@ -7,10 +7,10 @@
 // results, before the next request, and logged as `user` then (SPEC "Mid-run messages on
 // openai-plan"). The turn ends at the first reply that calls no tool; the last allowed request
 // may not call any.
-import { Clock, Effect, Schema } from "effect";
+import { Cause, Clock, Effect, Exit, Schema } from "effect";
 import { cap } from "../cap.ts";
 import { TOOL_ROUNDS } from "../config.ts";
-import { isEngineError } from "../engines/errors.ts";
+import { type EngineError, isEngineError } from "../engines/errors.ts";
 import type { Item, Provider } from "../providers/provider.ts";
 import type { StoreError } from "../store.ts";
 import type { ToolBox } from "../tools/box.ts";
@@ -37,6 +37,15 @@ const steered = (input: TurnInput, out: TurnEvents): Effect.Effect<Item[], Store
     return items;
   });
 
+// what one request has left behind so far (see `run`)
+type Track = { refused: StoreError | null; open: number };
+
+// a failure's cause in a few words, for an echo that says why a call did not run
+const whyOf = (cause: Cause.Cause<unknown>) => {
+  const error = Cause.squash(cause);
+  return error instanceof Error ? error.message : String(error);
+};
+
 export const toolLoop = (o: {
   readonly ref: string;
   readonly provider: Provider;
@@ -46,12 +55,30 @@ export const toolLoop = (o: {
 }): TurnEngine => {
   const rounds = o.rounds ?? TOOL_ROUNDS;
   const run: TurnEngine["run"] = (input, out, failoverFrom) => {
-    // each item is logged as it completes, so live text after it streams under the next log index
-    const logged = (item: Item) => {
-      if (item.type === "text") return item.text.trim() ? out.log("talk", item.text) : Effect.void;
-      if (item.type === "call") return out.log("tool", `${item.name} ${shown(item.input)}`);
-      return Effect.void;
+    // Each item is logged as it completes, so live text after it streams under the next log index.
+    // A log that refuses is remembered, not failed on at once: the reply goes on streaming (it is
+    // being paid for), its usage is recorded, and then the turn fails with the refusal.
+    // `open`: tool entries logged and not answered with an echo yet
+    const track: Track = { open: 0, refused: null };
+    const logged = (item: Item): Effect.Effect<void> => {
+      if (track.refused !== null) return Effect.void;
+      const write =
+        item.type === "text"
+          ? item.text.trim()
+            ? out.log("talk", item.text)
+            : Effect.void
+          : item.type === "call"
+            ? out.log("tool", `${item.name} ${shown(item.input)}`).pipe(Effect.tap(() => Effect.sync(() => void track.open++)))
+            : Effect.void;
+      return write.pipe(Effect.catch((error: StoreError) => Effect.sync(() => void (track.refused = error))));
     };
+    const answer = (text: string) => out.log("echo", text).pipe(Effect.tap(() => Effect.sync(() => void track.open--)));
+    // A turn that ends early (the provider failed, a cancel) leaves no tool entry without its echo,
+    // as the last round does not either.
+    const unanswered = (exit: Exit.Exit<void, StoreError | EngineError>) =>
+      Exit.isFailure(exit) && track.refused === null && track.open > 0
+        ? Effect.forEach(Array.from({ length: track.open }), () => answer(`not run: ${Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : whyOf(exit.cause)}`), { discard: true }).pipe(Effect.ignoreCause)
+        : Effect.void;
     return Effect.gen(function* () {
       const box = o.toolsFor(input.device);
       const view = cutBlocks(input.view);
@@ -80,10 +107,15 @@ export const toolLoop = (o: {
             });
           });
         const final = round >= rounds;
-        const step = yield* o.provider
+        const reply = yield* o.provider
           .call({ final, history, instructions: o.instructions, onItem: logged, onText: out.text, onThinking: out.thinking, tools: box.defs })
-          .pipe(Effect.tapError((e) => (isEngineError(e) && e._tag !== "DeviceOffline" && e.spent ? record(e.spent) : Effect.void)));
-        yield* record(step);
+          .pipe(Effect.result);
+        // what the call cost is recorded first, whether it failed or the log refused its items
+        if (reply._tag === "Success") yield* record(reply.success);
+        else if (isEngineError(reply.failure) && reply.failure._tag !== "DeviceOffline" && reply.failure.spent) yield* record(reply.failure.spent);
+        if (track.refused !== null) return yield* track.refused;
+        if (reply._tag === "Failure") return yield* reply.failure;
+        const step = reply.success;
         if (step.cut !== undefined) yield* out.info(`${o.ref}: ${step.cut}, so it may stop mid-sentence or mid-call`);
         history.push(...step.items);
         const calls = step.items.flatMap((item) => (item.type === "call" ? [item] : []));
@@ -91,16 +123,16 @@ export const toolLoop = (o: {
         if (final) {
           // the last request may call no tool; a model that still does gets each call answered in
           // the log, so no tool entry stands without its echo
-          for (const _ of calls) yield* out.log("echo", `not run: this turn used its ${rounds} requests`);
+          for (const _ of calls) yield* answer(`not run: this turn used its ${rounds} requests`);
           return yield* out.info(`${o.ref} stopped after ${rounds} requests with tool calls left`);
         }
         for (const call of calls) {
           const output = cap(yield* box.run(call.name, call.input));
-          yield* out.log("echo", output);
+          yield* answer(output);
           history.push({ id: call.id, output, type: "result" });
         }
       }
-    });
+    }).pipe(Effect.onExit(unanswered));
   };
   return { ref: o.ref, run, warm: () => Effect.void }; // nothing to start ahead
 };

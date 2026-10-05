@@ -10,14 +10,16 @@ import { Runner } from "../claude/process.ts";
 import type { Job } from "../compactor.ts";
 import type { ToolBox } from "../tools/box.ts";
 import { MASTER_TOOLS, type Ref, type Settings } from "../config.ts";
+import { apiKeyProvider } from "../providers/api-key.ts";
+import type { Provider } from "../providers/provider.ts";
+import { responsesProvider } from "../providers/responses.ts";
 import type { OpenAiPlan } from "../openai/responses.ts";
 import { apiKeyCompactor } from "../summarize/api-key.ts";
 import { claudeCodeCompactor } from "../summarize/claude-code.ts";
 import { openAiPlanCompactor } from "../summarize/openai-plan.ts";
-import { apiKeyTurn } from "../turn/api-key.ts";
 import { type Placement, claudeCodeTurn } from "../turn/claude-code.ts";
 import type { TurnEngine } from "../turn/engine.ts";
-import { openAiPlanTurn } from "../turn/openai-plan.ts";
+import { toolLoop } from "../turn/loop.ts";
 import type { UsageRecord } from "../usage.ts";
 import type { DeviceOffline, EngineError } from "./errors.ts";
 
@@ -62,9 +64,22 @@ export const compactorEngine = (ref: Ref, o: CompactorNeeds): Effect.Effect<Comp
   }
 };
 
+// The provider of an engine that has no loop of its own (SPEC "Engines": openai-plan, the Responses
+// API on the ChatGPT plan, with `stream: true` and `store: false`; api-key, an API key's Anthropic
+// or OpenAI), built from what the ref's engine needs. Our tool loop (../turn/loop.ts) runs it.
+export const providerOf = (ref: Ref, o: EngineNeeds, effort?: string): Effect.Effect<Provider> => {
+  switch (ref.engine) {
+    case "openai-plan":
+      return Effect.map(o.plan, (plan) => responsesProvider({ auth: "chatgpt-pro", effort, engine: "openai-plan", model: ref.model, respond: plan.respond }));
+    case "api-key":
+      return Effect.map(o.apiKeys, (clients) => apiKeyProvider({ budget: o.budget, clients, effort, ref, settings: o.settings }));
+    case "claude-code":
+      return Effect.die(new Error("claude-code runs its own loop: it has no provider"));
+  }
+};
+
 export const turnEngine = (ref: Ref, o: TurnNeeds): Effect.Effect<TurnEngine> => {
   const { effort, permissionMode, tools } = o.settings.master;
-  const loop = { instructions: o.instructions, toolsFor: o.toolsFor };
   switch (ref.engine) {
     case "claude-code":
       return claudeCodeTurn({
@@ -81,8 +96,7 @@ export const turnEngine = (ref: Ref, o: TurnNeeds): Effect.Effect<TurnEngine> =>
         ttl: o.settings.cache.claudeCodeTtl,
       });
     case "openai-plan":
-      return Effect.map(o.plan, (plan) => openAiPlanTurn({ ...loop, effort, model: ref.model, plan }));
     case "api-key":
-      return Effect.map(o.apiKeys, (clients) => apiKeyTurn({ ...loop, budget: o.budget, clients, effort, ref, settings: o.settings }));
+      return Effect.map(providerOf(ref, o, effort), (provider) => toolLoop({ instructions: o.instructions, provider, ref: ref.ref, toolsFor: o.toolsFor }));
   }
 };

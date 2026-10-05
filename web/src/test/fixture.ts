@@ -18,7 +18,7 @@ export const IDLE: SessionState = {
   engine: null,
   messages: 0,
   phase: "idle",
-  queued: [],
+  pending: [],
   viewBytes: 0,
   waiting: 0,
 };
