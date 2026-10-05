@@ -119,6 +119,9 @@ export const makeSession = (o: {
     let told: string | null = null;
 
     const held = () => inbox.filter((m) => m.state === "held");
+    // a message sent for no device, or for the one the turn runs on, may join it; one sent for
+    // another waits, and the turn after it runs there (SPEC "Turn and priming")
+    const forThis = (sentFor: string | null) => sentFor === null || sentFor === device;
     const offered = () => inbox.filter((m) => m.state === "offered");
 
     const state = (): SessionState => ({
@@ -358,7 +361,12 @@ export const makeSession = (o: {
         const runId = yield* logQueued(batch, on);
         const since = chat.mem.root.length; // what this turn's engines log starts here
         accepting = true;
-        for (const m of held()) m.state = "offered"; // came in while the captions or the log were awaited
+        // the ones that came in while the captions or the log were awaited, up to the first sent for
+        // another device: it waits for the next turn, and so does everything sent after it
+        for (const m of held()) {
+          if (!forThis(m.device)) break;
+          m.state = "offered";
+        }
         const out: TurnEvents = {
           info,
           log: (kind, text) => logPublished(kind, text, runId, on),
@@ -471,7 +479,10 @@ export const makeSession = (o: {
         if (attached.length > media.length) yield* info(`at most ${MAX_ATTACHMENTS} attachments per message: ${attached.length - media.length} left out`);
         if (text.trim() === "" && media.length === 0) return; // nothing to answer: no turn, no empty user entry
         const picked = on && o.devices.includes(on) ? on : deviceOf(text, o.devices);
-        const m: Incoming = { clientId: clientId ?? null, described: null, device: picked, media, seq: ++seq, state: accepting ? "offered" : "held", text };
+        // offered to the running call only when it runs where the message was sent for, and nothing
+        // sent before it waits for the next turn: the log keeps the order they were sent in
+        const offer = accepting && forThis(picked) && held().length === 0;
+        const m: Incoming = { clientId: clientId ?? null, described: null, device: picked, media, seq: ++seq, state: offer ? "offered" : "held", text };
         inbox.push(m);
         if (m.state === "offered") {
           if (offerTo) Queue.offerUnsafe(offerTo, m);

@@ -468,3 +468,49 @@ test("messages a successful call never took are answered by the next turn, on th
     }).pipe(Effect.scoped),
   );
 });
+
+// SPEC "Turn and priming": a message sent for another device than the running turn's does not join
+// it; it waits, the turn after it runs there, and what was sent after it waits too, so the log
+// keeps the order the messages were sent in
+test("a message sent for another device mid-run is not offered to the call; the next turn runs there, in send order", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const turns: string[] = [];
+      const offered: string[] = [];
+      const go = { now: false };
+      const engine: TurnEngine = {
+        ref: "fake:x",
+        run: (input, out) =>
+          Effect.gen(function* () {
+            turns.push(`${input.texts.join("+")}@${input.device}`);
+            if (turns.length === 1) yield* until("the go", () => go.now);
+            for (const m of yield* input.mid.ready) {
+              offered.push(m.text);
+              yield* out.took(m);
+            }
+            yield* out.log("talk", `reply ${turns.length}`);
+          }),
+        vision: false,
+        warm: () => Effect.void,
+      };
+      const r = yield* rig(engine);
+      yield* r.session.input("A", undefined, "c1");
+      yield* until("the run", () => turns.length === 1);
+      yield* r.session.input("same device", undefined, "c2");
+      yield* r.session.input("/on mac look there", undefined, "c3");
+      yield* r.session.input("after it", undefined, "c4");
+      go.now = true;
+      yield* until("both turns", () => r.events.filter((e) => e.type === "run-finished").length === 2);
+      expect(offered).toEqual(["same device"]);
+      expect(turns).toEqual(["A@mini", "/on mac look there+after it@mac"]);
+      expect(r.chat.mem.root.map((m) => [m.kind, m.text, m.device])).toEqual([
+        ["user", "A", "mini"],
+        ["user", "same device", "mini"],
+        ["talk", "reply 1", "mini"],
+        ["user", "/on mac look there", "mac"],
+        ["user", "after it", "mac"],
+        ["talk", "reply 2", "mac"],
+      ]);
+    }).pipe(Effect.scoped),
+  );
+});
