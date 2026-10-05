@@ -69,7 +69,7 @@ export const readSource = (path: string, n: number, skip = 0) =>
 export type Replayed = { readonly contender: Contender; readonly dir: string; readonly mem: Mem; readonly records: readonly UsageRecord[]; readonly reports: readonly string[] };
 
 const complete = (mem: Mem) => {
-  for (const c of nodes(mem.root.length)) if (!built(mem, c.l, c.i)) return false;
+  for (const c of nodes(mem.root.length)) if (!built(mem, c)) return false;
   return true;
 };
 
@@ -177,7 +177,7 @@ export function wordsKept(mem: Mem, levels: readonly number[] = [0, 2, 3], kinds
     let total = 0, quoted = 0, recall = 0;
     for (const m of mem.root) {
       if (!kinds.includes(m.kind)) continue;
-      const n = getNode(mem, l, m.i >> l);
+      const n = getNode(mem, { i: m.i >> l, l });
       if (!n) continue;
       const have = runs(words(n.text));
       for (const s of sentences(m.text)) {

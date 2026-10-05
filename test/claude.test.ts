@@ -224,8 +224,8 @@ test("a hung compactor call times out and fails the node; the pump reports it on
         summarize: (job) => engine(job).pipe(Effect.mapError((e) => new CompactError({ message: e.message }))),
       });
       yield* chat.log("echo", long(900));
-      yield* until("the node", () => built(chat.mem, 0, 0));
-      expect(getNode(chat.mem, 0, 0)?.text).toBe("echo: built on the second call");
+      yield* until("the node", () => built(chat.mem, { i: 0, l: 0 }));
+      expect(getNode(chat.mem, { i: 0, l: 0 })?.text).toBe("echo: built on the second call");
     }),
   );
   expect(reports).toHaveLength(1);

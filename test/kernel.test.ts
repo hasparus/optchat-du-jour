@@ -18,7 +18,7 @@ class Model {
   readonly sizes = new Map<string, number>(); // built nodes: "l,i" -> bytes of their text
   constructor(readonly budget: number) {}
 
-  built = (l: number, i: number) => this.sizes.has(`${l},${i}`);
+  has = (c: Coord) => this.sizes.has(`${c.l},${c.i}`);
   size = (c: Coord) => this.sizes.get(`${c.l},${c.i}`) ?? HOLE; // an unbuilt part counts its placeholder
   start = (c: Coord) => c.i * 2 ** c.l;
 
@@ -27,10 +27,13 @@ class Model {
     let total = this.view.reduce((sum, c) => sum + this.size(c), 0);
     while (total > this.budget) {
       let best = -1, most = -1;
-      for (let k = 0; k + 1 < this.view.length; k++) {
-        const a = this.view[k]!, b = this.view[k + 1]!;
-        if (a.l !== b.l || a.i % 2 !== 0 || b.i !== a.i + 1 || !this.built(a.l + 1, a.i / 2)) continue;
-        const due = (this.T - this.start(a)) / 2 ** (a.l + 2);
+      for (const [k, left] of this.view.entries()) {
+        const right = this.view[k + 1];
+        if (right === undefined) break;
+        // siblings: one level, `left` at an even index, `right` just after it, their parent built
+        const siblings = left.l === right.l && left.i % 2 === 0 && right.i === left.i + 1;
+        if (!siblings || !this.has({ i: left.i / 2, l: left.l + 1 })) continue;
+        const due = (this.T - this.start(left)) / (4 * 2 ** left.l);
         if (due > most) [best, most] = [k, due];
       }
       if (best === -1) return; // no pair has its parent yet: over budget until one is built
@@ -60,38 +63,37 @@ class Model {
   }
 
   first() {
-    const p = this.view.find((c) => !this.built(c.l, c.i));
+    const p = this.view.find((c) => !this.has(c));
     return p ? this.start(p) : this.T;
   }
 
-  ready = (l: number, i: number) => (l === 0 ? i < this.T : this.built(l - 1, 2 * i) && this.built(l - 1, 2 * i + 1));
+  // its message is logged, or both its children are built
+  ready = (c: Coord) =>
+    c.l === 0 ? c.i < this.T : this.has({ i: 2 * c.i, l: c.l - 1 }) && this.has({ i: 2 * c.i + 1, l: c.l - 1 });
 
-  // rule 3 (gist §4.1): unbuilt, its sources there, everything before its end summarized
-  offers() {
-    const out: Coord[] = [], head = this.first();
-    for (let l = 0; 2 ** l <= this.T; l++)
-      for (let i = 0; (i + 1) * 2 ** l <= this.T; i++) {
-        // a message's own summary waits for the lines before it; a merge for all it covers
-        const upTo = l > 0 ? (i + 1) * 2 ** l : i;
-        if (!this.built(l, i) && this.ready(l, i) && upTo <= head) out.push({ i, l });
-      }
-    return out;
+  // every node over whole messages, unbuilt and with its sources there: level 0 up, oldest first
+  // (what the free-node pass may build, rule 3 aside)
+  candidates() {
+    const found: Coord[] = [];
+    for (let l = 0, width = 1; width <= this.T; l++, width *= 2)
+      for (let i = 0; i < Math.floor(this.T / width); i++) if (!this.has({ i, l }) && this.ready({ i, l })) found.push({ i, l });
+    return found;
   }
 
-  // every unbuilt node whose sources exist, as the free-node pass builds them, rule 3 aside
-  readies() {
-    const out: Coord[] = [];
-    for (let l = 0; 2 ** l <= this.T; l++)
-      for (let i = 0; (i + 1) * 2 ** l <= this.T; i++) if (!this.built(l, i) && this.ready(l, i)) out.push({ i, l });
-    return out;
+  // rule 3 (gist §4.1): unbuilt, its sources there, everything before its end summarized; a
+  // message's own summary waits for the lines before it, a merge for all it covers
+  offers() {
+    const head = this.first();
+    return this.candidates().filter((c) => (c.l === 0 ? c.i : (c.i + 1) * 2 ** c.l) <= head);
   }
 }
 
-// id+n: n a power of two, id a multiple of n, id + n <= T (gist §3, §7.1)
-function address(id: number, n: number, T: number): Coord | null {
-  if (n < 1 || id < 0 || id % n !== 0 || id + n > T) return null;
+// id+n names a node when n is a power of two, id is a multiple of n and the n messages from id
+// are all logged (gist §3, §7.1)
+function named(id: number, n: number, logged: number): Coord | null {
   const l = Math.log2(n);
-  return Number.isInteger(l) ? { i: id / n, l } : null;
+  const fits = Number.isInteger(l) && id >= 0 && id % n === 0 && id + n <= logged;
+  return fits ? { i: id / n, l } : null;
 }
 
 function rng(seed: number) {
@@ -105,8 +107,11 @@ function rng(seed: number) {
 }
 
 const CHARS = ["a", "b", " ", "\n", "ä", "ß", "日", "本", "😀", "\u{10348}"];
-const text = (r: () => number, max: number) =>
-  Array.from({ length: 1 + Math.floor(r() * max) }, () => CHARS[Math.floor(r() * CHARS.length)]).join("");
+function text(r: () => number, max: number) {
+  let out = "";
+  for (let left = 1 + Math.floor(r() * max); left > 0; left--) out += CHARS[Math.floor(r() * CHARS.length)];
+  return out;
+}
 
 // `appends`: the share of steps that log a message; low, the compactor keeps up, high, it lags
 function run(seed: number, budget: number, steps: number, appends: number) {
@@ -115,7 +120,7 @@ function run(seed: number, budget: number, steps: number, appends: number) {
     const offered = model.offers(), roll = r();
     // mostly the pump's order; sometimes any ready node (free nodes skip rule 3); and runs of
     // messages with nothing built, so the view sits over budget with unbuilt lines
-    const pool = roll < appends ? [] : roll < 0.9 ? offered : model.readies();
+    const pool = roll < appends ? [] : roll < 0.9 ? offered : model.candidates();
     const pick = pool[Math.floor(r() * pool.length)];
     if (pick) {
       const t = text(r, r() < 0.1 ? 400 : 120);
@@ -150,16 +155,18 @@ test("the kernel's view, refold, first and rule-3 offers match the gist's litera
 
 test("id+n addressing matches the gist for every id, n and T under 70", () => {
   for (let T = 0; T < 70; T++)
-    for (let n = 0; n < 70; n++) for (let id = 0; id < 70; id++) expect(K.address(id, n, T)).toEqual(address(id, n, T));
+    for (let n = 0; n < 70; n++) for (let id = 0; id < 70; id++) expect(K.address(id, n, T)).toEqual(named(id, n, T));
   expect(K.address(1.5, 1, 4)).toBeNull();
   expect(K.address(-1, 1, 4)).toBeNull();
 });
+
+const logged = (i: number) => ({ date: "2026-10-05T00:00:00.000Z", i, kind: "user" as const, size: 9, text: "x" });
 
 // A view waits on a long backlog after a big import: 100k lines, nothing to merge. Every walk over it
 // must stay off the JS stack (it overflows past ~20k nested calls), and refold must not go quadratic.
 test("a 100k-line view refolds, appends, fits and offers without blowing the stack", () => {
   const T = 100_000, mem = newMem(128_000);
-  for (let i = 0; i < T; i++) mem.root.push({ date: "2026-10-05T00:00:00.000Z", i, kind: "user", size: 9, text: "x" });
+  for (let k = 0; k < T; k++) mem.root.push(logged(k));
   for (let i = 0; i < T; i += 2) setNode(mem, { i, l: 0, size: 100, text: "z".repeat(100) }); // every other leaf built
   const t0 = performance.now();
   mem.view = K.refold(mem, HOLE);
@@ -167,7 +174,7 @@ test("a 100k-line view refolds, appends, fits and offers without blowing the sta
   expect(performance.now() - t0).toBeLessThan(5000);
   expect(K.first(mem)).toBe(1);
   expect(K.offers(mem)).toEqual([{ i: 1, l: 0 }]);
-  mem.root.push({ date: "2026-10-05T00:00:00.000Z", i: T, kind: "user", size: 9, text: "x" });
+  mem.root.push(logged(T));
   mem.view = K.append(mem, HOLE);
   expect(mem.view).toHaveLength(T + 1);
   expect(K.fit(mem, HOLE)).toHaveLength(T + 1);
