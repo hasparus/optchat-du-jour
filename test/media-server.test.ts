@@ -102,7 +102,8 @@ test("a photo PUT, sent as an image part: caption and turn see it, the log keeps
   const thumb = await fetch(`${base}/api/assets/${shortSha(asset.sha)}/thumb`);
   expect(thumb.headers.get("content-type")).toBe("image/jpeg");
   expect(new Uint8Array(await thumb.arrayBuffer())).toEqual(stored);
-  for (const path of ["../../etc/passwd", "abcdefabcdef", "zzzzzzzzzzzz"]) {
+  // a path that climbs (encoded, so it stays one segment), a prefix of nothing, not hex
+  for (const path of ["..%2F..%2Fetc%2Fpasswd", "abcdefabcdef", "zzzzzzzzzzzz"]) {
     const missing = await fetch(`${base}/api/assets/${path}`);
     expect(missing.status).toBe(404);
   }
