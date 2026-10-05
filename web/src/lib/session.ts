@@ -1,15 +1,17 @@
 // The session as this client sees it (SPEC "Web UI", Chat; "Protocol"): the log (log.ts: entries
 // by log index and the reply streaming in), the server's state (phase, device, view size, the
 // messages it holds unlogged), status markers from CUSTOM info and RUN_ERROR, whether the model is thinking,
-// and the messages sent from here that the log doesn't hold yet. Every AG-UI event and every page of
-// /api/messages comes through here; the screens only draw it.
-import { type Kind, logIndex, SessionState, splitMarkers } from "@wire";
+// and the messages sent from here that the log doesn't hold yet (kept across a reload, ./draft.ts).
+// Every AG-UI event and every page of /api/messages comes through here; the screens only draw it.
+import { type Asset, type FollowUp, type Kind, logIndex, SessionState, splitMarkers } from "@wire";
 import { EventType } from "@ag-ui/core";
 import { Option, Schema } from "effect";
 import { api } from "./api.ts";
+import { refOf } from "./attach.ts";
 import type { Link, LinkStatus } from "./connection.ts";
+import { loadSent, saveSent } from "./draft.ts";
 import { applyEvent, applyPage, dropBelow, emptyLog, hole, type Log, lowest, tip, trimHeld } from "./log.ts";
-import type { AttachmentRef, Inbound, Patch } from "./protocol.ts";
+import type { Inbound, Patch } from "./protocol.ts";
 
 export type Marker = {
   readonly key: number;
@@ -21,15 +23,19 @@ export type Marker = {
 // Sent from here and not in the log yet. The server's ack (CUSTOM "ack", matched on `id`, the id the
 // message went out with) says it is logged, and then it is no longer pending, or that it could not
 // be: `error`. `from` is the log's length then, so its entry has an index at least that, and `conn`
-// the connection it went out on: an ack told to an earlier one is lost, see `logged` below.
+// the connection it went out on: an ack told to an earlier one is lost, see `logged` below (one
+// sent before a reload has conn 0, older than any connection of this page).
 export type Pending = {
   readonly id: string;
   readonly text: string;
-  readonly attachments: number; // the log adds a marker line for each
+  readonly media: readonly Asset[]; // its attachments; the log adds a marker line for each
   readonly from: number;
   readonly conn: number;
   readonly error: string | null;
 };
+
+// a message this client took back, for the composer to hold again; `key` tells one from the next
+export type Restored = { readonly key: number; readonly text: string; readonly media: readonly Asset[] };
 
 export type Session = {
   readonly status: LinkStatus;
@@ -38,6 +44,7 @@ export type Session = {
   readonly markers: readonly Marker[];
   readonly thinking: boolean;
   readonly pending: readonly Pending[];
+  readonly restored: Restored | null;
 };
 
 const MAX_MARKERS = 100;
@@ -47,16 +54,29 @@ export const UNSENT = "it may not have reached the server: send it again";
 const PAGE = 100; // older entries per page
 const MAX_FILL = 500; // a wider hole under the window is dropped, not fetched
 
-const initial: Session = { log: emptyLog, markers: [], pending: [], state: null, status: "connecting", thinking: false };
+const initial: Session = { log: emptyLog, markers: [], pending: [], restored: null, state: null, status: "connecting", thinking: false };
 
-export type Queued = { readonly text: string; readonly error: string | null; readonly attachments: number };
+// One message that waits for the model, and where it stands: "queued", the server holds it for a
+// later turn; "sent", a turn has it (offered to the running call, or being logged); "sending", the
+// server hasn't shown it yet; "failed", the log refused it or it may never have arrived (`error`).
+// `back`: how it can be taken back into the composer: from the server (it is queued there), from
+// here (the server doesn't hold it), or not at all (a turn has it).
+export type Queued = {
+  readonly key: string;
+  readonly clientId: string | null;
+  readonly text: string;
+  readonly media: readonly Asset[];
+  readonly error: string | null;
+  readonly where: "queued" | "sent" | "sending" | "failed";
+  readonly back: "server" | "local" | null;
+};
 
 // Is this user entry's text the message sent as `p`? The same text, or with attachments the typed
 // text followed by their marker lines (the log adds those, SPEC "Media").
 const sameMessage = (entry: string, p: Pending) => {
-  if (p.attachments === 0) return entry === p.text;
+  if (p.media.length === 0) return entry === p.text;
   const { body, markers } = splitMarkers(entry);
-  return markers.length === p.attachments && body === (p.text.trim() === "" ? "" : p.text);
+  return markers.length === p.media.length && body === (p.text.trim() === "" ? "" : p.text);
 };
 
 // What waits for the model: every message the server holds unlogged, then ours it doesn't hold
@@ -66,12 +86,23 @@ export function queued(s: Session): Queued[] {
   const ours = new Map(s.pending.map((p) => [p.id, p]));
   const held = new Set<string>();
   const out: Queued[] = [];
-  for (const m of s.state?.pending ?? []) {
+  for (const [k, m] of (s.state?.pending ?? []).entries()) {
     const mine = m.clientId === null ? undefined : ours.get(m.clientId);
     if (mine) held.add(mine.id);
-    out.push({ attachments: m.attachments ?? 0, error: mine?.error ?? null, text: m.text });
+    const error = mine?.error ?? null;
+    out.push({
+      back: m.queued && m.clientId !== null ? "server" : null,
+      clientId: m.clientId,
+      error,
+      key: m.clientId ?? `server ${k}`,
+      media: m.media ?? [],
+      text: m.text,
+      where: error === null ? (m.queued ? "queued" : "sent") : "failed",
+    });
   }
-  for (const p of s.pending) if (!held.has(p.id)) out.push({ attachments: p.attachments, error: p.error, text: p.text });
+  for (const p of s.pending)
+    if (!held.has(p.id))
+      out.push({ back: p.error === null ? null : "local", clientId: p.id, error: p.error, key: p.id, media: p.media, text: p.text, where: p.error === null ? "sending" : "failed" });
   return out;
 }
 
@@ -98,9 +129,11 @@ export type SessionOptions = {
   readonly messages?: (before: number, limit: number) => Promise<{ readonly entries: readonly { readonly i: number; readonly kind: Kind; readonly text: string }[] }>;
 };
 
-export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "status">, options: SessionOptions = {}) {
+export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "status" | "takeBack">, options: SessionOptions = {}) {
   const messages = options.messages ?? api.messages;
-  let s: Session = { ...initial, status: link.status() };
+  // what was sent before a reload and never acked: the snapshots tell below whether it got there
+  const kept = loadSent().map((m): Pending => ({ ...m, conn: 0, error: null }));
+  let s: Session = { ...initial, pending: kept, status: link.status() };
   let raw: Record<string, Schema.Json> = {};
   let conns = s.status === "open" ? 1 : 0; // the connections opened so far
   let keys = 0;
@@ -110,8 +143,11 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
   // never one of ours matched by its text
   const ackedAt = new Set<number>();
   const subscribers = new Set<() => void>();
+  const asked = new Set<string>(); // the client ids this page asked the server to take back
+  let restores = 0;
 
   const set = (next: Partial<Session>) => {
+    if (next.pending && next.pending !== s.pending) saveSent(next.pending.map(({ from, id, media, text }) => ({ from, id, media, text })));
     s = { ...s, ...next };
     for (const f of subscribers) f();
   };
@@ -137,6 +173,17 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
     const p = s.pending[at];
     if (p === undefined) return; // another client's message
     set({ pending: index === null ? s.pending.toSpliced(at, 1, { ...p, error: error ?? "not logged" }) : s.pending.toSpliced(at, 1) });
+  };
+  // A held message left the server's inbox for a client's composer, or could not: ours is no longer
+  // pending either way it went to a composer, and the page that asked gets it back.
+  const takenBack = (id: string, error: string | null, text: string | null, media: readonly Asset[]) => {
+    const mine = asked.delete(id);
+    if (error !== null || text === null) {
+      if (mine) mark(`couldn't take it back: ${error ?? "no such message"}`, "info");
+      return;
+    }
+    const pending = s.pending.filter((p) => p.id !== id);
+    set(mine ? { pending, restored: { key: ++restores, media, text } } : { pending });
   };
   // A user entry was logged without an ack for us: one a failed ack told of earlier, or one sent on
   // a connection that has dropped since (its ack, told to nobody, is lost). Only these are matched
@@ -229,6 +276,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
         if (e.name === "info") mark(e.value, "info");
         else if (e.name === "thinking") set({ thinking: true });
         else if (e.name === "ack") acked(e.value.clientId, e.value.error, e.value.messageId === null ? null : logIndex(e.value.messageId));
+        else if (e.name === "taken-back") takenBack(e.value.clientId, e.value.error, e.value.text, e.value.media);
         return;
       case EventType.RUN_STARTED:
       case EventType.TEXT_MESSAGE_START:
@@ -254,12 +302,25 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
       };
     },
     // a message from the composer, with the attachments it uploaded: shown as queued until its
-    // ack. Sent while the link is down, it goes out on the next connection.
-    send: (text: string, device: string | null, attachments: readonly AttachmentRef[] = []) => {
+    // ack. Sent while the link is down, it goes out on the next connection. `followUp`: when it
+    // asks for the other behavior than the session's ("send now" or "queue")
+    send: (text: string, device: string | null, media: readonly Asset[] = [], followUp?: FollowUp) => {
       const id = crypto.randomUUID();
       const conn = s.status === "open" ? conns : conns + 1;
-      set({ pending: [...s.pending, { attachments: attachments.length, conn, error: null, from: s.state?.messages ?? 0, id, text }] });
-      link.send(text, device, id, attachments);
+      set({ pending: [...s.pending, { conn, error: null, from: s.state?.messages ?? 0, id, media, text }] });
+      link.send(text, device, id, media.map(refOf), followUp);
+    },
+    // A waiting message back into the composer: one the server holds is asked for (it answers
+    // with "taken-back"); one it doesn't hold is ours alone, and comes back at once. False when it
+    // can't be taken back now (a turn has it, or the link is down).
+    takeBack: (q: Queued) => {
+      if (q.back === "local" && q.clientId !== null) {
+        set({ pending: s.pending.filter((p) => p.id !== q.clientId), restored: { key: ++restores, media: q.media, text: q.text } });
+        return true;
+      }
+      if (q.back !== "server" || q.clientId === null || !link.takeBack(q.clientId)) return false;
+      asked.add(q.clientId);
+      return true;
     },
     // the reader reached the chat's newest end, or left it: only there are the oldest entries dropped
     scrolled: (end: boolean) => {

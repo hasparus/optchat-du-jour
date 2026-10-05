@@ -60,7 +60,7 @@ const turn = async (url: string, text: string, device: string) => {
   return events;
 };
 
-test("a turn on another device runs there, and a turn on an offline device fails at once", async () => {
+test("a turn on another device runs there, and a turn on an offline device stops at once, waiting for a pick", async () => {
   const mini = `${home}/mini`, macbook = `${home}/macbook`, log = `${home}/fake.jsonl`;
   mkdirSync(mini);
   mkdirSync(macbook);
@@ -140,10 +140,10 @@ test("a turn on another device runs there, and a turn on an offline device fails
         const failed = yield* Effect.promise(async () => turn(ws, "and now offline", "offline"));
         expect(Date.now() - t0).toBeLessThan(3000);
         expect(failed.at(-1)?.type).toBe("RUN_ERROR");
-        // priming found it offline first; the turn fails on that verdict, and says so once
+        // priming found it offline first; the turn stops on that verdict (E4: no failover), and says so once
         const notices = infos(failed).filter((n) => n.includes("offline: no device runner"));
         expect(notices).toHaveLength(1);
-        expect(notices[0]).toStartWith("device offline: offline: no device runner");
+        expect(notices[0]).toStartWith("Claude Opus (Claude Code) stopped: device offline: offline: no device runner");
         expect(infos(failed).filter((n) => n.startsWith("priming failed"))).toEqual([]);
 
         const devices = yield* Effect.promise(async () => {
@@ -157,7 +157,7 @@ test("a turn on another device runs there, and a turn on an offline device fails
   );
 }, 20_000);
 
-test("without server.publicUrl a turn on another device is refused at once, and its claude never starts", async () => {
+test("without server.publicUrl a turn on another device is stopped at once, and its claude never starts", async () => {
   const dir = `${home}/private`, log = `${home}/private.jsonl`;
   mkdirSync(dir);
   Bun.env.OPTCHAT_CLAUDE = FAKE;
@@ -186,7 +186,7 @@ test("without server.publicUrl a turn on another device is refused at once, and 
         yield* Layer.build(both);
         const failed = yield* Effect.promise(async () => turn(`ws://127.0.0.1:${port}/ws`, "edit the macbook repo", "macbook"));
         expect(failed.at(-1)?.type).toBe("RUN_ERROR");
-        expect(infos(failed)).toContain("device offline: macbook: server.publicUrl is not set, so claude there could not reach zoom and date");
+        expect(infos(failed)).toContain("Claude Opus (Claude Code) stopped: device offline: macbook: server.publicUrl is not set, so claude there could not reach zoom and date. Pick a model to go on, or stop");
         expect(servedTurns(log)).toEqual([]);
       }),
     ),

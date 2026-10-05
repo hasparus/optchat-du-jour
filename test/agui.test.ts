@@ -7,7 +7,7 @@ import type { LiveRun, SessionEvent, SessionState } from "../src/session.ts";
 import { newMsg } from "../src/store.ts";
 import type { Entry } from "../src/tree.ts";
 
-const STATE: SessionState = { budget: 128_000, device: "mini", down: [], engine: null, messages: 1, phase: "running", pending: [], viewBytes: 100, waiting: 0 };
+const STATE: SessionState = { budget: 128_000, device: "mini", down: [], engine: null, engines: [{ down: null, label: "Claude Opus (Claude Code)", ref: "claude-code:opus" }], followUp: "steer", lead: "claude-code:opus", messages: 1, phase: "running", pending: [], stopped: null, viewBytes: 100, waiting: 0 };
 
 function connect(entries: Entry[], live: LiveRun | null = null) {
   const { first, translate } = openStream({ entries, live, state: STATE, thread: "mini", window: 50 });
@@ -63,4 +63,15 @@ test("a client that joins mid-reply gets the reply so far, then the rest without
   expect(c.out.filter((e) => e.type === EventType.RUN_STARTED)).toHaveLength(1);
   expect(c.out.filter((e) => e.type === EventType.TEXT_MESSAGE_START)).toHaveLength(1);
   expect(c.out.filter((e) => e.type === EventType.TEXT_MESSAGE_END)).toHaveLength(1);
+});
+
+test("a take-back is a CUSTOM event every client gets: the message with its attachments, or why not", () => {
+  const c = connect([]);
+  const photo = { bytes: 2048, height: 600, kind: "image", mime: "image/jpeg", sha: "a".repeat(64), width: 800 } as const;
+  c.feed({ clientId: "c1", error: null, message: { media: [photo], text: "never mind" }, type: "taken-back" });
+  c.feed({ clientId: "c2", error: "too late: the model has it", message: null, type: "taken-back" });
+  expect(c.out.filter((e) => e.type === EventType.CUSTOM)).toEqual([
+    { name: "taken-back", type: EventType.CUSTOM, value: { clientId: "c1", error: null, media: [photo], text: "never mind" } },
+    { name: "taken-back", type: EventType.CUSTOM, value: { clientId: "c2", error: "too late: the model has it", media: [], text: null } },
+  ]);
 });

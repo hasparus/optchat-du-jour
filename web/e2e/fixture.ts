@@ -10,7 +10,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-export const REPLY = "Streamed reply from the fake claude.";
+export { REPLY, SOL_REPLY } from "./replies.ts";
 
 type LogEntry = MessagesPage["entries"][number];
 const decodePage = Schema.decodeUnknownSync(MessagesPage);
@@ -79,7 +79,7 @@ async function stop(child: ChildProcess) {
   await exited;
 }
 
-async function startServer(seeded: number): Promise<Server & { readonly stop: () => Promise<void> }> {
+async function startServer(seeded: number, spent: boolean): Promise<Server & { readonly stop: () => Promise<void> }> {
   const home = mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
@@ -88,6 +88,7 @@ async function startServer(seeded: number): Promise<Server & { readonly stop: ()
   const launch = async () => {
     const env: NodeJS.ProcessEnv = { ...process.env, E2E_HOME: home, E2E_PORT: String(port) };
     if (seeded > 0) env.E2E_QUICK_SUMMARIES = "1";
+    if (spent) env.E2E_SPENT = "1";
     const child = spawn("bun", ["e2e/server.ts"], { cwd: web, env, stdio: ["ignore", "ignore", "inherit"] });
     await waitUp(url, child);
     return child;
@@ -117,10 +118,11 @@ async function startServer(seeded: number): Promise<Server & { readonly stop: ()
   };
 }
 
-export const test = base.extend<{ seeded: number; server: Server }>({
+export const test = base.extend<{ seeded: number; spent: boolean; server: Server }>({
   seeded: [0, { option: true }], // user messages in the log before the server starts
-  server: async ({ seeded }, provide) => {
-    const server = await startServer(seeded);
+  spent: [false, { option: true }], // every Claude turn ends on a usage limit
+  server: async ({ seeded, spent }, provide) => {
+    const server = await startServer(seeded, spent);
     await provide(server);
     await server.stop();
   },

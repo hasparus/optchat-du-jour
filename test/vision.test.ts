@@ -175,7 +175,7 @@ const rig = (engines: readonly TurnEngine[], media: SessionMedia) =>
     return { chat, ended, events, log: () => chat.mem.root.map((m) => [m.kind, m.text]), session };
   });
 
-test("a message logs its marker with the caption once it comes; a failover to an engine not sent images gets the markers and a note, also mid-run", async () => {
+test("a message logs its marker with the caption once it comes; picked after a stop, an engine not sent images gets the markers and a note, also mid-run", async () => {
   await Effect.runPromise(
     Effect.gen(function* () {
       const seen: { ref: string; media: number; texts: readonly string[]; mid: Mid[] }[] = [];
@@ -212,11 +212,14 @@ test("a message logs its marker with the caption once it comes; a failover to an
       yield* until("the caption asked for", () => f.waiting.has(photo.sha));
       expect(r.log()).toEqual([]);
       f.describe(photo, "a red [square]");
+      // the seeing engine's limit stops the turn (E4); the user picks the blind one
+      yield* until("the stop", () => r.session.state().phase === "needs-model");
+      yield* r.session.configure({ lead: "blind:x" });
       yield* until("the blind engine's call", () => seen.length === 2);
       // a picture sent mid-run, its caption already known
       f.describe(later, "a blue circle");
       yield* r.session.input("", undefined, "c2", [later]);
-      yield* until("the run's end", () => r.ended() === 1);
+      yield* until("the run's end", () => r.ended() === 2); // the stop's, then the pick's
 
       const first = `what is this?\n[image ${shortSha(photo.sha)} 1568x1176 195KB: a red (square)]`;
       const second = `[image ${shortSha(later.sha)} 1568x1176 195KB: a blue circle]`;

@@ -1,6 +1,6 @@
 // AI Elements' Queue (elements.ai-sdk.dev registry): messages sent but not taken by the model yet,
-// above the composer (SPEC "Web UI", Chat). Attachments, todos and item actions are left out: a
-// queued message is text, and it can't be taken back once sent.
+// above the composer (SPEC "Web UI", Chat). Todos are left out; an item's one action takes a
+// held message back into the composer.
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
@@ -23,6 +23,20 @@ export type QueueItemContentProps = ComponentProps<"span">;
 
 export const QueueItemContent = ({ className, ...props }: QueueItemContentProps) => (
   <span className={cn("line-clamp-2 grow wrap-break-word text-muted-foreground", className)} {...props} />
+);
+
+export type QueueItemActionProps = ComponentProps<"button">;
+
+// an icon button at the item's end, a 32 px target
+export const QueueItemAction = ({ className, ...props }: QueueItemActionProps) => (
+  <button
+    className={cn(
+      "-my-1 flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50 [&_svg]:size-4",
+      className,
+    )}
+    type="button"
+    {...props}
+  />
 );
 
 export type QueueListProps = ComponentProps<typeof ScrollArea>;

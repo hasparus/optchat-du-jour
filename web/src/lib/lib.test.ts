@@ -238,7 +238,7 @@ describe("session", () => {
     const { server, session } = await setup();
     session.send("old", null); // the same text as an entry already logged: still pending, by id
     expect(waiting(session)).toEqual(["old"]);
-    server.play(state({ phase: "running", pending: [{ clientId: idOf(server, 0), text: "old" }] }));
+    server.play(state({ phase: "running", pending: [{ clientId: idOf(server, 0), queued: false, text: "old" }] }));
     expect(waiting(session)).toEqual(["old"]); // the server's copy and ours are one message
     server.play(ack("someone else's", 1)); // another client's message: not ours
     expect(waiting(session)).toEqual(["old"]);
@@ -298,14 +298,14 @@ describe("session", () => {
   });
 
   test("a message sent on a connection that dropped is kept, marked, unless the log or the server's queue has it", async () => {
-    let heldThere: readonly { readonly clientId: string | null; readonly text: string }[] = [];
+    let heldThere: readonly { readonly clientId: string | null; readonly queued: boolean; readonly text: string }[] = [];
     const server = fakeServer(() => [snapshot([{ kind: "user", text: "old" }]), { snapshot: { ...IDLE, messages: 1, pending: heldThere }, type: EventType.STATE_SNAPSHOT }]);
     const link = openLink("ws://x/ws", { retryMs: 1, socket: server.socket });
     const session = makeSession(link);
     await tick();
     session.send("in flight", null);
     session.send("held there", null);
-    heldThere = [{ clientId: idOf(server, 1), text: "held there" }]; // the server had it, in any state of its inbox, when the socket dropped
+    heldThere = [{ clientId: idOf(server, 1), queued: false, text: "held there" }]; // the server had it, in any state of its inbox, when the socket dropped
     server.drop();
     await tick(20);
     expect(waiting(session)).toEqual(["held there", `in flight (${UNSENT})`]);
@@ -315,14 +315,14 @@ describe("session", () => {
   });
 
   test("after a reconnect the server's copy is told by the client id, not the text: of two equal texts only the lost one is marked", async () => {
-    let heldThere: readonly { readonly clientId: string | null; readonly text: string }[] = [];
+    let heldThere: readonly { readonly clientId: string | null; readonly queued: boolean; readonly text: string }[] = [];
     const server = fakeServer(() => [snapshot([{ kind: "user", text: "old" }]), { snapshot: { ...IDLE, messages: 1, pending: heldThere }, type: EventType.STATE_SNAPSHOT }]);
     const link = openLink("ws://x/ws", { retryMs: 1, socket: server.socket });
     const session = makeSession(link);
     await tick();
     session.send("same", null);
     session.send("same", null);
-    heldThere = [{ clientId: idOf(server, 1), text: "same" }]; // held while it waited for summaries: the second one only
+    heldThere = [{ clientId: idOf(server, 1), queued: false, text: "same" }]; // held while it waited for summaries: the second one only
     server.drop();
     await tick(20);
     expect(session.get().pending.map((p) => p.error)).toEqual([UNSENT, null]);

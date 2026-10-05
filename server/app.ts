@@ -23,6 +23,7 @@ import { promptFile, systemPrompt } from "../src/prompts.ts";
 import { type Secrets, SecretsLive } from "../src/secrets.ts";
 import { makeSession, type SessionEvent } from "../src/session.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
+import { loadChoices, saveChoices } from "../src/choices.ts";
 import { type UsageRecord, logUsage } from "../src/usage.ts";
 import { allowed, policyFor } from "./auth.ts";
 import { makePlacements } from "./placement.ts";
@@ -49,6 +50,7 @@ export const routes = (o: ServerOptions) =>
     Effect.gen(function* () {
       const { settings } = o;
       const usagePath = `${o.home}/usage.jsonl`;
+      const choicesPath = `${o.home}/session.json`; // the clients' choices: follow-ups, the lead engine
       const stream = `${o.home}/streams/${o.device}`;
       const secret = crypto.randomUUID();
       const local = yield* Runner;
@@ -102,6 +104,8 @@ export const routes = (o: ServerOptions) =>
         devices: Object.keys(settings.devices),
         engines,
         events,
+        choices: { followUp: settings.master.followUp, ...loadChoices(choicesPath) },
+        saveChoices: saveChoices(choicesPath, report),
         logUsage: usage,
       });
       for (const p of chat.problems) yield* report(p);

@@ -169,6 +169,9 @@ export function openStream(o: {
       // before the user entry it names, so its sender knows the message is its own
       case "ack":
         return [{ name: "ack", type: EventType.CUSTOM, value: { clientId: e.clientId, error: e.error, messageId: e.at === null ? null : String(e.at) } }];
+      // every client is told, so a page whose own message another one took back drops it too
+      case "taken-back":
+        return [{ name: "taken-back", type: EventType.CUSTOM, value: { clientId: e.clientId, error: e.error, media: e.message?.media ?? [], text: e.message?.text ?? null } }];
       case "usage":
         return [{ name: "usage", type: EventType.CUSTOM, value: e.record }];
       case "state": {

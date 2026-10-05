@@ -2,7 +2,7 @@
 // events arrive, and what it sends back.
 import { EventType } from "@ag-ui/core";
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { App } from "./app";
 import { useAttachments } from "./chat/composer";
 import type { Uploader } from "./lib/attach";
@@ -252,8 +252,8 @@ test("a reply's markdown never loads an image", async () => {
 
 // an upload that finishes when the test says: each one as asked for, its progress and its end
 const fakeUploads = () => {
-  const started: { body: Blob; progress: (f: number) => void; finish: (sha: string) => void; fail: (why: string) => void }[] = [];
-  const uploader: Uploader = (body, progress) => {
+  const started: { body: Blob; detail: string; progress: (f: number) => void; finish: (sha: string) => void; fail: (why: string) => void }[] = [];
+  const uploader: Uploader = (body, progress, detail = "standard") => {
     const { promise, reject, resolve } = Promise.withResolvers<Asset>();
     const fail = (why: string) => {
       reject(new Error(why));
@@ -261,7 +261,7 @@ const fakeUploads = () => {
     const finish = (sha: string) => {
       resolve({ bytes: 2048, height: 600, kind: "image", mime: "image/jpeg", sha, width: 800 });
     };
-    started.push({ body, fail, finish, progress });
+    started.push({ body, detail, fail, finish, progress });
     return {
       abort: () => {
         fail("upload cancelled");
@@ -324,7 +324,9 @@ test("attach, paste and drop fill the tray; send waits for the uploads, names ea
     { source: { type: "url", value: `asset:${SHA("b")}` }, type: "image" },
   ]);
   expect(screen.queryByTestId("attachments")).toBeNull(); // the tray is empty again
-  expect(within(await screen.findByTestId("queue")).getByText("+ 2 attachments")).toBeTruthy();
+  // the queue shows them, from the uploads, before the server has said a word
+  const queuedMedia = within(await screen.findByTestId("queue")).getByTestId("queue-media");
+  expect(within(queuedMedia).getAllByRole("img").map((t) => t.getAttribute("src"))).toEqual(["/api/assets/aaaaaaaaaaaa/thumb", "/api/assets/bbbbbbbbbbbb/thumb"]);
 
   // logged: the markers, as the server writes them; thumbnails from our own /api/assets
   const markers = `[image aaaaaaaaaaaa 800x600 2KB: a whiteboard]\n[image bbbbbbbbbbbb 800x600 2KB: (not described)]`;
@@ -381,4 +383,248 @@ test("a file removed, or a composer closed, while the photo is being downscaled 
     setTimeout(resolve, 30);
   });
   expect(uploads.started).toHaveLength(1);
+});
+
+// ---------------------------------------------------------------------------------------------
+// the composer (SPEC "Web UI", Chat): drafts, follow-ups, take-back, the model picker, recall
+
+const photo = (sha: string): Asset => ({ bytes: 2048, height: 600, kind: "image", mime: "image/jpeg", sha, width: 800 });
+const frames = (sent: readonly string[]) => sent.map((f) => parseSent(f));
+const box = () => screen.getByLabelText<HTMLTextAreaElement>("Message");
+const type = (text: string) => {
+  fireEvent.change(box(), { target: { value: text } });
+};
+
+test("the draft, its text and its finished uploads, survives the page; it is cleared once sent", async () => {
+  const uploads = fakeUploads();
+  start(LOG, 0, uploads.uploader);
+  await screen.findByText("what is in the repo?");
+  type("half a thought");
+  const picker = screen.getByLabelText("Attach: files");
+  Object.defineProperty(picker, "files", { configurable: true, value: filesOf(png("board.png")) });
+  fireEvent.change(picker);
+  await waitFor(() => {
+    expect(uploads.started).toHaveLength(1);
+  });
+  await act(async () => {
+    uploads.started[0]?.finish(SHA("a"));
+  });
+  cleanup(); // the tab is evicted
+
+  const again = start(LOG, 0, uploads.uploader);
+  await screen.findByText("what is in the repo?");
+  expect(box().value).toBe("half a thought");
+  const tray = screen.getByTestId("attachments");
+  expect(within(tray).getByRole("img").getAttribute("src")).toBe("/api/assets/aaaaaaaaaaaa/thumb");
+  fireEvent.keyDown(box(), { key: "Enter" });
+  const parts = Schema.decodeUnknownSync(Parts)(frames(again.server.sent).at(-1)?.messages?.at(-1)?.content);
+  expect(parts).toEqual([
+    { text: "half a thought", type: "text" },
+    { source: { type: "url", value: `asset:${SHA("a")}` }, type: "image" },
+  ]);
+  expect(localStorage.getItem("optchat:draft")).toBeNull();
+  // sent and not acked yet: kept, so a reload finds it in the server's queue or says it may be lost
+  expect(localStorage.getItem("optchat:sent")).toContain("half a thought");
+  again.play(ack(lastId(again.server.sent), 4));
+  expect(localStorage.getItem("optchat:sent")).toBeNull();
+});
+
+test("with no storage at all (a private window), the composer works and keeps nothing", async () => {
+  // site data blocked: even reading `localStorage` throws, as in some browsers' private modes
+  const real = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  let tried = 0;
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    get: () => {
+      tried += 1;
+      throw new Error("SecurityError");
+    },
+  });
+  try {
+    const { server } = start();
+    await screen.findByText("what is in the repo?");
+    type("still works");
+    fireEvent.keyDown(box(), { key: "Enter" });
+    expect(sentTexts(server.sent)).toEqual([{ device: undefined, text: "still works" }]);
+    // recall still works, from this page's memory
+    fireEvent.keyDown(box(), { key: "ArrowUp" });
+    expect(box().value).toBe("still works");
+    expect(tried).toBeGreaterThan(0);
+  } finally {
+    if (real) Object.defineProperty(globalThis, "localStorage", real);
+  }
+});
+
+test("a message sent before a reload that never reached the server is marked, and taken back into the composer from here", async () => {
+  localStorage.setItem("optchat:sent", JSON.stringify([{ from: 4, id: "lost-1", media: [photo(SHA("c"))], text: "did it go?" }]));
+  start();
+  const queue = await screen.findByTestId("queue");
+  // neither the log nor the server's queue has it
+  await waitFor(() => {
+    expect(within(queue).getByTestId("queue-error").textContent).toContain("it may not have reached the server");
+  });
+  fireEvent.click(within(queue).getByRole("button", { name: "Take back: did it go?" }));
+  expect(box().value).toBe("did it go?");
+  expect(within(screen.getByTestId("attachments")).getByRole("img").getAttribute("src")).toBe("/api/assets/cccccccccccc/thumb");
+  expect(screen.queryByTestId("queue")).toBeNull();
+});
+
+test("queue: a held message shows as queued with its attachments; take-back asks the server and puts it back into the composer", async () => {
+  const { play, server } = start();
+  await screen.findByText("what is in the repo?");
+  type("typed meanwhile");
+  play(state({ followUp: "queue", pending: [{ clientId: "q1", media: [photo(SHA("d"))], queued: true, text: "for later" }], phase: "running" }));
+  const item = await screen.findByTestId("queue-item");
+  expect(item.dataset.state).toBe("queued");
+  expect(within(item).getByTestId("queue-where").textContent).toBe("queued for the next turn");
+  expect(within(item).getByRole("img").getAttribute("src")).toBe("/api/assets/dddddddddddd/thumb");
+  fireEvent.click(within(item).getByRole("button", { name: "Take back: for later" }));
+  expect(frames(server.sent).at(-1)).toMatchObject({ clientId: "q1", type: "take-back" });
+  play(state({ pending: [] }), { name: "taken-back", type: EventType.CUSTOM, value: { clientId: "q1", error: null, media: [photo(SHA("d"))], text: "for later" } });
+  await waitFor(() => {
+    expect(box().value).toBe("for later\ntyped meanwhile");
+  });
+  expect(within(screen.getByTestId("attachments")).getByRole("img").getAttribute("src")).toBe("/api/assets/dddddddddddd/thumb");
+  expect(document.activeElement).toBe(box());
+});
+
+test("too late to take back: the page says so and the message stays the turn's", async () => {
+  const { play } = start();
+  await screen.findByText("what is in the repo?");
+  play(state({ pending: [{ clientId: "q1", queued: true, text: "racing" }], phase: "running" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Take back: racing" }));
+  play(state({ pending: [{ clientId: "q1", queued: false, text: "racing" }] }), { name: "taken-back", type: EventType.CUSTOM, value: { clientId: "q1", error: "too late: the model has it", media: [], text: null } });
+  const marker = await screen.findByTestId("marker-info");
+  expect(marker.textContent).toContain("couldn't take it back: too late: the model has it");
+  expect(box().value).toBe("");
+  expect(screen.queryByRole("button", { name: "Take back: racing" })).toBeNull();
+});
+
+test("while a turn runs: send follows the follow-up setting, the other button and Ctrl+Enter send the other way; with nothing to send, send is stop", async () => {
+  const { play, server } = start();
+  await screen.findByText("what is in the repo?");
+  play(state({ followUp: "queue", phase: "running" }));
+  expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
+  expect(box().getAttribute("placeholder")).toBe("Queue a follow-up");
+  type("queued one");
+  expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  type("right now");
+  fireEvent.click(screen.getByRole("button", { name: "Send now" }));
+  type("also now");
+  fireEvent.keyDown(box(), { ctrlKey: true, key: "Enter" });
+  expect(frames(server.sent).map((f) => [f.messages?.at(-1)?.content, f.forwardedProps?.followUp])).toEqual([
+    ["queued one", undefined],
+    ["right now", "steer"],
+    ["also now", "steer"],
+  ]);
+  // steering, the other button queues
+  play(state({ followUp: "steer" }));
+  type("later");
+  fireEvent.click(screen.getByRole("button", { name: "Queue for the next turn" }));
+  expect(frames(server.sent).at(-1)?.forwardedProps?.followUp).toBe("queue");
+});
+
+test("the follow-up setting and the model are the server's: the composer sends the change, and shows what the state says", async () => {
+  const { play, server } = start();
+  await screen.findByText("what is in the repo?");
+  fireEvent.click(screen.getByRole("button", { name: "Follow-ups: steer" }));
+  fireEvent.click(await screen.findByRole("button", { name: /^Queue/ }));
+  expect(frames(server.sent).at(-1)).toMatchObject({ followUp: "queue", type: "settings" });
+
+  const model = screen.getByLabelText<HTMLSelectElement>("Model");
+  expect([...model.options].map((o) => o.textContent)).toEqual(["Claude Opus (Claude Code)", "GPT-6.1 Sol (ChatGPT plan)"]);
+  expect(within(screen.getByTestId("model-picker")).getByText("Opus")).toBeTruthy();
+  fireEvent.change(model, { target: { value: "openai-plan:gpt-6.1-sol" } });
+  expect(frames(server.sent).at(-1)).toMatchObject({ lead: "openai-plan:gpt-6.1-sol", type: "settings" });
+  // the server's word: Sol leads, Opus is down with why
+  play(
+    state({
+      engines: [
+        { down: "Claude AI usage limit reached", label: "Claude Opus (Claude Code)", ref: "claude-code:opus" },
+        { down: null, label: "GPT-6.1 Sol (ChatGPT plan)", ref: "openai-plan:gpt-6.1-sol" },
+      ],
+      lead: "openai-plan:gpt-6.1-sol",
+    }),
+  );
+  expect(within(screen.getByTestId("model-picker")).getByText("GPT-6.1 Sol")).toBeTruthy();
+  const [opus] = [...screen.getByLabelText<HTMLSelectElement>("Model").options];
+  expect([opus?.disabled, opus?.textContent]).toEqual([true, "Claude Opus (Claude Code): unavailable, Claude AI usage limit reached"]);
+});
+
+test("a turn stopped on a usage limit: every client shows why and the engines to go on with; a pick is sent", async () => {
+  const { play, server } = start();
+  await screen.findByText("what is in the repo?");
+  play(
+    state({
+      engines: [
+        { down: "Claude AI usage limit reached", label: "Claude Opus (Claude Code)", ref: "claude-code:opus" },
+        { down: null, label: "GPT-6.1 Sol (ChatGPT plan)", ref: "openai-plan:gpt-6.1-sol" },
+      ],
+      phase: "needs-model",
+      stopped: { label: "Claude Opus (Claude Code)", ref: "claude-code:opus", why: "usage limit: Claude AI usage limit reached" },
+    }),
+  );
+  const alert = await screen.findByTestId("needs-model");
+  expect(alert.textContent).toContain("Claude Opus (Claude Code): usage limit: Claude AI usage limit reached. Pick a model to go on.");
+  expect(screen.getByTestId("model-picker").className).toContain("ring-destructive");
+  expect(screen.queryByTestId("status")).toBeNull();
+  fireEvent.click(within(alert).getByRole("button", { name: "GPT-6.1 Sol (ChatGPT plan)" }));
+  expect(frames(server.sent).at(-1)).toMatchObject({ lead: "openai-plan:gpt-6.1-sol", type: "settings" });
+  fireEvent.click(within(alert).getByRole("button", { name: "Try Claude Opus (Claude Code) again" }));
+  expect(frames(server.sent).at(-1)).toMatchObject({ lead: "claude-code:opus", type: "settings" });
+});
+
+test("on a keyboard, Up in an empty composer recalls this client's sent messages, Down goes back; edited, it stays", async () => {
+  start();
+  await screen.findByText("what is in the repo?");
+  for (const t of ["first", "second"]) {
+    type(t);
+    fireEvent.keyDown(box(), { key: "Enter" });
+  }
+  fireEvent.keyDown(box(), { key: "ArrowUp" });
+  expect(box().value).toBe("second");
+  box().setSelectionRange(0, 0);
+  fireEvent.keyDown(box(), { key: "ArrowUp" });
+  expect(box().value).toBe("first");
+  box().setSelectionRange(5, 5);
+  fireEvent.keyDown(box(), { key: "ArrowDown" });
+  expect(box().value).toBe("second");
+  box().setSelectionRange(6, 6);
+  fireEvent.keyDown(box(), { key: "ArrowDown" });
+  expect(box().value).toBe("");
+  type("my own");
+  fireEvent.keyDown(box(), { key: "ArrowUp" });
+  expect(box().value).toBe("my own");
+  expect(screen.getByTestId("composer-hint").textContent).toContain("↑ last message");
+});
+
+test("a photo can go up at high detail: it is uploaded again with ?detail=high, and send waits for it, saying why", async () => {
+  const uploads = fakeUploads();
+  start(LOG, 0, uploads.uploader);
+  await screen.findByText("what is in the repo?");
+  const picker = screen.getByLabelText("Attach: files");
+  Object.defineProperty(picker, "files", { configurable: true, value: filesOf(png("board.png")) });
+  fireEvent.change(picker);
+  await waitFor(() => {
+    expect(uploads.started).toHaveLength(1);
+  });
+  expect(screen.getByTestId("composer-hint").textContent).toBe("waiting for 1 upload…");
+  expect(screen.getByRole("button", { name: "Send" }).hasAttribute("disabled")).toBe(true);
+  await act(async () => {
+    uploads.started[0]?.finish(SHA("a"));
+  });
+  const hd = screen.getByRole("button", { name: "High detail for board.png" });
+  expect(hd.getAttribute("aria-pressed")).toBe("false");
+  fireEvent.click(hd);
+  await waitFor(() => {
+    expect(uploads.started.map((u) => u.detail)).toEqual(["standard", "high"]);
+  });
+  expect(screen.getByRole("button", { name: "High detail for board.png" }).getAttribute("aria-pressed")).toBe("true");
+  expect(screen.getByRole("button", { name: "Send" }).hasAttribute("disabled")).toBe(true);
+  await act(async () => {
+    uploads.started[1]?.finish(SHA("e"));
+  });
+  expect(screen.getByRole("button", { name: "Send" }).hasAttribute("disabled")).toBe(false);
 });

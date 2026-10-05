@@ -4,18 +4,24 @@
 // socket only when this client sends, and gives up when it closes, so a phone that only watches
 // would never see a turn the laptop started (SPEC M2 open question).
 import { Option } from "effect";
-import { ABORT, type AttachmentRef, type Inbound, parseFrame, runInput } from "./protocol.ts";
+import type { FollowUp } from "@wire";
+import { ABORT, type AttachmentRef, type Inbound, parseFrame, runInput, type Settings, settingsFrame, takeBackFrame } from "./protocol.ts";
 
 export type LinkStatus = "connecting" | "open" | "closed";
 
 export type Link = {
   // a message: it starts a turn, or joins the running one (device picks where a new turn runs).
   // Sent while the link is down, it goes out on the next open: what the user wrote isn't lost.
-  // `id` names the message in the server's ack; `attachments` were uploaded first (PUT /api/assets).
-  readonly send: (text: string, device: string | null, id: string, attachments?: readonly AttachmentRef[]) => void;
+  // `id` names the message in the server's ack; `attachments` were uploaded first (PUT /api/assets);
+  // `followUp`, when this one asks for the other follow-up behavior than the session's.
+  readonly send: (text: string, device: string | null, id: string, attachments?: readonly AttachmentRef[], followUp?: FollowUp) => void;
   // the user's cancel, for whichever turn runs. Only while the link is open: kept for later, it
   // would cancel whatever turn runs after the reconnect. False when it wasn't sent.
   readonly abort: () => boolean;
+  // a held message back, by the id it was sent with; like a cancel, only while the link is open
+  readonly takeBack: (clientId: string) => boolean;
+  // the session's settings; sent while the link is down, they go out on the next open
+  readonly configure: (change: Settings) => void;
   readonly listen: (listener: (event: Inbound) => void) => () => void;
   readonly onStatus: (listener: (status: LinkStatus) => void) => () => void;
   readonly status: () => LinkStatus;
@@ -52,6 +58,11 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
   const setStatus = (next: LinkStatus) => {
     status = next;
     for (const l of statusListeners) l(next);
+  };
+
+  const deliver = (frame: string) => {
+    if (socket && status === "open") socket.send(frame);
+    else outbox.push(frame);
   };
 
   const connect = () => {
@@ -111,10 +122,16 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
         statusListeners.delete(listener);
       };
     },
-    send: (text, device, id, attachments = []) => {
-      const frame = runInput(text, device, id, attachments);
-      if (socket && status === "open") socket.send(frame);
-      else outbox.push(frame);
+    send: (text, device, id, attachments = [], followUp) => {
+      deliver(runInput(text, device, id, attachments, followUp));
+    },
+    takeBack: (clientId) => {
+      if (!socket || status !== "open") return false;
+      socket.send(takeBackFrame(clientId));
+      return true;
+    },
+    configure: (change) => {
+      deliver(settingsFrame(change));
     },
     status: () => status,
   };

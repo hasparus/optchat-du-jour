@@ -29,6 +29,9 @@ export const PRIME_IDLE = "1 second";
 export const WARM_MAX_AGE = "30 minutes";
 export const WARM_RETRY = "2 seconds";
 export const WARM_TRIES = 3;
+// an engine of the master's chain that hit a usage limit shows as down in the picker this long,
+// unless it answers sooner; then it can be picked again
+export const MASTER_DOWN_FOR = "30 minutes";
 // requests one turn of our own tool loop may make (openai-plan, api-key); the last one may not
 // call tools, so the turn ends with an answer (M5)
 export const TOOL_ROUNDS = 40;
@@ -95,6 +98,10 @@ export const Settings = Schema.Struct({
     effort: Effort,
     permissionMode: Schema.String,
     tools: Schema.optional(Schema.Array(Schema.String)),
+    // what a message sent while a turn runs does when the server starts (SPEC "Turn and
+    // priming"): "steer" (the default) offers it to the running call, "queue" holds it for the
+    // next turn; clients change it at runtime (`settings` over /ws), until the server restarts
+    followUp: Schema.optional(Schema.Literals(["steer", "queue"])),
   }),
   compactor: Schema.Struct({
     byLevel: Schema.NonEmptyArray(Schema.Struct({ from: Schema.Int, chain: Chain })),

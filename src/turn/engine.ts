@@ -2,9 +2,9 @@
 // log entries and live events out. Mid-run messages stay the session's until a call takes one:
 // they are offered to the running call on `mid`, the call reports each one it passed to the model
 // with `took` (the session logs it then), and whatever it was offered and never took goes back to
-// the session when the call ends. When the chain fails over in the middle of a turn, the next
-// engine gets the same view and texts, what the turn has logged so far as `earlier`, and on `mid`
-// the messages the engine before never took, then any new ones.
+// the session when the call ends. When a usage limit stopped a turn and it goes on on the engine
+// the user picked (E4), that engine gets the same view and texts, what the turn has logged so far
+// as `earlier`, and on `mid` the messages the engine before never took, then any new ones.
 import type { Effect } from "effect";
 import type { EngineError } from "../engines/errors.ts";
 import type { Part } from "../media/part.ts";
@@ -32,7 +32,7 @@ export type TurnInput = {
   readonly earlier: readonly Logged[];
 };
 
-// The opening message's own text: the new texts, and after a failover mid-turn what the engine
+// The opening message's own text: the new texts, and after a stop mid-turn what the engine
 // before logged, so the next one carries on from there instead of starting again.
 export const openingText = (input: Pick<TurnInput, "earlier" | "texts">) => {
   const asked = input.texts.join("\n\n");
