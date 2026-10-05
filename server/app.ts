@@ -6,19 +6,20 @@ import { Effect, Layer, Option, Predicate, PubSub, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { openChat } from "../src/chat.ts";
 import { type Settings, MASTER_TOOLS } from "../src/config.ts";
-import { LocalRunner, Runner } from "../src/claude/process.ts";
+import { LocalRunner, Runner, claudeBinary, claudeVersion } from "../src/claude/process.ts";
+import { deviceHealth, remoteRunner } from "../src/claude/remote.ts";
 import type { Summarize } from "../src/compactor.ts";
 import { DeviceOffline } from "../src/engines/errors.ts";
 import { handleMcp, mcpConfig } from "../src/mcp.ts";
+import { expandHome } from "../src/paths.ts";
 import { makePersist } from "../src/persist.ts";
 import { promptFile, systemPrompt } from "../src/prompts.ts";
 import { makeSession } from "../src/session.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
 import { getNode, localTime, span } from "../src/tree.ts";
-import { claudeCodeTurn } from "../src/turn/claude-code.ts";
+import { type ClaudeCodeTurnOptions, claudeCodeTurn } from "../src/turn/claude-code.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
 import { type UsageRecord, logUsage, readUsage } from "../src/usage.ts";
 import { PLACEHOLDER, render, viewSize } from "../src/view.ts";
@@ -36,7 +37,6 @@ export type ServerOptions = {
   readonly window?: number; // log entries in a client's first snapshot
 };
 
-const expand = (path: string) => path.replace(/^~(?=\/|$)/, homedir());
 
 // What a client sends: AG-UI's RunAgentInput (the newest user message is the one to answer), or an abort
 const TextPart = Schema.Struct({ text: Schema.optional(Schema.String), type: Schema.String });
@@ -58,6 +58,7 @@ const lastUserText = (messages: readonly (typeof InboundMessage.Type)[]) => {
 const Before = Schema.Struct({ before: Schema.optional(Schema.NumberFromString), limit: Schema.optional(Schema.NumberFromString) });
 const NodeAt = Schema.Struct({ i: Schema.NumberFromString, l: Schema.NumberFromString });
 
+const HEALTH_TIMEOUT = "2 seconds";
 const logReport = (message: string) => Effect.logInfo(message);
 const forbidden = HttpServerResponse.text("forbidden", { status: 403 });
 const json = (body: Schema.Json) => HttpServerResponse.jsonUnsafe(body);
@@ -80,11 +81,25 @@ export const routes = (o: ServerOptions) =>
       const chat = yield* openChat(stream, { report: (m) => report(m), summarize });
 
       const systemFile = yield* promptFile(systemPrompt(o.home));
-      const mcp = mcpConfig(`http://127.0.0.1:${o.port}/mcp?key=${secret}`);
-      const runnerFor = (device: string) =>
-        device === o.device
-          ? Effect.succeed({ cwd: settings.devices[device]?.folders[0] ? expand(settings.devices[device].folders[0]) : undefined, runner: local })
-          : Effect.fail(new DeviceOffline({ message: `${device} has no device runner yet` }));
+      // where each device's claude runs (E7): this machine's own Runner, or that device's runner over
+      // the tailnet. A claude elsewhere reaches /mcp through the server's tailnet URL (E8).
+      const mcpAt = (base: string) => mcpConfig(`${base.replace(/\/$/, "")}/mcp?key=${secret}`);
+      const mcp = mcpAt(`http://127.0.0.1:${o.port}`);
+      const remoteMcp = settings.server?.publicUrl === undefined ? undefined : mcpAt(settings.server.publicUrl);
+      const remotes = new Map(
+        Object.entries(settings.devices)
+          .filter(([name]) => name !== o.device)
+          .map(([name, d]) => [name, remoteRunner(name, d.url)] as const),
+      );
+      if (remotes.size > 0 && remoteMcp === undefined)
+        yield* Effect.logWarning("server.publicUrl is not set: claude on another device can't reach zoom and date");
+      const runnerFor = (device: string): ReturnType<ClaudeCodeTurnOptions["runnerFor"]> => {
+        const folder = settings.devices[device]?.folders[0];
+        if (device === o.device) return Effect.succeed({ cwd: folder === undefined ? undefined : expandHome(folder), runner: local });
+        const runner = remotes.get(device);
+        if (!runner) return Effect.fail(new DeviceOffline({ message: `${device} is not a configured device` }));
+        return Effect.succeed({ cwd: folder, mcpConfig: remoteMcp, runner }); // `~` is the device's home, so it expands it
+      };
       const engines: TurnEngine[] = [];
       for (const ref of settings.master.chain) {
         const [engine, model = ""] = ref.split(/:(.*)/s);
@@ -228,12 +243,40 @@ export const routes = (o: ServerOptions) =>
       );
 
       yield* router.add("GET", "/api/usage", (request) => Effect.succeed(guard(request) ? json(readUsage(usagePath)) : forbidden));
+      // which devices answer and which claude they run (SPEC "Web UI", Devices). Devices on different
+      // claude versions don't share the prompt cache: a turn that moves misses it once (ref §16.8).
+      const localVersion = yield* Effect.cachedWithTTL(claudeVersion(claudeBinary()), "10 minutes");
+      let warned = "";
+      const devices = Effect.forEach(
+        Object.entries(settings.devices),
+        ([name, d]) =>
+          (name === o.device
+            ? Effect.map(localVersion, (v) => Option.some(v))
+            : Effect.map(deviceHealth(d.url, HEALTH_TIMEOUT), Option.map((h) => h.claudeVersion))
+          ).pipe(
+            Effect.map((version) => ({
+              claudeVersion: Option.getOrNull(version),
+              folders: d.folders,
+              local: name === o.device,
+              name,
+              online: Option.isSome(version),
+              url: d.url,
+            })),
+          ),
+        { concurrency: "unbounded" },
+      );
       yield* router.add("GET", "/api/devices", (request) =>
-        Effect.succeed(
-          guard(request)
-            ? json(Object.entries(settings.devices).map(([name, d]) => ({ folders: d.folders, local: name === o.device, name, url: d.url })))
-            : forbidden,
-        ),
+        Effect.gen(function* () {
+          if (!guard(request)) return forbidden;
+          const list = yield* devices;
+          const versions = new Set(list.flatMap((d) => (d.claudeVersion === null ? [] : [d.claudeVersion])));
+          const seen = list.map((d) => `${d.name} ${d.claudeVersion ?? "?"}`).join(", ");
+          if (versions.size > 1 && seen !== warned) {
+            warned = seen;
+            yield* report(`devices run different claude versions (${seen}): a turn that moves between them misses the cache once`);
+          }
+          return json(list);
+        }),
       );
 
       // the built web UI; any other path is the app's (it has no router)

@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { type Trust } from "../device/auth.ts";
 import { deviceLayer } from "../device/runner.ts";
 import { deviceHealth, remoteRunner } from "../src/claude/remote.ts";
+import { freePort } from "./ports.ts";
 
 const ECHO = new URL("echo-claude.ts", import.meta.url).pathname;
 const MAIN = new URL("../device/main.ts", import.meta.url).pathname;
@@ -21,17 +22,10 @@ afterAll(() => {
   for (const d of dirs) rmSync(d, { force: true, recursive: true });
 });
 
-export const freePort = () => {
-  const s = Bun.serve({ fetch: () => new Response(), hostname: "127.0.0.1", port: 0 });
-  const port = s.port ?? 0;
-  void s.stop(true);
-  return port;
-};
-
 const loopback: Trust = { loopback: true, nodes: [], whois: () => Effect.succeed(Option.none()) };
 
 // a device runner on 127.0.0.1 for the length of `body`
-const withDevice = <A, E>(folders: readonly string[], body: (url: string) => Effect.Effect<A, E, Scope.Scope>) =>
+const withDevice = async <A, E>(folders: readonly string[], body: (url: string) => Effect.Effect<A, E, Scope.Scope>) =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
@@ -116,7 +110,7 @@ test("closing the scope kills claude on the device, also one that ignores SIGTER
         }),
       );
       expect(alive(pid)).toBe(true); // SIGTERM is ignored; SIGKILL follows after the grace
-      expect(yield* Effect.promise(() => gone(pid))).toBe(true);
+      expect(yield* Effect.promise(async () => gone(pid))).toBe(true);
       return pid;
     }),
   );

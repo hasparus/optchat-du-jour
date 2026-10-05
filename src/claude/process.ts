@@ -83,7 +83,7 @@ export const claudeBinary = () => Bun.env.OPTCHAT_CLAUDE ?? "claude";
 
 // `claude --version`, e.g. "2.1.3 (Claude Code)"; null when it can't be run (SPEC "Multi-machine", /health)
 export const claudeVersion = (binary: string) =>
-  ChildProcessSpawner.ChildProcessSpawner.use((spawner) => spawner.string(ChildProcess.make(binary, ["--version"]))).pipe(
+  ChildProcessSpawner.ChildProcessSpawner.use((spawner) => spawner.string(ChildProcess.make(binary, ["--version"], { stdin: "ignore" }))).pipe(
     Effect.timeout("10 seconds"),
     Effect.map((out) => out.trim() || null),
     Effect.orElseSucceed(() => null),

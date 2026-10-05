@@ -41,7 +41,8 @@ export const Settings = Schema.Struct({
   devices: Schema.Record(Schema.String, Schema.Struct({ url: Schema.String, folders: Schema.Array(Schema.String) })),
   defaultDevice: Schema.String,
   allowedLogins: Schema.Array(Schema.String),
-  server: Schema.optional(Schema.Struct({ host: Schema.String, port: Schema.Int })),
+  // publicUrl: the server as the tailnet reaches it (`tailscale serve`), for claude on other devices
+  server: Schema.optional(Schema.Struct({ host: Schema.String, port: Schema.Int, publicUrl: Schema.optional(Schema.String) })),
 });
 export type Settings = typeof Settings.Type;
 
