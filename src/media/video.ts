@@ -22,8 +22,15 @@ export const MAX_FRAMES = 24;
 export const FRAME_EDGE = 768;
 const STEP = 2; // seconds between frames, for a clip short enough
 
-// `limit`: seconds a call may take on top of the clip's own length (media.toolSeconds)
-export type Tools = { readonly ffmpeg: string; readonly ffprobe: string; readonly whisper: readonly string[] | null; readonly limit: number };
+// `limit`: seconds an ffmpeg or ffprobe call may take on top of the clip's own length
+// (media.toolSeconds); `whisperLimit`: the same for whisper (media.whisperSeconds)
+export type Tools = {
+  readonly ffmpeg: string;
+  readonly ffprobe: string;
+  readonly whisper: readonly string[] | null;
+  readonly limit: number;
+  readonly whisperLimit: number;
+};
 
 // the demuxer each sniffed type is read with (ffmpeg names the MP4 family "mov", WebM "matroska")
 const DEMUXER = { "video/mp4": "mov", "video/quicktime": "mov", "video/webm": "matroska" } as const;
@@ -117,7 +124,8 @@ export const extract = (tools: Tools, bytes: Uint8Array, mime: VideoMime, maxSec
         if (p.width > MAX_EDGE || p.height > MAX_EDGE || p.width * p.height > MAX_PIXELS)
           return yield* new MediaError({ message: `the video is ${p.width}x${p.height}; at most ${MAX_EDGE} px on a side and ${MAX_PIXELS} px in all are taken`, status: 413 });
         if (p.duration > maxSeconds) return yield* new MediaError({ message: `the video is ${Math.round(p.duration)} s long; at most ${maxSeconds} s are taken`, status: 413 });
-        // each call may take this long: a minute (media.toolSeconds) and the clip's length
+        // each ffmpeg call may take this long: a minute (media.toolSeconds) and the clip's length;
+        // whisper has its own (media.whisperSeconds)
         const seconds = tools.limit + p.duration;
         const reading = [...intake(mime), "-t", String(maxSeconds)];
         // the same streams without any metadata, bit-exact so the same upload gives the same file
@@ -140,7 +148,7 @@ export const extract = (tools: Tools, bytes: Uint8Array, mime: VideoMime, maxSec
           .toSorted();
         const frames = files.map((f, k) => ({ data: readFileSync(`${dir}/${f}`), t: k * step }));
         if (frames.length === 0) return yield* new MediaError({ message: "the video has no frames ffmpeg can read", status: 422 });
-        const heard = yield* transcribe(tools, input, dir, { audio: p.audio, mime, seconds, maxSeconds });
+        const heard = yield* transcribe(tools, input, dir, { audio: p.audio, heardSeconds: tools.whisperLimit + p.duration, mime, seconds, maxSeconds });
         return { clean: readFileSync(clean), frames, notice: heard.notice, probe: p, transcript: heard.transcript };
       }),
     (dir) =>
@@ -150,7 +158,7 @@ export const extract = (tools: Tools, bytes: Uint8Array, mime: VideoMime, maxSec
   );
 
 // the audio as text, by the local whisper command with the 16 kHz mono WAV's path appended
-const transcribe = (tools: Tools, input: string, dir: string, o: { readonly audio: boolean; readonly mime: VideoMime; readonly seconds: number; readonly maxSeconds: number }) =>
+const transcribe = (tools: Tools, input: string, dir: string, o: { readonly audio: boolean; readonly mime: VideoMime; readonly seconds: number; readonly heardSeconds: number; readonly maxSeconds: number }) =>
   Effect.gen(function* () {
     if (!o.audio) return { notice: null, transcript: null };
     if (tools.whisper === null || tools.whisper.length === 0)
@@ -161,7 +169,7 @@ const transcribe = (tools: Tools, input: string, dir: string, o: { readonly audi
       "cannot take the audio from the video",
       o.seconds,
     );
-    const heard = yield* run([...tools.whisper, wav], "whisper failed", o.seconds).pipe(Effect.result);
+    const heard = yield* run([...tools.whisper, wav], "whisper failed", o.heardSeconds).pipe(Effect.result);
     if (heard._tag === "Failure") return { notice: `audio not transcribed: ${heard.failure.message}`, transcript: null };
     const text = heard.success.trim();
     return { notice: null, transcript: text.length > TRANSCRIPT_MAX ? `${headOf(text, TRANSCRIPT_MAX)}…` : text };

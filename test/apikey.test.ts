@@ -14,6 +14,7 @@ import { type ApiKeyRef, Settings, loadSettings, parseSettings } from "../src/co
 import { DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 import { memorySecrets } from "../src/secrets.ts";
 import { newMsg } from "../src/store.ts";
+import { type EngineNeeds, providerOf } from "../src/engines/registry.ts";
 import { apiKeyCompactor } from "../src/summarize/api-key.ts";
 import { apiKeyProvider } from "../src/providers/api-key.ts";
 import type { ToolBox } from "../src/tools/box.ts";
@@ -63,7 +64,8 @@ const rig = (monthly: number, usagePath: string) => {
       Effect.andThen(logUsage(usagePath, r)),
       Effect.andThen(Effect.sync(() => void records.push(r))),
     );
-  const compact = apiKeyCompactor({ budget, clients, effort: "medium", log, ref: API_KEY, settings: settings(monthly) });
+  const needs: EngineNeeds = { apiKeys: Effect.succeed(clients), budget, log, plan: Effect.never, report: () => Effect.void, settings: settings(monthly) };
+  const compact = apiKeyCompactor({ log, provider: Effect.runSync(providerOf(API_KEY, needs, "medium")) });
   return { budget, compact, records, reports };
 };
 

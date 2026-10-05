@@ -8,7 +8,7 @@ import { Runner } from "../claude/process.ts";
 import type { Job } from "../compactor.ts";
 import { CALL_TIMEOUT } from "../config.ts";
 import { type EngineError, fromResult, ModelError } from "../engines/errors.ts";
-import { COMPACT_FILE } from "../prompts.ts";
+import { COMPACT } from "../prompts.ts";
 import { tokensOf, type UsageRecord } from "../usage.ts";
 import { type Try, contextBlocks, sizeRetries, step } from "./step.ts";
 
@@ -32,7 +32,7 @@ export function blocks(job: Job, ttl: "1h" | "5m"): TextBlock[] {
 export const claudeCodeCompactor = (o: CompactorOptions) =>
   Effect.gen(function* () {
     const runner = yield* Runner;
-    const args = [...baseArgs({ effort: o.effort, model: o.model, systemFile: COMPACT_FILE, tools: "" }), "--safe-mode"];
+    const args = [...baseArgs({ effort: o.effort, model: o.model, system: COMPACT, tools: "" }), "--safe-mode"];
     // our marks only (D6), every one with the same TTL (E6)
     const env = { CLAUDE_CODE_PROMPT_CACHE_TTL: o.ttl, DISABLE_PROMPT_CACHING: "1" };
     const timeout = o.timeout ?? CALL_TIMEOUT;

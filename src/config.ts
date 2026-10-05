@@ -53,10 +53,13 @@ const Effort = Schema.Literals(["low", "medium", "high", "xhigh", "max"]);
 // ("api-key:anthropic/claude-opus-5-5"), and `model` is that provider's model id.
 const Model = { model: Schema.String, ref: Schema.String };
 const RefValue = Schema.Union([
-  Schema.Struct({ engine: Schema.Literals(["claude-code", "openai-plan"]), ...Model }),
+  Schema.Struct({ engine: Schema.Literal("claude-code"), ...Model }),
+  Schema.Struct({ engine: Schema.Literal("openai-plan"), ...Model }),
   Schema.Struct({ engine: Schema.Literal("api-key"), provider: Schema.Literals(["anthropic", "openai"]), ...Model }),
 ]);
 export type Ref = typeof RefValue.Type;
+// a ref whose engine runs on a provider (src/providers/): everything but claude-code, which runs its own loop
+export type ProviderRef = Exclude<Ref, { readonly engine: "claude-code" }>;
 export type ApiKeyRef = Extract<Ref, { readonly engine: "api-key" }>;
 
 export const parseRef = (ref: string): Result.Result<Ref, string> => {
@@ -133,7 +136,8 @@ export const Settings = Schema.Struct({
   // Media (SPEC "Media"): the caption chain, how long a message waits for its captions before it
   // is logged without them (ms), upload limits, the ffmpeg tools for video and how long each call
   // may take (`toolSeconds`, on top of the clip's length), a local whisper
-  // command (the WAV's path is appended; none: audio is not transcribed), and whether the ChatGPT
+  // command (the WAV's path is appended; none: audio is not transcribed) with its own limit
+  // (`whisperSeconds`, on top of the clip's length), and whether the ChatGPT
   // plan's route is sent images (not probed yet, so off unless set)
   media: Schema.optional(
     Schema.Struct({
@@ -143,6 +147,7 @@ export const Settings = Schema.Struct({
       maxVideoBytes: Schema.optional(Schema.Int),
       maxVideoSeconds: Schema.optional(Schema.Number),
       toolSeconds: Schema.optional(Schema.Number),
+      whisperSeconds: Schema.optional(Schema.Number),
       ffmpeg: Schema.optional(Schema.String),
       ffprobe: Schema.optional(Schema.String),
       whisper: Schema.optional(Schema.Array(Schema.String)),
@@ -211,6 +216,12 @@ export const mediaSettings = (settings: Settings) => {
     // seconds each ffmpeg or whisper call may take on top of the clip's length
     toolSeconds: m.toolSeconds ?? 60,
     whisper: m.whisper ?? null,
+    // Seconds whisper may take on top of the clip's length. ffmpeg only copies and decodes, so a
+    // minute is plenty for it; whisper first loads a model from a cold disk (a few GB for a large
+    // one, 10-30 s) and then decodes at about real time on a CPU, which the clip's length covers.
+    // 120 s is that load with a wide margin, and a hung process still dies at about two minutes
+    // past the clip.
+    whisperSeconds: m.whisperSeconds ?? 120,
   };
 };
 export type MediaSettings = ReturnType<typeof mediaSettings>;

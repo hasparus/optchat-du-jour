@@ -4,21 +4,24 @@
 // same conversation, each try re-sent with the reply it got (thinking blocks included). Every try
 // is priced and counted against the monthly budget; the size retries are step.ts's.
 import { Duration, Effect } from "effect";
-import { readFileSync } from "node:fs";
 import type { Job } from "../compactor.ts";
 import { CALL_TIMEOUT } from "../config.ts";
 import { type EngineError, ModelError } from "../engines/errors.ts";
-import { COMPACT_FILE } from "../prompts.ts";
-import { type ApiKeyOptions, apiKeyProvider } from "../providers/api-key.ts";
-import type { Item } from "../providers/provider.ts";
+import { COMPACT } from "../prompts.ts";
+import type { Item, Provider } from "../providers/provider.ts";
 import type { UsageRecord } from "../usage.ts";
 import { type Try, contextBlocks, sizeRetries, step } from "./step.ts";
 
-export const apiKeyCompactor = (
-  o: ApiKeyOptions & { readonly log: (record: UsageRecord) => Effect.Effect<void>; readonly device?: string; readonly timeout?: Duration.Input },
-) => {
-  const provider = apiKeyProvider(o);
-  const instructions = readFileSync(COMPACT_FILE, "utf8");
+// `provider` is the api-key one, from the registry's `providerOf`; its `engine` and `auth` name the
+// usage records
+export const apiKeyCompactor = (o: {
+  readonly provider: Provider;
+  readonly log: (record: UsageRecord) => Effect.Effect<void>;
+  readonly device?: string;
+  readonly timeout?: Duration.Input;
+}) => {
+  const { provider } = o;
+  const instructions = COMPACT;
   const timeout = o.timeout ?? CALL_TIMEOUT;
 
   // the transport: one request per try, the whole conversation so far in each
@@ -33,7 +36,7 @@ export const apiKeyCompactor = (
         const text = reply.items.flatMap((i) => (i.type === "text" ? [i.text] : [])).join("");
         return { dollars: reply.dollars, model: reply.model, text, usage: reply.usage };
       });
-    return sizeRetries({ ask, auth: "api-key", device: o.device, engine: "api-key", failoverFrom, job, log: o.log });
+    return sizeRetries({ ask, auth: provider.auth, device: o.device, engine: provider.engine, failoverFrom, job, log: o.log });
   };
 
   return (job: Job, failoverFrom: string | null = null): Effect.Effect<string, EngineError> =>

@@ -16,7 +16,7 @@ import { type WarmOptions, warmRunner } from "../src/claude/warm.ts";
 import { CompactError, type Job } from "../src/compactor.ts";
 import { MASTER_TOOLS } from "../src/config.ts";
 import { type McpSeen, mcpConfig, mcpTransports } from "../src/mcp.ts";
-import { COMPACT_FILE, SCALE } from "../src/prompts.ts";
+import { COMPACT, SCALE } from "../src/prompts.ts";
 import { makeSession, noMedia, type SessionEvent } from "../src/session.ts";
 import { openStream } from "../server/agui.ts";
 import { newMsg } from "../src/store.ts";
@@ -156,7 +156,7 @@ test("a compactor call: four marked context pieces at the marks, the unmarked st
   expect(line).toBe("talk: a short summary line");
 
   const [call] = f.of("compact");
-  expect(call?.argv).toEqual([...baseArgs({ effort: "medium", model: "sonnet", systemFile: COMPACT_FILE, tools: "" }), "--safe-mode"]);
+  expect(call?.argv).toEqual([...baseArgs({ effort: "medium", model: "sonnet", system: COMPACT, tools: "" }), "--safe-mode"]);
   expect(call?.env).toEqual({ CLAUDE_CODE_PROMPT_CACHE_TTL: "5m", DISABLE_PROMPT_CACHING: "1" });
   expect(call?.ins).toEqual([blocks(job, "5m")]);
 
@@ -287,7 +287,7 @@ const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
           mcpSeen: (seen: McpSeen) => transports.seen(device, seen),
           runner,
         })),
-      systemFile: "/dev/null",
+      instructions: "SYSTEM",
       tools: MASTER_TOOLS,
       ttl: "1h" as const,
     };
@@ -565,6 +565,11 @@ test("priming sends the turn's argv and the turn's view blocks with marks, plus 
   );
   const [prime] = f.of("prime"), [turn] = f.of("turn");
   expect(prime?.argv).toEqual(turn?.argv ?? []);
+  // the system prompt is inline, as it is on every device, never a file (SPEC "Multi-machine")
+  const at = turn?.argv?.indexOf("--system-prompt") ?? -1;
+  expect(at).toBeGreaterThan(-1);
+  expect(turn?.argv?.[at + 1]).toBe("SYSTEM");
+  expect(turn?.argv).not.toContain("--system-prompt-file");
   expect(prime?.env).toEqual({ CLAUDE_CODE_PROMPT_CACHE_TTL: "1h", DISABLE_PROMPT_CACHING: "1" });
   expect(turn?.env).toEqual({ CLAUDE_CODE_PROMPT_CACHE_TTL: "1h", DISABLE_PROMPT_CACHING: "" });
   const sent = turn?.ins[0] ?? [];

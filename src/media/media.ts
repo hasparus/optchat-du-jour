@@ -49,7 +49,7 @@ export const makeMedia = (o: {
   Effect.gen(function* () {
     const store = assetStore(o.root);
     const scope = yield* Effect.scope;
-    const tools = { ffmpeg: o.settings.ffmpeg, ffprobe: o.settings.ffprobe, limit: o.settings.toolSeconds, whisper: o.settings.whisper };
+    const tools = { ffmpeg: o.settings.ffmpeg, ffprobe: o.settings.ffprobe, limit: o.settings.toolSeconds, whisper: o.settings.whisper, whisperLimit: o.settings.whisperSeconds };
 
     const picture = (a: ImageAsset): Picture | null => {
       const file = store.file(a);

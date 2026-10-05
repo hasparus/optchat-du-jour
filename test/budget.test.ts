@@ -85,6 +85,43 @@ test("too many videos to thin: each is its sheet, then the rest are markers only
   expect(crowd.looks.slice(ROOM)).toEqual(["none", "none", "none"]);
 });
 
+test("when not every video can keep 4 frames, the first attachments in order keep a picture (an image whole, a video its sheet) and the rest are markers only", () => {
+  // thinning is tried only when the stills fit and leave every video MIN_FRAMES; otherwise it is
+  // sheets, and the room is spent in the order sent, stills and videos alike
+  // a budget that already holds `n` stills
+  const holding = (n: number) => {
+    const budget = pictureBudget();
+    kept(Array.from({ length: n }, (_, k) => still(k + 1)), budget);
+    return budget;
+  };
+  // 2 of 60 left: a video, a still, a video: the sheet, the still, then a marker
+  expect(kept([clip(1), still(60), clip(2)], holding(58)).looks).toEqual(["sheet", "all", "none"]);
+  // a still first keeps its place, then one sheet; the second video is a marker
+  expect(kept([still(60), clip(1), clip(2)], holding(58)).looks).toEqual(["all", "sheet", "none"]);
+  // and a still sent after the videos is the one left out: with room < videos + stills, thinning (room >= stills + 4 per video) was never possible
+  expect(kept([clip(1), clip(2), still(60)], holding(58)).looks).toEqual(["sheet", "sheet", "none"]);
+
+  // 5 pictures of room for two videos: 2 frames each is under MIN_FRAMES, so both are sheets
+  expect(kept([clip(1), clip(2)], holding(55)).looks).toEqual(["sheet", "sheet"]);
+
+  // a batch of 61 stills is over the 60: the first 60 are whole, the last is a marker
+  expect(kept(Array.from({ length: 61 }, (_, k) => still(k + 1))).looks).toEqual([...Array.from({ length: 60 }, () => "all" as const), "none" as const]);
+  // more stills than room plus a video: the video comes after them all and gets nothing
+  expect(kept([...Array.from({ length: 60 }, (_, k) => still(k + 1)), clip(1)]).looks.at(-1)).toBe("none");
+  // 30 videos and 31 stills, videos first: 30 sheets, 30 stills, the last still left out;
+  // stills first: 31 stills, 29 sheets, the last video left out
+  const videosFirst = kept([...Array.from({ length: 30 }, (_, k) => clip(k + 1)), ...Array.from({ length: 31 }, (_, k) => still(k + 100))]).looks;
+  expect(videosFirst.slice(0, 30).every((l) => l === "sheet")).toBe(true);
+  expect(videosFirst.slice(30, 60).every((l) => l === "all")).toBe(true);
+  expect(videosFirst.at(-1)).toBe("none");
+  const stillsFirst = kept([...Array.from({ length: 31 }, (_, k) => still(k + 100)), ...Array.from({ length: 30 }, (_, k) => clip(k + 1))]).looks;
+  expect(stillsFirst.slice(0, 31).every((l) => l === "all")).toBe(true);
+  expect(stillsFirst.slice(31, 60).every((l) => l === "sheet")).toBe(true);
+  expect(stillsFirst.at(-1)).toBe("none");
+  // when thinning does work, every still stays whole and only the videos are thinned
+  expect(kept([...Array.from({ length: 10 }, (_, k) => still(k + 1)), clip(1), clip(2), clip(3)]).looks).toEqual([...Array.from({ length: 10 }, () => "all" as const), 16, 17, 17]);
+});
+
 test("mid-run messages are planned against what the request holds already", () => {
   const budget = pictureBudget();
   expect(kept([still(1), clip(1), clip(2)], budget).looks).toEqual(["all", "all", "all"]); // 49 pictures

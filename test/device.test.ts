@@ -390,7 +390,7 @@ test("a connection lost mid-turn is a ModelError, so the chain doesn't run the t
           primeTtl: "1h",
           report: () => Effect.void,
           runnerFor: () => Effect.succeed({ cwd: undefined, mcpConfig: "{}", mcpSeen: () => Effect.succeed(false), runner: remoteRunner("macbook", url) }),
-          systemFile: "/dev/null",
+          instructions: "SYSTEM",
           tools: MASTER_TOOLS,
           ttl: "1h",
         });
