@@ -19,7 +19,13 @@ export type Chat = {
 export const committer =
   (dir: string, mem: Mem): Commit =>
   (n) =>
-    appendNode(dir, n).pipe(Effect.tap(() => Effect.sync(() =>{  addNode(mem, n); })));
+    appendNode(dir, n).pipe(
+      Effect.andThen(
+        Effect.sync(() => {
+          addNode(mem, n);
+        }),
+      ),
+    );
 
 export const openChat = Effect.fn("openChat")(function* (
   dir: string,

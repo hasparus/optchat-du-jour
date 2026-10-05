@@ -3,16 +3,13 @@
 // order of the calls (and the contexts they see) is the order rule 3 gives.
 import { Effect } from "effect";
 import { openChat } from "../../src/chat.ts";
-import { built } from "../../src/tree.ts";
+import { built, nodes } from "../../src/tree.ts";
 import { fakeSummary, fixture } from "./fixture.ts";
 
 const dir = process.argv[2];
 if (!dir) throw new Error("usage: drive-ours.ts <data dir>");
 
-const done = (T: number, has: (l: number, i: number) => boolean) => {
-  for (let l = 0; 2 ** l <= T; l++) for (let i = 0; (i + 1) * 2 ** l <= T; i++) if (!has(l, i)) return false;
-  return true;
-};
+const done = (T: number, has: (l: number, i: number) => boolean) => nodes(T).every((c) => has(c.l, c.i));
 
 await Effect.runPromise(
   Effect.scoped(

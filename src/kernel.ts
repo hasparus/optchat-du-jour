@@ -1,10 +1,8 @@
 // The calls into the Bend fold kernel (kernel/kernel.bend, E14). The kernel sees sizes only:
-// this file turns the memory into its inputs and its answers back into coordinates.
+// this file turns the memory into its inputs and its answers back into coordinates. It holds no
+// text either: an unbuilt line's size (the placeholder's, which view.ts owns) is a parameter.
 import kernel, { type List, type Msg, type Part } from "../kernel/kernel.mjs";
-import { built, bytes, type Coord, getNode, type Mem } from "./tree.ts";
-
-export const PLACEHOLDER = "(not summarized yet: zoom it)"; // display and fail-safe only, no call ever sees it
-const PLACEHOLDER_SIZE = bytes(PLACEHOLDER);
+import { built, type Coord, getNode, type Mem, nodes } from "./tree.ts";
 
 const nil: List<never> = { $: "Nil" };
 function list<T>(xs: readonly T[]): List<T> {
@@ -28,47 +26,46 @@ function ups(mem: Mem, l: number, i: number): number[] {
   }
 }
 
-export const partSize = (mem: Mem, c: Coord) => getNode(mem, c.l, c.i)?.size ?? PLACEHOLDER_SIZE;
-
-const part = (mem: Mem, c: Coord): Part => ({
+// `hole` is the size an unbuilt line counts with
+const part = (mem: Mem, c: Coord, hole: number): Part => ({
   $: "Part",
   built: built(mem, c.l, c.i),
   i: c.i,
   l: c.l,
-  size: partSize(mem, c),
+  size: getNode(mem, c.l, c.i)?.size ?? hole,
   ups: list(ups(mem, c.l, c.i)),
 });
-const parts = (mem: Mem) => list(mem.view.map((c) => part(mem, c)));
+const parts = (mem: Mem, hole: number) => list(mem.view.map((c) => part(mem, c, hole)));
 const coords = (ps: List<Part>): Coord[] => array(ps).map((p) => ({ i: Number(p.i), l: Number(p.l) }));
-const msg = (mem: Mem, i: number): Msg => {
-  const p = part(mem, { i, l: 0 });
+const msg = (mem: Mem, i: number, hole: number): Msg => {
+  const p = part(mem, { i, l: 0 }, hole);
   return { $: "Msg", built: p.built, size: p.size, ups: p.ups };
 };
 
 // merge the most due built pairs while over budget (gist §5.2), T messages
-export const fit = (mem: Mem) => coords(kernel.fit(mem.root.length, mem.budget, parts(mem)));
+export const fit = (mem: Mem, hole: number) => coords(kernel.fit(mem.root.length, mem.budget, parts(mem, hole)));
 
 // message T - 1 just arrived: its line goes at the end, then fit
-export const append = (mem: Mem) => {
+export const append = (mem: Mem, hole: number) => {
   const T = mem.root.length - 1;
-  return coords(kernel.append(T, mem.budget, parts(mem), msg(mem, T)));
+  return coords(kernel.append(T, mem.budget, parts(mem, hole), msg(mem, T, hole)));
 };
 
 // the view folded again from message 0 against today's tree (gist §5.2 "At load")
-export const refold = (mem: Mem) =>
-  coords(kernel.refold(mem.budget, list(mem.root.map((m) => msg(mem, m.i)))));
+export const refold = (mem: Mem, hole: number) =>
+  coords(kernel.refold(mem.budget, list(mem.root.map((m) => msg(mem, m.i, hole)))));
 
-// the first message whose view line is unbuilt, else T (gist §4.1)
-export const first = (mem: Mem) => Number(kernel.first(mem.root.length, parts(mem)));
+// the first message whose view line is unbuilt, else T (gist §4.1). It reads only where each
+// line starts and whether it is built, so the lines go without sizes or ancestors.
+export function first(mem: Mem) {
+  const ps = mem.view.map((c): Part => ({ $: "Part", built: built(mem, c.l, c.i), i: c.i, l: c.l, size: 0, ups: nil }));
+  return Number(kernel.first(mem.root.length, list(ps)));
+}
 
 // the nodes rule 3 lets the pump start, in its order: level by level, oldest first (gist §4.1)
 export function offers(mem: Mem): Coord[] {
-  const levels: boolean[][] = [], T = mem.root.length;
-  for (let l = 0; 2 ** l <= T; l++) {
-    const row: boolean[] = [];
-    for (let i = 0; (i + 1) * 2 ** l <= T; i++) row.push(built(mem, l, i));
-    levels.push(row);
-  }
+  const levels: boolean[][] = [];
+  for (const c of nodes(mem.root.length)) (levels[c.l] ??= []).push(built(mem, c.l, c.i));
   const found = array(kernel.offers(list(levels.map(list)), first(mem)));
   return found.toReversed().map((c) => ({ i: Number(c.i), l: Number(c.l) }));
 }

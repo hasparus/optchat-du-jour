@@ -5,7 +5,7 @@ import { Console, Effect } from "effect";
 import { importOptmem } from "../src/import.ts";
 import { streamDir } from "../src/paths.ts";
 import { loadChat } from "../src/store.ts";
-import { render } from "../src/view.ts";
+import { render, stats } from "../src/view.ts";
 
 const USAGE = "usage: optchat [view | import-optmem [LOG.txt]]   (data dir: $OPTCHAT_DIR or ~/.optchat/streams/mini)";
 const [cmd, arg] = process.argv.slice(2);
@@ -14,6 +14,8 @@ const dir = streamDir("mini");
 const view = Effect.gen(function* () {
   const { mem, problems } = yield* loadChat(dir, { repair: false });
   for (const p of problems) yield* Console.error(p);
+  // a dim header for a person at a terminal; piped, stdout is the view and nothing else
+  if (process.stdout.isTTY) yield* Effect.sync(() => process.stderr.write(`\u001B[2m${stats(mem).join("\n")}\u001B[0m\n`));
   yield* Console.log(render(mem));
 });
 

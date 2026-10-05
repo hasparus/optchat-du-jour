@@ -7,9 +7,9 @@ import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
 import { CompactError, type Job } from "../src/compactor.ts";
 import { parseOptmem } from "../src/import.ts";
-import { loadChat, lock, Locked } from "../src/store.ts";
-import { built } from "../src/tree.ts";
-import { cutBlocks } from "../src/view.ts";
+import { loadChat, lock, Locked, newMsg } from "../src/store.ts";
+import { built, newMem, nodes } from "../src/tree.ts";
+import { addMessage, addNode, cutBlocks, settle } from "../src/view.ts";
 
 const dirs: string[] = [];
 const tmp = () => {
@@ -24,10 +24,7 @@ afterAll(() => {
 const run = async <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(effect);
 const runScoped = async <A, E>(effect: Effect.Effect<A, E, Scope.Scope>) => run(Effect.scoped(effect));
 const long = (n: number) => "w".repeat(n); // never a free node at level 0
-const allBuilt = (T: number, has: (l: number, i: number) => boolean) => {
-  for (let l = 0; 2 ** l <= T; l++) for (let i = 0; (i + 1) * 2 ** l <= T; i++) if (!has(l, i)) return false;
-  return true;
-};
+const allBuilt = (T: number, has: (l: number, i: number) => boolean) => nodes(T).every((c) => has(c.l, c.i));
 
 test("the view is cut after the last line end before each mark, and marks past its end are skipped", () => {
   const view = ["<chat>", ...Array.from({ length: 40 }, (_, k) => `${k}+1|${"x".repeat(30)}`), "</chat>"].join("\n");
@@ -37,6 +34,31 @@ test("the view is cut after the last line end before each mark, and marks past i
   for (const b of blocks.slice(0, -1)) expect(b.endsWith("\n")).toBe(true);
   expect(blocks[0]!.length).toBeLessThanOrEqual(100);
   expect(cutBlocks("<chat>\n</chat>")).toEqual(["<chat>\n</chat>"]);
+});
+
+test("settle waits for the last unbuilt view line, and a cancelled wait leaves no listener", async () => {
+  const mem = newMem();
+  for (let i = 0; i < 2; i++) addMessage(mem, newMsg(i, "echo", long(600)));
+  await run(
+    Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(settle(mem));
+      yield* Effect.yieldNow;
+      expect(mem.listeners.size).toBe(1);
+      addNode(mem, { i: 0, l: 0, text: "first" });
+      yield* Effect.yieldNow;
+      expect(fiber.pollUnsafe()).toBeUndefined(); // one line is still a placeholder
+      addNode(mem, { i: 1, l: 0, text: "second" });
+      yield* Fiber.join(fiber);
+      expect(mem.listeners.size).toBe(0);
+
+      addMessage(mem, newMsg(2, "echo", long(600)));
+      const cancelled = yield* Effect.forkChild(settle(mem));
+      yield* Effect.yieldNow;
+      expect(mem.listeners.size).toBe(1);
+      yield* Fiber.interrupt(cancelled);
+      expect(mem.listeners.size).toBe(0);
+    }),
+  );
 });
 
 test("the pump compresses messages one at a time, in order, merges alongside, and never runs more than JOBS", async () => {
