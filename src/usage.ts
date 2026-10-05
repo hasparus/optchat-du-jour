@@ -3,35 +3,10 @@
 import { Effect, Schema } from "effect";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import type { Usage as ClaudeUsage } from "./claude/events.ts";
+import { type Tokens, UsageRecord } from "./wire.ts";
 
-export const Role = Schema.Literals(["turn", "prime", "compact", "subagent"]);
-export const Engine = Schema.Literals(["claude-code", "openai-plan", "api-key"]);
-export const Auth = Schema.Literals(["claude-max", "chatgpt-pro", "api-key"]);
-
-export const Tokens = Schema.Struct({
-  input: Schema.Number,
-  cacheRead: Schema.Number,
-  cacheWrite: Schema.Number,
-  output: Schema.Number,
-});
-export type Tokens = typeof Tokens.Type;
-
-export const UsageRecord = Schema.Struct({
-  date: Schema.String,
-  role: Role,
-  engine: Engine,
-  auth: Auth,
-  model: Schema.NullOr(Schema.String),
-  device: Schema.NullOr(Schema.String),
-  level: Schema.NullOr(Schema.Number),
-  usage: Tokens,
-  cold: Schema.Boolean,
-  attempt: Schema.Number,
-  failoverFrom: Schema.NullOr(Schema.String),
-  ms: Schema.Number,
-  dollars: Schema.optional(Schema.Number),
-});
-export type UsageRecord = typeof UsageRecord.Type;
+// the record's schema is the clients' too (src/wire.ts: /api/usage)
+export { Auth, Engine, Role, Tokens, UsageRecord } from "./wire.ts";
 
 export const tokensOf = (u: ClaudeUsage | undefined): Tokens => ({
   input: u?.input_tokens ?? 0,

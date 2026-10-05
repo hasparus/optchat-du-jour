@@ -14,6 +14,7 @@ type Listener = (event: { readonly data: string }) => void;
 export const IDLE: SessionState = {
   budget: 128_000,
   device: "mini",
+  down: [],
   engine: null,
   messages: 0,
   phase: "idle",

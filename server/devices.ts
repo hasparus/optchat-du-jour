@@ -4,16 +4,10 @@
 import { Effect } from "effect";
 import type { Settings } from "../src/config.ts";
 import { deviceHealth } from "../src/claude/remote.ts";
+import type { Device } from "../src/wire.ts";
 
-export type DeviceStatus = {
-  readonly name: string;
-  readonly url: string;
-  readonly folders: readonly string[];
-  readonly local: boolean; // the server's own machine, whose turns use the local runner
-  // `refused`: the runner is up but answered 403, so its list of callers or this node's name is wrong
-  readonly status: "online" | "offline" | "refused";
-  readonly claudeVersion: string | null;
-};
+// what /api/devices says of a device (src/wire.ts Device)
+export type DeviceStatus = Device;
 
 const HEALTH_TIMEOUT = "2 seconds";
 

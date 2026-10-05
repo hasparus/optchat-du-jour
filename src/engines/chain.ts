@@ -1,6 +1,9 @@
 // A failover chain (E4): the first engine that answers wins. Only a spent plan or an offline
 // device moves the call on to the next engine; a refusal or a model error is the answer.
 import { Effect, type PubSub } from "effect";
+import type { Down } from "../wire.ts";
+
+export type { Down } from "../wire.ts";
 
 type Failure = { readonly _tag: string; readonly message: string };
 export type Link<A, E extends Failure> = { readonly ref: string; readonly run: (failoverFrom: string | null) => Effect.Effect<A, E> };
@@ -32,7 +35,7 @@ export const failover = <A, E extends Failure>(
   return go(0, null);
 };
 
-export type Down = { readonly ref: string; readonly reason: string };
+
 
 // The engines of a chain down right now, with why, and a signal each time that list changes, for
 // a session that shows it to clients connecting later (SPEC "Policy": never unseen).

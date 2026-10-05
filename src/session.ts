@@ -5,27 +5,17 @@
 import { Cause, type Duration, Effect, Exit, Fiber, FiberSet, Option, PubSub, Queue, type Scope } from "effect";
 import { PRIME_IDLE } from "./config.ts";
 import type { Chat } from "./chat.ts";
-import { type Down, type DownList, failover } from "./engines/chain.ts";
+import { type DownList, failover } from "./engines/chain.ts";
 import type { EngineError } from "./engines/errors.ts";
 import type { StoreError } from "./store.ts";
 import type { Entry } from "./tree.ts";
 import type { Mid, TurnEngine, TurnEvents, TurnInput } from "./turn/engine.ts";
 import type { UsageRecord } from "./usage.ts";
 import { allBuilt, render, settle, unbuilt, viewSize } from "./view.ts";
+import type { Phase, SessionState } from "./wire.ts";
 
-export type Phase = "idle" | "running" | "waiting";
-
-export type SessionState = {
-  readonly phase: Phase;
-  readonly device: string; // where the next or current turn runs
-  readonly engine: string | null; // the engine of the current turn
-  readonly waiting: number; // view lines not summarized yet
-  readonly viewBytes: number;
-  readonly budget: number;
-  readonly messages: number;
-  readonly queued: readonly string[]; // sent mid-run, not taken by the call yet
-  readonly down: readonly Down[]; // compactor engines down right now, with why (SPEC "Policy": never unseen)
-};
+// the state every client is shown (STATE_SNAPSHOT, STATE_DELTA, /api/state): src/wire.ts
+export type { Phase, SessionState } from "./wire.ts";
 
 export type SessionEvent =
   | { readonly type: "logged"; readonly entry: Entry; readonly runId: string | null }

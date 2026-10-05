@@ -324,9 +324,9 @@ One chat, one memory, two pairs of hands: the Mini keeps memory and the turn loo
 
 The reference's session object (`createSession` in ref `turn.ts`) moves into the server unchanged; the REPL and the web UI become two clients of one WebSocket API (E1).
 
-**Server.** `Bun.serve` on `127.0.0.1:7700`, published to the tailnet by `tailscale serve`. Routes: `/ws` (the API), `/mcp` (zoom and date), `/api/*` (read-only JSON for the browser and stats), `/` (the built web UI).
+**Server.** `Bun.serve` on `127.0.0.1:7700`, published to the tailnet by `tailscale serve`. Routes, one module each under `server/routes/`: `/ws` (the API), `/mcp` (zoom and date), `/api/*` (read-only JSON for the browser and stats), `/` (the built web UI). `server/app.ts` builds the parts (chat, compactor, engines, session) and hands them to the routes; `server/placement.ts` says where each device's turns run.
 
-**Protocol: AG-UI events (E15).** The WebSocket carries AG-UI protocol events, a standard any AG-UI client can read. Both ends are ours: the server in Effect, the web UI's session store over the same events (see Web UI). Any number of clients watch the same server-owned turn. The state the events carry and the JSON of `/api/*` are schemas in `src/wire.ts`, a module with no node imports that the web UI bundles too.
+**Protocol: AG-UI events (E15).** The WebSocket carries AG-UI protocol events, a standard any AG-UI client can read. Both ends are ours: the server in Effect, the web UI's session store over the same events (see Web UI). Any number of clients watch the same server-owned turn. The state the events carry and the JSON of `/api/*` are schemas in `src/wire.ts`, a module with no node imports that the web UI bundles too; the server takes its types from there and encodes each `/api/*` body through its schema.
 
 | What happens | AG-UI event | Notes |
 | --- | --- | --- |
@@ -462,10 +462,6 @@ Each milestone ends with `bun test` green, the parity test passing, and a short 
 9. **M7, subagents.** Gist §9 `spawn` and `tell`; restore MASTER's subagent paragraph, which drops D5. D10 stays: background shell tasks still die with the turn.
 
 Later, unscheduled: layout B for the compactor (ref §7), media in a content-addressed sidecar (as hermes-optchat), and the importers (E12).
-
-Follow-ups after M5 (held back so the M1–M5 branches merge cleanly):
-
-- Split `server/app.ts` into route modules (`/ws`, `/mcp`, `/api/*`, static files).
 
 ## Open questions and things to measure
 
