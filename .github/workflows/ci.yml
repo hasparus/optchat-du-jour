@@ -52,6 +52,9 @@ jobs:
           cd kernel && bend kernel.bend -o kernel.mjs
           git diff --exit-code kernel.mjs
 
+      - name: Every law in LAWS.bend is proven, also by the Lean-proven kernel
+        run: cd kernel && bend PROOF.bend --verdict | tee /dev/stderr | grep -qx "ALL PROOFS CHECK"
+
   parity:
     runs-on: ubuntu-latest
     permissions:

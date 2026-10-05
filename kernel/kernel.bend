@@ -27,20 +27,43 @@ def start(+l: Nat, i: Nat) -> Nat:
 type Coord is Data:
   Coord{l: Nat, i: Nat}
 
-def log2.pick(hit: Bool, l: Nat, next: Maybe<&2, Nat>) -> Maybe<&2, Nat>:
-  match hit:
-    case True{}:
-      Some{l}
-    case False{}:
-      next
+# Looking for the l with pow2(l) == n: still looking at l, found it, or
+# passed n without meeting it
+type Search is Data:
+  Below{l: Nat}
+  Found{l: Nat}
+  Past{}
 
-# the l with pow2(l) == n, if n is a power of two below 2^fuel
-def log2(fuel: Nat, +n: Nat, +l: Nat) -> Maybe<&2, Nat>:
-  match fuel:
-    case 0n:
+def log2.step(c: Cmp, l: Nat) -> Search:
+  match c:
+    case LT{}:
+      Below{1n+l}
+    case EQ{}:
+      Found{l}
+    case GT{}:
+      Past{}
+
+def log2.done(st: Search) -> Maybe<&2, Nat>:
+  match st:
+    case Below{_}:
       None{}
-    case 1n+f:
-      log2.pick(Nat.is_eq(pow2(l), n), l, log2(f, n, 1n+l))
+    case Found{l}:
+      Some{l}
+    case Past{}:
+      None{}
+
+# the l with pow2(l) == n: walks l up from where st says and stops at the
+# first pow2(l) >= n, so it never computes a power past 2n
+def log2(fuel: Nat, st: Search, +n: Nat) -> Maybe<&2, Nat>:
+  match fuel st:
+    case 0n s:
+      log2.done(s)
+    case 1n+f Below{+l}:
+      log2(f, log2.step(Nat.cmp(pow2(l), n), l), n)
+    case 1n+f Found{l}:
+      Some{l}
+    case 1n+f Past{}:
+      None{}
 
 def coords.check(ok: Bool, l: Nat, i: Nat) -> Maybe<&2, Coord>:
   match ok:
@@ -59,9 +82,10 @@ def coords.at(+id: Nat, +n: Nat, +T: Nat, ml: Maybe<&2, Nat>) -> Maybe<&2, Coord
       coords.check(ok, l, i)
 
 # the node named id+n in a chat of T messages: n a power of two, id a
-# multiple of n, id + n <= T (gist §3 "Addressing"); n >= 2^48 is never one
+# multiple of n, id + n <= T (gist §3 "Addressing"). log2 needs at most
+# n + 1 steps, since 2^n > n.
 def coords(+id: Nat, +n: Nat, +T: Nat) -> Maybe<&2, Coord>:
-  coords.at(id, n, T, log2(48n, n, 0n))
+  coords.at(id, n, T, log2(1n+n, Below{0n}, n))
 
 # The view
 # --------

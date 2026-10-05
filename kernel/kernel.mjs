@@ -174,20 +174,52 @@ function $start$(_l_0, _i_0) {
   return nat_chk(_i_0 * _x_0);
 }
 
-function $log2$pick$(_hit_0, _l_0, _next_0) {
-  if (_hit_0) {
-    return {$: "Some", "value": _l_0};
+function $log2$step$(_c_0, _l_0) {
+  if (_c_0.$ === "LT") {
+    return {$: "Below", "l": nat_chk(_l_0 + 1)};
+  } else if (_c_0.$ === "EQ") {
+    return {$: "Found", "l": _l_0};
   } else {
-    return _next_0;
+    return {$: "Past"};
   }
 }
 
-function $log2$(_fuel_0, _n_0, _l_0) {
-  if (_fuel_0 === 0) {
+function $log2$done$(_st_0) {
+  if (_st_0.$ === "Below") {
     return {$: "None"};
+  } else if (_st_0.$ === "Found") {
+    const _l_0 = _st_0["l"];
+    return {$: "Some", "value": _l_0};
   } else {
-    const _f_0 = (_fuel_0 - 1);
-    return $log2$pick$(($Nat$is_eq$(($pow2$(_l_0)), _n_0)), _l_0, ($log2$(_f_0, _n_0, nat_chk(_l_0 + 1))));
+    return {$: "None"};
+  }
+}
+
+function $log2$($0, $1, $2) {
+  for (;;) {
+    {
+      const _fuel_0 = $0;
+      const _st_0 = $1;
+      const _n_0 = $2;
+      if (_fuel_0 === 0) {
+        return $log2$done$(_st_0);
+      } else {
+        const _f_0 = (_fuel_0 - 1);
+        if (_st_0.$ === "Below") {
+          const _l_0 = _st_0["l"];
+          const _x_0 = ($pow2$(_l_0));
+          $0 = _f_0;
+          $1 = ($log2$step$(cmp_new(_x_0, _n_0), _l_0));
+          $2 = _n_0;
+          continue;
+        } else if (_st_0.$ === "Found") {
+          const _l_1 = _st_0["l"];
+          return {$: "Some", "value": _l_1};
+        } else {
+          return {$: "None"};
+        }
+      }
+    }
   }
 }
 
@@ -211,7 +243,7 @@ function $coords$at$(_id_0, _n_0, _T_0, _ml_0) {
 }
 
 function $coords$(_id_0, _n_0, _T_0) {
-  return $coords$at$(_id_0, _n_0, _T_0, ($log2$(48, _n_0, 0)));
+  return $coords$at$(_id_0, _n_0, _T_0, ($log2$(nat_chk(_n_0 + 1), {$: "Below", "l": 0}, _n_0)));
 }
 
 function $total$($0, $1) {
@@ -627,10 +659,6 @@ function $offers$(_levels_0, _head_0) {
   }
 }
 
-function $Nat$is_eq$(_a_0, _b_0) {
-  return $Cmp$is_eq$(cmp_new(_a_0, _b_0));
-}
-
 function $Nat$div$(_a_0, _b_0) {
   return $Pair$fst$(nat_divmod(_a_0, _b_0));
 }
@@ -641,6 +669,10 @@ function $Bool$and$(_a_0, _b_0) {
   } else {
     return _b_0;
   }
+}
+
+function $Nat$is_eq$(_a_0, _b_0) {
+  return $Cmp$is_eq$(cmp_new(_a_0, _b_0));
 }
 
 function $Nat$is_le$(_a_0, _b_0) {
@@ -659,17 +691,17 @@ function $Bool$not$(_b_0) {
   }
 }
 
+function $Pair$fst$(_p_0) {
+  const _a_0 = _p_0["fst"];
+  return _a_0;
+}
+
 function $Cmp$is_eq$(_c_0) {
   if (_c_0.$ === "EQ") {
     return true;
   } else {
     return false;
   }
-}
-
-function $Pair$fst$(_p_0) {
-  const _a_0 = _p_0["fst"];
-  return _a_0;
 }
 
 function $Cmp$is_le$(_c_0) {
@@ -692,9 +724,10 @@ function $0m0(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
-      case "None": at[key] = v; return top[0];
-      case "Some": at = at[key] = {...v, "value": nat_host(v["value"])}; return top[0];
-      default: throw "bend: Maybe has no tag " + v?.$ + " (its tags: None, Some); a tag names its constructor as the"
+      case "Below": at = at[key] = {...v, "l": BigInt(v["l"])}; return top[0];
+      case "Found": at = at[key] = {...v, "l": BigInt(v["l"])}; return top[0];
+      case "Past": at[key] = v; return top[0];
+      default: throw "bend: Search has no tag " + v?.$ + " (its tags: Below, Found, Past); a tag names its constructor as the"
       + " loading file sees it, which a later version will make the same"
       + " everywhere (#1105)";
     }
@@ -702,6 +735,20 @@ function $0m0(v) {
 }
 
 function $0m1(v) {
+  const top = [v];
+  for (let at = top, key = 0;;) {
+    switch (v.$) {
+      case "Below": at = at[key] = {...v, "l": nat_host(v["l"])}; return top[0];
+      case "Found": at = at[key] = {...v, "l": nat_host(v["l"])}; return top[0];
+      case "Past": at[key] = v; return top[0];
+      default: throw "bend: Search has no tag " + v?.$ + " (its tags: Below, Found, Past); a tag names its constructor as the"
+      + " loading file sees it, which a later version will make the same"
+      + " everywhere (#1105)";
+    }
+  }
+}
+
+function $0m2(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
@@ -714,7 +761,7 @@ function $0m1(v) {
   }
 }
 
-function $0m3(v) {
+function $0m4(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
@@ -726,12 +773,12 @@ function $0m3(v) {
   }
 }
 
-function $0m2(v) {
+function $0m3(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
       case "None": at[key] = v; return top[0];
-      case "Some": at = at[key] = {...v, "value": $0m3(v["value"])}; return top[0];
+      case "Some": at = at[key] = {...v, "value": $0m4(v["value"])}; return top[0];
       default: throw "bend: Maybe has no tag " + v?.$ + " (its tags: None, Some); a tag names its constructor as the"
       + " loading file sees it, which a later version will make the same"
       + " everywhere (#1105)";
@@ -739,7 +786,20 @@ function $0m2(v) {
   }
 }
 
-function $0m6(v) {
+function $0m5(v) {
+  const top = [v];
+  for (let at = top, key = 0;;) {
+    switch (v.$) {
+      case "None": at[key] = v; return top[0];
+      case "Some": at = at[key] = {...v, "value": nat_host(v["value"])}; return top[0];
+      default: throw "bend: Maybe has no tag " + v?.$ + " (its tags: None, Some); a tag names its constructor as the"
+      + " loading file sees it, which a later version will make the same"
+      + " everywhere (#1105)";
+    }
+  }
+}
+
+function $0m8(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
@@ -752,11 +812,11 @@ function $0m6(v) {
   }
 }
 
-function $0m5(v) {
+function $0m7(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
-      case "Part": at = at[key] = {...v, "l": nat_host(v["l"]), "i": nat_host(v["i"]), "size": nat_host(v["size"]), "ups": $0m6(v["ups"])}; return top[0];
+      case "Part": at = at[key] = {...v, "l": nat_host(v["l"]), "i": nat_host(v["i"]), "size": nat_host(v["size"]), "ups": $0m8(v["ups"])}; return top[0];
       default: throw "bend: Part has no tag " + v?.$ + " (its tags: Part); a tag names its constructor as the"
       + " loading file sees it, which a later version will make the same"
       + " everywhere (#1105)";
@@ -764,12 +824,12 @@ function $0m5(v) {
   }
 }
 
-function $0m4(v) {
+function $0m6(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
       case "Nil": at[key] = v; return top[0];
-      case "Con": at = at[key] = {...v, "head": $0m5(v["head"])}; key = "tail"; v = v[key]; continue;
+      case "Con": at = at[key] = {...v, "head": $0m7(v["head"])}; key = "tail"; v = v[key]; continue;
       default: throw "bend: List has no tag " + v?.$ + " (its tags: Nil, Con); a tag names its constructor as the"
       + " loading file sees it, which a later version will make the same"
       + " everywhere (#1105)";
@@ -777,7 +837,7 @@ function $0m4(v) {
   }
 }
 
-function $0m9(v) {
+function $0m11(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
@@ -790,11 +850,11 @@ function $0m9(v) {
   }
 }
 
-function $0m8(v) {
+function $0m10(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
-      case "Part": at = at[key] = {...v, "l": BigInt(v["l"]), "i": BigInt(v["i"]), "size": BigInt(v["size"]), "ups": $0m9(v["ups"])}; return top[0];
+      case "Part": at = at[key] = {...v, "l": BigInt(v["l"]), "i": BigInt(v["i"]), "size": BigInt(v["size"]), "ups": $0m11(v["ups"])}; return top[0];
       default: throw "bend: Part has no tag " + v?.$ + " (its tags: Part); a tag names its constructor as the"
       + " loading file sees it, which a later version will make the same"
       + " everywhere (#1105)";
@@ -802,12 +862,12 @@ function $0m8(v) {
   }
 }
 
-function $0m7(v) {
+function $0m9(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
       case "Nil": at[key] = v; return top[0];
-      case "Con": at = at[key] = {...v, "head": $0m8(v["head"])}; key = "tail"; v = v[key]; continue;
+      case "Con": at = at[key] = {...v, "head": $0m10(v["head"])}; key = "tail"; v = v[key]; continue;
       default: throw "bend: List has no tag " + v?.$ + " (its tags: Nil, Con); a tag names its constructor as the"
       + " loading file sees it, which a later version will make the same"
       + " everywhere (#1105)";
@@ -815,7 +875,7 @@ function $0m7(v) {
   }
 }
 
-function $0m10(v) {
+function $0m12(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
@@ -827,7 +887,7 @@ function $0m10(v) {
   }
 }
 
-function $0m11(v) {
+function $0m13(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
@@ -839,39 +899,13 @@ function $0m11(v) {
   }
 }
 
-function $0m12(v) {
-  const top = [v];
-  for (let at = top, key = 0;;) {
-    switch (v.$) {
-      case "None": at[key] = v; return top[0];
-      case "Some": at = at[key] = {...v, "value": $0m11(v["value"])}; return top[0];
-      default: throw "bend: Maybe has no tag " + v?.$ + " (its tags: None, Some); a tag names its constructor as the"
-      + " loading file sees it, which a later version will make the same"
-      + " everywhere (#1105)";
-    }
-  }
-}
-
-function $0m13(v) {
-  const top = [v];
-  for (let at = top, key = 0;;) {
-    switch (v.$) {
-      case "None": at[key] = v; return top[0];
-      case "Some": at = at[key] = {...v, "value": $0m10(v["value"])}; return top[0];
-      default: throw "bend: Maybe has no tag " + v?.$ + " (its tags: None, Some); a tag names its constructor as the"
-      + " loading file sees it, which a later version will make the same"
-      + " everywhere (#1105)";
-    }
-  }
-}
-
 function $0m14(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
-      case "More": at = at[key] = {...v, "ps": $0m7(v["ps"])}; return top[0];
-      case "Stop": at = at[key] = {...v, "ps": $0m7(v["ps"])}; return top[0];
-      default: throw "bend: Step has no tag " + v?.$ + " (its tags: More, Stop); a tag names its constructor as the"
+      case "None": at[key] = v; return top[0];
+      case "Some": at = at[key] = {...v, "value": $0m13(v["value"])}; return top[0];
+      default: throw "bend: Maybe has no tag " + v?.$ + " (its tags: None, Some); a tag names its constructor as the"
       + " loading file sees it, which a later version will make the same"
       + " everywhere (#1105)";
     }
@@ -882,9 +916,9 @@ function $0m15(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
-      case "More": at = at[key] = {...v, "ps": $0m4(v["ps"])}; return top[0];
-      case "Stop": at = at[key] = {...v, "ps": $0m4(v["ps"])}; return top[0];
-      default: throw "bend: Step has no tag " + v?.$ + " (its tags: More, Stop); a tag names its constructor as the"
+      case "None": at[key] = v; return top[0];
+      case "Some": at = at[key] = {...v, "value": $0m12(v["value"])}; return top[0];
+      default: throw "bend: Maybe has no tag " + v?.$ + " (its tags: None, Some); a tag names its constructor as the"
       + " loading file sees it, which a later version will make the same"
       + " everywhere (#1105)";
     }
@@ -895,8 +929,9 @@ function $0m16(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
-      case "Msg": at = at[key] = {...v, "size": nat_host(v["size"]), "ups": $0m6(v["ups"])}; return top[0];
-      default: throw "bend: Msg has no tag " + v?.$ + " (its tags: Msg); a tag names its constructor as the"
+      case "More": at = at[key] = {...v, "ps": $0m9(v["ps"])}; return top[0];
+      case "Stop": at = at[key] = {...v, "ps": $0m9(v["ps"])}; return top[0];
+      default: throw "bend: Step has no tag " + v?.$ + " (its tags: More, Stop); a tag names its constructor as the"
       + " loading file sees it, which a later version will make the same"
       + " everywhere (#1105)";
     }
@@ -907,8 +942,9 @@ function $0m17(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
-      case "Msg": at = at[key] = {...v, "size": BigInt(v["size"]), "ups": $0m9(v["ups"])}; return top[0];
-      default: throw "bend: Msg has no tag " + v?.$ + " (its tags: Msg); a tag names its constructor as the"
+      case "More": at = at[key] = {...v, "ps": $0m6(v["ps"])}; return top[0];
+      case "Stop": at = at[key] = {...v, "ps": $0m6(v["ps"])}; return top[0];
+      default: throw "bend: Step has no tag " + v?.$ + " (its tags: More, Stop); a tag names its constructor as the"
       + " loading file sees it, which a later version will make the same"
       + " everywhere (#1105)";
     }
@@ -919,9 +955,8 @@ function $0m18(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
-      case "Nil": at[key] = v; return top[0];
-      case "Con": at = at[key] = {...v, "head": $0m16(v["head"])}; key = "tail"; v = v[key]; continue;
-      default: throw "bend: List has no tag " + v?.$ + " (its tags: Nil, Con); a tag names its constructor as the"
+      case "Msg": at = at[key] = {...v, "size": nat_host(v["size"]), "ups": $0m8(v["ups"])}; return top[0];
+      default: throw "bend: Msg has no tag " + v?.$ + " (its tags: Msg); a tag names its constructor as the"
       + " loading file sees it, which a later version will make the same"
       + " everywhere (#1105)";
     }
@@ -932,9 +967,8 @@ function $0m19(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
-      case "Nil": at[key] = v; return top[0];
-      case "Con": at = at[key] = {...v, "head": $0m17(v["head"])}; key = "tail"; v = v[key]; continue;
-      default: throw "bend: List has no tag " + v?.$ + " (its tags: Nil, Con); a tag names its constructor as the"
+      case "Msg": at = at[key] = {...v, "size": BigInt(v["size"]), "ups": $0m11(v["ups"])}; return top[0];
+      default: throw "bend: Msg has no tag " + v?.$ + " (its tags: Msg); a tag names its constructor as the"
       + " loading file sees it, which a later version will make the same"
       + " everywhere (#1105)";
     }
@@ -945,8 +979,9 @@ function $0m20(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
-      case "Coord": at = at[key] = {...v, "l": nat_host(v["l"]), "i": nat_host(v["i"])}; return top[0];
-      default: throw "bend: Coord has no tag " + v?.$ + " (its tags: Coord); a tag names its constructor as the"
+      case "Nil": at[key] = v; return top[0];
+      case "Con": at = at[key] = {...v, "head": $0m18(v["head"])}; key = "tail"; v = v[key]; continue;
+      default: throw "bend: List has no tag " + v?.$ + " (its tags: Nil, Con); a tag names its constructor as the"
       + " loading file sees it, which a later version will make the same"
       + " everywhere (#1105)";
     }
@@ -958,7 +993,7 @@ function $0m21(v) {
   for (let at = top, key = 0;;) {
     switch (v.$) {
       case "Nil": at[key] = v; return top[0];
-      case "Con": at = at[key] = {...v, "head": $0m20(v["head"])}; key = "tail"; v = v[key]; continue;
+      case "Con": at = at[key] = {...v, "head": $0m19(v["head"])}; key = "tail"; v = v[key]; continue;
       default: throw "bend: List has no tag " + v?.$ + " (its tags: Nil, Con); a tag names its constructor as the"
       + " loading file sees it, which a later version will make the same"
       + " everywhere (#1105)";
@@ -970,8 +1005,33 @@ function $0m22(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
+      case "Coord": at = at[key] = {...v, "l": nat_host(v["l"]), "i": nat_host(v["i"])}; return top[0];
+      default: throw "bend: Coord has no tag " + v?.$ + " (its tags: Coord); a tag names its constructor as the"
+      + " loading file sees it, which a later version will make the same"
+      + " everywhere (#1105)";
+    }
+  }
+}
+
+function $0m23(v) {
+  const top = [v];
+  for (let at = top, key = 0;;) {
+    switch (v.$) {
       case "Nil": at[key] = v; return top[0];
-      case "Con": at = at[key] = {...v, "head": $0m3(v["head"])}; key = "tail"; v = v[key]; continue;
+      case "Con": at = at[key] = {...v, "head": $0m22(v["head"])}; key = "tail"; v = v[key]; continue;
+      default: throw "bend: List has no tag " + v?.$ + " (its tags: Nil, Con); a tag names its constructor as the"
+      + " loading file sees it, which a later version will make the same"
+      + " everywhere (#1105)";
+    }
+  }
+}
+
+function $0m24(v) {
+  const top = [v];
+  for (let at = top, key = 0;;) {
+    switch (v.$) {
+      case "Nil": at[key] = v; return top[0];
+      case "Con": at = at[key] = {...v, "head": $0m4(v["head"])}; key = "tail"; v = v[key]; continue;
       default: throw "bend: List has no tag " + v?.$ + " (its tags: Nil, Con); a tag names its constructor as the"
       + " loading file sees it, which a later version will make the same"
       + " everywhere (#1105)";
@@ -981,41 +1041,42 @@ function $0m22(v) {
 export default {
   "pow2": run_lib((a0) => { const r = BigInt(run_loop($pow2$(nat_host(a0)))); BigInt(a0); return r; }, 1),
   "start": run_lib((a0, a1) => { const r = BigInt(run_loop($start$(nat_host(a0), nat_host(a1)))); BigInt(a0); BigInt(a1); return r; }, 2),
-  "log2.pick": run_lib((a0, a1, a2) => { const r = $0m1(run_loop($log2$pick$((a0), nat_host(a1), $0m0(a2)))); (a0); BigInt(a1); $0m1(a2); return r; }, 3),
-  "log2": run_lib((a0, a1, a2) => { const r = $0m1(run_loop($log2$(nat_host(a0), nat_host(a1), nat_host(a2)))); BigInt(a0); BigInt(a1); BigInt(a2); return r; }, 3),
-  "coords.check": run_lib((a0, a1, a2) => { const r = $0m2(run_loop($coords$check$((a0), nat_host(a1), nat_host(a2)))); (a0); BigInt(a1); BigInt(a2); return r; }, 3),
-  "coords.at": run_lib((a0, a1, a2, a3) => { const r = $0m2(run_loop($coords$at$(nat_host(a0), nat_host(a1), nat_host(a2), $0m0(a3)))); BigInt(a0); BigInt(a1); BigInt(a2); $0m1(a3); return r; }, 4),
-  "coords": run_lib((a0, a1, a2) => { const r = $0m2(run_loop($coords$(nat_host(a0), nat_host(a1), nat_host(a2)))); BigInt(a0); BigInt(a1); BigInt(a2); return r; }, 3),
-  "total": run_lib((a0, a1) => { const r = BigInt(run_loop($total$($0m4(a0), nat_host(a1)))); $0m7(a0); BigInt(a1); return r; }, 2),
-  "size": run_lib((a0) => { const r = BigInt(run_loop($size$($0m4(a0)))); $0m7(a0); return r; }, 1),
-  "built_up": run_lib((a0) => { const r = (run_loop($built_up$($0m6(a0)))); $0m9(a0); return r; }, 1),
-  "mergeable": run_lib((a0, a1) => { const r = (run_loop($mergeable$($0m5(a0), $0m5(a1)))); $0m8(a0); $0m8(a1); return r; }, 2),
-  "parent": run_lib((a0) => { const r = $0m8(run_loop($parent$($0m5(a0)))); $0m8(a0); return r; }, 1),
-  "more_due": run_lib((a0, a1, a2) => { const r = (run_loop($more_due$(nat_host(a0), $0m10(a1), $0m10(a2)))); BigInt(a0); $0m11(a1); $0m11(a2); return r; }, 3),
-  "choose.vs": run_lib((a0, a1, a2) => { const r = $0m12(run_loop($choose$vs$((a0), $0m10(a1), $0m10(a2)))); (a0); $0m11(a1); $0m11(a2); return r; }, 3),
-  "choose": run_lib((a0, a1, a2, a3) => { const r = $0m12(run_loop($choose$(nat_host(a0), (a1), $0m10(a2), $0m13(a3)))); BigInt(a0); (a1); $0m11(a2); $0m12(a3); return r; }, 4),
-  "pick": run_lib((a0, a1, a2, a3, a4) => { const r = $0m12(run_loop($pick$(nat_host(a0), $0m5(a1), $0m5(a2), nat_host(a3), $0m13(a4)))); BigInt(a0); $0m8(a1); $0m8(a2); BigInt(a3); $0m12(a4); return r; }, 5),
-  "best.go": run_lib((a0, a1, a2, a3) => { const r = $0m12(run_loop($best$go$($0m4(a0), nat_host(a1), nat_host(a2), $0m13(a3)))); $0m7(a0); BigInt(a1); BigInt(a2); $0m12(a3); return r; }, 4),
-  "best": run_lib((a0, a1) => { const r = $0m12(run_loop($best$(nat_host(a0), $0m4(a1)))); BigInt(a0); $0m7(a1); return r; }, 2),
-  "merge_head": run_lib((a0, a1) => { const r = $0m7(run_loop($merge_head$($0m5(a0), $0m4(a1)))); $0m8(a0); $0m7(a1); return r; }, 2),
-  "merge_at": run_lib((a0, a1) => { const r = $0m7(run_loop($merge_at$($0m4(a0), nat_host(a1)))); $0m7(a0); BigInt(a1); return r; }, 2),
-  "step.merge": run_lib((a0, a1) => { const r = $0m14(run_loop($step$merge$($0m4(a0), $0m13(a1)))); $0m7(a0); $0m12(a1); return r; }, 2),
-  "step.over": run_lib((a0, a1, a2) => { const r = $0m14(run_loop($step$over$((a0), nat_host(a1), $0m4(a2)))); (a0); BigInt(a1); $0m7(a2); return r; }, 3),
-  "step": run_lib((a0, a1, a2) => { const r = $0m14(run_loop($step$(nat_host(a0), nat_host(a1), $0m4(a2)))); BigInt(a0); BigInt(a1); $0m7(a2); return r; }, 3),
-  "fit.go": run_lib((a0, a1, a2, a3) => { const r = $0m7(run_loop($fit$go$(nat_host(a0), $0m15(a1), nat_host(a2), nat_host(a3)))); BigInt(a0); $0m14(a1); BigInt(a2); BigInt(a3); return r; }, 4),
-  "length": run_lib((a0, a1) => { const r = BigInt(run_loop($length$($0m4(a0), nat_host(a1)))); $0m7(a0); BigInt(a1); return r; }, 2),
-  "fit": run_lib((a0, a1, a2) => { const r = $0m7(run_loop($fit$(nat_host(a0), nat_host(a1), $0m4(a2)))); BigInt(a0); BigInt(a1); $0m7(a2); return r; }, 3),
-  "snoc": run_lib((a0, a1) => { const r = $0m7(run_loop($snoc$($0m4(a0), $0m5(a1)))); $0m7(a0); $0m8(a1); return r; }, 2),
-  "append": run_lib((a0, a1, a2, a3) => { const r = $0m7(run_loop($append$(nat_host(a0), nat_host(a1), $0m4(a2), $0m16(a3)))); BigInt(a0); BigInt(a1); $0m7(a2); $0m17(a3); return r; }, 4),
-  "refold.go": run_lib((a0, a1, a2, a3) => { const r = $0m7(run_loop($refold$go$($0m18(a0), nat_host(a1), nat_host(a2), $0m4(a3)))); $0m19(a0); BigInt(a1); BigInt(a2); $0m7(a3); return r; }, 4),
-  "refold": run_lib((a0, a1) => { const r = $0m7(run_loop($refold$(nat_host(a0), $0m18(a1)))); BigInt(a0); $0m19(a1); return r; }, 2),
+  "log2.step": run_lib((a0, a1) => { const r = $0m0(run_loop($log2$step$((a0), nat_host(a1)))); (a0); BigInt(a1); return r; }, 2),
+  "log2.done": run_lib((a0) => { const r = $0m2(run_loop($log2$done$($0m1(a0)))); $0m0(a0); return r; }, 1),
+  "log2": run_lib((a0, a1, a2) => { const r = $0m2(run_loop($log2$(nat_host(a0), $0m1(a1), nat_host(a2)))); BigInt(a0); $0m0(a1); BigInt(a2); return r; }, 3),
+  "coords.check": run_lib((a0, a1, a2) => { const r = $0m3(run_loop($coords$check$((a0), nat_host(a1), nat_host(a2)))); (a0); BigInt(a1); BigInt(a2); return r; }, 3),
+  "coords.at": run_lib((a0, a1, a2, a3) => { const r = $0m3(run_loop($coords$at$(nat_host(a0), nat_host(a1), nat_host(a2), $0m5(a3)))); BigInt(a0); BigInt(a1); BigInt(a2); $0m2(a3); return r; }, 4),
+  "coords": run_lib((a0, a1, a2) => { const r = $0m3(run_loop($coords$(nat_host(a0), nat_host(a1), nat_host(a2)))); BigInt(a0); BigInt(a1); BigInt(a2); return r; }, 3),
+  "total": run_lib((a0, a1) => { const r = BigInt(run_loop($total$($0m6(a0), nat_host(a1)))); $0m9(a0); BigInt(a1); return r; }, 2),
+  "size": run_lib((a0) => { const r = BigInt(run_loop($size$($0m6(a0)))); $0m9(a0); return r; }, 1),
+  "built_up": run_lib((a0) => { const r = (run_loop($built_up$($0m8(a0)))); $0m11(a0); return r; }, 1),
+  "mergeable": run_lib((a0, a1) => { const r = (run_loop($mergeable$($0m7(a0), $0m7(a1)))); $0m10(a0); $0m10(a1); return r; }, 2),
+  "parent": run_lib((a0) => { const r = $0m10(run_loop($parent$($0m7(a0)))); $0m10(a0); return r; }, 1),
+  "more_due": run_lib((a0, a1, a2) => { const r = (run_loop($more_due$(nat_host(a0), $0m12(a1), $0m12(a2)))); BigInt(a0); $0m13(a1); $0m13(a2); return r; }, 3),
+  "choose.vs": run_lib((a0, a1, a2) => { const r = $0m14(run_loop($choose$vs$((a0), $0m12(a1), $0m12(a2)))); (a0); $0m13(a1); $0m13(a2); return r; }, 3),
+  "choose": run_lib((a0, a1, a2, a3) => { const r = $0m14(run_loop($choose$(nat_host(a0), (a1), $0m12(a2), $0m15(a3)))); BigInt(a0); (a1); $0m13(a2); $0m14(a3); return r; }, 4),
+  "pick": run_lib((a0, a1, a2, a3, a4) => { const r = $0m14(run_loop($pick$(nat_host(a0), $0m7(a1), $0m7(a2), nat_host(a3), $0m15(a4)))); BigInt(a0); $0m10(a1); $0m10(a2); BigInt(a3); $0m14(a4); return r; }, 5),
+  "best.go": run_lib((a0, a1, a2, a3) => { const r = $0m14(run_loop($best$go$($0m6(a0), nat_host(a1), nat_host(a2), $0m15(a3)))); $0m9(a0); BigInt(a1); BigInt(a2); $0m14(a3); return r; }, 4),
+  "best": run_lib((a0, a1) => { const r = $0m14(run_loop($best$(nat_host(a0), $0m6(a1)))); BigInt(a0); $0m9(a1); return r; }, 2),
+  "merge_head": run_lib((a0, a1) => { const r = $0m9(run_loop($merge_head$($0m7(a0), $0m6(a1)))); $0m10(a0); $0m9(a1); return r; }, 2),
+  "merge_at": run_lib((a0, a1) => { const r = $0m9(run_loop($merge_at$($0m6(a0), nat_host(a1)))); $0m9(a0); BigInt(a1); return r; }, 2),
+  "step.merge": run_lib((a0, a1) => { const r = $0m16(run_loop($step$merge$($0m6(a0), $0m15(a1)))); $0m9(a0); $0m14(a1); return r; }, 2),
+  "step.over": run_lib((a0, a1, a2) => { const r = $0m16(run_loop($step$over$((a0), nat_host(a1), $0m6(a2)))); (a0); BigInt(a1); $0m9(a2); return r; }, 3),
+  "step": run_lib((a0, a1, a2) => { const r = $0m16(run_loop($step$(nat_host(a0), nat_host(a1), $0m6(a2)))); BigInt(a0); BigInt(a1); $0m9(a2); return r; }, 3),
+  "fit.go": run_lib((a0, a1, a2, a3) => { const r = $0m9(run_loop($fit$go$(nat_host(a0), $0m17(a1), nat_host(a2), nat_host(a3)))); BigInt(a0); $0m16(a1); BigInt(a2); BigInt(a3); return r; }, 4),
+  "length": run_lib((a0, a1) => { const r = BigInt(run_loop($length$($0m6(a0), nat_host(a1)))); $0m9(a0); BigInt(a1); return r; }, 2),
+  "fit": run_lib((a0, a1, a2) => { const r = $0m9(run_loop($fit$(nat_host(a0), nat_host(a1), $0m6(a2)))); BigInt(a0); BigInt(a1); $0m9(a2); return r; }, 3),
+  "snoc": run_lib((a0, a1) => { const r = $0m9(run_loop($snoc$($0m6(a0), $0m7(a1)))); $0m9(a0); $0m10(a1); return r; }, 2),
+  "append": run_lib((a0, a1, a2, a3) => { const r = $0m9(run_loop($append$(nat_host(a0), nat_host(a1), $0m6(a2), $0m18(a3)))); BigInt(a0); BigInt(a1); $0m9(a2); $0m19(a3); return r; }, 4),
+  "refold.go": run_lib((a0, a1, a2, a3) => { const r = $0m9(run_loop($refold$go$($0m20(a0), nat_host(a1), nat_host(a2), $0m6(a3)))); $0m21(a0); BigInt(a1); BigInt(a2); $0m9(a3); return r; }, 4),
+  "refold": run_lib((a0, a1) => { const r = $0m9(run_loop($refold$(nat_host(a0), $0m20(a1)))); BigInt(a0); $0m21(a1); return r; }, 2),
   "first.pick": run_lib((a0, a1, a2) => { const r = BigInt(run_loop($first$pick$((a0), nat_host(a1), nat_host(a2)))); (a0); BigInt(a1); BigInt(a2); return r; }, 3),
-  "first": run_lib((a0, a1) => { const r = BigInt(run_loop($first$(nat_host(a0), $0m4(a1)))); BigInt(a0); $0m7(a1); return r; }, 2),
-  "offer": run_lib((a0, a1, a2) => { const r = $0m22(run_loop($offer$((a0), $0m20(a1), $0m21(a2)))); (a0); $0m3(a1); $0m22(a2); return r; }, 3),
-  "offers.leaves": run_lib((a0, a1, a2, a3) => { const r = $0m22(run_loop($offers$leaves$((a0), nat_host(a1), nat_host(a2), $0m21(a3)))); (a0); BigInt(a1); BigInt(a2); $0m22(a3); return r; }, 4),
+  "first": run_lib((a0, a1) => { const r = BigInt(run_loop($first$(nat_host(a0), $0m6(a1)))); BigInt(a0); $0m9(a1); return r; }, 2),
+  "offer": run_lib((a0, a1, a2) => { const r = $0m24(run_loop($offer$((a0), $0m22(a1), $0m23(a2)))); (a0); $0m4(a1); $0m24(a2); return r; }, 3),
+  "offers.leaves": run_lib((a0, a1, a2, a3) => { const r = $0m24(run_loop($offers$leaves$((a0), nat_host(a1), nat_host(a2), $0m23(a3)))); (a0); BigInt(a1); BigInt(a2); $0m24(a3); return r; }, 4),
   "offers.node": run_lib((a0, a1, a2, a3, a4) => { const r = (run_loop($offers$node$(nat_host(a0), nat_host(a1), nat_host(a2), (a3), (a4)))); BigInt(a0); BigInt(a1); BigInt(a2); (a3); (a4); return r; }, 5),
   "offers.drop2": run_lib((a0) => { const r = (run_loop($offers$drop2$((a0)))); (a0); return r; }, 1),
-  "offers.level": run_lib((a0, a1, a2, a3, a4, a5) => { const r = $0m22(run_loop($offers$level$((a0), (a1), nat_host(a2), nat_host(a3), nat_host(a4), $0m21(a5)))); (a0); (a1); BigInt(a2); BigInt(a3); BigInt(a4); $0m22(a5); return r; }, 6),
-  "offers.up": run_lib((a0, a1, a2, a3, a4) => { const r = $0m22(run_loop($offers$up$((a0), (a1), nat_host(a2), nat_host(a3), $0m21(a4)))); (a0); (a1); BigInt(a2); BigInt(a3); $0m22(a4); return r; }, 5),
-  "offers": run_lib((a0, a1) => { const r = $0m22(run_loop($offers$((a0), nat_host(a1)))); (a0); BigInt(a1); return r; }, 2),
+  "offers.level": run_lib((a0, a1, a2, a3, a4, a5) => { const r = $0m24(run_loop($offers$level$((a0), (a1), nat_host(a2), nat_host(a3), nat_host(a4), $0m23(a5)))); (a0); (a1); BigInt(a2); BigInt(a3); BigInt(a4); $0m24(a5); return r; }, 6),
+  "offers.up": run_lib((a0, a1, a2, a3, a4) => { const r = $0m24(run_loop($offers$up$((a0), (a1), nat_host(a2), nat_host(a3), $0m23(a4)))); (a0); (a1); BigInt(a2); BigInt(a3); $0m24(a4); return r; }, 5),
+  "offers": run_lib((a0, a1) => { const r = $0m24(run_loop($offers$((a0), nat_host(a1)))); (a0); BigInt(a1); return r; }, 2),
 };
