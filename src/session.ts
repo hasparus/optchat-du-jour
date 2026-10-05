@@ -310,7 +310,9 @@ export const makeSession = (o: {
     // An engine that is not sent images gets the marker lines only, and a note saying so. What
     // pictures a call is sent, the opening message's and each mid-run message's, is decided in
     // one place: `forEngine`, against the call's picture budget.
-    const call = (e: TurnEngine, batch: readonly Incoming[], base: { readonly device: string; readonly view: string }, from: string | null, out: TurnEvents, since: number) =>
+    // `taken`: the mid-run messages this turn's calls took so far; after a failover the next link
+    // gets their pictures too, as they are in `earlier` only by their marker lines
+    const call = (e: TurnEngine, batch: readonly Incoming[], base: { readonly device: string; readonly view: string }, from: string | null, out: TurnEvents, since: number, taken: readonly Incoming[]) =>
       Effect.gen(function* () {
         const q = yield* Queue.unbounded<Incoming>();
         const budget = pictureBudget();
@@ -326,14 +328,19 @@ export const makeSession = (o: {
             return { media: attached.flatMap((a, k) => o.media.parts(a, looks[k] ?? { how: "none" }, capped)), texts };
           });
         const midOf = (m: Incoming): Effect.Effect<Mid> => forEngine([m]).pipe(Effect.map(({ media, texts }) => ({ media, seq: m.seq, text: texts.join("\n") })));
-        const earlier = yield* Effect.sync(() => {
+        const { before, earlier } = yield* Effect.sync(() => {
           offerTo = q;
           for (const m of offered()) Queue.offerUnsafe(q, m);
           engine = e.ref;
-          return chat.mem.root.slice(since).map(({ kind, text }) => ({ kind, text }));
+          return { before: [...taken], earlier: chat.mem.root.slice(since).map(({ kind, text }) => ({ kind, text })) };
         });
         yield* tell;
-        const opening = yield* forEngine(batch);
+        // the opening's pictures, then those of the mid-run messages a link before took, against
+        // the same budget; their texts are in `earlier` already, so only a blind engine's note is added
+        const asked = yield* forEngine(batch);
+        const carried = yield* forEngine(before);
+        const blind = carried.texts.includes(BLIND) && !asked.texts.includes(BLIND);
+        const opening = { media: [...asked.media, ...carried.media], texts: blind ? [...asked.texts, BLIND] : asked.texts };
         const mid = {
           next: Queue.take(q).pipe(Effect.flatMap(midOf)),
           ready: Queue.clear(q).pipe(Effect.flatMap((ms) => captioned(ms).pipe(Effect.andThen(Effect.forEach(ms, midOf))))),
@@ -360,6 +367,7 @@ export const makeSession = (o: {
         yield* enter("running");
         const runId = yield* logQueued(batch, on);
         const since = chat.mem.root.length; // what this turn's engines log starts here
+        const taken: Incoming[] = []; // the mid-run messages its calls took, in the order they were logged
         accepting = true;
         // the ones that came in while the captions or the log were awaited, up to the first sent for
         // another device: it waits for the next turn, and so does everything sent after it
@@ -373,10 +381,18 @@ export const makeSession = (o: {
           text: (delta) => stream(delta, runId),
           thinking: (tokens) => publish({ runId, tokens, type: "thinking" }),
           // the call passed this one to the model: logged now; a second report finds it gone (taken once)
-          took: (taken) =>
+          took: (mid) =>
             Effect.suspend(() => {
-              const m = inbox.find((x) => x.seq === taken.seq && x.state === "offered");
-              return m ? logMessage(m, runId, on).pipe(Effect.andThen(tell)) : Effect.void;
+              const m = inbox.find((x) => x.seq === mid.seq && x.state === "offered");
+              if (!m) return Effect.void;
+              return logMessage(m, runId, on).pipe(
+                Effect.tap((entry) =>
+                  Effect.sync(() => {
+                    if (entry !== null) taken.push(m);
+                  }),
+                ),
+                Effect.andThen(tell),
+              );
             }),
           usage: (record) => o.logUsage(record).pipe(Effect.andThen(publish({ record, type: "usage" }))),
         };
@@ -384,7 +400,7 @@ export const makeSession = (o: {
         yield* tell;
         const base = { device: on, view };
         const result = yield* failover(
-          o.engines.map((e) => ({ ref: e.ref, run: (from: string | null) => call(e, batch, base, from, out, since) })),
+          o.engines.map((e) => ({ ref: e.ref, run: (from: string | null) => call(e, batch, base, from, out, since, taken) })),
           {
             // A failover mid-turn keeps what was logged: the next engine is told and carries on from
             // it. Text the engine before streamed and never logged is dropped, so the next engine's
