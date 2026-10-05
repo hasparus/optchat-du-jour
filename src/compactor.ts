@@ -51,6 +51,8 @@ export const buildFree = (mem: Mem, commit: Commit) =>
 export type Pump = {
   // build the free nodes, then start what rule 3 allows; call it after every change
   readonly kick: Effect.Effect<void, StoreError>;
+  // the same, for a caller whose own work is already done: a failure is reported, not returned
+  readonly nudge: Effect.Effect<void>;
 };
 
 export const makePump = (o: {
@@ -70,7 +72,7 @@ export const makePump = (o: {
     const one = yield* Semaphore.make(1);
 
     // a kick that follows a job is no part of that job: its failure is reported on its own
-    const again: Effect.Effect<void> = Effect.suspend(() => kick).pipe(Effect.catch((error) => report(error.message)));
+    const nudge: Effect.Effect<void> = Effect.suspend(() => kick).pipe(Effect.catch((error) => report(error.message)));
 
     // One job: summarize, commit, and whatever goes wrong on the way (a typed error, a throw, a
     // defect in the store) is one failure: reported the first time this node fails, then the
@@ -92,7 +94,7 @@ export const makePump = (o: {
       return attempt.pipe(
         Effect.catchCause(failed),
         Effect.andThen(Effect.sync(() => busy.delete(name))),
-        Effect.andThen(again),
+        Effect.andThen(nudge),
       );
     };
 
@@ -108,5 +110,5 @@ export const makePump = (o: {
     });
 
     const kick: Effect.Effect<void, StoreError> = one.withPermit(Effect.andThen(buildFree(mem, commit), start));
-    return { kick } satisfies Pump;
+    return { kick, nudge } satisfies Pump;
   });

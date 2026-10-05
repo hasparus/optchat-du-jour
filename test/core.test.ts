@@ -6,10 +6,10 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
 import { CompactError, type Job } from "../src/compactor.ts";
-import { parseOptmem } from "../src/import.ts";
+import { importOptmem, parseOptmem } from "../src/import.ts";
 import { loadChat, lock, Locked, newMsg } from "../src/store.ts";
 import { built, newMem, nodes } from "../src/tree.ts";
-import { addMessage, addNode, cutBlocks, settle } from "../src/view.ts";
+import { addMessage, addNode, cutBlocks, render, settle } from "../src/view.ts";
 
 const dirs: string[] = [];
 const tmp = () => {
@@ -143,6 +143,24 @@ test("a compactor that throws or dies is a failure like any other: reported once
   expect(reports).toEqual(["0+1: summarizer crashed"]);
 });
 
+test("a stored message is logged even when the pump cannot start: that failure is reported", async () => {
+  const dir = tmp(), reports: string[] = [];
+  await runScoped(
+    Effect.gen(function* () {
+      const chat = yield* openChat(dir, { report: (m) => Effect.sync(() => reports.push(m)), summarize: () => Effect.never });
+      mkdirSync(`${dir}/chat`, { recursive: true });
+      writeFileSync(`${dir}/chat/tree`, ""); // a file where the tree's directory goes: no node can be saved
+      const m = yield* chat.log("user", "short enough to be its own summary");
+      expect(m.i).toBe(0);
+    }),
+  );
+  rmSync(`${dir}/chat/tree`);
+  const after = await run(loadChat(dir, { repair: false }));
+  expect(after.mem.root).toHaveLength(1);
+  expect(reports).toHaveLength(1);
+  expect(reports[0]).toStartWith("cannot save node 0+1: ");
+});
+
 test("a torn last line is skipped quietly by readers, and repaired by the lock holder", async () => {
   const dir = tmp();
   mkdirSync(`${dir}/chat/main`, { recursive: true });
@@ -176,6 +194,18 @@ test("the lock refuses a second owner and takes over a stale socket", async () =
   await owner.exited;
   expect(existsSync(`${stale}/lock`)).toBe(true);
   await runScoped(lock(stale));
+});
+
+test("an OptMem import folds the view once, to what the next start loads", async () => {
+  const dir = tmp();
+  const notes = Array.from({ length: 40 }, (_, n) => `#${n} 2026-08-${String(1 + (n % 28)).padStart(2, "0")} ${"n".repeat(n % 3 === 0 ? 600 : 20)}`);
+  writeFileSync(`${dir}/LOG.txt`, `${notes.join("\n")}\n`);
+  const mem = await run(importOptmem(`${dir}/data`, `${dir}/LOG.txt`));
+  const loaded = await run(loadChat(`${dir}/data`, { repair: false }));
+  expect(mem.root).toHaveLength(40);
+  expect(mem.tree.size).toBeGreaterThan(0);
+  expect(mem.view).toEqual(loaded.mem.view);
+  expect(render(mem)).toBe(render(loaded.mem));
 });
 
 test("OptMem notes must be contiguous from 0 and dated", () => {

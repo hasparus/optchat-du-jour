@@ -43,7 +43,8 @@ export const openChat = Effect.fn("openChat")(function* (
       const m = { ...newMsg(mem.root.length, kind, text), ...extra };
       yield* appendMessage(dir, m);
       addMessage(mem, m);
-      yield* pump.kick;
+      // the message is stored: a pump that cannot start now is reported, and log still succeeds
+      yield* pump.nudge;
       return m;
     });
   yield* pump.kick; // catch up: the free nodes and whatever the last run left unbuilt
