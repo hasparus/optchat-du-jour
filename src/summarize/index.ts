@@ -22,13 +22,21 @@ export const makeSummarize = (o: {
       if (engine === "claude-code") engines.set(ref, yield* claudeCodeCompactor({ effort, log: o.log, model, ttl: o.settings.cache.claudeCodeTtl }));
       if (engine === "openai-plan") engines.set(ref, yield* openAiPlanCompactor({ effort, log: o.log, model }));
     }
+    // one notice per change of failover, not one per node: signed out, every node would say it
+    let last = "";
+    const moved = (from: string, to: string, why: string) => {
+      const notice = `compactor: ${from} → ${to} (${why})`;
+      if (notice === last) return Effect.void;
+      last = notice;
+      return o.report(notice);
+    };
     const summarize: Summarize = (job) =>
       failover(
         chainFor(o.settings, job.l).flatMap((ref) => {
           const run = engines.get(ref);
           return run ? [{ ref, run: (from: string | null) => run(job, from) }] : [];
         }),
-        (from, to, why) => o.report(`compactor: ${from} → ${to} (${why})`),
+        moved,
       ).pipe(Effect.mapError((e) => new CompactError({ message: e.message })));
     return summarize;
   });
