@@ -193,6 +193,23 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
         expect(fake.state.seen).toHaveLength(2);
         const next = decodeBody(fake.state.seen[1]?.body ?? "");
         expect(next.input.slice(-3).map((i) => i.type ?? i.role)).toEqual(["function_call", "function_call_output", "user"]);
+
+        // a limit after partial output: what claude logged stays, once, and openai-plan is told to carry on from it
+        writeFileSync(`${home}/script.json`, JSON.stringify({ turn: [[{ text: "Starting on it." }, { result: { is_error: true, text: "Claude AI usage limit reached" } }]] }));
+        fake.state.seen.length = 0;
+        fake.state.script = [{ text: "Done." }];
+        c.send("tidy up");
+        yield* Effect.promise(async () => until("the third turn", () => c.ended().length === 3));
+        expect((yield* Effect.promise(log)).slice(10)).toEqual([
+          ["user", "tidy up"],
+          ["talk", "Starting on it."],
+          ["talk", "Done."],
+        ]);
+        expect(c.infos().at(-1)).toContain("(after 1 logged entries; openai-plan:gpt-sol carries on from them)");
+        const resumed = decodeBody(fake.state.seen[0]?.body ?? "").input[0]?.content ?? "";
+        const said = Schema.is(Schema.String)(resumed) ? resumed : (resumed.at(-1)?.text ?? "");
+        expect(said).toStartWith("tidy up\n\n[optchat: another engine began this turn");
+        expect(said).toEndWith("\ntalk: Starting on it.");
         c.ws.close();
       }),
     ),
