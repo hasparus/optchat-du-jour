@@ -10,16 +10,22 @@ import { bytes } from "../tree.ts";
 import { type Tokens, type UsageRecord, isCold } from "../usage.ts";
 import { cutBlocks, flat } from "../view.ts";
 
+// Everything here leaves the log for a model, so it is made well-formed on the way out: a line
+// logged before cap() kept surrogate pairs whole (or a message that arrived with a lone half)
+// would otherwise be refused by the provider on every try, and rule 3 would wait on that node
+// forever. Well-formed text passes unchanged, so the cache prefix does too.
+
 // The context pieces: <chat>, the bare lines, </chat>, cut at the marks. No ids anywhere: shown
 // `id+n|text`, the model starts copying the format (gist §4.2). Byte-stable from call to call.
-export const contextBlocks = (job: Job, marks: readonly number[] = MARKS) => cutBlocks(["<chat>", ...job.ctx, "</chat>"].join("\n"), marks);
+export const contextBlocks = (job: Job, marks: readonly number[] = MARKS) =>
+  cutBlocks(["<chat>", ...job.ctx, "</chat>"].join("\n"), marks).map((piece) => piece.toWellFormed());
 
 // what the gist's step block says above the message or the two lines (gist §4.2): the message
 // whole with its newlines, the two lines written out again, flattened
 export function step(job: Job): string {
   const scale = `For scale, this line is exactly ${NODE} bytes:\n${SCALE}\n\n`;
-  if ("msg" in job) return `${scale}Compress this message into one line, in at most ${NODE} bytes:\n${job.msg.kind}: ${job.msg.text}`;
-  return `${scale}Merge these two lines into one, in at most ${NODE} bytes:\n${flat(job.a)}\n${flat(job.b)}`;
+  if ("msg" in job) return `${scale}Compress this message into one line, in at most ${NODE} bytes:\n${job.msg.kind}: ${job.msg.text}`.toWellFormed();
+  return `${scale}Merge these two lines into one, in at most ${NODE} bytes:\n${flat(job.a)}\n${flat(job.b)}`.toWellFormed();
 }
 
 // the first `limit` bytes of a line, never ending inside a UTF-8 character (gist §4.3)

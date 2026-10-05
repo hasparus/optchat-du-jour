@@ -10,6 +10,11 @@ import { importOptmem, parseOptmem } from "../src/import.ts";
 import { loadChat, lock, Locked, newMsg } from "../src/store.ts";
 import { built, getNode, type Mem, newMem, nodes } from "../src/tree.ts";
 import { addMessage, addNode, cutBlocks, render, settle } from "../src/view.ts";
+import { cap } from "../src/cap.ts";
+import { CAP } from "../src/config.ts";
+import { zoom } from "../src/mcp.ts";
+import { contextBlocks, step } from "../src/summarize/step.ts";
+import { headOf, tailOf } from "../src/text.ts";
 
 const made: string[] = [];
 // short: socket paths stop at ~107 characters
@@ -41,6 +46,49 @@ test("the view is cut after the last line end before each mark, and marks past i
   expect(blocks.slice(0, -1).filter((b) => !b.endsWith("\n"))).toEqual([]);
   expect(blocks[0]!.length).toBeLessThanOrEqual(100);
   expect(cutBlocks("<chat>\n</chat>")).toEqual(["<chat>\n</chat>"]);
+});
+
+// A surrogate pair split by a cut leaves a lone half in the permanent log; the provider refuses
+// the compactor's input on every try, and rule 3 keeps every later summary waiting on that node.
+test("cap() never splits a surrogate pair, and says how much it left out", () => {
+  const rocket = "\u{1F680}";
+  // the cut after the head would fall between the rocket's halves: the head stops before it
+  const full = `${"a".repeat(14_999)}${rocket}${"b".repeat(20_000)}`;
+  const capped = cap(full);
+  expect(capped.isWellFormed()).toBe(true);
+  expect(capped).toBe(`${"a".repeat(14_999)}\n[… ${full.length - 14_999 - CAP / 2} chars cut …]\n${"b".repeat(CAP / 2)}`);
+  expect(JSON.stringify(newMsg(7, "echo", capped))).not.toMatch(/\\ud83d/i);
+  // and the tail's start would fall between them: the tail starts after it
+  const late = `${"a".repeat(20_000)}${rocket}${"b".repeat(14_999)}`;
+  expect(cap(late)).toBe(`${"a".repeat(CAP / 2)}\n[… ${late.length - CAP / 2 - 14_999} chars cut …]\n${"b".repeat(14_999)}`);
+  // plain text is cut exactly as the reference cuts it (the parity fixtures are ASCII)
+  const ascii = `${"x".repeat(20_000)}${"y".repeat(20_000)}`;
+  expect(cap(ascii)).toBe(`${"x".repeat(CAP / 2)}\n[… ${40_000 - CAP} chars cut …]\n${"y".repeat(CAP / 2)}`);
+  expect(cap("short")).toBe("short");
+  // a lone half the tool itself wrote is not logged as one
+  expect(cap("a\uD83Db").isWellFormed()).toBe(true);
+  expect(headOf(`x${rocket}`, 2)).toBe("x");
+  expect(headOf(`x${rocket}`, 3)).toBe(`x${rocket}`);
+  expect(tailOf(`${rocket}x`, 2)).toBe("x");
+  expect(tailOf(`${rocket}x`, 3)).toBe(`${rocket}x`);
+});
+
+test("a line logged with a lone surrogate leaves for a model well-formed: compactor step and context, the view, zoom", () => {
+  const bad = `rocket \uD83D then text`; // what cap() wrote before it kept pairs whole
+  const msg = newMsg(7, "echo", bad);
+  const asked = step({ ctx: [], i: 7, l: 0, msg });
+  expect(asked.isWellFormed()).toBe(true);
+  expect(asked).toContain("echo: rocket \uFFFD then text");
+  expect(step({ a: bad, b: "fine", ctx: [], i: 0, l: 1 }).isWellFormed()).toBe(true);
+  expect(contextBlocks({ ctx: ["older", bad], i: 7, l: 0, msg: newMsg(7, "user", "hi") }).every((piece) => piece.isWellFormed())).toBe(true);
+  // a short message is its own free node, so the lone half reaches the view and zoom too
+  const mem = newMem();
+  addMessage(mem, newMsg(0, "echo", bad));
+  addNode(mem, { i: 0, l: 0, size: msg.size, text: `echo: ${bad}` });
+  expect(render(mem).isWellFormed()).toBe(true);
+  expect(zoom(mem, 0, 1).isWellFormed()).toBe(true);
+  // well-formed text is not touched, so nothing cached changes
+  expect(step({ ctx: [], i: 7, l: 0, msg: newMsg(7, "user", "ok \u{1F680}") })).toEndWith("user: ok \u{1F680}");
 });
 
 test("settle waits for the last unbuilt view line, and a cancelled wait leaves no listener", async () => {

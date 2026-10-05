@@ -38,10 +38,12 @@ export const refold = (mem: Mem): void => {
 // one space for each line break, whether LF, CRLF or a CR on its own
 export const flat = (text: string) => text.split(/\r\n?|\n/).join(" ");
 
-// the view as every call sees it: one id+n|text line per part inside <chat> tags
+// the view as every call sees it: one id+n|text line per part inside <chat> tags. Made
+// well-formed for the model (a free node is a logged message's own text, which may hold a lone
+// surrogate); well-formed text, every view so far, is unchanged
 export function render(mem: Mem): string {
   const lines = mem.view.map((c) => `${label(c)}|${flat(getNode(mem, c)?.text ?? PLACEHOLDER)}`);
-  return `${["<chat>", ...lines].join("\n")}\n</chat>`;
+  return `${["<chat>", ...lines].join("\n")}\n</chat>`.toWellFormed();
 }
 
 // The view in blocks (gist §8). Each mark inside the text moves back to just after the last

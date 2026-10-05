@@ -44,15 +44,16 @@ export function openNode(mem: Mem, id: number, n: number): Opened | null {
 
 // Line id+n opened into its two halves, or for n = 1 the message itself, whole. A merge that is
 // not built yet is no line at all; a single message always opens, since the view tells the model
-// to zoom a line that has no summary yet.
+// to zoom a line that has no summary yet. What it answers goes to a model, so it is made
+// well-formed: a lone surrogate in an old log line becomes U+FFFD, not a request refused.
 export function zoom(mem: Mem, id: number, n: number): string {
   const found = openNode(mem, id, n);
   if (!found) return noLine(id, n);
-  if ("message" in found) return `${id}+0|${found.message.kind}: ${found.message.text}`;
+  if ("message" in found) return `${id}+0|${found.message.kind}: ${found.message.text}`.toWellFormed();
   const [left, right] = found.halves;
   // a parent is only built after its children: a missing half is a broken tree
   if (!found.node || !left?.node || !right?.node) return noLine(id, n);
-  return `${label(left.at)}|${flat(left.node.text)}\n${label(right.at)}|${flat(right.node.text)}`;
+  return `${label(left.at)}|${flat(left.node.text)}\n${label(right.at)}|${flat(right.node.text)}`.toWellFormed();
 }
 
 // the local date and time of message id, "YYYY-MM-DD HH:MM"

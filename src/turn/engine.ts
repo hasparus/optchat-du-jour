@@ -37,7 +37,7 @@ export type TurnInput = {
 export const openingText = (input: Pick<TurnInput, "earlier" | "texts">) => {
   const asked = input.texts.join("\n\n");
   if (input.earlier.length === 0) return asked;
-  const done = input.earlier.map((e) => `${e.kind}: ${e.text}`).join("\n");
+  const done = input.earlier.map((e) => `${e.kind}: ${e.text}`.toWellFormed()).join("\n"); // read back from the log
   return `${asked}\n\n[optchat: another engine began this turn and stopped before it finished (usage limit or device offline). What it did is below and is already in the log; continue from there and do not repeat it.]\n${done}`;
 };
 

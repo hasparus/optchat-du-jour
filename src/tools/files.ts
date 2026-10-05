@@ -6,6 +6,7 @@
 import { Data, Duration, Effect, FileSystem, Option, Schema } from "effect";
 import { isAbsolute, resolve } from "node:path";
 import { expandHome } from "../paths.ts";
+import { headOf } from "../text.ts";
 import { type GrepJob, binary } from "./grep-search.ts";
 
 export class Outside extends Data.TaggedError("Outside")<{ readonly message: string }> {}
@@ -164,7 +165,7 @@ export const makeFileTools = (folders: readonly string[], o: { readonly timeout?
         if (text.endsWith("\n")) lines.pop(); // a final newline ends the last line; it starts none
         const from = Math.max(1, i.offset ?? 1);
         const shown = lines.slice(from - 1, from - 1 + Math.max(1, i.limit ?? READ_LINES));
-        return bounded(shown.map((line, k) => `${String(from + k).padStart(6)}\t${line.length > LINE_CHARS ? `${line.slice(0, LINE_CHARS)}[…]` : line}`));
+        return bounded(shown.map((line, k) => `${String(from + k).padStart(6)}\t${line.length > LINE_CHARS ? `${headOf(line, LINE_CHARS)}[…]` : line}`));
       });
 
     // the files under `base` matching `pattern`, each checked against the folders

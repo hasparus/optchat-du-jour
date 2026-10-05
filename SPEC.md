@@ -136,7 +136,7 @@ The gist's constants stay fixed; everything new is configuration. Sizes are UTF-
 | `JOBS` | 8 compactor jobs at once | gist §1 |
 | `TRIES` | 5 size retries | gist §1 |
 | `RETRY` | 10 s, fixed, forever | gist §1 |
-| `CAP` | 30,000 chars of logged tool output | gist §1 |
+| `CAP` | 30,000 chars of logged tool output (UTF-16 code units, as the reference counts; a cut never splits a surrogate pair, E21) | gist §1 |
 | `MARKS` | 50,000 / 80,000 / 100,000 chars | gist §1 |
 | `PRIME_MAX_AGE` | 270 s with 5 min TTL; 3,300 s with 1 h TTL | ref §2, adjusted for E6 |
 | `PRIME_TIMEOUT`, `PRIME_IDLE`, `KILL_GRACE` | 30 s, 1 s, 5 s | ref §2 |
@@ -477,6 +477,7 @@ Our changes on top of the reference's D1–D10, which all still apply except D8 
 | E18 | One warm `claude` per expected spawn (the master's turn and priming on the Mini), handed out only to a byte-identical spawn | A fresh process per call (ref §5) | `claude`'s boot is ~1.3 s of each turn; measured median time to first text 1,990 → 1,160 ms |
 | E19 | Messages may carry images and short videos: the normalized bytes in a content-addressed sidecar (`assets/`), the log text plus one marker line per attachment with a caption from a cheap vision call; the sending turn gets the pictures, later turns and the compactor only the markers. Logging a message with attachments waits up to `media.captionWait` for their captions | Messages are text only (gist §2, ref §3); a message is logged before anything else happens to it (gist §7) | The phone is the camera. The log stays text, so view, compactor and parity are unchanged; a short wait keeps the description in the same line as the message instead of a later note |
 | E20 | `zoom(id, 1)` on a user message with attachments answers with its text and their pictures (MCP `image` content, at most 4) | zoom returns text (gist §7.1) | The model can look again at what it was sent; the tool's schema and description are unchanged, so the cached tool list is too |
+| E21 | Every cut by length (`cap()`'s head and tail, Read and Grep's long lines, a video's transcript) moves to a code-point boundary, and `[… N chars cut …]` counts every unit left out; text read back from the log is made well-formed (`toWellFormed()`) wherever it leaves for a model: the compactor's context and step, the view, zoom, a failover's hand-on | A head and a tail of exactly `CAP / 2` UTF-16 units (ref §5.3), whatever falls there | An emoji at the cut left a lone surrogate in the permanent log; the provider refuses that input, so its level-0 node failed every 10 s forever and rule 3 kept every later summary, and so every turn, waiting. ASCII is cut byte for byte as before, so parity is unchanged |
 
 ## Milestones
 
