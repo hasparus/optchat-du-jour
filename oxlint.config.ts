@@ -20,5 +20,12 @@ export default defineConfig({
     // scripts whose output is their report
     { files: ["test/parity/**"], rules: { "no-console": "off" } },
   ],
-  rules: unsorted,
+  rules: {
+    ...unsorted,
+    // An exhaustive switch over a union returns on every path; this rule can't see that, and the
+    // fall-through it asks for trips switch-exhaustiveness-check and no-useless-switch-case instead.
+    "typescript/consistent-return": "off",
+    // Effect.forEach(items, f, options) reads to it as Array#forEach with a thisArg.
+    "unicorn/no-array-method-this-argument": "off",
+  },
 });

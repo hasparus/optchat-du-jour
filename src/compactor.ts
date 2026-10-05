@@ -109,8 +109,9 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
       });
 
     // One job for node c. Making the call, summarizing, committing: whatever goes wrong there (a
-    // typed error, a throw, a defect) is one failure of c, reported the first time c fails, after
-    // which c rests for RETRY. Built or not, c then leaves `running` and the pump looks again.
+    // typed error, a throw, a defect, the call coming back interrupted) is one failure of c,
+    // reported the first time c fails, after which c rests for RETRY. Built or not, c then leaves
+    // `running`, whatever happens, and the pump looks again.
     const job = (c: Coord, call: Exit.Exit<Job>) => {
       const name = label(c);
       const attempt = call.pipe(
@@ -122,13 +123,20 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
         Effect.gen(function* () {
           if (!told.has(name)) {
             told.add(name);
-            yield* report(`${name}: ${reason(cause)}`);
+            // a report that fails has nowhere to go: the node rests and is retried all the same
+            yield* Effect.exit(report(`${name}: ${reason(cause)}`));
           }
           yield* Effect.sleep(pause);
         });
-      return attempt.pipe(
-        Effect.catchCause((cause) => (Cause.hasInterruptsOnly(cause) ? Effect.failCause(cause) : rest(cause))),
-        Effect.andThen(
+      // The attempt runs interruptibly inside an uninterruptible frame, so its outcome is always
+      // looked at. An engine whose call ends interrupted (a process killed under it) has failed
+      // like any other. If it is this fiber that is being interrupted (the pump's scope closing),
+      // turning interruption back on for the rest ends the job right there.
+      const once = Effect.uninterruptibleMask((restore) =>
+        Effect.exit(restore(attempt)).pipe(Effect.flatMap((exit) => (Exit.isSuccess(exit) ? Effect.void : restore(rest(exit.cause))))),
+      );
+      return once.pipe(
+        Effect.ensuring(
           Effect.sync(() => {
             running.delete(name);
           }),

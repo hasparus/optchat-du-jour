@@ -155,6 +155,48 @@ test("a compactor that throws or dies is a failure like any other: reported once
   expect(said).toEqual(["0+1: summarizer crashed"]);
 });
 
+test("a call that comes back interrupted fails its node: the node is freed, reported, retried and built", async () => {
+  const said: string[] = [];
+  let calls = 0;
+  await virtual(
+    Effect.gen(function* () {
+      const chat = yield* openChat(scratchDir(), {
+        jobs: 1, // a node that never left its slot would leave none for the retry
+        report: sink(said),
+        summarize: () => {
+          calls++;
+          return calls === 1 ? Effect.interrupt : Effect.succeed(`line ${long(100)}`);
+        },
+      });
+      yield* chat.log("echo", long(900));
+      yield* awaitFirst(chat.mem);
+      expect(built(chat.mem, first)).toBe(true);
+    }),
+  );
+  expect(calls).toBe(2);
+  expect(said).toHaveLength(1);
+});
+
+test("a report that dies does not keep its node from the retry", async () => {
+  let calls = 0;
+  await virtual(
+    Effect.gen(function* () {
+      const chat = yield* openChat(scratchDir(), {
+        jobs: 1,
+        report: () => Effect.die(new Error("the report broke")),
+        summarize: () => {
+          calls++;
+          return calls === 1 ? Effect.fail(new CompactError({ message: "no" })) : Effect.succeed(`line ${long(100)}`);
+        },
+      });
+      yield* chat.log("echo", long(900));
+      yield* awaitFirst(chat.mem);
+      expect(built(chat.mem, first)).toBe(true);
+    }),
+  );
+  expect(calls).toBe(2);
+});
+
 test("a summary is trimmed, and one that is only whitespace fails the node like any error", async () => {
   const said: string[] = [];
   let calls = 0;

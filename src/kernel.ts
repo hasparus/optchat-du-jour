@@ -77,10 +77,11 @@ export function offers(mem: Mem): Coord[] {
   return found.toReversed().map((c) => ({ i: Number(c.i), l: Number(c.l) }));
 }
 
-// the node named id+n in a chat of T messages, or null (gist §7.1); integers only
+// the node named id+n in a chat of T messages, or null (gist §7.1); integers only. A node past
+// the end is no node, and is never handed to the kernel (its Nats stop at 2^48).
 export function address(id: number, n: number, count: number): Coord | null {
   const whole = [id, n].every((x) => Number.isSafeInteger(x));
-  if (!whole || id < 0 || n < 1) return null;
+  if (!whole || id < 0 || n < 1 || id + n > count) return null;
   const c = kernel.coords(id, n, count);
   return c.$ === "Some" ? { i: Number(c.value.i), l: Number(c.value.l) } : null;
 }
