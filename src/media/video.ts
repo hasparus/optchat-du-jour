@@ -14,6 +14,7 @@
 import { Duration, Effect, Option, Schema } from "effect";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { headOf } from "../text.ts";
 import { MediaError } from "./image.ts";
 import { EXT } from "./sniff.ts";
 
@@ -163,5 +164,5 @@ const transcribe = (tools: Tools, input: string, dir: string, o: { readonly audi
     const heard = yield* run([...tools.whisper, wav], "whisper failed", o.seconds).pipe(Effect.result);
     if (heard._tag === "Failure") return { notice: `audio not transcribed: ${heard.failure.message}`, transcript: null };
     const text = heard.success.trim();
-    return { notice: null, transcript: text.length > TRANSCRIPT_MAX ? `${text.slice(0, TRANSCRIPT_MAX)}…` : text };
+    return { notice: null, transcript: text.length > TRANSCRIPT_MAX ? `${headOf(text, TRANSCRIPT_MAX)}…` : text };
   });

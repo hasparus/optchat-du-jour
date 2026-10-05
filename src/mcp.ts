@@ -4,6 +4,7 @@
 import { Effect, Option, Schema } from "effect";
 import type { McpTransport } from "./config.ts";
 import { address } from "./kernel.ts";
+import { wireJson } from "./text.ts";
 import { type Built, children, type Coord, type Entry, getNode, label, localTime, type Mem } from "./tree.ts";
 import { flat } from "./view.ts";
 
@@ -100,7 +101,8 @@ type Initialized = {
 };
 type Result = Initialized | ToolResult | { readonly tools: typeof TOOLS } | Record<string, never>;
 
-const respond = (id: Id, result: Result): Reply => ({ body: JSON.stringify({ id, jsonrpc: "2.0", result }), status: 200 });
+// a tool's answer goes to the model with its strings made well-formed (wireJson)
+const respond = (id: Id, result: Result): Reply => ({ body: wireJson({ id, jsonrpc: "2.0", result }), status: 200 });
 const failure = (id: Id, code: number, message: string, status = 200): Reply => ({
   body: JSON.stringify({ error: { code, message }, id, jsonrpc: "2.0" }),
   status,

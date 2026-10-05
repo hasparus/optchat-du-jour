@@ -1,9 +1,11 @@
-// Anthropic's Messages API with an API key (SPEC "Engines", api-key: overflow only, our own cache
-// marks with `cache.apiKeyTtls`). One streamed request per call. The marks go on the stable
-// leading blocks of the first user message (the view, or a compactor's context pieces), one TTL
-// each, in the configured order; config.ts makes sure every 1-hour mark comes before any
-// 5-minute one, which Anthropic requires. Thinking blocks come back in the next request exactly as
-// they arrived, signature and all, as tool use with thinking requires.
+// Anthropic's Messages API with an API key (SPEC "Engines", api-key: overflow only). One streamed
+// request per call, cached as gist §8 lays it out: a breakpoint at each of the view's cuts (the
+// pieces a user Item's `marks` counts; cutBlocks makes at most 3) and the top-level automatic
+// `cache_control` on every request, which Anthropic puts on its last block, so each step of a
+// turn (or each size retry of a compactor call) reads everything the step before it sent. That
+// makes 4, Anthropic's limit. Every entry is a 5-minute one, the API's default (gist §8, checklist
+// item 10; E6's 1-hour entries are the Claude subscription's). Thinking blocks come back in the
+// next request exactly as they arrived, signature and all, as tool use with thinking requires.
 import { Effect, Option, Schema, Stream } from "effect";
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
@@ -12,20 +14,21 @@ import { isPicture } from "../media/part.ts";
 import type { ToolDef } from "../tools/files.ts";
 import type { Item } from "../providers/provider.ts";
 import type { Tokens } from "../usage.ts";
+import { wireJson } from "../text.ts";
 import type { Writes } from "./budget.ts";
 
 export const ANTHROPIC_API = "https://api.anthropic.com";
 const VERSION = "2023-06-01";
 export const MAX_TOKENS = 64_000; // streamed, so a long answer doesn't time out
 
-type Ttl = "1h" | "5m";
 type Json = Schema.Json;
+// a 5-minute entry, the API's default and the only one gist §8 uses
+const EPHEMERAL = { type: "ephemeral" } as const;
 
 export type MessagesAsk<E extends Tagged = never> = {
   readonly model: string;
   readonly system: string;
   readonly history: readonly Item[];
-  readonly ttls: readonly Ttl[];
   readonly tools?: readonly ToolDef[];
   readonly toolChoice?: "auto" | "none";
   readonly maxTokens?: number;
@@ -49,11 +52,10 @@ const decodeObject = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Rec
 const inputOf = (text: string): Json => Option.getOrElse(decodeObject(text), () => ({}));
 
 // The conversation as Messages: user parts and tool results on the user side, text, calls and
-// kept blocks on the assistant side, neighbours of one side merged into one message. The first
-// user message's stable parts get the marks, as many as there are TTLs.
-export const messagesOf = (history: readonly Item[], ttls: readonly Ttl[]) => {
+// kept blocks on the assistant side, neighbours of one side merged into one message. A user
+// message's parts that end at a view cut (its `marks`) get a breakpoint each.
+export const messagesOf = (history: readonly Item[]) => {
   const out: { role: "user" | "assistant"; content: Json[] }[] = [];
-  let marked = false;
   const push = (role: "user" | "assistant", blocks: readonly Json[]) => {
     if (blocks.length === 0) return;
     const last = out.at(-1);
@@ -63,8 +65,7 @@ export const messagesOf = (history: readonly Item[], ttls: readonly Ttl[]) => {
   for (const item of history) {
     switch (item.type) {
       case "user": {
-        const marks: number = marked ? 0 : Math.min(item.stable ?? 0, ttls.length);
-        marked ||= marks > 0;
+        const marks = item.marks ?? 0;
         const blocks: Json[] = [];
         for (const [k, part] of item.parts.entries()) {
           if (isPicture(part)) {
@@ -72,8 +73,7 @@ export const messagesOf = (history: readonly Item[], ttls: readonly Ttl[]) => {
             continue;
           }
           if (!part) continue; // the API refuses empty text blocks
-          const ttl = k < marks ? ttls[k] : undefined;
-          blocks.push(ttl === undefined ? { text: part, type: "text" } : { cache_control: { ttl, type: "ephemeral" }, text: part, type: "text" });
+          blocks.push(k < marks ? { cache_control: EPHEMERAL, text: part, type: "text" } : { text: part, type: "text" });
         }
         push("user", blocks);
         break;
@@ -88,7 +88,7 @@ export const messagesOf = (history: readonly Item[], ttls: readonly Ttl[]) => {
         push("assistant", [{ id: item.id, input: inputOf(item.input), name: item.name, type: "tool_use" }]);
         break;
       case "kept":
-        push("assistant", [item.block]);
+        if (item.provider === "anthropic") push("assistant", [item.block]);
         break;
     }
   }
@@ -103,15 +103,19 @@ const Body = Schema.Struct({
   tools: Schema.optional(Schema.Array(Schema.Struct({ name: Schema.String, description: Schema.String, input_schema: Schema.Json }))),
   tool_choice: Schema.optional(Schema.Struct({ type: Schema.Literals(["auto", "none"]) })),
   output_config: Schema.optional(Schema.Struct({ effort: Schema.String })),
+  // automatic caching: a breakpoint on the request's last cacheable block (gist §8)
+  cache_control: Schema.Struct({ type: Schema.Literal("ephemeral") }),
   stream: Schema.Literal(true),
 });
-const encodeBody = Schema.encodeSync(Schema.fromJsonString(Body));
+// every string made well-formed on the way out (wireJson)
+const encodeBody = (body: typeof Body.Type) => wireJson(Schema.encodeSync(Body)(body));
 
 export const requestBody = (ask: MessagesAsk<Tagged>) => {
   const tools = ask.tools === undefined || ask.tools.length === 0 ? undefined : ask.tools;
   return encodeBody({
+    cache_control: EPHEMERAL,
     max_tokens: ask.maxTokens ?? MAX_TOKENS,
-    messages: messagesOf(ask.history, ask.ttls),
+    messages: messagesOf(ask.history),
     model: ask.model,
     output_config: ask.effort === undefined ? undefined : { effort: ask.effort },
     stream: true,
@@ -266,9 +270,9 @@ const itemOf = (b: Block): Item[] => {
     case "tool_use":
       return [{ id: b.id, input: b.json || "{}", name: b.name, type: "call" }];
     case "thinking":
-      return [{ block: { signature: b.signature, thinking: b.thinking, type: "thinking" }, type: "kept" }];
+      return [{ block: { signature: b.signature, thinking: b.thinking, type: "thinking" }, provider: "anthropic", type: "kept" }];
     case "redacted_thinking":
-      return [{ block: { data: b.data, type: "redacted_thinking" }, type: "kept" }];
+      return [{ block: { data: b.data, type: "redacted_thinking" }, provider: "anthropic", type: "kept" }];
     case "other":
       return [];
   }

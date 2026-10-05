@@ -136,7 +136,7 @@ test("a turn's pictures: two videos and a high-detail image in the opening, a th
   const settings = mediaSettings(
     parseSettings({
       allowedLogins: [],
-      cache: { apiKeyTtls: ["1h"], claudeCodeTtl: "1h", primeTtl: "1h" },
+      cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
       compactor: { byLevel: [{ chain: ["claude-code:sonnet"], from: 0 }], effort: "medium" },
       defaultDevice: "mini",
       devices: { mini: { folders: ["/tmp"], url: "http://127.0.0.1:1" } },

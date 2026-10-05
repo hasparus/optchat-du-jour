@@ -1,7 +1,8 @@
-// The compactor on an API key (SPEC "Compactor calls", api-key; E5): Anthropic gets layout A, the
-// context pieces with our marks and `cache.apiKeyTtls`, the step unmarked; OpenAI gets what
-// openai-plan gets. Size retries stay in the same conversation, each try re-sent with the reply
-// it got (thinking blocks included). Every try is priced and counted against the monthly budget; the size retries are step.ts's.
+// The compactor on an API key (SPEC "Compactor calls", api-key; E5): the context pieces first, a
+// cache mark at each of their cuts, then the step; the request's end is cached too (gist §8), so a
+// size retry reads the try before it. OpenAI gets what openai-plan gets. Size retries stay in the
+// same conversation, each try re-sent with the reply it got (thinking blocks included). Every try
+// is priced and counted against the monthly budget; the size retries are step.ts's.
 import { Duration, Effect } from "effect";
 import { readFileSync } from "node:fs";
 import type { Job } from "../compactor.ts";
@@ -23,7 +24,7 @@ export const apiKeyCompactor = (
   // the transport: one request per try, the whole conversation so far in each
   const call = (job: Job, failoverFrom: string | null) => {
     const context = contextBlocks(job);
-    const history: Item[] = [{ parts: [...context, step(job)], stable: context.length, type: "user" }];
+    const history: Item[] = [{ marks: context.length - 1, parts: [...context, step(job)], type: "user" }];
     const ask = (t: Try) =>
       Effect.gen(function* () {
         if (t.retry !== null) history.push({ parts: [t.retry.text], type: "user" });

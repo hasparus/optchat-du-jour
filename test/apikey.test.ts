@@ -1,6 +1,7 @@
 // The api-key engine (SPEC "Engines", api-key; "Usage and cost tracking") against a fake Messages
-// API: our marks with 1-hour entries before 5-minute ones, every call priced from the table, the
-// thinking sent back on a retry, and a spent monthly budget that stops the key and says so once.
+// API: gist §8's cache layout (a 5-minute mark at each view cut and the top-level automatic
+// one), every call priced from the table, the thinking sent back on a retry, and a spent
+// monthly budget that stops the key and says so once.
 import { afterAll, expect, test } from "bun:test";
 import { Effect, Layer, Option, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -37,7 +38,7 @@ const settings = (monthlyBudget: number): Settings =>
   parseSettings({
     allowedLogins: [],
     apiKey: { anthropicUrl: fake.base, monthlyBudget, prices: { "anthropic/claude-opus-5-5": price } },
-    cache: { apiKeyTtls: ["1h", "5m", "5m"], claudeCodeTtl: "1h", primeTtl: "1h" },
+    cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
     compactor: { byLevel: [{ chain: [REF], from: 0 }], effort: "medium" },
     defaultDevice: "mini",
     devices: { mini: { folders: [], url: "http://127.0.0.1:9" } },
@@ -66,15 +67,15 @@ const rig = (monthly: number, usagePath: string) => {
   return { budget, compact, records, reports };
 };
 
-// enough context for three pieces (cut at 50k and 80k characters)
-const job: Job = { ctx: Array.from({ length: 90 }, (_, k) => `user: line ${k} ${"z".repeat(1000)}`), i: 90, l: 0, msg: newMsg(90, "user", "squeeze me") };
+// enough context for all four pieces (cut at 50k, 80k and 100k characters)
+const job: Job = { ctx: Array.from({ length: 110 }, (_, k) => `user: line ${k} ${"z".repeat(1000)}`), i: 110, l: 0, msg: newMsg(110, "user", "squeeze me") };
 
 const Block = Schema.Struct({
   type: Schema.String,
   text: Schema.optional(Schema.String),
   thinking: Schema.optional(Schema.String),
   signature: Schema.optional(Schema.String),
-  cache_control: Schema.optional(Schema.Struct({ ttl: Schema.String })),
+  cache_control: Schema.optional(Schema.Struct({ type: Schema.String, ttl: Schema.optional(Schema.String) })),
 });
 const Body = Schema.Struct({
   system: Schema.Array(Block),
@@ -82,10 +83,14 @@ const Body = Schema.Struct({
   tools: Schema.optional(Schema.Array(Schema.Struct({ name: Schema.String, input_schema: Schema.Json }))),
   tool_choice: Schema.optional(Schema.Struct({ type: Schema.String })),
   output_config: Schema.optional(Schema.Struct({ effort: Schema.String })),
+  cache_control: Schema.optional(Schema.Struct({ type: Schema.String, ttl: Schema.optional(Schema.String) })),
 });
 const decodeBody = Schema.decodeUnknownSync(Schema.fromJsonString(Body));
 
-test("Anthropic gets 1-hour marks before 5-minute ones on the stable blocks, the thinking back on a retry, and every call is priced", async () => {
+// a block's mark as sent, "5m" for one with no TTL (the API's default), null for none
+const markOf = (b: typeof Block.Type) => (b.cache_control === undefined ? null : `${b.cache_control.type} ${b.cache_control.ttl ?? "5m"}`);
+
+test("Anthropic gets gist §8's layout: a 5-minute mark at each view cut and the request end, the thinking back on a retry, and every call is priced", async () => {
   const r = rig(5, `${dir}/priced.jsonl`);
   fake.state.seen.length = 0;
   fake.state.script = [{ text: `user: ${"x".repeat(600)}`, thinking: "too long, but first" }, { text: "user: squeeze me" }];
@@ -94,10 +99,15 @@ test("Anthropic gets 1-hour marks before 5-minute ones on the stable blocks, the
   const [first, retry] = fake.state.seen.map((b) => decodeBody(b));
   expect(fake.state.headers[0]?.get("anthropic-version")).toBe("2023-06-01");
   expect(first?.system.every((b) => b.cache_control === undefined)).toBe(true);
-  expect(first?.messages[0]?.content.map((b) => b.cache_control?.ttl ?? null)).toEqual(["1h", "5m", "5m", null]); // three context pieces, the step unmarked
+  // four context pieces, a mark at each of the three cuts; the last piece and the step are read
+  // through the request end's automatic mark, so the size retry reads the whole first try
+  expect(first?.messages[0]?.content.map(markOf)).toEqual(["ephemeral 5m", "ephemeral 5m", "ephemeral 5m", null, null]);
+  expect(first?.cache_control).toEqual({ type: "ephemeral" });
+  expect(fake.state.seen.every((b) => !b.includes('"1h"'))).toBe(true);
   expect(first?.output_config?.effort).toBe("medium");
   expect(retry?.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
   expect(JSON.stringify(retry?.messages[0])).toBe(JSON.stringify(first?.messages[0])); // byte-stable, so the marks hit
+  expect(retry?.cache_control).toEqual({ type: "ephemeral" });
   expect(retry?.messages[1]?.content[0]).toEqual({ signature: "sig-1", thinking: "too long, but first", type: "thinking" });
   expect(r.records.map((x) => [x.engine, x.auth, x.attempt, x.dollars])).toEqual([
     ["api-key", "api-key", 1, DOLLARS],
@@ -106,12 +116,13 @@ test("Anthropic gets 1-hour marks before 5-minute ones on the stable blocks, the
 
   // as the master: the view's blocks marked, the read-only tools offered, the last round without tools
   const provider = apiKeyProvider({ budget: r.budget, clients, effort: "high", ref: API_KEY, settings: settings(5) });
-  const history = [{ parts: ["<chat>\n0+1|user: hi\n</chat>", "what now?"], stable: 1, type: "user" as const }];
+  const history = [{ marks: 1, parts: ["<chat>\n0+1|user: hi\n", "1+1|talk: hello\n</chat>", "what now?"], type: "user" as const }];
   const tools = [{ description: "Read a file", name: "Read", parameters: { properties: { file_path: { type: "string" } }, type: "object" } }];
   await Effect.runPromise(provider.call({ final: false, history, instructions: "MASTER", onText: () => Effect.void, tools }));
   await Effect.runPromise(provider.call({ final: true, history, instructions: "MASTER", onText: () => Effect.void, tools }));
   const [turn, last] = fake.state.seen.slice(-2).map((b) => decodeBody(b));
-  expect(turn?.messages[0]?.content.map((b) => b.cache_control?.ttl ?? null)).toEqual(["1h", null]);
+  expect(turn?.messages[0]?.content.map(markOf)).toEqual(["ephemeral 5m", null, null]);
+  expect([turn?.cache_control, last?.cache_control]).toEqual([{ type: "ephemeral" }, { type: "ephemeral" }]);
   expect(turn?.tools?.map((t) => t.name)).toEqual(["Read"]);
   expect([turn?.tool_choice?.type, last?.tool_choice?.type]).toEqual(["auto", "none"]);
 });
@@ -154,16 +165,22 @@ test("a spent monthly budget is a UsageLimit, reported once, and nothing more re
   expect(fake.state.seen).toHaveLength(1);
 });
 
-test("the config refuses a 5-minute mark before a 1-hour one, and an engine ref it can't decode", async () => {
+test("an older config with cache.apiKeyTtls still loads, the key ignored; an engine ref the config can't decode is refused", async () => {
   const written = Schema.encodeSync(Settings)(settings(5));
   let configs = 0;
-  const refused = async (config: typeof Settings.Encoded) => {
+  // an older config's shape: what Settings takes, and anything it no longer does
+  const write = (config: typeof Settings.Encoded | Readonly<Record<string, Schema.Json>>) => {
     const path = `${dir}/optchat-${++configs}.config.ts`; // a module is imported once per path
     writeFileSync(path, `export default ${JSON.stringify(config)};\n`);
-    const error = await Effect.runPromise(Effect.flip(loadSettings(path)));
+    return path;
+  };
+  const refused = async (config: typeof Settings.Encoded) => {
+    const error = await Effect.runPromise(Effect.flip(loadSettings(write(config))));
     return error.message;
   };
-  expect(await refused({ ...written, cache: { apiKeyTtls: ["5m", "1h"], claudeCodeTtl: "1h", primeTtl: "1h" } })).toContain('every "1h" before any "5m"');
+  // gist §8 leaves nothing to set on a key; the old setting is dropped like any unknown key
+  const old = await Effect.runPromise(loadSettings(write({ ...written, cache: { ...written.cache, apiKeyTtls: ["1h", "5m", "5m", "5m"] } })));
+  expect(old.cache).toEqual({ claudeCodeTtl: "1h", primeTtl: "1h" });
   expect(await refused({ ...written, master: { ...written.master, chain: ["gpt:x"] } })).toContain("engine gpt:x: no such engine");
   expect(await refused({ ...written, master: { ...written.master, chain: ["api-key:claude-sonnet"] } })).toContain("must be api-key:anthropic/<model>");
 });

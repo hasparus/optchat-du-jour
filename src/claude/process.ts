@@ -5,6 +5,7 @@ import { Context, Data, Deferred, type Duration, Effect, Fiber, Layer, Option, t
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { KILL_GRACE } from "../config.ts";
 import type { DeviceOffline } from "../engines/errors.ts";
+import { wireJson } from "../text.ts";
 import { type Block, type Event, type Result, parseEvent } from "./events.ts";
 
 export class ClaudeError extends Data.TaggedError("ClaudeError")<{ readonly message: string }> {}
@@ -41,8 +42,8 @@ export class Runner extends Context.Service<
   }
 >()("optchat/Runner") {}
 
-const userMessage = (blocks: readonly Block[]) =>
-  `${JSON.stringify({ message: { content: blocks, role: "user" }, type: "user" })}\n`;
+// one stream-json line, its strings made well-formed (wireJson): this is what claude sends a model
+const userMessage = (blocks: readonly Block[]) => `${wireJson({ message: { content: blocks, role: "user" }, type: "user" })}\n`;
 
 // wraps a process's stdin queue and stdout lines into a Claude; `exit` explains why output ended
 export const makeClaude = Effect.fnUntraced(function* (o: {

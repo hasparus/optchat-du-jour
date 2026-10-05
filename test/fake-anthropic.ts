@@ -1,7 +1,11 @@
 // A stand-in for Anthropic's Messages API (POST /v1/messages, streamed), on a free port: it checks
-// the key, keeps every request body, and answers from a script with an optional thinking block,
-// text, tool calls and text after them, in that order, with the stop reason it is given (else
-// tool_use or end_turn), or an HTTP error. No model.
+// the key, keeps every request body, refuses with a 400 what the real API refuses about cache
+// breakpoints (more than 4, the top-level automatic `cache_control` counting as one; a 1-hour
+// entry after a 5-minute one), and answers from a script with an optional thinking block, text,
+// tool calls and text after them, in that order, with the stop reason it is given (else tool_use
+// or end_turn), or an HTTP error. No model.
+import { Schema } from "effect";
+
 export type AnthropicAnswer =
   | {
       readonly text?: string;
@@ -24,6 +28,31 @@ export const USAGE = {
   output_tokens: 1,
 };
 
+// the parts of a request body that can hold a cache breakpoint
+const Mark = Schema.optional(Schema.Struct({ ttl: Schema.optional(Schema.String) }));
+const Marked = Schema.Struct({ cache_control: Mark });
+const decodeMarks = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      tools: Schema.optional(Schema.Array(Marked)),
+      system: Schema.optional(Schema.Array(Marked)),
+      messages: Schema.optional(Schema.Array(Schema.Struct({ content: Schema.Array(Marked) }))),
+      cache_control: Mark,
+    }),
+  ),
+);
+// what the real API answers a request with too many breakpoints or misordered TTLs, or null when
+// it takes it: the breakpoints in prompt order (tools, system, messages), then the automatic one
+// at its end, each by its TTL
+const cacheRefusal = (raw: string) => {
+  const body = decodeMarks(raw);
+  const blocks = [...(body.tools ?? []), ...(body.system ?? []), ...(body.messages ?? []).flatMap((m) => m.content)];
+  const ttls = [...blocks, body].flatMap((b) => (b.cache_control ? [b.cache_control.ttl ?? "5m"] : []));
+  if (ttls.length > 4) return `A maximum of 4 blocks with cache_control may be provided. Found ${ttls.length}.`;
+  if (ttls.some((t, k) => t === "1h" && ttls.slice(0, k).includes("5m"))) return "a ttl='1h' cache_control block must not come after a ttl='5m' cache_control block";
+  return null;
+};
+
 export type FakeAnthropicState = { readonly headers: Headers[]; script: AnthropicAnswer[]; readonly seen: string[] };
 
 export function fakeAnthropic(key: string) {
@@ -32,8 +61,11 @@ export function fakeAnthropic(key: string) {
     fetch: async (req) => {
       if (new URL(req.url).pathname !== "/v1/messages") return new Response("not found", { status: 404 });
       if (req.headers.get("x-api-key") !== key) return Response.json({ error: { message: "invalid x-api-key", type: "authentication_error" }, type: "error" }, { status: 401 });
-      state.seen.push(await req.text());
+      const raw = await req.text();
+      state.seen.push(raw);
       state.headers.push(req.headers);
+      const refused = cacheRefusal(raw);
+      if (refused !== null) return Response.json({ error: { message: refused, type: "invalid_request_error" }, type: "error" }, { status: 400 });
       const answer = state.script.shift() ?? { text: "ok" };
       if ("status" in answer) return Response.json({ error: { message: "no", type: answer.errorType }, type: "error" }, { status: answer.status });
       const blocks: { readonly start: Json; readonly deltas: readonly Json[] }[] = [

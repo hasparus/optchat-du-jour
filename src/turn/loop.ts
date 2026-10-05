@@ -83,8 +83,9 @@ export const toolLoop = (o: {
     return Effect.gen(function* () {
       const box = o.toolsFor(input.device);
       const view = cutBlocks(input.view);
-      // the view (stable, cached), the new messages' pictures, then their texts
-      const history: Item[] = [{ parts: [...view, ...input.media, openingText(input)], stable: view.length, type: "user" }];
+      // the view (byte-stable, a cache mark after each piece but its last), the new messages'
+      // pictures, then their texts
+      const history: Item[] = [{ marks: view.length - 1, parts: [...view, ...input.media, openingText(input)], type: "user" }];
       for (let round = 1; ; round++) {
         history.push(...(yield* steered(input, out)));
         const started = yield* Clock.currentTimeMillis;

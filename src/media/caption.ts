@@ -11,6 +11,7 @@ import { failover, watchChain } from "../engines/chain.ts";
 import { type EngineError, fromResult, ModelError, UsageLimit } from "../engines/errors.ts";
 import { type EngineNeeds, providerOf } from "../engines/registry.ts";
 import { CAPTION, CAPTION_FILE } from "../prompts.ts";
+import { headOf } from "../text.ts";
 import { tokensOf, type Tokens, type UsageRecord } from "../usage.ts";
 import { cleanCaption } from "../wire.ts";
 import type { Picture } from "./part.ts";
@@ -20,7 +21,7 @@ export type Describe = (input: CaptionInput, failoverFrom: string | null) => Eff
 
 const CAPTION_TIMEOUT = "90 seconds";
 const ASK = "Describe this image in one line.";
-const askOf = (input: CaptionInput) => (input.heard ? `${ASK}\nIts audio, transcribed: ${input.heard.slice(0, 600)}` : ASK);
+const askOf = (input: CaptionInput) => (input.heard ? `${ASK}\nIts audio, transcribed: ${headOf(input.heard, 600)}` : ASK);
 
 // one record per caption call, as every model call gets (E11)
 const record = (o: { engine: UsageRecord["engine"]; auth: UsageRecord["auth"]; model: string | null; usage: Tokens; failoverFrom: string | null; started: number; device: string | null; dollars?: number | undefined }): UsageRecord => {
