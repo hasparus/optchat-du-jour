@@ -2,7 +2,8 @@
 // Our fake `claude`: it speaks the stream-json of `claude -p` on stdin and stdout (ref §10,
 // §16.4). The code under test runs it when OPTCHAT_CLAUDE names this file. No model, no network.
 //
-// It tells the three kinds of call apart the way optchat starts them:
+// It tells the four kinds of call apart the way optchat starts them:
+//   caption   --system-prompt-file .../caption.txt (an attachment's caption, SPEC "Media")
 //   compact   --safe-mode in argv (the compactor)
 //   prime     DISABLE_PROMPT_CACHING=1 without --safe-mode (a priming call)
 //   turn      anything else
@@ -12,7 +13,7 @@
 //   {type: "in", pid, content}                          every user message read from stdin
 //   {type: "exit", pid, code}                           a normal end (not after SIGKILL)
 //
-// FAKE_CLAUDE_SCRIPT: a JSON file {turn?, prime?, compact?}. Each role holds a list of calls: the
+// FAKE_CLAUDE_SCRIPT: a JSON file {turn?, prime?, compact?, caption?}. Each role holds a list of calls: the
 // k-th process of that role plays call k, and the last call repeats. A call is a list of replies,
 // reply k answering the k-th message the call starts work on (the last reply repeats); a call
 // may also be written as one reply, a plain list of actions. Actions:
@@ -79,6 +80,7 @@ type Reply = typeof Reply.Type;
 const Replies = Schema.Array(Reply);
 const Call = Schema.Union([Replies, Reply]);
 const Script = Schema.Struct({
+  caption: Schema.optional(Schema.Array(Call)),
   compact: Schema.optional(Schema.Array(Call)),
   prime: Schema.optional(Schema.Array(Call)),
   turn: Schema.optional(Schema.Array(Call)),
@@ -86,7 +88,7 @@ const Script = Schema.Struct({
 const Input = Schema.fromJsonString(Schema.Struct({ message: Schema.optional(Schema.Struct({ content: Schema.optional(Schema.Json) })) }));
 const McpConfig = Schema.fromJsonString(Schema.Struct({ mcpServers: Schema.optional(Schema.Record(Schema.String, Schema.Struct({ type: Schema.optional(Schema.String) }))) }));
 
-type Role = "compact" | "prime" | "turn";
+type Role = "caption" | "compact" | "prime" | "turn";
 type Json = Schema.Json;
 type LogRecord =
   | { readonly type: "start"; readonly role: Role; readonly call: number; readonly argv: readonly string[]; readonly cwd: string; readonly env: Json }
@@ -95,7 +97,14 @@ type LogRecord =
 
 const argv = process.argv.slice(2);
 const { env } = process;
-const role: Role = argv.includes("--safe-mode") ? "compact" : env.DISABLE_PROMPT_CACHING === "1" ? "prime" : "turn";
+const systemFile = argv[argv.indexOf("--system-prompt-file") + 1] ?? "";
+const role: Role = systemFile.endsWith("/caption.txt")
+  ? "caption"
+  : argv.includes("--safe-mode")
+    ? "compact"
+    : env.DISABLE_PROMPT_CACHING === "1"
+      ? "prime"
+      : "turn";
 const flag = (name: string) => {
   const at = argv.indexOf(name);
   return at === -1 ? undefined : argv[at + 1];
@@ -119,6 +128,7 @@ const usageOf = (u?: typeof Usage.Type) => ({ cache_creation_input_tokens: 0, ca
 const messageStart = (usage: typeof Usage.Type) => ({ event: { message: { model, usage }, type: "message_start" }, type: "stream_event" });
 
 const DEFAULTS = {
+  caption: [{ text: "a picture from the fake claude" }],
   compact: [{ text: "talk: a short summary line" }],
   prime: [{ emit: messageStart({ cache_creation_input_tokens: 100, input_tokens: 3 }) }, { hang: true }],
   turn: [{ text: "ok" }],

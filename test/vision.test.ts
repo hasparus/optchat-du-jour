@@ -1,0 +1,267 @@
+// Attachments in a turn (SPEC "Media"): the sending turn gets real pictures (Anthropic image
+// blocks, Responses input_image data URLs), the log only text (the typed words and one marker per
+// attachment, with its caption waited for briefly), a failover to an engine that is not sent
+// images gets the markers and a note, and the compactor's input keeps a marker's sha.
+import { afterAll, expect, test } from "bun:test";
+import { Effect, Layer, PubSub, Schema } from "effect";
+import { FetchHttpClient } from "effect/http";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { makeBudget } from "../src/apikey/budget.ts";
+import { ApiKeys, apiKeysLayer, KEY_SECRETS } from "../src/apikey/clients.ts";
+import { openChat } from "../src/chat.ts";
+import type { Job } from "../src/compactor.ts";
+import { type ApiKeyRef, parseSettings } from "../src/config.ts";
+import { UsageLimit } from "../src/engines/errors.ts";
+import type { Picture } from "../src/media/part.ts";
+import { DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
+import { apiKeyProvider } from "../src/providers/api-key.ts";
+import { memorySecrets } from "../src/secrets.ts";
+import { makeSession, type SessionEvent, type SessionMedia } from "../src/session.ts";
+import { step } from "../src/summarize/step.ts";
+import { BLIND, type Mid, type TurnEngine, type TurnEvents, type TurnInput } from "../src/turn/engine.ts";
+import { toolLoop } from "../src/turn/loop.ts";
+import { type Asset, type ImageAsset, markerOf, NOT_DESCRIBED, shortSha } from "../src/wire.ts";
+import { fakeAnthropic } from "./fake-anthropic.ts";
+import { fakeOpenAi } from "./fake-openai.ts";
+
+const dirs: string[] = [];
+const anthropic = fakeAnthropic("sk-ant");
+const openai = fakeOpenAi();
+afterAll(async () => {
+  await anthropic.server.stop(true);
+  await openai.server.stop(true);
+  for (const d of dirs) rmSync(d, { force: true, recursive: true });
+});
+
+const PIC: Picture = { data: Buffer.from("not really a jpeg").toString("base64"), mime: "image/jpeg", type: "image" };
+const image = (n: number): ImageAsset => ({ bytes: 200_000, height: 1176, kind: "image", mime: "image/jpeg", sha: String(n).repeat(64).slice(0, 64), width: 1568 });
+
+const until = (what: string, ok: () => boolean, ms = 4000) =>
+  Effect.gen(function* () {
+    const deadline = Date.now() + ms;
+    while (!ok()) {
+      if (Date.now() > deadline) yield* Effect.die(new Error(`timed out waiting for ${what}`));
+      yield* Effect.sleep("5 millis");
+    }
+  });
+
+// ---------------------------------------------------------------------------------------------
+// the api-key engine's requests
+
+const settings = parseSettings({
+  allowedLogins: [],
+  apiKey: {
+    anthropicUrl: anthropic.base,
+    monthlyBudget: 5,
+    openaiUrl: `${openai.base}/v1`,
+    prices: { "anthropic/claude-opus-5-5": { cacheRead: 0, input: 1, output: 1 }, "openai/gpt-6": { cacheRead: 0, input: 1, output: 1 } },
+  },
+  cache: { apiKeyTtls: ["1h"], claudeCodeTtl: "1h", primeTtl: "1h" },
+  compactor: { byLevel: [{ chain: ["claude-code:sonnet"], from: 0 }], effort: "medium" },
+  defaultDevice: "mini",
+  devices: { mini: { folders: [], url: "http://127.0.0.1:9" } },
+  master: { chain: ["claude-code:opus"], effort: "high", permissionMode: "bypassPermissions" },
+  openai: DEFAULT_ENDPOINTS,
+});
+const clients = Effect.runSync(
+  Effect.gen(function* () {
+    return yield* ApiKeys;
+  }).pipe(
+    Effect.provide(
+      apiKeysLayer({ anthropicUrl: anthropic.base, openaiUrl: `${openai.base}/v1` }).pipe(
+        Layer.provide([memorySecrets({ [KEY_SECRETS.anthropic]: "sk-ant", [KEY_SECRETS.openai]: "sk-oai" }), FetchHttpClient.layer]),
+      ),
+    ),
+  ),
+);
+const quiet: TurnEvents = {
+  info: () => Effect.void,
+  log: () => Effect.void,
+  text: () => Effect.void,
+  thinking: () => Effect.void,
+  took: () => Effect.void,
+  usage: () => Effect.void,
+};
+const VIEW = "<chat>\n0+1|user: hello\n</chat>";
+const withPicture: TurnInput = {
+  device: "mini",
+  earlier: [],
+  media: [PIC],
+  mid: { next: Effect.never, ready: Effect.succeed([]) },
+  texts: [`what is this?\n${markerOf(image(1), "a red square")}`],
+  view: VIEW,
+};
+const loopOn = (ref: ApiKeyRef) =>
+  toolLoop({
+    instructions: "MASTER",
+    provider: apiKeyProvider({ budget: makeBudget({ monthly: 5, report: () => Effect.void, usagePath: `${tmpdir()}/oc-vision-usage-${crypto.randomUUID()}.jsonl` }), clients, ref, settings }),
+    ref: ref.ref,
+    toolsFor: () => ({ defs: [], run: () => Effect.succeed("") }),
+    vision: true,
+  });
+
+const AnthropicBody = Schema.Struct({
+  messages: Schema.Array(Schema.Struct({ role: Schema.String, content: Schema.Array(Schema.Record(Schema.String, Schema.Json)) })),
+});
+const ResponsesBody = Schema.Struct({
+  input: Schema.Array(Schema.Struct({ role: Schema.optional(Schema.String), content: Schema.optional(Schema.Array(Schema.Record(Schema.String, Schema.Json))) })),
+});
+
+test("api-key turns send the picture: an Anthropic image block after the cached view, a Responses input_image data URL", async () => {
+  anthropic.state.script = [{ text: "a red square" }];
+  await Effect.runPromise(loopOn({ engine: "api-key", model: "claude-opus-5-5", provider: "anthropic", ref: "api-key:anthropic/claude-opus-5-5" }).run(withPicture, quiet, null));
+  const sent = Schema.decodeUnknownSync(Schema.fromJsonString(AnthropicBody))(anthropic.state.seen.at(-1));
+  const [first] = sent.messages;
+  expect(first?.content.map((b) => b.type)).toEqual(["text", "image", "text"]);
+  expect(first?.content[0]).toEqual({ cache_control: { ttl: "1h", type: "ephemeral" }, text: VIEW, type: "text" });
+  expect(first?.content[1]).toEqual({ source: { data: PIC.data, media_type: "image/jpeg", type: "base64" }, type: "image" });
+  expect(first?.content[2]?.text).toContain("[image 111111111111 1568x1176 195KB: a red square]");
+
+  openai.state.access = "sk-oai";
+  openai.state.script = [{ text: "a red square" }];
+  await Effect.runPromise(loopOn({ engine: "api-key", model: "gpt-6", provider: "openai", ref: "api-key:openai/gpt-6" }).run(withPicture, quiet, null));
+  const asked = Schema.decodeUnknownSync(Schema.fromJsonString(ResponsesBody))(openai.state.seen.at(-1)?.body);
+  const parts = asked.input[0]?.content ?? [];
+  expect(parts.map((p) => p.type)).toEqual(["input_text", "input_image", "input_text"]);
+  expect(parts[1]).toEqual({ detail: "auto", image_url: `data:image/jpeg;base64,${PIC.data}`, type: "input_image" });
+});
+
+// ---------------------------------------------------------------------------------------------
+// the session
+
+// a media service whose captions come when `describe` says, and whose every attachment is PIC
+const fakeMedia = () => {
+  const ready = new Map<string, string>();
+  const waiting = new Map<string, (caption: string) => void>();
+  const media: SessionMedia = {
+    caption: (a) =>
+      Effect.callback<string>((resume) => {
+        const known = ready.get(a.sha);
+        if (known === undefined)
+          waiting.set(a.sha, (c) => {
+            resume(Effect.succeed(c));
+          });
+        else resume(Effect.succeed(known));
+      }),
+    captionNow: (a) => ready.get(a.sha) ?? null,
+    parts: () => [PIC],
+  };
+  const describe = (a: Asset, caption: string) => {
+    ready.set(a.sha, caption);
+    waiting.get(a.sha)?.(caption);
+  };
+  return { describe, media, waiting };
+};
+
+const rig = (engines: readonly TurnEngine[], media: SessionMedia) =>
+  Effect.gen(function* () {
+    const dir = mkdtempSync(`${tmpdir()}/oc-vision-`);
+    dirs.push(dir);
+    const chat = yield* openChat(dir, { summarize: (job) => Effect.succeed(`summary ${job.l}.${job.i}`) });
+    const session = yield* makeSession({ chat, commit: Effect.succeed(null), defaultDevice: "mini", devices: ["mini"], engines, idle: "1 hour", logUsage: () => Effect.void, media });
+    const events: SessionEvent[] = [];
+    const sub = yield* PubSub.subscribe(session.events);
+    yield* PubSub.take(sub).pipe(
+      Effect.tap((e) => Effect.sync(() => events.push(e))),
+      Effect.forever,
+      Effect.forkScoped,
+    );
+    const ended = () => events.filter((e) => e.type === "run-finished").length;
+    return { chat, ended, events, log: () => chat.mem.root.map((m) => [m.kind, m.text]), session };
+  });
+
+test("a message logs its marker with the caption once it comes; a failover to an engine not sent images gets the markers and a note, also mid-run", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const seen: { ref: string; media: number; texts: readonly string[]; mid: Mid[] }[] = [];
+      const spent: TurnEngine = {
+        ref: "seeing:x",
+        run: (input) =>
+          Effect.gen(function* () {
+            seen.push({ media: input.media?.length ?? 0, mid: [], ref: "seeing:x", texts: input.texts });
+            return yield* new UsageLimit({ message: "spent" });
+          }),
+        vision: true,
+        warm: () => Effect.void,
+      };
+      const blind: TurnEngine = {
+        ref: "blind:x",
+        run: (input, out) =>
+          Effect.gen(function* () {
+            const mid: Mid[] = [];
+            const mine = { media: input.media?.length ?? 0, mid, ref: "blind:x", texts: input.texts };
+            seen.push(mine);
+            const m = yield* input.mid.next;
+            mine.mid.push(m);
+            yield* out.took(m);
+            yield* out.log("talk", "I can only read the markers");
+          }),
+        warm: () => Effect.void,
+      };
+      const f = fakeMedia();
+      const r = yield* rig([spent, blind], f.media);
+      const photo = image(1), later = image(2);
+      yield* r.session.input("what is this?", undefined, "c1", [photo]);
+      // the turn waits for the caption before it logs the message
+      yield* until("the caption asked for", () => f.waiting.has(photo.sha));
+      expect(r.log()).toEqual([]);
+      f.describe(photo, "a red [square]");
+      yield* until("the blind engine's call", () => seen.length === 2);
+      // a picture sent mid-run, its caption already known
+      f.describe(later, "a blue circle");
+      yield* r.session.input("", undefined, "c2", [later]);
+      yield* until("the run's end", () => r.ended() === 1);
+
+      const first = `what is this?\n[image ${shortSha(photo.sha)} 1568x1176 195KB: a red (square)]`;
+      const second = `[image ${shortSha(later.sha)} 1568x1176 195KB: a blue circle]`;
+      expect(r.log()).toEqual([
+        ["user", first],
+        ["user", second],
+        ["talk", "I can only read the markers"],
+      ]);
+      expect(seen.map(({ media, ref, texts }) => ({ media, ref, texts }))).toEqual([
+        { media: 1, ref: "seeing:x", texts: [first] },
+        { media: 0, ref: "blind:x", texts: [first, BLIND] },
+      ]);
+      expect(seen[1]?.mid).toEqual([{ seq: 2, text: `${second}\n${BLIND}` }]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("a caption that never comes is logged as not described; more than four attachments are cut to four, and said", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const got: TurnInput[] = [];
+      const seeing: TurnEngine = { ref: "seeing:x", run: (input) => Effect.sync(() => void got.push(input)), vision: true, warm: () => Effect.void };
+      // the service's own wait ran out
+      const media: SessionMedia = { caption: () => Effect.succeed(NOT_DESCRIBED), captionNow: () => null, parts: () => [PIC] };
+      const r = yield* rig([seeing], media);
+      yield* r.session.input("five", undefined, "c1", [1, 2, 3, 4, 5].map(image));
+      yield* until("the run's end", () => r.ended() === 1);
+      const [[, text = ""] = []] = r.log();
+      expect(text.split("\n")).toEqual(["five", ...[1, 2, 3, 4].map((n) => `[image ${shortSha(image(n).sha)} 1568x1176 195KB: (not described)]`)]);
+      expect(got[0]?.media).toHaveLength(4);
+      expect(r.events.flatMap((e) => (e.type === "info" ? [e.message] : []))).toEqual(["at most 4 attachments per message: 1 left out"]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("the compactor's input for a message of markers only keeps every sha", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const dir = mkdtempSync(`${tmpdir()}/oc-vision-`);
+      dirs.push(dir);
+      const jobs: Job[] = [];
+      const chat = yield* openChat(dir, { summarize: (job) => Effect.sync(() => (jobs.push(job), `user: four pictures`)) });
+      // four markers with long captions: too big for a free node, so the compactor sees it
+      const shas = [1, 2, 3, 4].map((n) => image(n));
+      const text = shas.map((a) => markerOf(a, "a long description of a photo ".repeat(4))).join("\n");
+      expect(Buffer.byteLength(`user: ${text}`)).toBeGreaterThan(512);
+      yield* chat.log("user", text);
+      yield* until("the summary", () => jobs.length > 0);
+      const input = step(jobs[0] ?? { ctx: [], i: 0, l: 0, msg: { date: "", i: 0, kind: "user", size: 0, text: "" } });
+      for (const a of shas) expect(input).toContain(shortSha(a.sha));
+    }).pipe(Effect.scoped),
+  );
+});

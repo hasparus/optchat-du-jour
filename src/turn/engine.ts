@@ -7,17 +7,22 @@
 // the messages the engine before never took, then any new ones.
 import type { Effect } from "effect";
 import type { EngineError } from "../engines/errors.ts";
+import type { Part } from "../media/part.ts";
 import type { Kind } from "../records.ts";
 import type { StoreError } from "../store.ts";
 import type { UsageRecord } from "../usage.ts";
 
-// a message sent while the turn runs, as offered to one call; `seq` is the session's name for it
-export type Mid = { readonly seq: number; readonly text: string };
+// a message sent while the turn runs, as offered to one call; `seq` is the session's name for it.
+// `media`: its attachments' pictures (SPEC "Media"), sent with it and never again
+export type Mid = { readonly seq: number; readonly text: string; readonly media?: readonly Part[] };
 export type Logged = { readonly kind: Kind; readonly text: string };
 
 export type TurnInput = {
   readonly view: string;
   readonly texts: readonly string[];
+  // the new messages' attachments as pictures, sent after the view and before the texts; only this
+  // turn sees them, later ones only the marker lines in the texts (SPEC "Media")
+  readonly media?: readonly Part[];
   readonly device: string;
   // the mid-run messages offered to this call, oldest first: `next` waits for one, `ready` takes
   // every one there now without waiting
@@ -54,4 +59,10 @@ export type TurnEngine = {
   // the session is idle: get ready for the next turn and priming on `device` (E18); never fails.
   // Only claude-code has anything to get ready; the others return at once.
   readonly warm: (device: string) => Effect.Effect<void>;
+  // whether it is sent images (SPEC "Media"); one that isn't gets the marker lines and a note
+  readonly vision?: boolean;
 };
+
+// what an engine that is not sent images is told when a message had attachments
+export const BLIND =
+  "[optchat: this engine is not sent images or video frames; each attachment is known here only by its marker line.]";

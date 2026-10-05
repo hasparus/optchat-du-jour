@@ -5,16 +5,16 @@ import { Effect } from "effect";
 import { type HttpRouter, type HttpServerRequest, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 import { forbidden } from "../../src/http.ts";
-import { handleMcp } from "../../src/mcp.ts";
+import { type Attached, handleMcp } from "../../src/mcp.ts";
 import type { Mem } from "../../src/tree.ts";
 
-export const mcpRoutes = (router: HttpRouter.HttpRouter, o: { readonly mem: Mem; readonly secret: string }) => {
+export const mcpRoutes = (router: HttpRouter.HttpRouter, o: { readonly mem: Mem; readonly secret: string; readonly attached?: Attached }) => {
   const keyed = (request: HttpServerRequest.HttpServerRequest) => new URL(request.url, "http://x").searchParams.get("key") === o.secret;
   return Effect.gen(function* () {
     yield* router.add("POST", "/mcp", (request) =>
       Effect.gen(function* () {
         if (!keyed(request)) return forbidden;
-        const reply = handleMcp(o.mem, yield* request.text);
+        const reply = handleMcp(o.mem, yield* request.text, o.attached);
         return reply.body === null
           ? HttpServerResponse.empty({ status: reply.status })
           : HttpServerResponse.text(reply.body, { contentType: "application/json", status: reply.status });
@@ -33,7 +33,7 @@ export const mcpRoutes = (router: HttpRouter.HttpRouter, o: { readonly mem: Mem;
             Effect.forEach(
               frames,
               (frame) => {
-                const reply = handleMcp(o.mem, frame);
+                const reply = handleMcp(o.mem, frame, o.attached);
                 return reply.body === null ? Effect.void : write.write(reply.body);
               },
               { discard: true },

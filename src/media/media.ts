@@ -4,6 +4,7 @@
 import { Deferred, Effect, Option, type Scope } from "effect";
 import { readFileSync } from "node:fs";
 import type { MediaSettings } from "../config.ts";
+import type { Content } from "../mcp.ts";
 import { type Asset, type ImageAsset, NOT_DESCRIBED, shortSha, splitMarkers, type VideoAsset } from "../wire.ts";
 import { type AssetStore, assetStore, sha256 } from "./assets.ts";
 import type { Captioner } from "./caption.ts";
@@ -12,8 +13,6 @@ import type { Part, Picture } from "./part.ts";
 import { EXT, sniff } from "./sniff.ts";
 import { clock, extract, FRAME_EDGE } from "./video.ts";
 
-// one block of an MCP tool result: text, or an image (base64) the model can look at
-export type McpContent = { readonly type: "text"; readonly text: string } | { readonly type: "image"; readonly data: string; readonly mimeType: string };
 
 export type Media = {
   readonly store: AssetStore;
@@ -27,7 +26,7 @@ export type Media = {
   // what an engine is sent of it: its picture, or a video's frames with their times and its transcript
   readonly parts: (a: Asset) => Part[];
   // zoom(id, 1) on a message: the pictures of its attachments (at most MAX_ZOOM)
-  readonly zoomContent: (text: string) => McpContent[];
+  readonly zoomContent: (text: string) => Content[];
 };
 
 // images a zoom answers with, at most
@@ -171,14 +170,14 @@ export const makeMedia = (o: {
       return out;
     };
 
-    const zoomContent = (text: string): McpContent[] =>
+    const zoomContent = (text: string): Content[] =>
       splitMarkers(text)
         .markers.slice(0, MAX_ZOOM)
-        .flatMap((m): McpContent[] => {
+        .flatMap((m): Content[] => {
           const a = store.find(m.sha);
           const shown = a && shownOf(a);
           if (a === null || shown === null) return [{ text: `(${m.kind} ${m.sha} is missing from the asset store)`, type: "text" }];
-          const pic: McpContent = { data: shown.data, mimeType: shown.mime, type: "image" };
+          const pic: Content = { data: shown.data, mimeType: shown.mime, type: "image" };
           if (a.kind === "image") return [pic];
           const heard = a.transcript === null ? `no transcript${a.notice ? ` (${a.notice})` : ""}` : `transcript: ${a.transcript}`;
           return [{ text: `video ${m.sha}: ${a.frames.length} frames over ${Math.round(a.duration)} s, shown as one sheet; ${heard}`, type: "text" }, pic];

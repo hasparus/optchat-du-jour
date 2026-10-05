@@ -10,6 +10,7 @@ import { baseArgs } from "../claude/args.ts";
 import type { Assistant, Block, Event, Init, StreamEvent, Usage, User } from "../claude/events.ts";
 import type { Claude, Runner, Spawn } from "../claude/process.ts";
 import { cap } from "../cap.ts";
+import { isPicture, type Part } from "../media/part.ts";
 import { PRIME_TIMEOUT } from "../config.ts";
 import { type DeviceOffline, fromResult, ModelError } from "../engines/errors.ts";
 import type { McpSeen } from "../mcp.ts";
@@ -60,6 +61,8 @@ export const masterArgs = (o: Pick<ClaudeCodeTurnOptions, "effort" | "model" | "
 ];
 
 const text = (t: string): Block => ({ text: t, type: "text" });
+// a part of a message as a stream-json block: text, or an image with its bytes inline (SPEC "Media")
+const block = (p: Part): Block => (isPicture(p) ? { source: { data: p.data, media_type: p.mime, type: "base64" }, type: "image" } : text(p));
 
 type Assistant = typeof Assistant.Type;
 type User = typeof User.Type;
@@ -255,16 +258,17 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
           .spawn(turnSpawn(placement))
           .pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(new ModelError({ message: e.message }))));
         const started = yield* Clock.currentTimeMillis;
-        // the view exactly as priming cut it, with no marks: Claude Code's own marks are on (D2)
-        // the new messages, a blank line apart (ref §5.1), and after a failover what came before
-        yield* claude.send([...cutBlocks(input.view).map(text), text(openingText(input))]);
+        // the view exactly as priming cut it, with no marks: Claude Code's own marks are on (D2);
+        // the new messages' pictures; the new messages, a blank line apart (ref §5.1), and after a
+        // failover what came before
+        yield* claude.send([...cutBlocks(input.view).map(text), ...(input.media ?? []).map(block), text(openingText(input))]);
 
         // Mid-run messages go to stdin as they are offered (after a failover, first the ones the
         // engine before never took), each noted as passed before it is written, so its echo can
         // name it. One never echoed stays the session's: it gets it back when the call ends.
         const passed: Mid[] = [];
         yield* input.mid.next.pipe(
-          Effect.flatMap((m) => Effect.suspend(() => (passed.push(m), claude.send([text(m.text)])))),
+          Effect.flatMap((m) => Effect.suspend(() => (passed.push(m), claude.send([...(m.media ?? []).map(block), text(m.text)])))),
           Effect.forever,
           Effect.forkScoped,
         );
@@ -342,5 +346,5 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
         }),
       );
 
-    return { prime, ref: `claude-code:${o.model}`, run, warm } satisfies TurnEngine;
+    return { prime, ref: `claude-code:${o.model}`, run, vision: true, warm } satisfies TurnEngine;
   });

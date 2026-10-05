@@ -26,8 +26,9 @@ export const SessionState = Schema.Struct({
   budget: Schema.Number,
   messages: Schema.Number,
   // Every message the server holds and has not logged: waiting for a turn or for summaries, or
-  // offered to the running call and not taken yet. `clientId`: the id its client sent it with.
-  pending: Schema.Array(Schema.Struct({ clientId: Schema.NullOr(Schema.String), text: Schema.String })),
+  // offered to the running call and not taken yet. `clientId`: the id its client sent it with;
+  // `text`: as typed; `attachments`: how many it has, when it has any.
+  pending: Schema.Array(Schema.Struct({ clientId: Schema.NullOr(Schema.String), text: Schema.String, attachments: Schema.optional(Schema.Number) })),
   down: Schema.Array(Down), // compactor engines down right now, with why (SPEC "Policy": never unseen)
 });
 export type SessionState = typeof SessionState.Type;

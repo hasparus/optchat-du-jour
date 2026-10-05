@@ -5,12 +5,17 @@ import { type HttpRouter, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 import type { Session } from "../../src/session.ts";
 import type { Entry } from "../../src/tree.ts";
+import { type Asset, shortSha } from "../../src/wire.ts";
 import { type AgUiEvent, openStream } from "../agui.ts";
 
-// What a client sends: AG-UI's RunAgentInput (its user messages not seen before are the ones to answer), or an abort
-const TextPart = Schema.Struct({ text: Schema.optional(Schema.String), type: Schema.String });
+// What a client sends: AG-UI's RunAgentInput (its user messages not seen before are the ones to
+// answer), or an abort. A user message's content is its text, or AG-UI's parts: text, and image
+// or video parts whose source is a URL "asset:<sha256>", an upload PUT /api/assets stored
+// (SPEC "Media"). The server finds each in its own store; a client never names a path.
+const Source = Schema.Struct({ type: Schema.String, value: Schema.String });
+const ContentPart = Schema.Struct({ text: Schema.optional(Schema.String), type: Schema.String, source: Schema.optional(Source) });
 const InboundMessage = Schema.Struct({
-  content: Schema.optional(Schema.Union([Schema.String, Schema.Array(TextPart)])),
+  content: Schema.optional(Schema.Union([Schema.String, Schema.Array(ContentPart)])),
   id: Schema.String,
   role: Schema.String,
 });
@@ -24,7 +29,17 @@ const Inbound = Schema.Union([
 ]);
 const decodeInbound = Schema.decodeUnknownOption(Schema.fromJsonString(Inbound));
 
-const textOf = ({ content = "" }: InboundMessage) => (Predicate.isString(content) ? content : content.map((p) => p.text ?? "").join(""));
+const textOf = ({ content = "" }: InboundMessage) => (Predicate.isString(content) ? content : content.map((p) => (p.type === "text" ? (p.text ?? "") : "")).join(""));
+
+// the digests a message's image and video parts name, in order
+const ASSET = /^asset:([0-9a-f]{64})$/;
+const attachmentsOf = ({ content = "" }: InboundMessage) =>
+  Predicate.isString(content)
+    ? []
+    : content.flatMap((p) => {
+        const sha = (p.type === "image" || p.type === "video") && p.source?.type === "url" ? ASSET.exec(p.source.value)?.[1] : undefined;
+        return sha === undefined ? [] : [{ kind: p.type, sha }];
+      });
 
 // how many message ids a connection remembers
 const SEEN = 1000;
@@ -54,7 +69,14 @@ export const unseen = (entries: readonly Entry[]) => {
 
 export const wsRoute = (
   router: HttpRouter.HttpRouter,
-  o: { readonly session: Session; readonly entries: readonly Entry[]; readonly thread: string; readonly window: number },
+  o: {
+    readonly session: Session;
+    readonly entries: readonly Entry[];
+    readonly thread: string;
+    readonly window: number;
+    // the asset store's lookup, and where a client is told of one it named that isn't there
+    readonly assets?: { readonly find: (sha: string) => Asset | null; readonly report: (message: string) => Effect.Effect<void> };
+  },
 ) =>
   router.add("GET", "/ws", (request) =>
     Effect.gen(function* () {
@@ -71,6 +93,13 @@ export const wsRoute = (
         Effect.forkScoped,
       );
       const fresh = unseen(o.entries);
+      // a message's attachments as stored; one the store doesn't hold is left out, and said
+      const attached = (m: InboundMessage) =>
+        Effect.forEach(attachmentsOf(m), ({ kind, sha }) => {
+          const asset = o.assets?.find(sha) ?? null;
+          if (asset?.kind === kind) return Effect.succeed([asset]);
+          return (o.assets?.report(`${kind} ${shortSha(sha)} is not on the server: left out of the message`) ?? Effect.void).pipe(Effect.as([]));
+        }).pipe(Effect.map((found) => found.flat()));
       const pull = yield* Socket.readerString(socket);
       yield* pull.pipe(
         Effect.flatMap((frames) =>
@@ -79,7 +108,9 @@ export const wsRoute = (
               onNone: () => Effect.void,
               onSome: (m) =>
                 "messages" in m
-                  ? Effect.forEach(fresh(m.messages), (x) => o.session.input(textOf(x), m.forwardedProps?.device, x.id), { discard: true })
+                  ? Effect.forEach(fresh(m.messages), (x) => attached(x).pipe(Effect.flatMap((media) => o.session.input(textOf(x), m.forwardedProps?.device, x.id, media))), {
+                      discard: true,
+                    })
                   : o.session.cancel,
             }),
           ),

@@ -85,7 +85,11 @@ const decodeDate = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.Number 
 const FALLBACK_PROTOCOL = "2025-06-18";
 
 type Reply = { readonly status: number; readonly body: string | null };
-type ToolResult = { readonly content: readonly { readonly type: "text"; readonly text: string }[]; readonly isError?: true };
+// a block of a tool's result: text, or an image the model can look at (MCP's ImageContent)
+export type Content = { readonly type: "text"; readonly text: string } | { readonly type: "image"; readonly data: string; readonly mimeType: string };
+type ToolResult = { readonly content: readonly Content[]; readonly isError?: true };
+// the pictures of a message's attachments, from its marker lines (SPEC "Media"); none without media
+export type Attached = (text: string) => readonly Content[];
 
 type Initialized = {
   readonly capabilities: { readonly tools: Record<string, never> };
@@ -102,18 +106,25 @@ const failure = (id: Id, code: number, message: string, status = 200): Reply => 
 const answer = (text: string): ToolResult => ({ content: [{ text, type: "text" }] });
 const refuse = (text: string): ToolResult => ({ content: [{ text, type: "text" }], isError: true });
 
-function call(mem: Mem, params: Schema.Json | undefined): ToolResult {
+// zoom(id, 1) on a message with attachments answers with their pictures after its text, so the
+// model can look again at what it was sent (SPEC "Media"); the tool's schema is the same
+function zoomed(mem: Mem, id: number, n: number, attached: Attached | undefined): ToolResult {
+  const text = answer(zoom(mem, id, n));
+  const found = n === 1 && attached ? openNode(mem, id, n) : null;
+  if (!found || !("message" in found) || found.message.kind !== "user") return text;
+  return { content: [...text.content, ...(attached?.(found.message.text) ?? [])] };
+}
+
+function call(mem: Mem, params: Schema.Json | undefined, attached?: Attached): ToolResult {
   const found = decodeCall(params);
   if (Option.isNone(found)) return refuse("tools/call needs a tool name.");
   const { arguments: args = {}, name } = found.value;
   switch (name) {
     case "zoom":
-      return answer(
-        Option.match(decodeZoom(args), {
-          onNone: () => noLine(shown(args.id), shown(args.n)),
-          onSome: ({ id, n }) => zoom(mem, id, n),
-        }),
-      );
+      return Option.match(decodeZoom(args), {
+        onNone: () => answer(noLine(shown(args.id), shown(args.n))),
+        onSome: ({ id, n }) => zoomed(mem, id, n, attached),
+      });
     case "date":
       return answer(
         Option.match(decodeDate(args), {
@@ -130,12 +141,12 @@ function call(mem: Mem, params: Schema.Json | undefined): ToolResult {
 // from memory. The text the tool returns, or null for a tool that isn't one of these.
 export const MEMORY_TOOLS: readonly string[] = TOOLS.map((t) => t.name);
 export const memoryTool = (mem: Mem, name: string, args: Schema.Json): string | null =>
-  MEMORY_TOOLS.includes(name) ? (call(mem, { arguments: args, name }).content[0]?.text ?? "") : null;
+  MEMORY_TOOLS.includes(name) ? call(mem, { arguments: args, name }).content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("\n") : null;
 
 // One message in (a POST's body or a WebSocket frame), the HTTP status and body out. A
 // notification (no id) or a client's response gets 202 and no body, as MCP's HTTP transport asks;
 // over a WebSocket, no frame.
-export function handleMcp(mem: Mem, body: string): Reply {
+export function handleMcp(mem: Mem, body: string, attached?: Attached): Reply {
   const found = decodeRequest(body);
   if (Option.isNone(found)) return failure(null, -32_700, "Parse error: one JSON-RPC message per request", 400);
   const { id, method, params } = found.value;
@@ -154,7 +165,7 @@ export function handleMcp(mem: Mem, body: string): Reply {
     case "tools/list":
       return respond(id, { tools: TOOLS });
     case "tools/call":
-      return respond(id, call(mem, params));
+      return respond(id, call(mem, params, attached));
     default:
       return failure(id, -32_601, `Method not found: ${method}`);
   }
