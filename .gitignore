@@ -1,0 +1,6 @@
+node_modules
+dist
+.DS_Store
+*.tsbuildinfo
+# wire-proxy logs and stream taps hold the userEmail reminder or a chat
+*.wire.jsonl
