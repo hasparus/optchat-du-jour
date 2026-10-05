@@ -258,6 +258,26 @@ def Laws.fit_merges(T, budget, ps):
 def Laws.fit_fits(T, budget, ps):
   fits_laws(budget, K.fit(T, budget, ps), PF.fit_fits_k(T, budget, ps))
 
+# fit.go stops at a Stop, whatever fuel is left
+def stop_go(f: Nat, +T: Nat, +budget: Nat, ps: List<&2, K.Part>) -> {K.fit.go(f, K.Stop{ps}, T, budget) == ps : List<&2, K.Part>}:
+  match f:
+    case 0n:
+      {==}
+    case 1n+g:
+      {==}
+
+# within budget in LAWS.bend's words is within budget in the kernel's
+def within_k(+ps: List<&2, K.Part>, -budget: Nat, h: {Nat.is_gt(Laws.Total(ps), budget) == False{} : Bool})
+  -> {Nat.is_gt(K.size(ps), budget) == False{} : Bool}:
+  %Equal.sym(Nat, K.size(ps), Laws.Total(ps), size_total(ps)) : {Nat.is_gt(_, budget) == False{} : Bool}
+  h
+
+# within budget, fit's first step is a Stop on the view itself
+def Laws.fit_within(T, budget, ps):
+  h =>
+    %Equal.sym(Bool, Nat.is_gt(K.size(ps), budget), False{}, within_k(ps, budget, h)) : {K.fit.go(K.length(ps, 0n), K.step.over(_, T, ps), T, budget) == ps : List<&2, K.Part>}
+    stop_go(K.length(ps, 0n), T, budget, ps)
+
 def Laws.tiles_fit(T, budget, ps):
   t => tiles_laws(K.fit(T, budget, ps), 0n, T, PF.tiles_fit_k(T, budget, ps)(tiles_ks(ps, 0n, T, t)))
 

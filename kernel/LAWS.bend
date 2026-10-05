@@ -248,6 +248,14 @@ law fit_fits:
   for +ps: List<&2, K.Part>
   Fits(budget, K.fit(T, budget, ps))
 
+# and a view already within budget is left as it is: fit merges nothing
+# unless it must
+law fit_within:
+  for +T: Nat
+  for +budget: Nat
+  for +ps: List<&2, K.Part>
+  {Nat.is_gt(Total(ps), budget) == False{} : Bool} -> {K.fit(T, budget, ps) == ps : List<&2, K.Part>}
+
 # 5. Rule 3 never offers a node whose children are unbuilt, nor one beyond
 #    the first unbuilt view line
 # ------------------------------------------------------------------------
