@@ -127,6 +127,13 @@ export async function send(page: Page, text: string) {
   await page.getByLabel("Message").press("Enter");
 }
 
+// A message sent from `page` has had its turn: it is in the log (its bubble shows), then the status
+// line goes. The status line alone would race: it is hidden before the server has read the message.
+export async function answered(page: Page, text: string) {
+  await expect(page.getByTestId("user-message").filter({ hasText: text })).toBeVisible();
+  await expect(page.getByTestId("status")).toBeHidden({ timeout: 15_000 });
+}
+
 // the chat's rows by log index: a tool entry and the echo answering it are one row (rows.ts)
 const rowIndexes = (entries: readonly LogEntry[]) => {
   const out: number[] = [];

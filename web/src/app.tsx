@@ -16,10 +16,10 @@ import { Memory } from "./memory/memory";
 
 // recharts is most of a chart's weight; the chat shouldn't wait for it. Its chunk can fail to load
 // (offline before the first visit; a page left open across a new build, whose old chunk is gone):
-// one more try, then the boundary below says so, and the rest of the app stays up.
-const loadStats = async () => import("./stats/stats").catch(async () => import("./stats/stats"));
+// the boundary below says so and offers a reload, and the rest of the app stays up. No retry: a
+// browser keeps a failed import of the same URL failed until the page loads again.
 const Stats = lazy(async () => {
-  const module = await loadStats();
+  const module = await import("./stats/stats");
   return { default: module.Stats };
 });
 
