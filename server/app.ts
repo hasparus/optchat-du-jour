@@ -346,7 +346,8 @@ export const routes = (o: ServerOptions) =>
         }),
       );
 
-      // the built web UI; any other path is the app's (it has no router)
+      // the built web UI; any other path is the app's (it has no router), except a missing file
+      // under /assets/: a stale page asking for a chunk an old build had must fail, not get HTML
       if (o.web && existsSync(`${o.web}/index.html`)) {
         const { web } = o;
         yield* router.add("GET", "/*", (request) =>
@@ -354,6 +355,7 @@ export const routes = (o: ServerOptions) =>
             const path = new URL(request.url, "http://x").pathname;
             const file = `${web}${path}`;
             const found = !path.includes("..") && path !== "/" && existsSync(file);
+            if (!found && path.startsWith("/assets/")) return HttpServerResponse.empty({ status: 404 });
             return yield* HttpServerResponse.file(found ? file : `${web}/index.html`);
           }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 404 }))),
         );

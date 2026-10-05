@@ -6,3 +6,6 @@ dist
 *.wire.jsonl
 vendor/oxlint-config/oxlint.config.js
 vendor/oxlint-config/anti-slop/**/*.js
+web/test-results
+web/playwright-report
+web/dev-dist

@@ -1,0 +1,4 @@
+[test]
+# a DOM for component tests; the Playwright specs in e2e/ run with `bun run e2e`
+preload = ["./src/test/setup.ts"]
+pathIgnorePatterns = ["e2e/**", "node_modules/**"]
