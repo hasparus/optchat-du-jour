@@ -1,7 +1,7 @@
 // The pump (gist §4.1): builds tree nodes in rule-3 order, at most `jobs` at once, each job a
 // fiber in the pump's scope. A failed node waits RETRY and goes back to the pump, forever: the
 // pump then takes a fresh context for it, which a retry of the same job could not.
-import { Console, Data, type Duration, Effect, Semaphore } from "effect";
+import { Cause, Console, Data, type Duration, Effect, Semaphore } from "effect";
 import { JOBS, RETRY } from "./config.ts";
 import { offers } from "./kernel.ts";
 import type { Node } from "./records.ts";
@@ -18,6 +18,12 @@ export type Job = { readonly l: number; readonly i: number; readonly ctx: readon
 export class CompactError extends Data.TaggedError("CompactError")<{ readonly message: string }> {}
 export type Summarize = (job: Job) => Effect.Effect<string, CompactError>;
 export type Commit = (n: Node) => Effect.Effect<void, StoreError>;
+
+// a failure in one line: the typed error's message, else the defect's
+const reason = (cause: Cause.Cause<unknown>) => {
+  const error = Cause.squash(cause);
+  return error instanceof Error ? error.message : String(error);
+};
 
 // What a call for (l, i) sees, taken now: the view lines before message i for a leaf, up to
 // the node's last message for a merge.
@@ -62,27 +68,27 @@ export const makePump = (o: {
     // a kick that follows a job is no part of that job: its failure is reported on its own
     const again: Effect.Effect<void> = Effect.suspend(() => kick).pipe(Effect.catch((error) => report(error.message)));
 
+    // One job: summarize, commit, and whatever goes wrong on the way (a typed error, a throw, a
+    // defect in the store) is one failure: reported the first time this node fails, then the
+    // node rests RETRY. Built or not, it then leaves `busy` and the pump looks again. An
+    // interrupt (the pump's scope closing) is no failure and stays an interrupt.
     const run = (c: Coord, job: Job) => {
       const name = label(c);
-      return summarize(job).pipe(
-        Effect.flatMap((text) => commit(newNode(c.l, c.i, text))),
-        Effect.matchEffect({
-          onFailure: (e) =>
-            Effect.gen(function* () {
-              if (!reported.has(name)) {
-                reported.add(name);
-                yield* report(`${name}: ${e.message}`);
-              }
-              yield* Effect.sleep(retry);
-              busy.delete(name);
-              yield* again;
-            }),
-          onSuccess: () =>
-            Effect.gen(function* () {
-              busy.delete(name);
-              yield* again;
-            }),
-        }),
+      const attempt = Effect.suspend(() => summarize(job)).pipe(Effect.flatMap((text) => commit(newNode(c.l, c.i, text))));
+      const rest = (cause: Cause.Cause<CompactError | StoreError>) =>
+        Effect.gen(function* () {
+          if (!reported.has(name)) {
+            reported.add(name);
+            yield* report(`${name}: ${reason(cause)}`);
+          }
+          yield* Effect.sleep(retry);
+        });
+      const failed = (cause: Cause.Cause<CompactError | StoreError>) =>
+        Cause.hasInterruptsOnly(cause) ? Effect.failCause(cause) : rest(cause);
+      return attempt.pipe(
+        Effect.catchCause(failed),
+        Effect.andThen(Effect.sync(() => busy.delete(name))),
+        Effect.andThen(again),
       );
     };
 

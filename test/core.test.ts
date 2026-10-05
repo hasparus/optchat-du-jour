@@ -117,6 +117,32 @@ test("a failing node is reported once, retried after RETRY, and built", async ()
   expect(reports).toEqual(["0+1: overloaded"]);
 });
 
+test("a compactor that throws or dies is a failure like any other: reported once, retried, built", async () => {
+  const dir = tmp(), reports: string[] = [];
+  let calls = 0;
+  await runScoped(
+    Effect.gen(function* () {
+      const chat = yield* openChat(dir, {
+        report: (m) => Effect.sync(() => reports.push(m)),
+        summarize: () => {
+          calls++;
+          if (calls === 1) throw new Error("summarizer crashed");
+          if (calls === 2) return Effect.die(new Error("summarizer died"));
+          return Effect.succeed(`line ${long(100)}`);
+        },
+      });
+      yield* chat.log("echo", long(900));
+      for (let k = 0; k < 3 && !built(chat.mem, 0, 0); k++) {
+        yield* TestClock.adjust("10 seconds");
+        for (let y = 0; y < 50 && !built(chat.mem, 0, 0); y++) yield* Effect.yieldNow;
+      }
+      expect(built(chat.mem, 0, 0)).toBe(true);
+    }).pipe(Effect.provide(Layer.fresh(TestClock.layer()))),
+  );
+  expect(calls).toBe(3);
+  expect(reports).toEqual(["0+1: summarizer crashed"]);
+});
+
 test("a torn last line is skipped quietly by readers, and repaired by the lock holder", async () => {
   const dir = tmp();
   mkdirSync(`${dir}/chat/main`, { recursive: true });
