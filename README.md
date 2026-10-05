@@ -1,6 +1,6 @@
 # optchat-du-jour
 
-Our own [OptChat](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449):
+an implementation of [OptChat](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449):
 one endless chat whose history is its memory, kept as a binary summary tree.
 [SPEC.md](./SPEC.md) is the build spec.
 
