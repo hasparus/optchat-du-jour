@@ -84,36 +84,34 @@ const commands = new Map<string, Effect.Effect<void, { readonly message: string 
   ["key", arg === "anthropic" || arg === "openai" ? saveKey(arg) : help(false)],
   ["login", arg === "openai" ? loginOpenai : help(false)],
   ["view", view],
+  // the long-running processes, loaded only when asked for
+  ["server", Effect.promise(async () => import("../server/main.ts")).pipe(Effect.flatMap((m) => m.main))],
+  ["device", arg === undefined ? help(false) : Effect.promise(async () => import("../device/main.ts")).pipe(Effect.flatMap((m) => m.main(arg)))],
 ]);
 const repl = runRepl({ url: Bun.env.OPTCHAT_URL ?? "http://127.0.0.1:7700" });
 const command = cmd === undefined ? repl : (commands.get(cmd) ?? help(false));
 
 // why the command stopped, in one line: its error, or what was thrown (a defect, e.g. in the kernel)
 const reason = (cause: Cause.Cause<{ readonly message: string }>) => {
-  if (Cause.hasInterruptsOnly(cause)) return "interrupted";
   const thrown = Cause.squash(cause);
   if (thrown instanceof Error) return thrown.message;
   return Predicate.hasProperty(thrown, "message") && Predicate.isString(thrown.message) ? thrown.message : String(thrown);
 };
 
-// the long-running processes run their own main; NAME is the device as in optchat.config.ts
-if (cmd === "server") await import("../server/main.ts");
-else if (cmd === "device") {
-  if (arg !== undefined) Bun.env.OPTCHAT_DEVICE = arg;
-  await import("../device/main.ts");
-} else {
-  BunRuntime.runMain(
-    command.pipe(
-      Effect.catchCause((cause) =>
-        Console.error(`optchat: ${reason(cause)}`).pipe(
-          Effect.andThen(
-            Effect.sync(() => {
-              process.exitCode = 1;
-            }),
+BunRuntime.runMain(
+  command.pipe(
+    Effect.catchCause((cause) =>
+      // an interrupt (Ctrl-C, SIGTERM to the server or a device) ends the run as it ends any Effect program
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.failCause(cause)
+        : Console.error(`optchat: ${reason(cause)}`).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                process.exitCode = 1;
+              }),
+            ),
           ),
-        ),
-      ),
     ),
-    { disableErrorReporting: true },
-  );
-}
+  ),
+  { disableErrorReporting: true },
+);
