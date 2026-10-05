@@ -229,6 +229,39 @@ test("a message logs its marker with the caption once it comes; a failover to an
   );
 });
 
+test("a picture sent mid-run reaches an engine that sees with the message that carries it", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const mids: Mid[] = [];
+      const seeing: TurnEngine = {
+        ref: "seeing:x",
+        run: (input, out) =>
+          Effect.gen(function* () {
+            const m = yield* input.mid.next;
+            mids.push(m);
+            yield* out.took(m);
+          }),
+        vision: true,
+        warm: () => Effect.void,
+      };
+      const f = fakeMedia();
+      const later = image(3);
+      f.describe(later, "a green triangle");
+      const r = yield* rig([seeing], f.media);
+      yield* r.session.input("go", undefined, "c1");
+      yield* until("the call", () => r.session.state().engine === "seeing:x");
+      yield* r.session.input("and this", undefined, "c2", [later]);
+      yield* until("the run's end", () => r.ended() === 1);
+      const text = `and this\n[image ${shortSha(later.sha)} 1568x1176 195KB: a green triangle]`;
+      expect(mids).toEqual([{ media: [PIC], seq: 2, text }]);
+      expect(r.log()).toEqual([
+        ["user", "go"],
+        ["user", text],
+      ]);
+    }).pipe(Effect.scoped),
+  );
+});
+
 test("a caption that never comes is logged as not described; more than four attachments are cut to four, and said", async () => {
   await Effect.runPromise(
     Effect.gen(function* () {

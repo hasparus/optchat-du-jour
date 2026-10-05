@@ -15,6 +15,7 @@ const starts = (bytes: Uint8Array, prefix: readonly number[]) => prefix.every((b
 
 // ISO base media files (MP4, MOV) start with a box whose type is "ftyp" and whose first brand
 // says which: "qt  " is QuickTime, anything else is read as MP4
+const IMAGE_BRANDS: ReadonlySet<string> = new Set(["heic", "heix", "heim", "heis", "hevc", "hevx", "mif1", "msf1", "avif", "avis"]);
 const isoBrand = (bytes: Uint8Array) => (ascii(bytes, 4, "ftyp") ? String.fromCodePoint(...bytes.subarray(8, 12)) : null);
 
 export function sniff(bytes: Uint8Array): Sniffed | null {
@@ -23,6 +24,9 @@ export function sniff(bytes: Uint8Array): Sniffed | null {
   if (ascii(bytes, 0, "GIF87a") || ascii(bytes, 0, "GIF89a")) return { kind: "image", mime: "image/gif" };
   if (ascii(bytes, 0, "RIFF") && ascii(bytes, 8, "WEBP")) return { kind: "image", mime: "image/webp" };
   const brand = isoBrand(bytes);
+  // HEIF and AVIF are still images in the same box format: not taken (a browser re-encodes HEIC
+  // before it uploads, see web/src/lib/attach.ts)
+  if (brand !== null && IMAGE_BRANDS.has(brand)) return null;
   if (brand !== null) return { kind: "video", mime: brand === "qt  " ? "video/quicktime" : "video/mp4" };
   // EBML, the Matroska family; WebM is the one browsers record
   if (starts(bytes, [0x1A, 0x45, 0xDF, 0xA3])) return { kind: "video", mime: "video/webm" };

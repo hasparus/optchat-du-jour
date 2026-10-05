@@ -89,6 +89,8 @@ test("the real type is read from the bytes: a disguised file is refused, and so 
   expect(sniff(Buffer.from("RIFF\0\0\0\0WEBPVP8 "))).toEqual({ kind: "image", mime: "image/webp" });
   expect(sniff(Buffer.from("\0\0\0\u0018ftypqt  \0\0\0\0"))).toEqual({ kind: "video", mime: "video/quicktime" });
   expect(sniff(Buffer.from("\0\0\0\u0018ftypisom\0\0\0\0"))).toEqual({ kind: "video", mime: "video/mp4" });
+  // an iPhone's HEIC is a still image in the same box format
+  expect(sniff(Buffer.from("\0\0\0\u0018ftypheic\0\0\0\0"))).toBeNull();
   // a script saved as photo.png, an SVG (it can carry script), a PDF
   const refused = await withMedia((m) =>
     Effect.forEach(
