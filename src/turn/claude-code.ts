@@ -261,14 +261,14 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
         // the view exactly as priming cut it, with no marks: Claude Code's own marks are on (D2);
         // the new messages' pictures; the new messages, a blank line apart (ref §5.1), and after a
         // failover what came before
-        yield* claude.send([...cutBlocks(input.view).map(text), ...(input.media ?? []).map(block), text(openingText(input))]);
+        yield* claude.send([...cutBlocks(input.view).map(text), ...input.media.map(block), text(openingText(input))]);
 
         // Mid-run messages go to stdin as they are offered (after a failover, first the ones the
         // engine before never took), each noted as passed before it is written, so its echo can
         // name it. One never echoed stays the session's: it gets it back when the call ends.
         const passed: Mid[] = [];
         yield* input.mid.next.pipe(
-          Effect.flatMap((m) => Effect.suspend(() => (passed.push(m), claude.send([...(m.media ?? []).map(block), text(m.text)])))),
+          Effect.flatMap((m) => Effect.suspend(() => (passed.push(m), claude.send([...m.media.map(block), text(m.text)])))),
           Effect.forever,
           Effect.forkScoped,
         );

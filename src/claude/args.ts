@@ -1,11 +1,11 @@
 // The flags every `claude -p` call shares (ref §4). The master adds its MCP config and replays,
-// the compactor --safe-mode.
-export const baseArgs = (o: { model: string; effort: string; systemFile: string; tools: string }) => [
+// the compactor and the caption --safe-mode. A call with no effort (the caption's: a cheap model
+// with no thinking to tune) sends none.
+export const baseArgs = (o: { model: string; effort?: string | undefined; systemFile: string; tools: string }) => [
   "-p",
   "--model",
   o.model,
-  "--effort",
-  o.effort,
+  ...(o.effort === undefined ? [] : ["--effort", o.effort]),
   "--input-format",
   "stream-json",
   "--output-format",

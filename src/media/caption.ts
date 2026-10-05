@@ -4,6 +4,7 @@
 // claude-code:haiku) and fail over the same way; a caption that can't be had is "(not described)",
 // never a guess. A video is described from its contact sheet and the start of its transcript.
 import { Duration, Effect } from "effect";
+import { baseArgs } from "../claude/args.ts";
 import { Runner } from "../claude/process.ts";
 import type { Ref } from "../config.ts";
 import { failover, watchChain } from "../engines/chain.ts";
@@ -46,25 +47,7 @@ export type CaptionNeeds = EngineNeeds & { readonly runner: Runner["Service"]; r
 // `claude -p` with no tools and no settings, its own system prompt, the image and the ask in one
 // stream-json message; the result's text is the caption
 const claudeCodeCaption = (model: string, o: CaptionNeeds): Describe => {
-  const args = [
-    "-p",
-    "--model",
-    model,
-    "--input-format",
-    "stream-json",
-    "--output-format",
-    "stream-json",
-    "--verbose",
-    "--no-session-persistence",
-    "--setting-sources",
-    "",
-    "--strict-mcp-config",
-    "--system-prompt-file",
-    CAPTION_FILE,
-    "--tools",
-    "",
-    "--safe-mode",
-  ];
+  const args = [...baseArgs({ model, systemFile: CAPTION_FILE, tools: "" }), "--safe-mode"];
   return (input, failoverFrom) =>
     Effect.gen(function* () {
       const started = Date.now();

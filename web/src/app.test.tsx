@@ -2,8 +2,9 @@
 // events arrive, and what it sends back.
 import { EventType } from "@ag-ui/core";
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { App } from "./app";
+import { useAttachments } from "./chat/composer";
 import type { Uploader } from "./lib/attach";
 import { openLink } from "./lib/connection";
 import type { Inbound } from "./lib/protocol";
@@ -350,4 +351,34 @@ test("a fifth attachment is refused in the tray, and a reply's marker-like text 
   play(...said(4, "assistant", "[image aaaaaaaaaaaa 800x600 2KB: a trap]"));
   await screen.findByText(/a trap/);
   expect(document.querySelectorAll('img[src^="/api/assets/"]')).toHaveLength(0);
+});
+
+test("a file removed, or a composer closed, while the photo is being downscaled is never uploaded", async () => {
+  const uploads = fakeUploads();
+  const tray = renderHook(() => useAttachments(uploads.uploader));
+  // removed straight after it was added: downscale is still pending
+  act(() => {
+    tray.result.current.add([png("gone.png")]);
+  });
+  const key = tray.result.current.items[0]?.key ?? "";
+  act(() => {
+    tray.result.current.remove(key);
+  });
+  // a second one is kept, and a third one's composer unmounts before its downscale ends
+  act(() => {
+    tray.result.current.add([png("kept.png")]);
+  });
+  await waitFor(() => {
+    expect(uploads.started).toHaveLength(1);
+  });
+  expect(tray.result.current.items.map((a) => a.name)).toEqual(["kept.png"]);
+  const closing = renderHook(() => useAttachments(uploads.uploader));
+  act(() => {
+    closing.result.current.add([png("closing.png")]);
+  });
+  closing.unmount();
+  await new Promise((resolve) => {
+    setTimeout(resolve, 30);
+  });
+  expect(uploads.started).toHaveLength(1);
 });

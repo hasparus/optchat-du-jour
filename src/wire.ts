@@ -157,6 +157,9 @@ export const ImageAsset = Schema.Struct({
   width: Schema.Number,
   height: Schema.Number,
   bytes: Schema.Number,
+  // a high-detail image past 2000 px also keeps the standard-tier one (its own image asset): what a
+  // request with many images is sent instead, and zoom's answer (src/media/budget.ts)
+  small: Schema.optionalKey(Schema.String),
 });
 export type ImageAsset = typeof ImageAsset.Type;
 
@@ -187,18 +190,35 @@ export type Asset = typeof Asset.Type;
 
 // attachments per message: each is one marker line, and the line must stay well inside a node
 export const MAX_ATTACHMENTS = 4;
-// a caption's length in characters, at most; the marker grammar forbids brackets and newlines in it
-export const CAPTION_MAX = 100;
+// a caption's size in UTF-8 bytes, at most; the marker grammar forbids brackets and newlines in it
+export const CAPTION_MAX = 120;
 export const NOT_DESCRIBED = "(not described)";
 
 // what a marker and a thumbnail name an asset by
 export const shortSha = (sha: string) => sha.slice(0, 12);
 
-// one line of at most CAPTION_MAX characters with no brackets, so it can't end its marker early
+// the UTF-8 size of one code point
+const bytesOf = (cp: number) => (cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65_536 ? 3 : 4);
+
+// the longest start of `text` that is at most `max` bytes, cut between code points; `whole` says it was not cut
+const startOf = (text: string, max: number) => {
+  let size = 0;
+  let start = "";
+  for (const ch of text) {
+    size += bytesOf(ch.codePointAt(0) ?? 0);
+    if (size > max) return { start, whole: false };
+    start += ch;
+  }
+  return { start, whole: true };
+};
+
+// one line of at most CAPTION_MAX bytes with no brackets, so it can't end its marker early. A
+// longer one is cut between code points, never inside a surrogate pair, and ends in "…" (3 bytes).
 export const cleanCaption = (text: string) => {
   const flat = text.replaceAll(/\s+/g, " ").replaceAll("[", "(").replaceAll("]", ")").trim();
   if (flat === "") return NOT_DESCRIBED;
-  return flat.length > CAPTION_MAX ? `${flat.slice(0, CAPTION_MAX - 1)}…` : flat;
+  const whole = startOf(flat, CAPTION_MAX);
+  return whole.whole ? flat : `${startOf(flat, CAPTION_MAX - 3).start}…`;
 };
 
 // [image 9d0c38e7aafe 1568x1176 212KB: a whiteboard with three arrows]

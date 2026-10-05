@@ -28,6 +28,7 @@ export function useAttachments(uploader: Uploader = upload) {
   const [notice, setNotice] = useState<string | null>(null);
   const held = useRef<readonly Attachment[]>([]);
   const aborts = useRef(new Map<string, () => void>());
+  const alive = useRef(true); // false once the composer is gone
   const commit = (next: readonly Attachment[]) => {
     held.current = next;
     setItems(next);
@@ -43,9 +44,18 @@ export function useAttachments(uploader: Uploader = upload) {
     },
     [],
   );
+  // a downscale that ends after the composer is gone uploads nothing (it is set again if the effect re-runs)
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
 
   const start = async (a: Attachment, file: File) => {
     const body = a.kind === "image" ? await downscale(file) : file;
+    // removed, or the composer gone, while it was downscaled: there is nothing to upload any more
+    if (!alive.current || !held.current.some((x) => x.key === a.key)) return;
     const up = uploader(body, (progress) => {
       update(a.key, { progress });
     });

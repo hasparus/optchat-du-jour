@@ -2,7 +2,7 @@
 // background when a remote is configured, and a failed push is a message, never a failure.
 import { afterAll, expect, test } from "bun:test";
 import { Effect, Exit, Scope } from "effect";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { makePersist } from "../src/persist.ts";
@@ -91,5 +91,41 @@ test("the data dir is committed as its own repo, without its lock, and pushed in
   } finally {
     await Effect.runPromise(Scope.close(scope, Exit.void)); // the hanging push is killed
     lock.close();
+  }
+});
+
+test("files the caller leaves out are not committed until it stops leaving them out; one already committed stays, and the repo's own excludes are kept", async () => {
+  const data = tmp();
+  mkdirSync(`${data}/assets/ab`, { recursive: true });
+  writeFileSync(`${data}/assets/ab/abc.jpg`, "named");
+  writeFileSync(`${data}/assets/ab/def.jpg`, "stray");
+  writeFileSync(`${data}/log.jsonl`, '{"i":0}\n');
+  git(data, "init", "-q");
+  mkdirSync(`${data}/.git/info`, { recursive: true });
+  appendFileSync(`${data}/.git/info/exclude`, "*.swp\n");
+  let leftOut: string[] = ["/assets/ab/def.jpg"];
+  const scope = await Effect.runPromise(Scope.make());
+  const persist = await Effect.runPromise(Scope.provide(makePersist(() => Effect.void, () => leftOut), scope));
+  try {
+    expect(await Effect.runPromise(persist(data, "one"))).toBeNull();
+    expect(git(data, "ls-files").out.split("\n")).toEqual([".gitignore", "assets/ab/abc.jpg", "log.jsonl"]);
+    // the stray one stays on disk
+    expect(existsSync(`${data}/assets/ab/def.jpg`)).toBe(true);
+    // another one comes, and is left out as well
+    writeFileSync(`${data}/assets/ab/ghi.jpg`, "new stray");
+    leftOut = ["/assets/ab/def.jpg", "/assets/ab/ghi.jpg"];
+    appendFileSync(`${data}/log.jsonl`, '{"i":1}\n');
+    expect(await Effect.runPromise(persist(data, "two"))).toBeNull();
+    expect(git(data, "ls-files").out.split("\n")).toEqual([".gitignore", "assets/ab/abc.jpg", "log.jsonl"]);
+    // messages name them now: they go in with the next commit
+    leftOut = [];
+    appendFileSync(`${data}/log.jsonl`, '{"i":2}\n');
+    expect(await Effect.runPromise(persist(data, "three"))).toBeNull();
+    expect(git(data, "ls-files").out.split("\n")).toEqual([".gitignore", "assets/ab/abc.jpg", "assets/ab/def.jpg", "assets/ab/ghi.jpg", "log.jsonl"]);
+    const exclude = readFileSync(`${data}/.git/info/exclude`, "utf8");
+    expect(exclude).toContain("*.swp");
+    expect(exclude).not.toContain("assets");
+  } finally {
+    await Effect.runPromise(Scope.close(scope, Exit.void));
   }
 });

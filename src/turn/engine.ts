@@ -14,7 +14,7 @@ import type { UsageRecord } from "../usage.ts";
 
 // a message sent while the turn runs, as offered to one call; `seq` is the session's name for it.
 // `media`: its attachments' pictures (SPEC "Media"), sent with it and never again
-export type Mid = { readonly seq: number; readonly text: string; readonly media?: readonly Part[] };
+export type Mid = { readonly seq: number; readonly text: string; readonly media: readonly Part[] };
 export type Logged = { readonly kind: Kind; readonly text: string };
 
 export type TurnInput = {
@@ -22,10 +22,11 @@ export type TurnInput = {
   readonly texts: readonly string[];
   // the new messages' attachments as pictures, sent after the view and before the texts; only this
   // turn sees them, later ones only the marker lines in the texts (SPEC "Media")
-  readonly media?: readonly Part[];
+  readonly media: readonly Part[];
   readonly device: string;
-  // the mid-run messages offered to this call, oldest first: `next` waits for one, `ready` takes
-  // every one there now without waiting
+  // the mid-run messages offered to this call, oldest first, each with the captions of its
+  // attachments waited for: `next` waits for one, `ready` takes every one there now without
+  // waiting for another to arrive
   readonly mid: { readonly next: Effect.Effect<Mid>; readonly ready: Effect.Effect<readonly Mid[]> };
   // what this turn's engines logged before this call, in order (read from the log)
   readonly earlier: readonly Logged[];
@@ -60,7 +61,7 @@ export type TurnEngine = {
   // Only claude-code has anything to get ready; the others return at once.
   readonly warm: (device: string) => Effect.Effect<void>;
   // whether it is sent images (SPEC "Media"); one that isn't gets the marker lines and a note
-  readonly vision?: boolean;
+  readonly vision: boolean;
 };
 
 // what an engine that is not sent images is told when a message had attachments

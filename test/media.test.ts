@@ -13,7 +13,7 @@ import { MediaError } from "../src/media/image.ts";
 import { makeMedia } from "../src/media/media.ts";
 import { textOnly } from "../src/media/part.ts";
 import { sniff } from "../src/media/sniff.ts";
-import { frameTimes } from "../src/media/video.ts";
+import { extract, frameTimes } from "../src/media/video.ts";
 import { type Asset, CAPTION_MAX, cleanCaption, markerOf, splitMarkers, withMarkers } from "../src/wire.ts";
 
 const dirs: string[] = [];
@@ -72,6 +72,9 @@ test("a big PNG with EXIF becomes an upright JPEG on the standard tier's long ed
   // turned upright first (2000 wide, 3000 tall), then 1568 on the long edge
   expect(standard).toMatchObject({ height: 1568, kind: "image", mime: "image/jpeg", width: 1045 });
   expect(high).toMatchObject({ height: 2576, width: 1717 });
+  // the high tier past 2000 px keeps its standard-tier copy too, as an image of its own
+  expect(standard.kind === "image" ? standard.small : "video").toBeUndefined();
+  expect(high.kind === "image" ? high.small : undefined).toBe(standard.sha);
   const stored = readFileSync(file?.path ?? "");
   expect(standard.bytes).toBe(stored.length);
   const meta = await sharp(stored).metadata();
@@ -167,7 +170,7 @@ test("a video becomes frames every 2 s at 768 px, a contact sheet and no locatio
         expect(again).toEqual(v);
         const file = v.kind === "video" ? m.store.file(v) : null;
         const sheet = v.kind === "video" ? m.find(v.sheet) : null;
-        return { heard: v, root, stored: { file, parts: textOnly(m.parts(v)), sheet } };
+        return { heard: v, root, stored: { file, parts: textOnly(m.parts(v, { how: "all" }, false)), sheet } };
       }),
     { whisper: [whisper] },
   );
@@ -223,8 +226,152 @@ test("markers: one line per attachment after the typed text, read back the same,
   ]);
   expect(withMarkers("  ", [a])).toBe(a);
   expect(splitMarkers("just text").markers).toEqual([]);
-  // the longest caption still leaves the line far inside a node
-  const longest = markerOf(image, "x".repeat(500));
-  expect(cleanCaption("x".repeat(500))).toHaveLength(CAPTION_MAX);
-  expect(Buffer.byteLength(longest)).toBeLessThan(NODE / 3);
+});
+
+// the size of a message of four of these markers
+const fourBytes = (marker: string) => Buffer.byteLength(`user: look\n${[marker, marker, marker, marker].join("\n")}`);
+
+test("a caption is cut by code points under a byte cap, never inside a surrogate pair; what that makes of a marker's size", () => {
+  const long = cleanCaption("x".repeat(500));
+  expect(Buffer.byteLength(long)).toBe(CAPTION_MAX);
+  expect(long).toBe(`${"x".repeat(CAPTION_MAX - 3)}…`);
+  // 4 bytes each: 29 fit beside the ellipsis, and the 30th is not cut in half
+  const emoji = cleanCaption("😀".repeat(100));
+  expect(emoji).toBe(`${"😀".repeat(29)}…`);
+  expect(emoji.isWellFormed()).toBe(true);
+  expect(Buffer.byteLength(emoji)).toBeLessThanOrEqual(CAPTION_MAX);
+  // an odd boundary: 2-byte letters, then a 4-byte one that would straddle the cap
+  const mixed = cleanCaption(`${"ł".repeat(58)}😀😀`);
+  expect(mixed.isWellFormed()).toBe(true);
+  expect(Buffer.byteLength(mixed)).toBeLessThanOrEqual(CAPTION_MAX);
+  // short ones are left alone, flattened and bracket-free; nothing is "not described"
+  expect(cleanCaption("  a [red]\n square  ")).toBe("a (red) square");
+  expect(cleanCaption("ł".repeat(60))).toBe("ł".repeat(60));
+  expect(cleanCaption(" \n ")).toBe("(not described)");
+
+  // The size of a marker: its words and the caption, so at most ~160 bytes. One with the text
+  // beside it is well inside a node (NODE bytes); four with captions of a typical length fit
+  // with room for text; four with the longest captions do not (the compactor then sees the
+  // message, and keeps its shas: test/vision.test.ts).
+  const image: Asset = { bytes: 31_000_000, height: 2576, kind: "image", mime: "image/jpeg", sha: "9d0c38e7aafe062c".padEnd(64, "0"), width: 2576 };
+  const biggest = markerOf(image, "x".repeat(500));
+  expect(Buffer.byteLength(biggest)).toBeLessThanOrEqual(160);
+  expect(Buffer.byteLength(`user: look\n${biggest}`)).toBeLessThan(NODE);
+  const typical = markerOf(image, "a whiteboard with three arrows and a queue");
+  expect(fourBytes(typical)).toBeLessThan(NODE - 100);
+  expect(fourBytes(biggest)).toBeGreaterThan(NODE);
+});
+
+// ---------------------------------------------------------------------------------------------
+// a stranger's bytes: every ffmpeg call is bounded (SPEC "Media", Video)
+
+const script = (dir: string, name: string, body: string) => {
+  const path = `${dir}/${name}`;
+  writeFileSync(path, `#!/bin/sh\n${body}\n`);
+  chmodSync(path, 0o755);
+  return path;
+};
+// the right first bytes and nothing else: sniffed as MP4, a video to nothing that reads it
+const HEAD = Buffer.from("\0\0\0\u0018ftypisom\0\0\0\0isomiso2");
+
+test("a truncated clip, garbage behind an MP4 header and bytes of another container fail cleanly, and fast", async () => {
+  const dir = fresh();
+  const clip = makeVideo(dir, 5);
+  const webm = `${dir}/clip.webm`;
+  const made = Bun.spawnSync(["ffmpeg", "-v", "error", "-y", "-i", `${dir}/clip.mp4`, "-an", "-c:v", "libvpx", "-t", "1", webm]);
+  const matroska = made.exitCode === 0 ? new Uint8Array(readFileSync(webm)) : null;
+  const started = Date.now();
+  const refused = await withMedia((m) =>
+    Effect.forEach(
+      [
+        clip.slice(0, Math.floor(clip.length / 3)), // the moov atom is at the end: gone
+        new Uint8Array(Buffer.concat([HEAD, Buffer.from("this is not a video at all, only text ".repeat(50))])),
+        new Uint8Array(Buffer.concat([HEAD, Buffer.from("#EXTM3U\n#EXTINF:1,\nhttp://127.0.0.1:1/a.ts\n")])), // a playlist behind a header
+      ],
+      (bytes) => m.ingest(bytes, "standard").pipe(Effect.flip, Effect.map((e: MediaError) => [e.status, e.message])),
+    ),
+  );
+  expect(Date.now() - started).toBeLessThan(15_000);
+  for (const [status, message] of refused) {
+    expect(status).toBe(422);
+    expect(message).toContain("cannot read the video");
+  }
+  // the demuxer is the sniffed type's, not the one ffmpeg would guess: a WebM read as MP4 fails
+  if (matroska !== null) {
+    const tools = { ffmpeg: "ffmpeg", ffprobe: "ffprobe", limit: 30, whisper: null };
+    const wrong = await Effect.runPromise(extract(tools, matroska, "video/mp4", 180).pipe(Effect.flip));
+    expect(wrong.status).toBe(422);
+    const right = await Effect.runPromise(extract(tools, matroska, "video/webm", 180));
+    expect(right.frames.length).toBeGreaterThan(0);
+  }
+});
+
+test("a call that runs past its time is killed and the upload is refused; at most two are worked on at once", async () => {
+  const dir = fresh();
+  // a ffprobe that never answers, and one that notes when it starts and ends
+  const hang = script(dir, "hang.sh", "exec sleep 30");
+  const log = `${dir}/probes.log`;
+  const slow = script(dir, "slow.sh", `echo s >> ${log}\nsleep 0.3\necho e >> ${log}\nexit 1`);
+  const started = Date.now();
+  const timedOut = await withMedia((m) => m.ingest(new Uint8Array(HEAD), "standard").pipe(Effect.flip), { ffprobe: hang, toolSeconds: 0.4 });
+  expect(timedOut.status).toBe(422);
+  expect(timedOut.message).toContain("took longer");
+  expect(Date.now() - started).toBeLessThan(5000);
+
+  await withMedia((m) => Effect.forEach([1, 2, 3, 4, 5], () => m.ingest(new Uint8Array(HEAD), "standard").pipe(Effect.flip), { concurrency: "unbounded" }), { ffprobe: slow });
+  let running = 0;
+  let most = 0;
+  for (const line of readFileSync(log, "utf8").trim().split("\n")) {
+    running += line === "s" ? 1 : -1;
+    most = Math.max(most, running);
+  }
+  expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(10);
+  expect(most).toBe(2);
+});
+
+test("every ffmpeg and ffprobe call reads the file protocol only, with the sniffed demuxer, and at most maxVideoSeconds; a video past ~8K is refused", async () => {
+  const dir = fresh();
+  const clip = makeVideo(dir, 3);
+  const log = `${dir}/calls.log`;
+  const ffmpeg = script(dir, "ffmpeg.sh", `echo "$@" >> ${log}\nexec ffmpeg "$@"`);
+  const ffprobe = script(dir, "ffprobe.sh", `echo "$@" >> ${log}\nexec ffprobe "$@"`);
+  const whisper = script(dir, "whisper.sh", 'echo "words"');
+  const asset = await withMedia((m) => m.ingest(clip, "standard"), { ffmpeg, ffprobe, maxVideoSeconds: 90, whisper: [whisper] });
+  expect(asset.kind).toBe("video");
+  const calls = readFileSync(log, "utf8").trim().split("\n");
+  expect(calls).toHaveLength(4); // probe, copy, frames, audio
+  for (const call of calls) {
+    expect(call).toContain("-protocol_whitelist file");
+    expect(call).toContain("-f mov");
+  }
+  for (const call of calls.slice(1)) expect(call).toContain("-t 90");
+
+  // 9000 px wide
+  const wide = `${dir}/wide.mov`;
+  const made = Bun.spawnSync(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=9000x16:rate=2", "-an", "-c:v", "mjpeg", wide]);
+  expect(made.exitCode).toBe(0);
+  const refused = await withMedia((m) => m.ingest(new Uint8Array(readFileSync(wide)), "standard").pipe(Effect.flip));
+  expect(refused.status).toBe(413);
+  expect(refused.message).toContain("9000x16");
+});
+
+test("an upload no logged message names is left out of the commits; what a message names, a frame, a sheet and a standard-tier copy included, is not", async () => {
+  const dir = fresh();
+  const clip = makeVideo(dir, 3);
+  const photo = await sharp({ create: { background: "#c33", channels: 3, height: 2000, width: 3000 } }).png().toBuffer();
+  const other = await sharp({ create: { background: "#3c3", channels: 3, height: 200, width: 300 } }).png().toBuffer();
+  const { named, stray, store } = await withMedia(
+    (m) =>
+      Effect.gen(function* () {
+        const video = yield* m.ingest(clip, "standard");
+        const high = yield* m.ingest(new Uint8Array(photo), "high");
+        const never = yield* m.ingest(new Uint8Array(other), "standard");
+        const texts = [`look\n${markerOf(video, "a clip")}\n${markerOf(high, "a field")}`, "no marker here"];
+        return { named: m.unreferenced(texts), stray: never, store: { high, video } };
+      }),
+    {},
+  );
+  // only the picture nobody sent: its bytes and its metadata
+  expect(named.toSorted()).toEqual([`${stray.sha.slice(0, 2)}/${stray.sha}.jpg`, `${stray.sha.slice(0, 2)}/${stray.sha}.json`].toSorted());
+  expect(store.high.kind === "image" && store.high.small !== undefined).toBe(true);
 });

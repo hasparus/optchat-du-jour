@@ -1,7 +1,7 @@
 // zoom and date as the model reaches them: JSON-RPC over the /mcp handler (gist §7.1, ref §9, E8).
 import { expect, test } from "bun:test";
 import { Effect, Schema } from "effect";
-import { handleMcp, type McpSeen, mcpConfig, mcpTransports } from "../src/mcp.ts";
+import { handleMcp, type McpSeen, mcpConfig, mcpTransports, noAttached } from "../src/mcp.ts";
 import { newMsg } from "../src/store.ts";
 import { type Mem, newMem } from "../src/tree.ts";
 import { addMessage, addNode } from "../src/view.ts";
@@ -35,7 +35,7 @@ const ToolList = Schema.Struct({ tools: Schema.Array(Schema.Struct({ description
 
 let next = 0;
 const rpc = (mem: Mem, method: string, params?: Schema.Json) => {
-  const reply = handleMcp(mem, JSON.stringify({ id: ++next, jsonrpc: "2.0", method, params }));
+  const reply = handleMcp(mem, JSON.stringify({ id: ++next, jsonrpc: "2.0", method, params }), noAttached);
   expect(reply.status).toBe(200);
   return Schema.decodeUnknownSync(Response)(reply.body);
 };
@@ -46,7 +46,7 @@ test("zoom and date over JSON-RPC: the handshake, the verbatim tools, a zoom dow
   const mem = memory();
   const init = rpc(mem, "initialize", { capabilities: {}, clientInfo: { name: "claude-code" }, protocolVersion: "2025-03-26" });
   expect(init.result).toMatchObject({ capabilities: { tools: {} }, protocolVersion: "2025-03-26", serverInfo: { name: "optchat" } });
-  expect(handleMcp(mem, JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }))).toEqual({ body: null, status: 202 });
+  expect(handleMcp(mem, JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }), noAttached)).toEqual({ body: null, status: 202 });
   expect(rpc(mem, "ping").result).toEqual({});
 
   const { tools } = Schema.decodeUnknownSync(ToolList)(rpc(mem, "tools/list").result);
@@ -78,7 +78,7 @@ test("zoom and date over JSON-RPC: the handshake, the verbatim tools, a zoom dow
   expect(callTool(mem, "date", { id: 6 })).toBe("No message 6.");
 
   expect(rpc(mem, "resources/list").error?.code).toBe(-32_601);
-  expect(handleMcp(mem, "{not json").status).toBe(400);
+  expect(handleMcp(mem, "{not json", noAttached).status).toBe(400);
 });
 
 test("--mcp-config is ws unless http is asked for", () => {

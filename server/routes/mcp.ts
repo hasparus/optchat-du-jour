@@ -8,7 +8,7 @@ import { forbidden } from "../../src/http.ts";
 import { type Attached, handleMcp } from "../../src/mcp.ts";
 import type { Mem } from "../../src/tree.ts";
 
-export const mcpRoutes = (router: HttpRouter.HttpRouter, o: { readonly mem: Mem; readonly secret: string; readonly attached?: Attached }) => {
+export const mcpRoutes = (router: HttpRouter.HttpRouter, o: { readonly mem: Mem; readonly secret: string; readonly attached: Attached }) => {
   const keyed = (request: HttpServerRequest.HttpServerRequest) => new URL(request.url, "http://x").searchParams.get("key") === o.secret;
   return Effect.gen(function* () {
     yield* router.add("POST", "/mcp", (request) =>

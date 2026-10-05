@@ -393,7 +393,7 @@ test("a connection lost mid-turn is a ModelError, so the chain doesn't run the t
           tools: MASTER_TOOLS,
           ttl: "1h",
         });
-        const input = { device: "macbook", earlier: [], mid: { next: Effect.never, ready: Effect.succeed([]) }, texts: ["edit it"], view: "<chat>\n</chat>" };
+        const input = { device: "macbook", earlier: [], media: [], mid: { next: Effect.never, ready: Effect.succeed([]) }, texts: ["edit it"], view: "<chat>\n</chat>" };
         const out = { info: () => Effect.void, log: () => Effect.void, text: () => Effect.void, thinking: () => Effect.void, took: () => Effect.void, usage: () => Effect.void };
         return yield* failover(
           [

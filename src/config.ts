@@ -121,7 +121,8 @@ export const Settings = Schema.Struct({
     }),
   ),
   // Media (SPEC "Media"): the caption chain, how long a message waits for its captions before it
-  // is logged without them (ms), upload limits, the ffmpeg tools for video, a local whisper
+  // is logged without them (ms), upload limits, the ffmpeg tools for video and how long each call
+  // may take (`toolSeconds`, on top of the clip's length), a local whisper
   // command (the WAV's path is appended; none: audio is not transcribed), and whether the ChatGPT
   // plan's route is sent images (not probed yet, so off unless set)
   media: Schema.optional(
@@ -131,6 +132,7 @@ export const Settings = Schema.Struct({
       maxImageBytes: Schema.optional(Schema.Int),
       maxVideoBytes: Schema.optional(Schema.Int),
       maxVideoSeconds: Schema.optional(Schema.Number),
+      toolSeconds: Schema.optional(Schema.Number),
       ffmpeg: Schema.optional(Schema.String),
       ffprobe: Schema.optional(Schema.String),
       whisper: Schema.optional(Schema.Array(Schema.String)),
@@ -194,9 +196,14 @@ export const mediaSettings = (settings: Settings) => {
     ffmpeg: m.ffmpeg ?? "ffmpeg",
     ffprobe: m.ffprobe ?? "ffprobe",
     maxImageBytes: m.maxImageBytes ?? 30 * 1024 * 1024,
-    maxVideoBytes: m.maxVideoBytes ?? 100 * 1024 * 1024,
+    // GitHub warns at 50 MB and refuses a file over 100 MiB, and persist commits every video
+    // (SPEC "Media"). The server's request body limit (server/app.ts) is set from this and
+    // maxImageBytes, so a bigger value here is taken as it stands.
+    maxVideoBytes: m.maxVideoBytes ?? 50 * 1024 * 1024,
     maxVideoSeconds: m.maxVideoSeconds ?? 180,
     planImages: m.planImages ?? false,
+    // seconds each ffmpeg or whisper call may take on top of the clip's length
+    toolSeconds: m.toolSeconds ?? 60,
     whisper: m.whisper ?? null,
   };
 };

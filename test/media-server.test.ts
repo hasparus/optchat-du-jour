@@ -5,7 +5,7 @@
 // on the message answers with the picture over MCP, over HTTP and over a WebSocket alike.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { Option, Schema } from "effect";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { type Inbound, parseInbound } from "../cli/repl.ts";
@@ -174,4 +174,82 @@ test("a photo PUT, sent as an image part: caption and turn see it, the log keeps
   const plain = await fetch(url.replace(/^ws/, "http"), { body: talk, method: "POST" });
   const only: readonly Record<string, string>[] = [{ text: "1+0|talk: I see a red square.", type: "text" }];
   expect(Schema.decodeUnknownSync(Reply)(await plain.text()).result.content).toEqual(only);
+});
+
+// the guard is the same one every route has (server/auth.ts): a page on another site, a rebound
+// hostname, or a login that is not on the list can neither store an asset nor read one
+test("PUT and GET /api/assets are refused for a foreign Origin, a Host that is not ours and a login not on the list", async () => {
+  const mine = await sharp({ create: { background: "#3a3", channels: 3, height: 40, width: 60 } }).png().toBuffer();
+  const theirs = await sharp({ create: { background: "#a33", channels: 3, height: 41, width: 61 } }).png().toBuffer();
+  const first = await put(new Uint8Array(mine));
+  const stored = Schema.decodeUnknownSync(Asset)(await first.json());
+  const before = held();
+  const refusals: [string, Record<string, string>][] = [
+    ["a foreign Origin", { origin: "https://evil.example" }],
+    ["an Origin of null", { origin: "null" }],
+    ["a Host that is not ours", { host: `rebound.example:${port}` }],
+    ["a login not on the list", { "tailscale-user-login": "stranger@example.com" }],
+  ];
+  for (const [what, headers] of refusals) {
+    const upload = await put(new Uint8Array(theirs), headers);
+    expect([what, upload.status]).toEqual([what, 403]);
+    for (const path of [stored.sha, `${shortSha(stored.sha)}/thumb`]) {
+      const read = await fetch(`${base}/api/assets/${path}`, { headers });
+      expect([what, path, read.status]).toEqual([what, path, 403]);
+    }
+  }
+  // none of the refused uploads stored anything; the same one from a caller let in does
+  expect(held()).toBe(before);
+  const allowed = await put(new Uint8Array(theirs));
+  expect(allowed.status).toBe(200);
+  expect(held()).toBeGreaterThan(before);
+});
+
+// how many files the asset store holds
+const held = () => readdirSync(`${env.OPTCHAT_HOME}/assets`, { recursive: true }).length;
+
+test("a video is served in ranges: 206 with its Content-Range, 416 past its end, the whole file for a range it does not answer", async () => {
+  const clip = `${dir}/range.mp4`;
+  const made = Bun.spawnSync(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=3:size=320x240:rate=10", "-an", "-c:v", "mpeg4", clip]);
+  expect(made.exitCode).toBe(0);
+  const res = await put(new Uint8Array(readFileSync(clip)));
+  expect(res.status).toBe(200);
+  const video = Schema.decodeUnknownSync(Asset)(await res.json());
+  const url = `${base}/api/assets/${video.sha}`;
+  const whole = await fetch(url);
+  const all = new Uint8Array(await whole.arrayBuffer());
+  expect(whole.status).toBe(200);
+  expect(whole.headers.get("accept-ranges")).toBe("bytes");
+  expect(whole.headers.get("content-type")).toBe("video/mp4");
+  expect(all.length).toBe(video.bytes);
+
+  const ranged = async (range: string) => {
+    const r = await fetch(url, { headers: { range } });
+    return { body: new Uint8Array(await r.arrayBuffer()), length: r.headers.get("content-length"), range: r.headers.get("content-range"), status: r.status, type: r.headers.get("content-type") };
+  };
+  // Safari asks for the first two bytes, then the rest, then the tail
+  const first = await ranged("bytes=0-1");
+  expect(first).toMatchObject({ length: "2", range: `bytes 0-1/${all.length}`, status: 206, type: "video/mp4" });
+  expect(first.body).toEqual(all.slice(0, 2));
+  const rest = await ranged("bytes=2-");
+  expect(rest).toMatchObject({ range: `bytes 2-${all.length - 1}/${all.length}`, status: 206 });
+  expect(rest.body).toEqual(all.slice(2));
+  const tail = await ranged("bytes=-100");
+  expect(tail).toMatchObject({ length: "100", range: `bytes ${all.length - 100}-${all.length - 1}/${all.length}`, status: 206 });
+  expect(tail.body).toEqual(all.slice(-100));
+  // an end past the file is cut to it
+  const cut = await ranged(`bytes=${all.length - 10}-${all.length + 500}`);
+  expect(cut.body).toEqual(all.slice(-10));
+  // past the end, nothing to give
+  const past = await ranged(`bytes=${all.length}-`);
+  expect(past).toMatchObject({ range: `bytes */${all.length}`, status: 416 });
+  // several ranges, another unit, or nonsense: the whole file, as the standard allows
+  for (const odd of ["bytes=0-1,5-6", "items=0-1", "bytes=9-3", "bytes=-"]) {
+    const r = await ranged(odd);
+    expect([odd, r.status, r.body.length]).toEqual([odd, 200, all.length]);
+  }
+  // the thumbnail of a video is its sheet: an image, in ranges as well
+  const sheet = await fetch(`${url}/thumb`, { headers: { range: "bytes=0-9" } });
+  expect(sheet.status).toBe(206);
+  expect(sheet.headers.get("content-type")).toBe("image/jpeg");
 });

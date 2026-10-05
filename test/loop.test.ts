@@ -10,7 +10,7 @@ import { toolLoop } from "../src/turn/loop.ts";
 import type { UsageRecord } from "../src/usage.ts";
 
 const SPENT = { model: "m", usage: { cacheRead: 0, cacheWrite: 0, input: 10, output: 5 } };
-const input: TurnInput = { device: "mini", earlier: [], mid: { next: Effect.never, ready: Effect.succeed([]) }, texts: ["go"], view: "" };
+const input: TurnInput = { device: "mini", earlier: [], media: [], mid: { next: Effect.never, ready: Effect.succeed([]) }, texts: ["go"], view: "" };
 
 // a provider whose one request streams two tool calls, then fails having cost something
 const failing: Provider = {
@@ -42,7 +42,7 @@ const run = (provider: Provider, o: { readonly refuseAfter?: number } = {}) => {
     took: () => Effect.void,
     usage: (record) => Effect.sync(() => void usage.push(record)),
   };
-  const engine: TurnEngine = toolLoop({ instructions: "MASTER", provider, ref: "api-key:x", toolsFor: () => ({ defs: [], run: () => Effect.succeed("ran") }) });
+  const engine: TurnEngine = toolLoop({ instructions: "MASTER", provider, ref: "api-key:x", toolsFor: () => ({ defs: [], run: () => Effect.succeed("ran") }), vision: false });
   return { exit: Effect.runPromise(Effect.result(engine.run(input, out, null))), log, usage };
 };
 

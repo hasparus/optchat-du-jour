@@ -88,8 +88,10 @@ type Reply = { readonly status: number; readonly body: string | null };
 // a block of a tool's result: text, or an image the model can look at (MCP's ImageContent)
 export type Content = { readonly type: "text"; readonly text: string } | { readonly type: "image"; readonly data: string; readonly mimeType: string };
 type ToolResult = { readonly content: readonly Content[]; readonly isError?: true };
-// the pictures of a message's attachments, from its marker lines (SPEC "Media"); none without media
+// the pictures of a message's attachments, from its marker lines (SPEC "Media")
 export type Attached = (text: string) => readonly Content[];
+// for a server with no media service (tests): a message has no pictures
+export const noAttached: Attached = () => [];
 
 type Initialized = {
   readonly capabilities: { readonly tools: Record<string, never> };
@@ -108,14 +110,14 @@ const refuse = (text: string): ToolResult => ({ content: [{ text, type: "text" }
 
 // zoom(id, 1) on a message with attachments answers with their pictures after its text, so the
 // model can look again at what it was sent (SPEC "Media"); the tool's schema is the same
-function zoomed(mem: Mem, id: number, n: number, attached: Attached | undefined): ToolResult {
+function zoomed(mem: Mem, id: number, n: number, attached: Attached): ToolResult {
   const text = answer(zoom(mem, id, n));
-  const found = n === 1 && attached ? openNode(mem, id, n) : null;
+  const found = n === 1 ? openNode(mem, id, n) : null;
   if (!found || !("message" in found) || found.message.kind !== "user") return text;
-  return { content: [...text.content, ...(attached?.(found.message.text) ?? [])] };
+  return { content: [...text.content, ...attached(found.message.text)] };
 }
 
-function call(mem: Mem, params: Schema.Json | undefined, attached?: Attached): ToolResult {
+function call(mem: Mem, params: Schema.Json | undefined, attached: Attached): ToolResult {
   const found = decodeCall(params);
   if (Option.isNone(found)) return refuse("tools/call needs a tool name.");
   const { arguments: args = {}, name } = found.value;
@@ -138,15 +140,16 @@ function call(mem: Mem, params: Schema.Json | undefined, attached?: Attached): T
 }
 
 // zoom and date for an engine with its own tool loop (M5): the same answers, run on the server
-// from memory. The text the tool returns, or null for a tool that isn't one of these.
+// from memory, with no pictures (function-call outputs with images are not wired). The text the
+// tool returns, or null for a tool that isn't one of these.
 export const MEMORY_TOOLS: readonly string[] = TOOLS.map((t) => t.name);
 export const memoryTool = (mem: Mem, name: string, args: Schema.Json): string | null =>
-  MEMORY_TOOLS.includes(name) ? call(mem, { arguments: args, name }).content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("\n") : null;
+  MEMORY_TOOLS.includes(name) ? call(mem, { arguments: args, name }, noAttached).content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("\n") : null;
 
 // One message in (a POST's body or a WebSocket frame), the HTTP status and body out. A
 // notification (no id) or a client's response gets 202 and no body, as MCP's HTTP transport asks;
 // over a WebSocket, no frame.
-export function handleMcp(mem: Mem, body: string, attached?: Attached): Reply {
+export function handleMcp(mem: Mem, body: string, attached: Attached): Reply {
   const found = decodeRequest(body);
   if (Option.isNone(found)) return failure(null, -32_700, "Parse error: one JSON-RPC message per request", 400);
   const { id, method, params } = found.value;

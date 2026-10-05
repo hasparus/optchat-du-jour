@@ -75,7 +75,7 @@ export const wsRoute = (
     readonly thread: string;
     readonly window: number;
     // the asset store's lookup, and where a client is told of one it named that isn't there
-    readonly assets?: { readonly find: (sha: string) => Asset | null; readonly report: (message: string) => Effect.Effect<void> };
+    readonly assets: { readonly find: (sha: string) => Asset | null; readonly report: (message: string) => Effect.Effect<void> };
   },
 ) =>
   router.add("GET", "/ws", (request) =>
@@ -96,9 +96,9 @@ export const wsRoute = (
       // a message's attachments as stored; one the store doesn't hold is left out, and said
       const attached = (m: InboundMessage) =>
         Effect.forEach(attachmentsOf(m), ({ kind, sha }) => {
-          const asset = o.assets?.find(sha) ?? null;
+          const asset = o.assets.find(sha);
           if (asset?.kind === kind) return Effect.succeed([asset]);
-          return (o.assets?.report(`${kind} ${shortSha(sha)} is not on the server: left out of the message`) ?? Effect.void).pipe(Effect.as([]));
+          return o.assets.report(`${kind} ${shortSha(sha)} is not on the server: left out of the message`).pipe(Effect.as([]));
         }).pipe(Effect.map((found) => found.flat()));
       const pull = yield* Socket.readerString(socket);
       yield* pull.pipe(

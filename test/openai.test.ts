@@ -17,7 +17,7 @@ import { type Endpoints, DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 import { OpenAiPlan, openAiPlanLayer, readStream } from "../src/openai/responses.ts";
 import { COMPACT_FILE } from "../src/prompts.ts";
 import { SECURITY_LINE_MAX, Secrets, SecretsError, keychainLine, memorySecrets } from "../src/secrets.ts";
-import { makeSession } from "../src/session.ts";
+import { makeSession, noMedia } from "../src/session.ts";
 import { newMsg } from "../src/store.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
 import { blocks } from "../src/summarize/claude-code.ts";
@@ -275,7 +275,7 @@ test("a client connecting after a 429 failover sees the engine down in the sessi
     await Effect.runPromise(
       Effect.gen(function* () {
         const chat = yield* openChat(dir, { summarize: () => Effect.succeed("unused") });
-        const session = yield* makeSession({ chat, commit: Effect.succeed(null), compactorDown: down, defaultDevice: "mini", devices: ["mini"], engines: [], logUsage: () => Effect.void });
+        const session = yield* makeSession({ chat, commit: Effect.succeed(null), compactorDown: down, defaultDevice: "mini", devices: ["mini"], engines: [], logUsage: () => Effect.void, media: noMedia });
         const sub = yield* PubSub.subscribe(session.events);
         expect(session.state().down).toEqual([]);
 

@@ -87,7 +87,7 @@ const VIEW = "<chat>\n0+1|user: hello\n</chat>";
 const withPicture: TurnInput = {
   device: "mini",
   earlier: [],
-  media: [PIC],
+  media: [`image ${shortSha(image(1).sha)}:`, PIC], // as media.parts sends one: a label, then the picture
   mid: { next: Effect.never, ready: Effect.succeed([]) },
   texts: [`what is this?\n${markerOf(image(1), "a red square")}`],
   view: VIEW,
@@ -113,30 +113,35 @@ test("api-key turns send the picture: an Anthropic image block after the cached 
   await Effect.runPromise(loopOn({ engine: "api-key", model: "claude-opus-5-5", provider: "anthropic", ref: "api-key:anthropic/claude-opus-5-5" }).run(withPicture, quiet, null));
   const sent = Schema.decodeUnknownSync(Schema.fromJsonString(AnthropicBody))(anthropic.state.seen.at(-1));
   const [first] = sent.messages;
-  expect(first?.content.map((b) => b.type)).toEqual(["text", "image", "text"]);
+  expect(first?.content.map((b) => b.type)).toEqual(["text", "text", "image", "text"]);
   expect(first?.content[0]).toEqual({ cache_control: { ttl: "1h", type: "ephemeral" }, text: VIEW, type: "text" });
-  expect(first?.content[1]).toEqual({ source: { data: PIC.data, media_type: "image/jpeg", type: "base64" }, type: "image" });
-  expect(first?.content[2]?.text).toContain("[image 111111111111 1568x1176 195KB: a red square]");
+  expect(first?.content[1]?.text).toBe("image 111111111111:");
+  expect(first?.content[2]).toEqual({ source: { data: PIC.data, media_type: "image/jpeg", type: "base64" }, type: "image" });
+  expect(first?.content[3]?.text).toContain("[image 111111111111 1568x1176 195KB: a red square]");
 
   openai.state.access = "sk-oai";
   openai.state.script = [{ text: "a red square" }];
   await Effect.runPromise(loopOn({ engine: "api-key", model: "gpt-6", provider: "openai", ref: "api-key:openai/gpt-6" }).run(withPicture, quiet, null));
   const asked = Schema.decodeUnknownSync(Schema.fromJsonString(ResponsesBody))(openai.state.seen.at(-1)?.body);
   const parts = asked.input[0]?.content ?? [];
-  expect(parts.map((p) => p.type)).toEqual(["input_text", "input_image", "input_text"]);
-  expect(parts[1]).toEqual({ detail: "auto", image_url: `data:image/jpeg;base64,${PIC.data}`, type: "input_image" });
+  expect(parts.map((p) => p.type)).toEqual(["input_text", "input_text", "input_image", "input_text"]);
+  expect(parts[1]?.text).toBe("image 111111111111:");
+  expect(parts[2]).toEqual({ detail: "auto", image_url: `data:image/jpeg;base64,${PIC.data}`, type: "input_image" });
 });
 
 // ---------------------------------------------------------------------------------------------
 // the session
 
-// a media service whose captions come when `describe` says, and whose every attachment is PIC
+// a media service whose captions come when `describe` says, and whose every attachment is PIC;
+// `asked` counts how often each attachment's caption was asked for
 const fakeMedia = () => {
   const ready = new Map<string, string>();
   const waiting = new Map<string, (caption: string) => void>();
+  const asked = new Map<string, number>();
   const media: SessionMedia = {
     caption: (a) =>
       Effect.callback<string>((resume) => {
+        asked.set(a.sha, (asked.get(a.sha) ?? 0) + 1);
         const known = ready.get(a.sha);
         if (known === undefined)
           waiting.set(a.sha, (c) => {
@@ -144,14 +149,13 @@ const fakeMedia = () => {
           });
         else resume(Effect.succeed(known));
       }),
-    captionNow: (a) => ready.get(a.sha) ?? null,
     parts: () => [PIC],
   };
   const describe = (a: Asset, caption: string) => {
     ready.set(a.sha, caption);
     waiting.get(a.sha)?.(caption);
   };
-  return { describe, media, waiting };
+  return { asked, describe, media, waiting };
 };
 
 const rig = (engines: readonly TurnEngine[], media: SessionMedia) =>
@@ -179,7 +183,7 @@ test("a message logs its marker with the caption once it comes; a failover to an
         ref: "seeing:x",
         run: (input) =>
           Effect.gen(function* () {
-            seen.push({ media: input.media?.length ?? 0, mid: [], ref: "seeing:x", texts: input.texts });
+            seen.push({ media: input.media.length, mid: [], ref: "seeing:x", texts: input.texts });
             return yield* new UsageLimit({ message: "spent" });
           }),
         vision: true,
@@ -190,13 +194,14 @@ test("a message logs its marker with the caption once it comes; a failover to an
         run: (input, out) =>
           Effect.gen(function* () {
             const mid: Mid[] = [];
-            const mine = { media: input.media?.length ?? 0, mid, ref: "blind:x", texts: input.texts };
+            const mine = { media: input.media.length, mid, ref: "blind:x", texts: input.texts };
             seen.push(mine);
             const m = yield* input.mid.next;
             mine.mid.push(m);
             yield* out.took(m);
             yield* out.log("talk", "I can only read the markers");
           }),
+        vision: false,
         warm: () => Effect.void,
       };
       const f = fakeMedia();
@@ -224,7 +229,7 @@ test("a message logs its marker with the caption once it comes; a failover to an
         { media: 1, ref: "seeing:x", texts: [first] },
         { media: 0, ref: "blind:x", texts: [first, BLIND] },
       ]);
-      expect(seen[1]?.mid).toEqual([{ seq: 2, text: `${second}\n${BLIND}` }]);
+      expect(seen[1]?.mid).toEqual([{ media: [], seq: 2, text: `${second}\n${BLIND}` }]);
     }).pipe(Effect.scoped),
   );
 });
@@ -268,7 +273,7 @@ test("a caption that never comes is logged as not described; more than four atta
       const got: TurnInput[] = [];
       const seeing: TurnEngine = { ref: "seeing:x", run: (input) => Effect.sync(() => void got.push(input)), vision: true, warm: () => Effect.void };
       // the service's own wait ran out
-      const media: SessionMedia = { caption: () => Effect.succeed(NOT_DESCRIBED), captionNow: () => null, parts: () => [PIC] };
+      const media: SessionMedia = { caption: () => Effect.succeed(NOT_DESCRIBED), parts: () => [PIC] };
       const r = yield* rig([seeing], media);
       yield* r.session.input("five", undefined, "c1", [1, 2, 3, 4, 5].map(image));
       yield* until("the run's end", () => r.ended() === 1);
@@ -295,6 +300,83 @@ test("the compactor's input for a message of markers only keeps every sha", asyn
       yield* until("the summary", () => jobs.length > 0);
       const input = step(jobs[0] ?? { ctx: [], i: 0, l: 0, msg: { date: "", i: 0, kind: "user", size: 0, text: "" } });
       for (const a of shas) expect(input).toContain(shortSha(a.sha));
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("a message that arrives while the turn waits for a caption waits for its own: both markers carry their captions", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const seeing: TurnEngine = { ref: "seeing:x", run: () => Effect.void, vision: true, warm: () => Effect.void };
+      const f = fakeMedia();
+      const r = yield* rig([seeing], f.media);
+      const a = image(1), b = image(2);
+      yield* r.session.input("first", undefined, "c1", [a]);
+      yield* until("a's caption asked for", () => f.waiting.has(a.sha));
+      // b comes while the turn waits for a's caption: it is not in that turn's batch
+      yield* r.session.input("second", undefined, "c2", [b]);
+      f.describe(a, "caption A");
+      yield* Effect.sleep("20 millis");
+      f.describe(b, "caption B"); // well within captionWait
+      yield* until("both runs' ends", () => r.ended() === 2);
+      expect(r.log()).toEqual([
+        ["user", `first\n[image ${shortSha(a.sha)} 1568x1176 195KB: caption A]`],
+        ["user", `second\n[image ${shortSha(b.sha)} 1568x1176 195KB: caption B]`],
+      ]);
+      // each caption was asked for once: the log and the engine are told the same one
+      expect([...f.asked]).toEqual([[a.sha, 1], [b.sha, 1]]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("a mid-run message is offered with the caption it is logged with, though the caption comes after it", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const mids: Mid[] = [];
+      const seeing: TurnEngine = {
+        ref: "seeing:x",
+        run: (input, out) =>
+          Effect.gen(function* () {
+            const m = yield* input.mid.next;
+            mids.push(m);
+            yield* out.took(m);
+          }),
+        vision: true,
+        warm: () => Effect.void,
+      };
+      const f = fakeMedia();
+      const r = yield* rig([seeing], f.media);
+      const later = image(3);
+      yield* r.session.input("go", undefined, "c1");
+      yield* until("the call", () => r.session.state().engine === "seeing:x");
+      yield* r.session.input("and this", undefined, "c2", [later]);
+      yield* until("its caption asked for", () => f.waiting.has(later.sha));
+      expect(mids).toEqual([]); // not offered before its caption is in
+      f.describe(later, "a green triangle");
+      yield* until("the run's end", () => r.ended() === 1);
+      const text = `and this\n[image ${shortSha(later.sha)} 1568x1176 195KB: a green triangle]`;
+      expect(mids).toEqual([{ media: [PIC], seq: 2, text }]);
+      expect(r.log()).toEqual([
+        ["user", "go"],
+        ["user", text],
+      ]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("a cancel while a caption is awaited loses nothing: the message is logged, with the wait over", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const seeing: TurnEngine = { ref: "seeing:x", run: () => Effect.void, vision: true, warm: () => Effect.void };
+      const f = fakeMedia();
+      const r = yield* rig([seeing], f.media);
+      const a = image(1);
+      yield* r.session.input("look", undefined, "c1", [a]);
+      yield* until("the caption asked for", () => f.waiting.has(a.sha));
+      yield* Effect.forkChild(r.session.cancel);
+      f.describe(a, "late"); // the cancel's own wait ends with it
+      yield* until("the run's end", () => r.log().length === 1);
+      expect(r.log()).toEqual([["user", `look\n[image ${shortSha(a.sha)} 1568x1176 195KB: late]`]]);
     }).pipe(Effect.scoped),
   );
 });
