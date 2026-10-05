@@ -1,6 +1,7 @@
 // The session (ref §5.2, E1): the one turn loop the server owns. Messages queue up and start a
 // turn; a message sent while a turn runs is steered into it. Every client sees the same events.
-import { Cause, type Duration, Effect, Exit, Fiber, Option, PubSub, Queue, type Scope } from "effect";
+// Priming runs only while idle, and a turn never waits for it (E17, SPEC "Turn and priming").
+import { Cause, type Duration, Effect, Exit, Fiber, FiberSet, Option, PubSub, Queue, type Scope } from "effect";
 import { PRIME_IDLE } from "./config.ts";
 import type { Chat } from "./chat.ts";
 import { type Down, failover } from "./engines/chain.ts";
@@ -11,7 +12,7 @@ import type { Logged, Sent, TurnEngine, TurnEvents } from "./turn/engine.ts";
 import type { UsageRecord } from "./usage.ts";
 import { allBuilt, render, settle, unbuilt, viewSize } from "./view.ts";
 
-export type Phase = "idle" | "priming" | "running" | "waiting";
+export type Phase = "idle" | "running" | "waiting";
 
 export type SessionState = {
   readonly phase: Phase;
@@ -165,10 +166,20 @@ export const makeSession = (o: {
         return publish({ error, logged: chat.mem.root.length, runId, type: "run-finished" });
       });
 
+    // Priming happens only while idle, in fibers of `primes`. A turn that starts stops them
+    // instead of waiting (E17): its own request writes the same prefix to the cache.
+    const lead = o.engines[0];
+    const primer = lead?.prime;
+    const scope = yield* Effect.scope;
+    const primes = yield* FiberSet.make();
+    const primeNow = Effect.suspend(() =>
+      !primer || running || !allBuilt(chat.mem) ? Effect.succeed(null) : FiberSet.run(primes, primer(render(chat.mem), o.defaultDevice)),
+    );
+    // the next turn's and priming's claude, started ahead on the default device (E18)
+    const warm = lead?.warm ? lead.warm(o.defaultDevice).pipe(Effect.forkIn(scope), Effect.asVoid) : Effect.void;
+
     // the view changed (a message, a node): once it has been quiet for PRIME_IDLE and no turn runs,
     // prime it in the background. One fiber debounces every change, so bursts start one timer.
-    const primer = o.engines[0]?.prime;
-    const scope = yield* Effect.scope;
     const changes = yield* Queue.sliding<true>(1);
     const primeLater = Queue.offer(changes, true);
     if (primer) {
@@ -178,9 +189,11 @@ export const makeSession = (o: {
         while (Option.isSome(yield* Queue.take(changes).pipe(Effect.timeoutOption(quiet)))) {
           // changed again within PRIME_IDLE: wait for quiet from here
         }
-        if (!running && allBuilt(chat.mem)) yield* primer(render(chat.mem), o.defaultDevice);
+        const priming = yield* primeNow;
+        if (priming) yield* Fiber.await(priming); // a turn may stop it; this loop goes on
       }).pipe(Effect.forever, Effect.forkIn(scope));
     }
+    yield* warm;
     const onViewChange = () => {
       Effect.runFork(Effect.andThen(tell, primeLater));
     };
@@ -220,6 +233,7 @@ export const makeSession = (o: {
     });
 
     const turn = Effect.gen(function* () {
+      yield* FiberSet.clear(primes).pipe(Effect.forkIn(scope)); // not waited for: the killed claude may take a moment
       while (queue.length > 0) {
         device = queue.findLast((q) => q.device)?.device ?? o.defaultDevice;
         const on = device;
@@ -228,12 +242,6 @@ export const makeSession = (o: {
           yield* settle(chat.mem);
         }
         const view = render(chat.mem); // BEFORE the new messages are logged (gist §7)
-        const lead = o.engines[0];
-        if (lead?.prime) {
-          yield* enter("priming");
-          // a fiber of the session's own: a cancel stops this wait, the priming call itself finishes (ref §6)
-          yield* Fiber.join(yield* Effect.forkIn(lead.prime(view, on), scope));
-        }
         yield* enter("running");
         const { runId, texts } = yield* logQueued(on);
         steer = yield* Queue.unbounded<string>();
@@ -293,7 +301,7 @@ export const makeSession = (o: {
         halted = null;
         phase = "idle";
         const told = why === null ? Effect.void : Effect.forEach(queue, (q) => nack(q.text, why), { discard: true });
-        return told.pipe(Effect.andThen(tell), Effect.andThen(primeLater));
+        return told.pipe(Effect.andThen(tell), Effect.andThen(primeLater), Effect.andThen(warm));
       });
     });
 
@@ -316,7 +324,7 @@ export const makeSession = (o: {
         }
         if (Option.isSome(refused)) return; // the log refuses: they stay queued
         yield* logFirst(queue.length, null);
-        if (cancelled && !inRun) yield* info("cancelled"); // before any run started: waiting or priming
+        if (cancelled && !inRun) yield* info("cancelled"); // before any run started: waiting for summaries
       }).pipe(Effect.catch((error: StoreError) => Effect.sync(() => (halted = error.message)).pipe(Effect.andThen(info(`error: ${error.message}`)))));
 
     const start: Effect.Effect<void> = Effect.suspend(() => {
@@ -349,9 +357,7 @@ export const makeSession = (o: {
       });
 
     const cancel = Effect.suspend(() => (loop ? Fiber.interrupt(loop) : Effect.void));
-    const primeSoon = Effect.suspend(() =>
-      !primer || running || !allBuilt(chat.mem) ? Effect.void : primer(render(chat.mem), o.defaultDevice).pipe(Effect.forkIn(scope), Effect.asVoid),
-    );
+    const primeSoon = Effect.asVoid(primeNow);
 
     return { cancel, events, input, live, primeSoon, state, tell };
   });

@@ -25,8 +25,16 @@ afterAll(() => {
 const Event = Schema.Struct({ type: Schema.String, name: Schema.optional(Schema.String), value: Schema.optional(Schema.Json), message: Schema.optional(Schema.String) });
 type Event = typeof Event.Type;
 const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(Event));
-const Start = Schema.Struct({ type: Schema.Literal("start"), role: Schema.String, argv: Schema.Array(Schema.String), cwd: Schema.String });
+const Start = Schema.Struct({ type: Schema.Literal("start"), pid: Schema.Number, role: Schema.String, argv: Schema.Array(Schema.String), cwd: Schema.String });
 const decodeStart = Schema.decodeUnknownOption(Schema.fromJsonString(Start));
+const In = Schema.Struct({ type: Schema.Literal("in"), pid: Schema.Number });
+const decodeIn = Schema.decodeUnknownOption(Schema.fromJsonString(In));
+// the turn processes the fake's log shows a message reached; the server's warm ones wait unused (E18)
+const servedTurns = (log: string) => {
+  const lines = existsSync(log) ? readFileSync(log, "utf8").split("\n") : [];
+  const fed = new Set(lines.flatMap((l) => Option.toArray(decodeIn(l))).map((r) => r.pid));
+  return lines.flatMap((l) => Option.toArray(decodeStart(l))).filter((s) => s.role === "turn" && fed.has(s.pid));
+};
 const Entry = Schema.Struct({ kind: Schema.String, text: Schema.String, device: Schema.optional(Schema.String) });
 const decodeEntry = Schema.decodeUnknownSync(Schema.fromJsonString(Entry));
 const decodeDevices = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.Struct({ name: Schema.String, status: Schema.String }))));
@@ -98,11 +106,10 @@ test("a turn on another device runs there, and a turn on an offline device fails
 
         const done = yield* Effect.promise(async () => turn(ws, "edit the macbook repo", "macbook"));
         expect(done.at(-1)?.type).toBe("RUN_FINISHED");
-        const starts = readFileSync(log, "utf8").split("\n").flatMap((l) => Option.toArray(decodeStart(l)));
-        const there = starts.find((s) => s.role === "turn");
+        const [there] = servedTurns(log);
         expect(there?.cwd).toBe(macbook);
         const argv = there?.argv ?? [];
-        expect(argv[argv.indexOf("--mcp-config") + 1]).toContain(`"url":"http://localhost:${port}/mcp?key=`);
+        expect(argv[argv.indexOf("--mcp-config") + 1]).toContain(`"type":"ws","url":"ws://localhost:${port}/mcp?key=`);
         expect(argv).toContain("--system-prompt"); // the server's file, inlined
         expect(argv).not.toContain("--system-prompt-file");
 
@@ -180,8 +187,7 @@ test("without server.publicUrl a turn on another device is refused at once, and 
         const failed = yield* Effect.promise(async () => turn(`ws://127.0.0.1:${port}/ws`, "edit the macbook repo", "macbook"));
         expect(failed.at(-1)?.type).toBe("RUN_ERROR");
         expect(infos(failed)).toContain("device offline: macbook: server.publicUrl is not set, so claude there could not reach zoom and date");
-        const starts = existsSync(log) ? readFileSync(log, "utf8").split("\n").flatMap((l) => Option.toArray(decodeStart(l))) : [];
-        expect(starts.filter((s) => s.role === "turn")).toEqual([]);
+        expect(servedTurns(log)).toEqual([]);
       }),
     ),
   );

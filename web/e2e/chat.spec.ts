@@ -28,6 +28,8 @@ test("a turn started on one page streams into another", async ({ browser, server
   await expect(watcher.getByTestId("user-message").filter({ hasText: "from the other page" })).toBeVisible();
   await expect(watcher.getByTestId("status")).toContainText("running");
   await expect(watcher.getByText(REPLY)).toBeVisible({ timeout: 15_000 });
+  // the last word streams in a moment before the reply is logged: the log is read once the turn is over
+  await expect(watcher.getByTestId("status")).toBeHidden({ timeout: 15_000 });
   await expectShowsLog(watcher, server);
   await watcher.close();
   await sender.close();

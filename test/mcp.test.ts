@@ -1,7 +1,7 @@
 // zoom and date as the model reaches them: JSON-RPC over the /mcp handler (gist §7.1, ref §9, E8).
 import { expect, test } from "bun:test";
-import { Schema } from "effect";
-import { handleMcp, mcpConfig } from "../src/mcp.ts";
+import { Effect, Schema } from "effect";
+import { handleMcp, mcpConfig, mcpTransports } from "../src/mcp.ts";
 import { newMsg } from "../src/store.ts";
 import { type Mem, newMem } from "../src/tree.ts";
 import { addMessage, addNode } from "../src/view.ts";
@@ -79,7 +79,26 @@ test("zoom and date over JSON-RPC: the handshake, the verbatim tools, a zoom dow
 
   expect(rpc(mem, "resources/list").error?.code).toBe(-32_601);
   expect(handleMcp(mem, "{not json").status).toBe(400);
-  expect(JSON.parse(mcpConfig("http://127.0.0.1:7700/mcp?key=k"))).toEqual({
+});
+
+test("--mcp-config is ws unless http is asked for; a device whose claude won't connect over ws falls back to http, said once", async () => {
+  expect(JSON.parse(mcpConfig("http://127.0.0.1:7700/mcp?key=k"))).toEqual({ mcpServers: { optchat: { type: "ws", url: "ws://127.0.0.1:7700/mcp?key=k" } } });
+  expect(JSON.parse(mcpConfig("https://mini.example.ts.net/mcp?key=k"))).toEqual({ mcpServers: { optchat: { type: "ws", url: "wss://mini.example.ts.net/mcp?key=k" } } });
+  expect(JSON.parse(mcpConfig("http://127.0.0.1:7700/mcp?key=k", "http"))).toEqual({
     mcpServers: { optchat: { type: "http", url: "http://127.0.0.1:7700/mcp?key=k" } },
   });
+
+  const said: string[] = [];
+  const t = mcpTransports("ws", (m) => Effect.sync(() => said.push(m)));
+  expect([t.of("mini"), t.of("macbook")]).toEqual(["ws", "ws"]);
+  await Effect.runPromise(t.down("macbook", "failed"));
+  await Effect.runPromise(t.down("macbook", "failed"));
+  expect([t.of("mini"), t.of("macbook")]).toEqual(["ws", "http"]);
+  expect(said).toEqual(["claude on macbook did not connect to zoom and date over WebSocket (MCP server optchat is failed); using HTTP from now on"]);
+
+  // configured to http: nothing to fall back from
+  const plain = mcpTransports("http", (m) => Effect.sync(() => said.push(m)));
+  await Effect.runPromise(plain.down("mini", "failed"));
+  expect(plain.of("mini")).toBe("http");
+  expect(said).toHaveLength(1);
 });

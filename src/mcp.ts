@@ -1,6 +1,8 @@
-// zoom and date (gist §7.1, ref §9) as an MCP server over HTTP (E8): one JSON-RPC message per
-// POST, answered from the server's memory. It only reads; the lock stays with the chat.
-import { Option, Schema } from "effect";
+// zoom and date (gist §7.1, ref §9) as an MCP server (E8): one JSON-RPC message per WebSocket
+// frame, or per POST over HTTP, answered from the server's memory. It only reads; the lock stays
+// with the chat.
+import { Effect, Option, Schema } from "effect";
+import type { McpTransport } from "./config.ts";
 import { address } from "./kernel.ts";
 import { type Built, children, type Coord, type Entry, getNode, label, localTime, type Mem } from "./tree.ts";
 import { flat } from "./view.ts";
@@ -130,8 +132,9 @@ export const MEMORY_TOOLS: readonly string[] = TOOLS.map((t) => t.name);
 export const memoryTool = (mem: Mem, name: string, args: Schema.Json): string | null =>
   MEMORY_TOOLS.includes(name) ? (call(mem, { arguments: args, name }).content[0]?.text ?? "") : null;
 
-// One POSTed message in, the HTTP status and body out. A notification (no id) or a client's
-// response gets 202 and no body, as MCP's HTTP transport asks.
+// One message in (a POST's body or a WebSocket frame), the HTTP status and body out. A
+// notification (no id) or a client's response gets 202 and no body, as MCP's HTTP transport asks;
+// over a WebSocket, no frame.
 export function handleMcp(mem: Mem, body: string): Reply {
   const found = decodeRequest(body);
   if (Option.isNone(found)) return failure(null, -32_700, "Parse error: one JSON-RPC message per request", 400);
@@ -157,6 +160,23 @@ export function handleMcp(mem: Mem, body: string): Reply {
   }
 }
 
-// The --mcp-config JSON. Built once per device and passed to the turn and the priming call alike:
-// it is part of the cached tool list, and the name `optchat` makes the tools mcp__optchat__*.
-export const mcpConfig = (url: string) => JSON.stringify({ mcpServers: { optchat: { type: "http", url } } });
+// The --mcp-config JSON for `url`, the http(s) URL of /mcp with its key; over "ws" the same URL
+// as ws(s). Passed to the turn and the priming call alike: the name `optchat` makes the tools
+// mcp__optchat__*, and the transport is not part of what the model is sent, so the cache doesn't
+// care which one it is.
+export const mcpConfig = (url: string, transport: McpTransport = "ws") =>
+  JSON.stringify({ mcpServers: { optchat: { type: transport, url: transport === "ws" ? url.replace(/^http/, "ws") : url } } });
+
+// The transport per device: `preferred` until a claude there starts without optchat connected
+// over ws; that device then uses http from the next call on, and the user is told once.
+export const mcpTransports = (preferred: McpTransport, report: (message: string) => Effect.Effect<void>) => {
+  const fellBack = new Set<string>();
+  const of = (device: string): McpTransport => (fellBack.has(device) ? "http" : preferred);
+  const down = (device: string, status: string) =>
+    Effect.suspend(() => {
+      if (of(device) !== "ws") return Effect.void; // over http, the turn's own notice says it
+      fellBack.add(device);
+      return report(`claude on ${device} did not connect to zoom and date over WebSocket (MCP server optchat is ${status}); using HTTP from now on`);
+    });
+  return { down, of };
+};

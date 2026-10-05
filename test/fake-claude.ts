@@ -31,6 +31,13 @@
 // Roles the script leaves out: a turn answers "ok", a priming call is accepted (message_start)
 // and waits, a compactor call answers a short line.
 //
+// FAKE_CLAUDE_BOOT: milliseconds it takes to start, before it reads any message (claude's own
+// boot is ~1.3 s; dev/latency.ts uses this).
+//
+// Its init event lists the MCP server optchat as connected whenever --mcp-config names it, without
+// dialling it; with FAKE_CLAUDE_NO_WS=1 one of type "ws" is listed as failed, as an older claude
+// that does not take that type would.
+//
 // It exits when stdin closes, also while it hangs or waits, and on SIGTERM.
 import * as Schema from "effect/Schema";
 import { appendFileSync, existsSync, readFileSync, writeSync } from "node:fs";
@@ -73,6 +80,7 @@ const Script = Schema.Struct({
   turn: Schema.optional(Schema.Array(Call)),
 });
 const Input = Schema.fromJsonString(Schema.Struct({ message: Schema.optional(Schema.Struct({ content: Schema.optional(Schema.Json) })) }));
+const McpConfig = Schema.fromJsonString(Schema.Struct({ mcpServers: Schema.optional(Schema.Record(Schema.String, Schema.Struct({ type: Schema.optional(Schema.String) }))) }));
 
 type Role = "compact" | "prime" | "turn";
 type Json = Schema.Json;
@@ -222,13 +230,16 @@ async function play(reply: Reply): Promise<boolean> {
   return true;
 }
 
+if (env.FAKE_CLAUDE_BOOT) await Bun.sleep(Number(env.FAKE_CLAUDE_BOOT)); // messages wait in `inbox`
+
 let initSent = false;
 for (let k = 0; ; k++) {
   await unused();
   const content = inbox[used++] ?? null;
   if (!initSent) {
     initSent = true;
-    const mcp = argv.includes("--mcp-config") ? [{ name: "optchat", status: "connected" }] : [];
+    const servers = Object.entries(Schema.decodeUnknownSync(McpConfig)(flag("--mcp-config") ?? "{}").mcpServers ?? {});
+    const mcp = servers.map(([name, c]) => ({ name, status: c.type === "ws" && env.FAKE_CLAUDE_NO_WS === "1" ? "failed" : "connected" }));
     emit({ mcp_servers: mcp, model, subtype: "init", tools: [], type: "system" });
   }
   if (replaying) replay(content);

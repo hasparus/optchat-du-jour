@@ -29,8 +29,14 @@ const rig = (engine: TurnEngine) =>
     const dir = mkdtempSync(`${tmpdir()}/oc-`);
     dirs.push(dir);
     const chat = yield* openChat(dir, { summarize: (job) => Effect.succeed(`summary ${job.l}.${job.i}`) });
-    const disk = { full: false };
-    const log: typeof chat.log = (kind, body, extra) => (disk.full ? Effect.fail(new StoreError({ message: "disk full" })) : chat.log(kind, body, extra));
+    const disk = { full: false, bugs: 0 }; // bugs: how many of the next writes throw
+    const log: typeof chat.log = (kind, body, extra) => {
+      if (disk.bugs > 0) {
+        disk.bugs -= 1;
+        return Effect.die(new Error("log bug"));
+      }
+      return disk.full ? Effect.fail(new StoreError({ message: "disk full" })) : chat.log(kind, body, extra);
+    };
     const counts = { commits: 0 };
     const commit = Effect.sync(() => ((counts.commits += 1), null));
     const session = yield* makeSession({
@@ -107,24 +113,20 @@ test("a turn that dies with messages steered into it logs every one of them unan
 test("a defect before the messages are logged stops the loop once, and logs them unanswered", async () => {
   await Effect.runPromise(
     Effect.gen(function* () {
-      let primes = 0;
+      let runs = 0;
       const engine: TurnEngine = {
-        prime: () =>
-          Effect.suspend(() => {
-            primes += 1;
-            return Effect.die(new Error("prime bug"));
-          }),
         ref: "fake:x",
-        run: () => Effect.void,
+        run: () => Effect.sync(() => (runs += 1)),
       };
       const r = yield* rig(engine);
+      r.disk.bugs = 1; // the first write, the message's, throws; the next one logs it unanswered
       yield* r.session.input("hello", undefined, "c1");
       yield* until("idle", () => r.events.some((e) => e.type === "state" && e.state.phase === "idle"));
       yield* Effect.sleep("100 millis"); // no restart, no further commits
-      expect(primes).toBe(1);
+      expect(runs).toBe(0);
       expect(r.counts.commits).toBe(1);
       expect(r.log()).toEqual([["user", "hello"]]);
-      expect(r.said()).toEqual(["info: error: the turn stopped: prime bug", "ack c1: 0"]);
+      expect(r.said()).toEqual(["info: error: the turn stopped: log bug", "ack c1: 0"]);
       expect(r.events.some((e) => e.type === "run-started")).toBe(false);
     }).pipe(Effect.scoped),
   );

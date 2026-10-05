@@ -56,8 +56,8 @@ const inlineFiles = (args: readonly string[]) =>
 export const remoteRunner = (device: string, url: string, timeouts: Partial<RemoteTimeouts> = {}): Runner["Service"] => {
   const t = { ...TIMEOUTS, ...timeouts };
   const offline = (why: string) => new DeviceOffline({ message: `${device}: ${why}` });
-  // The last time the device could not be reached, and why. A turn's priming finds it offline,
-  // and the turn right after it fails at once with the same verdict instead of waiting again.
+  // The last time the device could not be reached, and why. When a priming finds it offline, a
+  // turn right after fails at once with the same verdict instead of waiting again.
   let unreachable: { readonly until: number; readonly error: DeviceOffline } | null = null;
   const remember = (error: DeviceOffline) =>
     Clock.currentTimeMillis.pipe(

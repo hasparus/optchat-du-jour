@@ -10,7 +10,7 @@ export { Kind, Msg } from "./records.ts";
 // ---------------------------------------------------------------------------------------------
 // the session's shared state (STATE_SNAPSHOT, STATE_DELTA)
 
-export const Phase = Schema.Literals(["idle", "priming", "running", "waiting"]);
+export const Phase = Schema.Literals(["idle", "running", "waiting"]);
 export type Phase = typeof Phase.Type;
 
 export const SessionState = Schema.Struct({

@@ -1,7 +1,7 @@
 // A running `claude -p` (ref §4): stream-json user messages in, events out. The process belongs to
 // the scope that spawned it; closing the scope sends SIGTERM, then SIGKILL after KILL_GRACE
 // (ref §5.2). The Runner service decides where it runs: here, or on a device (E7).
-import { Context, Data, type Duration, Effect, Fiber, Layer, Option, type PlatformError, Queue, Ref, type Scope, Stream } from "effect";
+import { Context, Data, Deferred, type Duration, Effect, Fiber, Layer, Option, type PlatformError, Queue, Ref, type Scope, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { KILL_GRACE } from "../config.ts";
 import type { DeviceOffline } from "../engines/errors.ts";
@@ -18,6 +18,8 @@ export type Claude = {
   readonly result: Effect.Effect<Result, ClaudeError>;
   // which model answered, for usage.jsonl: the init event names it, message_start too
   readonly model: () => string | undefined;
+  // waits until its output has closed: the process ended (a warm process that died while idle)
+  readonly ended: Effect.Effect<void>;
 };
 
 export type Spawn = {
@@ -26,10 +28,14 @@ export type Spawn = {
   readonly cwd?: string;
 };
 
-// DeviceOffline: a device runner could not be reached or would not start claude (SPEC "Device offline")
+// DeviceOffline: a device runner could not be reached or would not start claude (SPEC "Device offline").
+// `warm`, on a Runner that keeps processes started ahead (./warm.ts): the spawns to expect next.
 export class Runner extends Context.Service<
   Runner,
-  { readonly spawn: (o: Spawn) => Effect.Effect<Claude, ClaudeError | DeviceOffline, Scope.Scope> }
+  {
+    readonly spawn: (o: Spawn) => Effect.Effect<Claude, ClaudeError | DeviceOffline, Scope.Scope>;
+    readonly warm?: (expected: readonly Spawn[]) => Effect.Effect<void>;
+  }
 >()("optchat/Runner") {}
 
 const userMessage = (blocks: readonly Block[]) =>
@@ -42,6 +48,7 @@ export const makeClaude = Effect.fnUntraced(function* (o: {
   readonly exit: Effect.Effect<string>;
 }) {
   const events = yield* Queue.unbounded<Option.Option<Event>>();
+  const closed = yield* Deferred.make<true>();
   let current: string | undefined;
   yield* o.lines.pipe(
     Stream.runForEach((line) =>
@@ -57,6 +64,7 @@ export const makeClaude = Effect.fnUntraced(function* (o: {
     ),
     Effect.ignore,
     Effect.andThen(Queue.offer(events, Option.none())),
+    Effect.andThen(Deferred.succeed(closed, true)),
     Effect.forkScoped,
   );
 
@@ -71,6 +79,7 @@ export const makeClaude = Effect.fnUntraced(function* (o: {
     }
   });
   return {
+    ended: Effect.asVoid(Deferred.await(closed)),
     model: () => current,
     next,
     result,

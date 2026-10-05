@@ -91,7 +91,7 @@ describe("repl screen", () => {
 
     // cancelled from another client before its run began: logged unanswered, no run end, then idle
     const never = idOf(t.s.submit("never answered"));
-    t.feed({ delta: [{ op: "replace", path: "/phase", value: "priming" }], type: "STATE_DELTA" });
+    t.feed({ delta: [{ op: "replace", path: "/phase", value: "waiting" }], type: "STATE_DELTA" });
     t.feed(ack(never, "5"), ...said("5", "user", "never answered"));
     expect(t.s.unanswered).toBe(1);
     t.feed({ delta: [{ op: "replace", path: "/phase", value: "idle" }], type: "STATE_DELTA" });
