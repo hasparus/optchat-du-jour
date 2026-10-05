@@ -7,6 +7,7 @@ import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput, type ToolState } 
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Message, MessageContent, MessageHeader } from "@/components/ui/message";
 import type { Row } from "@/lib/rows";
+import { splitMarkers } from "@wire";
 import { CodeIcon, TextIcon } from "lucide-react";
 import { Component, memo, type ReactNode, useState } from "react";
 
@@ -45,6 +46,39 @@ function Reply({ text, streaming }: { text: string; streaming: boolean }) {
   );
 }
 
+// A user message as logged: its attachments' thumbnails above the bubble (SPEC "Media"), and in
+// the bubble the text with its marker lines, dimmed. A thumbnail is our own asset, named by the
+// marker's 12 hex digits; only user rows show them, so nothing a model wrote is ever fetched.
+function UserMessage({ text }: { text: string }) {
+  const { body, markers } = splitMarkers(text);
+  return (
+    <Message align="end" data-testid="user-message">
+      <MessageContent>
+        {markers.length > 0 && (
+          <div className="flex flex-wrap justify-end gap-1.5" data-testid="user-attachments">
+            {markers.map((m) => (
+              <a className="block overflow-hidden rounded-lg border" href={`/api/assets/${m.sha}`} key={m.line} rel="noreferrer" target="_blank">
+                <img alt={`${m.kind} ${m.sha}`} className="max-h-40 max-w-56 object-contain" loading="lazy" src={`/api/assets/${m.sha}/thumb`} />
+              </a>
+            ))}
+          </div>
+        )}
+        <Bubble align="end">
+          <BubbleContent className="whitespace-pre-wrap">
+            {body}
+            {markers.length > 0 && (
+              <span className="text-xs opacity-70">
+                {body === "" ? "" : "\n"}
+                {markers.map((m) => m.line).join("\n")}
+              </span>
+            )}
+          </BubbleContent>
+        </Bubble>
+      </MessageContent>
+    </Message>
+  );
+}
+
 // a row that fails to render shows its text as logged, and the rest of the chat stays up
 class RowBoundary extends Component<{ readonly text: string; readonly children: ReactNode }, { readonly failed: boolean }> {
   override state = { failed: false };
@@ -69,12 +103,13 @@ export const ChatRow = memo(function ChatRow({ row, streaming, toolState }: { ro
 function RowView({ row, streaming, toolState }: { row: Row; streaming: boolean; toolState: ToolState }) {
   switch (row.kind) {
     case "user":
+      return <UserMessage text={row.text} />;
     case "note":
       return (
         <Message align="end" data-testid="user-message">
           <MessageContent>
-            {row.kind === "note" && <MessageHeader>note</MessageHeader>}
-            <Bubble align="end" variant={row.kind === "note" ? "muted" : "default"}>
+            <MessageHeader>note</MessageHeader>
+            <Bubble align="end" variant="muted">
               <BubbleContent className="whitespace-pre-wrap">{row.text}</BubbleContent>
             </Bubble>
           </MessageContent>

@@ -44,6 +44,13 @@ describe("repl screen", () => {
     expect(after).toContain("hi\n");
   });
 
+  test("a photo sent from the phone shows as its text and marker line, as the log holds it", () => {
+    const t = screen(false);
+    t.feed({ snapshot: { ...IDLE, pending: [{ attachments: 1, clientId: "p1", text: "look" }] }, type: "STATE_SNAPSHOT" });
+    t.feed(...said("3", "user", "look\n[image 9d0c38e7aafe 1568x1176 212KB: a whiteboard with three arrows]"));
+    expect(t.out()).toContain("[image 9d0c38e7aafe 1568x1176 212KB: a whiteboard with three arrows]");
+  });
+
   test("output that arrives while typing keeps the typed text below it", () => {
     const t = screen();
     t.feed({ snapshot: { ...IDLE, phase: "running" }, type: "STATE_SNAPSHOT" });

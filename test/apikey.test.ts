@@ -175,7 +175,7 @@ const turnRig = (rounds?: number) => {
   const reports: string[] = [], records: UsageRecord[] = [], log: [string, string][] = [], texts: [number, string][] = [], infos: string[] = [], thoughts: number[] = [];
   const budget = makeBudget({ monthly: 5, report: (m) => Effect.sync(() => void reports.push(m)), usagePath });
   const box: ToolBox = { defs: [{ description: "Read a file", name: "Read", parameters: { type: "object" } }], run: (name) => Effect.succeed(`${name} ran`) };
-  const engine = toolLoop({ instructions: "MASTER", provider: apiKeyProvider({ budget, clients, effort: "high", ref: API_KEY, settings: settings(5) }), ref: REF, rounds, toolsFor: () => box });
+  const engine = toolLoop({ instructions: "MASTER", provider: apiKeyProvider({ budget, clients, effort: "high", ref: API_KEY, settings: settings(5) }), ref: REF, rounds, toolsFor: () => box, vision: false });
   const out: TurnEvents = {
     info: (m) => Effect.sync(() => void infos.push(m)),
     log: (kind, text) => Effect.sync(() => void log.push([kind, text])),
@@ -184,7 +184,7 @@ const turnRig = (rounds?: number) => {
     took: () => Effect.void,
     usage: (r) => budget.note(r).pipe(Effect.andThen(Effect.sync(() => void records.push(r)))),
   };
-  const input: TurnInput = { device: "mini", earlier: [], mid: { next: Effect.never, ready: Effect.succeed([]) }, texts: ["go"], view: "<chat>\n</chat>" };
+  const input: TurnInput = { device: "mini", earlier: [], media: [], mid: { next: Effect.never, ready: Effect.succeed([]) }, texts: ["go"], view: "<chat>\n</chat>" };
   const run = Effect.runPromise(Effect.flip(engine.run(input, out, null)).pipe(Effect.option));
   return { budget, infos, log, records, run, texts, thoughts };
 };

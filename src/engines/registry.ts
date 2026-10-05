@@ -9,7 +9,7 @@ import type { ApiKeys } from "../apikey/clients.ts";
 import { Runner } from "../claude/process.ts";
 import type { Job } from "../compactor.ts";
 import type { ToolBox } from "../tools/box.ts";
-import { MASTER_TOOLS, type Ref, type Settings } from "../config.ts";
+import { MASTER_TOOLS, mediaSettings, type Ref, type Settings } from "../config.ts";
 import { apiKeyProvider } from "../providers/api-key.ts";
 import type { Provider } from "../providers/provider.ts";
 import { responsesProvider } from "../providers/responses.ts";
@@ -97,6 +97,9 @@ export const turnEngine = (ref: Ref, o: TurnNeeds): Effect.Effect<TurnEngine> =>
       });
     case "openai-plan":
     case "api-key":
-      return Effect.map(providerOf(ref, o, effort), (provider) => toolLoop({ instructions: o.instructions, provider, ref: ref.ref, toolsFor: o.toolsFor }));
+      // the plan's route is sent images only once that is known to work (SPEC "Media")
+      return Effect.map(providerOf(ref, o, effort), (provider) =>
+        toolLoop({ instructions: o.instructions, provider, ref: ref.ref, toolsFor: o.toolsFor, vision: ref.engine === "api-key" || mediaSettings(o.settings).planImages }),
+      );
   }
 };

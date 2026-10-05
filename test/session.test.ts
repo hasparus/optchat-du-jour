@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
 import { openStream } from "../server/agui.ts";
 import { UsageLimit } from "../src/engines/errors.ts";
-import { makeSession, type SessionEvent } from "../src/session.ts";
+import { makeSession, noMedia, type SessionEvent } from "../src/session.ts";
 import { StoreError } from "../src/store.ts";
 import type { Mid, TurnEngine, TurnInput } from "../src/turn/engine.ts";
 
@@ -61,6 +61,7 @@ const rig = (engine: TurnEngine | readonly TurnEngine[], o: { readonly commit?: 
       engines: Array.isArray(engine) ? engine : [engine],
       idle: "1 hour",
       logUsage: () => Effect.void,
+      media: noMedia,
     });
     const events: SessionEvent[] = [];
     const sub = yield* PubSub.subscribe(session.events);
@@ -87,6 +88,7 @@ test("a turn that dies with messages steered into it logs every one of them unan
       let calls = 0;
       const engine: TurnEngine = {
         ref: "fake:x",
+        vision: false,
         warm: () => Effect.void,
         run: (input) =>
           Effect.gen(function* () {
@@ -134,6 +136,7 @@ test("a defect before the messages are logged stops the loop once, and logs them
       const engine: TurnEngine = {
         ref: "fake:x",
         run: () => Effect.sync(() => (runs += 1)),
+        vision: false,
         warm: () => Effect.void,
       };
       const r = yield* rig(engine);
@@ -153,7 +156,7 @@ test("a defect before the messages are logged stops the loop once, and logs them
 test("a message the log refuses stays queued, its sender is told, and the next message logs it", async () => {
   await Effect.runPromise(
     Effect.gen(function* () {
-      const engine: TurnEngine = { ref: "fake:x", run: (_input, out) => out.log("talk", "an answer"), warm: () => Effect.void };
+      const engine: TurnEngine = { ref: "fake:x", run: (_input, out) => out.log("talk", "an answer"), vision: false, warm: () => Effect.void };
       const r = yield* rig(engine);
       r.disk.full = true;
       yield* r.session.input("lost?", undefined, "c1");
@@ -177,7 +180,7 @@ test("a message the log refuses stays queued, its sender is told, and the next m
 test("two clients sending the same text get acks naming their own entries, also once the log refused one", async () => {
   await Effect.runPromise(
     Effect.gen(function* () {
-      const engine: TurnEngine = { ref: "fake:x", run: (_input, out) => out.log("talk", "an answer"), warm: () => Effect.void };
+      const engine: TurnEngine = { ref: "fake:x", run: (_input, out) => out.log("talk", "an answer"), vision: false, warm: () => Effect.void };
       const r = yield* rig(engine);
       r.disk.full = true;
       yield* r.session.input("same", undefined, "a1");
@@ -203,6 +206,7 @@ test("a message that comes in while the loop winds down after a defect gets its 
       const engine: TurnEngine = {
         ref: "fake:x",
         run: (_input, out) => (++calls === 1 ? Effect.die(new Error("boom")) : out.log("talk", "an answer")),
+        vision: false,
         warm: () => Effect.void,
       };
       const committing = { now: false };
@@ -241,6 +245,7 @@ test("a failover mid-turn hands the next engine what the first never took, once,
             passed.now += 1;
             return yield* new UsageLimit({ message: "spent" });
           }),
+        vision: false,
         warm: () => Effect.void,
       };
       const second: TurnEngine = {
@@ -252,6 +257,7 @@ test("a failover mid-turn hands the next engine what the first never took, once,
             for (const m of ready) yield* out.took(m);
             yield* out.log("talk", "done");
           }),
+        vision: false,
         warm: () => Effect.void,
       };
       const r = yield* rig([first, second]);
@@ -290,11 +296,13 @@ test("text an engine streamed and never logged is dropped at a failover, so the 
       const spent: TurnEngine = {
         ref: "first:x",
         run: (_input, out) => out.text("Starting on").pipe(Effect.andThen(Effect.fail(new UsageLimit({ message: "spent" })))),
+        vision: false,
         warm: () => Effect.void,
       };
       const next: TurnEngine = {
         ref: "second:x",
         run: (_input, out) => out.text("Done.").pipe(Effect.andThen(Effect.sleep("100 millis")), Effect.andThen(out.log("talk", "Done."))),
+        vision: false,
         warm: () => Effect.void,
       };
       const r = yield* rig([spent, next]);
@@ -339,6 +347,7 @@ test("a cancel right after a taken message was written does not log it again", a
             yield* out.took(yield* input.mid.next);
             yield* Effect.never;
           }),
+        vision: false,
         warm: () => Effect.void,
       };
       const r = yield* rig(engine);
@@ -375,6 +384,7 @@ test("a log that refuses a taken message is reported once, and the message is lo
             }
             yield* out.log("talk", `answer ${calls}`);
           }),
+        vision: false,
         warm: () => Effect.void,
       };
       const r = yield* rig(engine);
@@ -405,6 +415,7 @@ test("a message sent while the turn waits for its first log write is in the stat
             yield* Effect.sleep("40 millis");
             yield* out.log("talk", "ok");
           }),
+        vision: false,
         warm: () => Effect.void,
       };
       const r = yield* rig(engine);
@@ -439,6 +450,7 @@ test("messages a successful call never took are answered by the next turn, on th
             yield* Effect.sleep("40 millis");
             yield* out.log("talk", "ok");
           }),
+        vision: false,
         warm: () => Effect.void,
       };
       const r = yield* rig(engine);

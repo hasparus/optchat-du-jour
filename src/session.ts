@@ -2,17 +2,19 @@
 // start a turn; a message sent while a turn runs is offered to its call. Every client sees the
 // same events. Priming runs only while idle, and a turn never waits for it (E17, SPEC "Turn and
 // priming").
-import { Cause, type Duration, Effect, Exit, Fiber, FiberSet, Option, PubSub, Queue, type Scope } from "effect";
+import { Cause, Deferred, type Duration, Effect, Exit, Fiber, FiberSet, Option, PubSub, Queue, type Scope } from "effect";
 import { PRIME_IDLE } from "./config.ts";
 import type { Chat } from "./chat.ts";
 import { type DownList, failover } from "./engines/chain.ts";
 import type { EngineError } from "./engines/errors.ts";
 import type { StoreError } from "./store.ts";
 import type { Entry } from "./tree.ts";
-import type { Mid, TurnEngine, TurnEvents, TurnInput } from "./turn/engine.ts";
+import { type Look, pictureBudget } from "./media/budget.ts";
+import type { Part } from "./media/part.ts";
+import { BLIND, type Mid, type TurnEngine, type TurnEvents } from "./turn/engine.ts";
 import type { UsageRecord } from "./usage.ts";
 import { allBuilt, render, settle, unbuilt, viewSize } from "./view.ts";
-import type { Phase, SessionState } from "./wire.ts";
+import { type Asset, MAX_ATTACHMENTS, markerOf, NOT_DESCRIBED, type Phase, type SessionState, withMarkers } from "./wire.ts";
 
 // the state every client is shown (STATE_SNAPSHOT, STATE_DELTA, /api/state): src/wire.ts
 export type { Phase, SessionState } from "./wire.ts";
@@ -38,7 +40,8 @@ export type SessionEvent =
 export type Session = {
   // a message from a client: it starts a turn, or joins the running one. With a `clientId` the
   // client is told (an "ack") which log entry the message became, or that it could not be logged.
-  readonly input: (text: string, device?: string, clientId?: string) => Effect.Effect<void>;
+  // `media`: its attachments, already in the asset store (SPEC "Media")
+  readonly input: (text: string, device?: string, clientId?: string, media?: readonly Asset[]) => Effect.Effect<void>;
   // the user's cancel: the wait or the turn stops; nothing sent is lost
   readonly cancel: Effect.Effect<void>;
   readonly events: PubSub.PubSub<SessionEvent>;
@@ -63,14 +66,28 @@ export const deviceOf = (text: string, devices: readonly string[]) => {
 // clients see lists all of them as `pending`.)
 type Incoming = {
   readonly seq: number; // the order messages came in
-  readonly text: string;
+  readonly text: string; // as typed; the log gets it with a marker line per attachment
+  readonly media: readonly Asset[];
   device: string | null; // the device it was sent for; one a call left gets that call's device
   readonly clientId: string | null;
   state: "held" | "offered";
+  // the captions of its attachments, asked for once (`captionsOf`); null until someone needs them
+  described: Deferred.Deferred<readonly string[]> | null;
 };
+
+// What the session needs of the media service (src/media/media.ts) for attachments: a caption,
+// waited for at most a few seconds, and an attachment's pictures as the picture budget planned them.
+export type SessionMedia = {
+  readonly caption: (a: Asset) => Effect.Effect<string>;
+  readonly parts: (a: Asset, look: Look, capped: boolean) => Part[];
+};
+
+// no captions and no pictures: for a session that is not tested on attachments
+export const noMedia: SessionMedia = { caption: () => Effect.succeed(NOT_DESCRIBED), parts: () => [] };
 
 export const makeSession = (o: {
   readonly chat: Chat;
+  readonly media: SessionMedia;
   readonly engines: readonly TurnEngine[]; // the master chain, first choice first
   readonly devices: readonly string[];
   readonly defaultDevice: string;
@@ -92,7 +109,7 @@ export const makeSession = (o: {
     let phase: Phase = "idle", device = o.defaultDevice, engine: string | null = null;
     // a turn's call accepts mid-run messages, and the queue the call running now reads them from
     let accepting = false;
-    let offerTo: Queue.Queue<Mid> | null = null;
+    let offerTo: Queue.Queue<Incoming> | null = null;
     let running = false; // the turn loop is on: set before its fiber starts, cleared as it ends
     let loop: Fiber.Fiber<void> | null = null; // that fiber, for a cancel
     // the loop stopped on an error (the log refused, or a defect), why, and the last message in by
@@ -111,7 +128,7 @@ export const makeSession = (o: {
       engine,
       messages: chat.mem.root.length,
       phase,
-      pending: inbox.map((m) => ({ clientId: m.clientId, text: m.text })),
+      pending: inbox.map((m) => (m.media.length > 0 ? { attachments: m.media.length, clientId: m.clientId, text: m.text } : { clientId: m.clientId, text: m.text })),
       viewBytes: viewSize(chat.mem),
       waiting: unbuilt(chat.mem),
     });
@@ -147,22 +164,57 @@ export const makeSession = (o: {
     const logPublished = (kind: Entry["kind"], text: string, runId: string | null, on: string | null) =>
       log(kind, text, on).pipe(Effect.flatMap(published(runId)), Effect.uninterruptible);
 
-    // A message becomes a user entry, on device `on` or else the one it was sent for. It leaves the
-    // inbox only once it is in the log, so a failure finds it logged or still there, and its
-    // client is told which entry it is before the entry goes out. Uninterruptible: a cancel
-    // between the write and the inbox would log it twice.
+    const scope = yield* Effect.scope;
+
+    // A message's attachments' captions, each waited for at most media.captionWait, asked for once:
+    // what the log keeps of the message and what an engine is sent of it come from this one answer,
+    // so they agree, and a marker is never written without having waited for its caption.
+    const captionsOf = (m: Incoming): Effect.Effect<readonly string[]> =>
+      Effect.suspend(() => {
+        if (m.described) return Deferred.await(m.described);
+        const done = Deferred.makeUnsafe<readonly string[]>();
+        m.described = done;
+        return Effect.forEach(m.media, (a) => o.media.caption(a), { concurrency: "unbounded" }).pipe(
+          Effect.flatMap((said) => Deferred.succeed(done, said)),
+          Effect.forkIn(scope),
+          Effect.andThen(Deferred.await(done)),
+        );
+      });
+    // these messages' captions, asked for together: a turn waits once for the lot
+    const captioned = (ms: readonly Incoming[]) => Effect.forEach(ms, captionsOf, { concurrency: "unbounded", discard: true });
+
+    // A message's text as the log keeps it: what was typed, then a marker line per attachment with
+    // its caption (SPEC "Media")
+    const logText = (m: Incoming, said: readonly string[]) =>
+      withMarkers(
+        m.text,
+        m.media.map((a, k) => markerOf(a, said[k] ?? NOT_DESCRIBED)),
+      );
+
+    // A message becomes a user entry, on device `on` or else the one it was sent for, once its
+    // captions are in (the one place a marker is written). It leaves the inbox only once it is in
+    // the log, so a failure finds it logged or still there, and its client is told which entry it
+    // is before the entry goes out. The write is uninterruptible: a cancel between the write and
+    // the inbox would log it twice. null: it was logged already (a second report of the same one).
     const logMessage = (m: Incoming, runId: string | null, on: string | null) =>
-      log("user", m.text, on ?? m.device).pipe(
-        Effect.tap((entry) =>
+      captionsOf(m).pipe(
+        Effect.flatMap((said) =>
           Effect.suspend(() => {
-            inbox.splice(inbox.indexOf(m), 1);
-            return ack(m, entry.i, null).pipe(Effect.andThen(published(runId)(entry)));
+            if (!inbox.includes(m)) return Effect.succeed(null);
+            return log("user", logText(m, said), on ?? m.device).pipe(
+              Effect.tap((entry) =>
+                Effect.suspend(() => {
+                  inbox.splice(inbox.indexOf(m), 1);
+                  return ack(m, entry.i, null).pipe(Effect.andThen(published(runId)(entry)));
+                }),
+              ),
+              Effect.uninterruptible,
+            );
           }),
         ),
-        Effect.uninterruptible,
       );
     // these messages, in order, logged unanswered (gist §7: nothing is lost)
-    const logEach = (ms: readonly Incoming[]) => Effect.forEach(ms, (m) => logMessage(m, null, null), { discard: true });
+    const logEach = (ms: readonly Incoming[]) => captioned(ms).pipe(Effect.andThen(Effect.forEach(ms, (m) => logMessage(m, null, null), { discard: true })));
 
     // live reply text: buffered for clients that join mid-reply, each delta with its place in it
     const stream = (delta: string, runId: string) =>
@@ -195,7 +247,6 @@ export const makeSession = (o: {
     // instead of waiting (E17): its own request writes the same prefix to the cache.
     const lead = o.engines[0];
     const primer = lead?.prime;
-    const scope = yield* Effect.scope;
     const primes = yield* FiberSet.make();
     const primeNow = Effect.suspend(() =>
       !primer || running || !allBuilt(chat.mem) ? Effect.succeed(null) : FiberSet.run(primes, primer(render(chat.mem), o.defaultDevice)),
@@ -225,13 +276,16 @@ export const makeSession = (o: {
     chat.mem.listeners.add(onViewChange);
     yield* Effect.addFinalizer(() => Effect.sync(() => chat.mem.listeners.delete(onViewChange)));
 
-    // the held messages, logged for a turn on `on`; uninterruptible, so a cancel finds each logged
-    // or held. One that comes in meanwhile waits for the next turn.
-    const logQueued = (on: string) =>
+    // the turn's messages, logged on `on`; uninterruptible, so a cancel finds each logged or held.
+    // Their captions are in by now (the turn waited for them together).
+    const logQueued = (batch: readonly Incoming[], on: string) =>
       Effect.gen(function* () {
         const entries: Entry[] = [];
-        for (const m of held()) entries.push(yield* logMessage(m, null, on));
-        return { runId: String(entries[0]?.i ?? chat.mem.root.length), texts: entries.map((e) => e.text) };
+        for (const m of batch) {
+          const entry = yield* logMessage(m, null, on);
+          if (entry !== null) entries.push(entry);
+        }
+        return String(entries[0]?.i ?? chat.mem.root.length);
       }).pipe(Effect.uninterruptible);
 
     // The call is over: nothing more is offered to it, and what it was offered and never took is
@@ -250,17 +304,38 @@ export const makeSession = (o: {
 
     // A call of one link of the chain, with its own queue of mid-run messages: first those offered
     // before it (to a link that failed over), then each one as it comes. `took` logs one it took.
-    const call = (e: TurnEngine, base: Omit<TurnInput, "earlier" | "mid">, from: string | null, out: TurnEvents, since: number) =>
+    // An engine that is not sent images gets the marker lines only, and a note saying so. What
+    // pictures a call is sent, the opening message's and each mid-run message's, is decided in
+    // one place: `forEngine`, against the call's picture budget.
+    const call = (e: TurnEngine, batch: readonly Incoming[], base: { readonly device: string; readonly view: string }, from: string | null, out: TurnEvents, since: number) =>
       Effect.gen(function* () {
-        const q = yield* Queue.unbounded<Mid>();
+        const q = yield* Queue.unbounded<Incoming>();
+        const budget = pictureBudget();
+        // Messages as this engine is sent them: their texts as logged (with the captions the log
+        // got) and their pictures, or for an engine not sent images a note instead.
+        const forEngine = (ms: readonly Incoming[]) =>
+          Effect.gen(function* () {
+            const texts = yield* Effect.forEach(ms, (m) => Effect.map(captionsOf(m), (said) => logText(m, said)));
+            const attached = ms.flatMap((m) => m.media);
+            if (attached.length === 0) return { media: [], texts };
+            if (!e.vision) return { media: [], texts: [...texts, BLIND] };
+            const { capped, looks } = budget.take(attached);
+            return { media: attached.flatMap((a, k) => o.media.parts(a, looks[k] ?? { how: "none" }, capped)), texts };
+          });
+        const midOf = (m: Incoming): Effect.Effect<Mid> => forEngine([m]).pipe(Effect.map(({ media, texts }) => ({ media, seq: m.seq, text: texts.join("\n") })));
         const earlier = yield* Effect.sync(() => {
           offerTo = q;
-          for (const m of offered()) Queue.offerUnsafe(q, { seq: m.seq, text: m.text });
+          for (const m of offered()) Queue.offerUnsafe(q, m);
           engine = e.ref;
           return chat.mem.root.slice(since).map(({ kind, text }) => ({ kind, text }));
         });
         yield* tell;
-        return yield* e.run({ ...base, earlier, mid: { next: Queue.take(q), ready: Queue.clear(q) } }, out, from);
+        const opening = yield* forEngine(batch);
+        const mid = {
+          next: Queue.take(q).pipe(Effect.flatMap(midOf)),
+          ready: Queue.clear(q).pipe(Effect.flatMap((ms) => captioned(ms).pipe(Effect.andThen(Effect.forEach(ms, midOf))))),
+        };
+        return yield* e.run({ ...base, ...opening, earlier, mid }, out, from);
       });
 
     const turn = Effect.gen(function* () {
@@ -273,28 +348,35 @@ export const makeSession = (o: {
           yield* enter("waiting");
           yield* settle(chat.mem);
         }
+        // This turn's messages are the ones held now; their captions are waited for together, briefly,
+        // before any is logged. One that comes in meanwhile is offered to the call below, ahead of any
+        // sent later, so the log keeps the order they were sent in.
+        const batch = held();
+        yield* captioned(batch);
         const view = render(chat.mem); // BEFORE the new messages are logged (gist §7)
         yield* enter("running");
-        const { runId, texts } = yield* logQueued(on);
+        const runId = yield* logQueued(batch, on);
         const since = chat.mem.root.length; // what this turn's engines log starts here
         accepting = true;
+        for (const m of held()) m.state = "offered"; // came in while the captions or the log were awaited
         const out: TurnEvents = {
           info,
           log: (kind, text) => logPublished(kind, text, runId, on),
           text: (delta) => stream(delta, runId),
           thinking: (tokens) => publish({ runId, tokens, type: "thinking" }),
+          // the call passed this one to the model: logged now; a second report finds it gone (taken once)
           took: (taken) =>
             Effect.suspend(() => {
               const m = inbox.find((x) => x.seq === taken.seq && x.state === "offered");
-              return m ? logMessage(m, runId, on).pipe(Effect.andThen(tell)) : Effect.void; // taken once
+              return m ? logMessage(m, runId, on).pipe(Effect.andThen(tell)) : Effect.void;
             }),
           usage: (record) => o.logUsage(record).pipe(Effect.andThen(publish({ record, type: "usage" }))),
         };
         yield* beginRun(runId);
         yield* tell;
-        const base = { device: on, texts, view };
+        const base = { device: on, view };
         const result = yield* failover(
-          o.engines.map((e) => ({ ref: e.ref, run: (from: string | null) => call(e, base, from, out, since) })),
+          o.engines.map((e) => ({ ref: e.ref, run: (from: string | null) => call(e, batch, base, from, out, since) })),
           {
             // A failover mid-turn keeps what was logged: the next engine is told and carries on from
             // it. Text the engine before streamed and never logged is dropped, so the next engine's
@@ -383,14 +465,16 @@ export const makeSession = (o: {
       );
     });
 
-    const input = (text: string, on?: string, clientId?: string) =>
+    const input = (text: string, on?: string, clientId?: string, attached: readonly Asset[] = []) =>
       Effect.gen(function* () {
-        if (text.trim() === "") return; // nothing to answer: no turn, no empty user entry
+        const media = attached.slice(0, MAX_ATTACHMENTS);
+        if (attached.length > media.length) yield* info(`at most ${MAX_ATTACHMENTS} attachments per message: ${attached.length - media.length} left out`);
+        if (text.trim() === "" && media.length === 0) return; // nothing to answer: no turn, no empty user entry
         const picked = on && o.devices.includes(on) ? on : deviceOf(text, o.devices);
-        const m: Incoming = { clientId: clientId ?? null, device: picked, seq: ++seq, state: accepting ? "offered" : "held", text };
+        const m: Incoming = { clientId: clientId ?? null, described: null, device: picked, media, seq: ++seq, state: accepting ? "offered" : "held", text };
         inbox.push(m);
         if (m.state === "offered") {
-          if (offerTo) Queue.offerUnsafe(offerTo, { seq: m.seq, text });
+          if (offerTo) Queue.offerUnsafe(offerTo, m);
           return yield* tell;
         }
         yield* start;

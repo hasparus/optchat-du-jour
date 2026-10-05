@@ -32,7 +32,7 @@ const steered = (input: TurnInput, out: TurnEvents): Effect.Effect<Item[], Store
     const items: Item[] = [];
     for (const m of yield* input.mid.ready) {
       yield* out.took(m);
-      items.push({ parts: [m.text], type: "user" });
+      items.push({ parts: [...m.media, m.text], type: "user" });
     }
     return items;
   });
@@ -52,6 +52,7 @@ export const toolLoop = (o: {
   readonly instructions: string; // MASTER + VIEW_DOC + instructions.md, as claude-code gets it
   readonly toolsFor: (device: string) => ToolBox;
   readonly rounds?: number; // TOOL_ROUNDS
+  readonly vision: boolean; // whether its provider is sent images (SPEC "Media")
 }): TurnEngine => {
   const rounds = o.rounds ?? TOOL_ROUNDS;
   const run: TurnEngine["run"] = (input, out, failoverFrom) => {
@@ -82,7 +83,8 @@ export const toolLoop = (o: {
     return Effect.gen(function* () {
       const box = o.toolsFor(input.device);
       const view = cutBlocks(input.view);
-      const history: Item[] = [{ parts: [...view, openingText(input)], stable: view.length, type: "user" }];
+      // the view (stable, cached), the new messages' pictures, then their texts
+      const history: Item[] = [{ parts: [...view, ...input.media, openingText(input)], stable: view.length, type: "user" }];
       for (let round = 1; ; round++) {
         history.push(...(yield* steered(input, out)));
         const started = yield* Clock.currentTimeMillis;
@@ -134,5 +136,5 @@ export const toolLoop = (o: {
       }
     }).pipe(Effect.onExit(unanswered));
   };
-  return { ref: o.ref, run, warm: () => Effect.void }; // nothing to start ahead
+  return { ref: o.ref, run, vision: o.vision, warm: () => Effect.void }; // nothing to start ahead
 };

@@ -11,11 +11,13 @@ import { openChat } from "../src/chat.ts";
 import { Runner } from "../src/claude/process.ts";
 import { WarmLocalRunner } from "../src/claude/warm.ts";
 import type { Summarize } from "../src/compactor.ts";
-import type { Settings } from "../src/config.ts";
+import { mediaSettings, type Settings } from "../src/config.ts";
 import type { DownList } from "../src/engines/chain.ts";
 import { turnEngine } from "../src/engines/registry.ts";
 import { forbidden, mount } from "../src/http.ts";
 import { OpenAiPlan, openAiPlanLayer } from "../src/openai/responses.ts";
+import { makeCaptioner } from "../src/media/caption.ts";
+import { makeMedia } from "../src/media/media.ts";
 import { makePersist } from "../src/persist.ts";
 import { promptFile, systemPrompt } from "../src/prompts.ts";
 import { type Secrets, SecretsLive } from "../src/secrets.ts";
@@ -25,6 +27,7 @@ import { type UsageRecord, logUsage } from "../src/usage.ts";
 import { allowed, policyFor } from "./auth.ts";
 import { makePlacements } from "./placement.ts";
 import { apiRoutes } from "./routes/api.ts";
+import { assetRoutes } from "./routes/assets.ts";
 import { mcpRoutes } from "./routes/mcp.ts";
 import { webRoute } from "./routes/web.ts";
 import { wsRoute } from "./routes/ws.ts";
@@ -82,9 +85,17 @@ export const routes = (o: ServerOptions) =>
       const systemFile = yield* promptFile(instructions);
       const { runnerFor, toolsFor, unreachable } = yield* makePlacements({ device: o.device, local, mem: chat.mem, port: o.port, report, secret, settings });
       const engines = yield* Effect.forEach(settings.master.chain, (ref, k) => turnEngine(ref, { ...needs, instructions, lead: k === 0, runnerFor, systemFile, toolsFor }));
-      const persist = yield* makePersist(report);
+      // attachments: the shared asset store under the home, captions by their own chain (SPEC "Media")
+      const mediaConfig = mediaSettings(settings);
+      const captioner = makeCaptioner(mediaConfig.caption, { ...needs, device: o.device, planImages: mediaConfig.planImages, runner: local });
+      const media = yield* makeMedia({ captioner, report, root: `${o.home}/assets`, settings: mediaConfig });
+      // an upload no logged message names (a photo attached and never sent) is not committed
+      const persist = yield* makePersist(report, () =>
+        media.unreferenced(chat.mem.root.flatMap((e) => (e.kind === "user" ? [e.text] : []))).map((path) => `/assets/${path}`),
+      );
       const session = yield* makeSession({
         chat,
+        media,
         commit: Effect.suspend(() => persist(o.home, `chore(chat): ${chat.mem.root.length} messages`)),
         compactorDown: compactor.down,
         defaultDevice: settings.defaultDevice,
@@ -108,18 +119,31 @@ export const routes = (o: ServerOptions) =>
         Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => (guard(request) ? handle : Effect.succeed(forbidden))),
       );
 
-      yield* wsRoute(router, { entries: chat.mem.root, session, thread: o.device, window: o.window ?? 200 });
-      yield* mcpRoutes(router, { mem: chat.mem, secret });
+      yield* wsRoute(router, { assets: { find: media.find, report }, entries: chat.mem.root, session, thread: o.device, window: o.window ?? 200 });
+      yield* mcpRoutes(router, { attached: media.zoomContent, mem: chat.mem, secret });
+      yield* assetRoutes(router, { media, settings: mediaConfig });
       yield* apiRoutes(router, { device: o.device, mem: chat.mem, report, session, settings, usagePath });
       yield* webRoute(router, o.web);
       return { chat, session };
     }),
   );
 
+// Bun refuses a request body over `maxRequestBodySize` (128 MiB unless set) with a 413 before any
+// route runs: set from the media limits (an upload is the largest body), plus room for headers'
+// sake, so raising media.maxVideoBytes is enough.
+const MARGIN = 1024 * 1024;
+
 export const serverLayer = (o: ServerOptions) =>
   HttpRouter.serve(routes(o)).pipe(
     // on SIGTERM, open sockets (a web page's /ws) are closed at once instead of waited for
-    Layer.provide(BunHttpServer.layer({ disablePreemptiveShutdown: true, hostname: o.host, port: o.port })),
+    Layer.provide(
+      BunHttpServer.layer({
+        disablePreemptiveShutdown: true,
+        hostname: o.host,
+        maxRequestBodySize: Math.max(mediaSettings(o.settings).maxImageBytes, mediaSettings(o.settings).maxVideoBytes) + MARGIN,
+        port: o.port,
+      }),
+    ),
     Layer.provide(WarmLocalRunner),
     Layer.provide(BunServices.layer),
   );

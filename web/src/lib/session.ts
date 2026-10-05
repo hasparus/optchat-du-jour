@@ -3,13 +3,13 @@
 // messages it holds unlogged), status markers from CUSTOM info and RUN_ERROR, whether the model is thinking,
 // and the messages sent from here that the log doesn't hold yet. Every AG-UI event and every page of
 // /api/messages comes through here; the screens only draw it.
-import { type Kind, logIndex, SessionState } from "@wire";
+import { type Kind, logIndex, SessionState, splitMarkers } from "@wire";
 import { EventType } from "@ag-ui/core";
 import { Option, Schema } from "effect";
 import { api } from "./api.ts";
 import type { Link, LinkStatus } from "./connection.ts";
 import { applyEvent, applyPage, dropBelow, emptyLog, hole, type Log, lowest, tip, trimHeld } from "./log.ts";
-import type { Inbound, Patch } from "./protocol.ts";
+import type { AttachmentRef, Inbound, Patch } from "./protocol.ts";
 
 export type Marker = {
   readonly key: number;
@@ -25,6 +25,7 @@ export type Marker = {
 export type Pending = {
   readonly id: string;
   readonly text: string;
+  readonly attachments: number; // the log adds a marker line for each
   readonly from: number;
   readonly conn: number;
   readonly error: string | null;
@@ -48,7 +49,15 @@ const MAX_FILL = 500; // a wider hole under the window is dropped, not fetched
 
 const initial: Session = { log: emptyLog, markers: [], pending: [], state: null, status: "connecting", thinking: false };
 
-export type Queued = { readonly text: string; readonly error: string | null };
+export type Queued = { readonly text: string; readonly error: string | null; readonly attachments: number };
+
+// Is this user entry's text the message sent as `p`? The same text, or with attachments the typed
+// text followed by their marker lines (the log adds those, SPEC "Media").
+const sameMessage = (entry: string, p: Pending) => {
+  if (p.attachments === 0) return entry === p.text;
+  const { body, markers } = splitMarkers(entry);
+  return markers.length === p.attachments && body === (p.text.trim() === "" ? "" : p.text);
+};
 
 // What waits for the model: every message the server holds unlogged, then ours it doesn't hold
 // yet. A message of ours the server holds is one entry, told by its client id, not its text: the
@@ -60,9 +69,9 @@ export function queued(s: Session): Queued[] {
   for (const m of s.state?.pending ?? []) {
     const mine = m.clientId === null ? undefined : ours.get(m.clientId);
     if (mine) held.add(mine.id);
-    out.push({ error: mine?.error ?? null, text: m.text });
+    out.push({ attachments: m.attachments ?? 0, error: mine?.error ?? null, text: m.text });
   }
-  for (const p of s.pending) if (!held.has(p.id)) out.push({ error: p.error, text: p.text });
+  for (const p of s.pending) if (!held.has(p.id)) out.push({ attachments: p.attachments, error: p.error, text: p.text });
   return out;
 }
 
@@ -135,7 +144,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
   // whose ack named another message.
   const logged = (i: number, text: string) => {
     if (ackedAt.has(i)) return;
-    const at = s.pending.findIndex((p) => (p.error !== null || p.conn < conns) && p.text === text && i >= p.from);
+    const at = s.pending.findIndex((p) => (p.error !== null || p.conn < conns) && sameMessage(text, p) && i >= p.from);
     if (at !== -1) set({ pending: s.pending.toSpliced(at, 1) });
   };
   // After a reconnect: a message sent on a connection that dropped, which the log doesn't hold and
@@ -244,13 +253,13 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
         subscribers.delete(f);
       };
     },
-    // a message from the composer: shown as queued until its ack. Sent while the link is down, it
-    // goes out on the next connection.
-    send: (text: string, device: string | null) => {
+    // a message from the composer, with the attachments it uploaded: shown as queued until its
+    // ack. Sent while the link is down, it goes out on the next connection.
+    send: (text: string, device: string | null, attachments: readonly AttachmentRef[] = []) => {
       const id = crypto.randomUUID();
       const conn = s.status === "open" ? conns : conns + 1;
-      set({ pending: [...s.pending, { conn, error: null, from: s.state?.messages ?? 0, id, text }] });
-      link.send(text, device, id);
+      set({ pending: [...s.pending, { attachments: attachments.length, conn, error: null, from: s.state?.messages ?? 0, id, text }] });
+      link.send(text, device, id, attachments);
     },
     // the reader reached the chat's newest end, or left it: only there are the oldest entries dropped
     scrolled: (end: boolean) => {

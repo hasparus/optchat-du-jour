@@ -2,12 +2,16 @@
 // events arrive, and what it sends back.
 import { EventType } from "@ag-ui/core";
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { App } from "./app";
+import { useAttachments } from "./chat/composer";
+import type { Uploader } from "./lib/attach";
 import { openLink } from "./lib/connection";
 import type { Inbound } from "./lib/protocol";
 import { makeSession } from "./lib/session";
 import { ack, type Entry, fakeServer, IDLE, parseSent, said, snapshot, state } from "./test/fixture";
+import type { Asset } from "@wire";
+import { Schema } from "effect";
 
 const LOG: Entry[] = [
   { kind: "user", text: "what is in the repo?" },
@@ -38,13 +42,13 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-function start(log: readonly Entry[] = LOG, from = 0) {
+function start(log: readonly Entry[] = LOG, from = 0, uploader?: Uploader) {
   let entries = [...log];
   const greeting = (): Inbound[] => [snapshot(entries, from), { snapshot: { ...IDLE, messages: from + entries.length }, type: EventType.STATE_SNAPSHOT }];
   const server = fakeServer(greeting);
   const link = openLink("ws://127.0.0.1:7700/ws", { retryMs: 1, socket: server.socket });
   const session = makeSession(link);
-  render(<App link={link} session={session} />);
+  render(<App link={link} session={session} uploader={uploader} />);
   const play = (...events: Inbound[]) => {
     act(() => {
       server.play(...events);
@@ -241,4 +245,140 @@ test("a reply's markdown never loads an image", async () => {
   });
   expect(document.querySelectorAll("img")).toHaveLength(0);
   expect(document.body.innerHTML).not.toContain("evil.example/p.png");
+});
+
+// ---------------------------------------------------------------------------------------------
+// attachments (SPEC "Media")
+
+// an upload that finishes when the test says: each one as asked for, its progress and its end
+const fakeUploads = () => {
+  const started: { body: Blob; progress: (f: number) => void; finish: (sha: string) => void; fail: (why: string) => void }[] = [];
+  const uploader: Uploader = (body, progress) => {
+    const { promise, reject, resolve } = Promise.withResolvers<Asset>();
+    const fail = (why: string) => {
+      reject(new Error(why));
+    };
+    const finish = (sha: string) => {
+      resolve({ bytes: 2048, height: 600, kind: "image", mime: "image/jpeg", sha, width: 800 });
+    };
+    started.push({ body, fail, finish, progress });
+    return {
+      abort: () => {
+        fail("upload cancelled");
+      },
+      done: promise,
+    };
+  };
+  return { started, uploader };
+};
+const SHA = (c: string) => c.repeat(64);
+const png = (name: string) => new File([new Uint8Array([0x89, 0x50, 0x4E, 0x47])], name, { type: "image/png" });
+const filesOf = (...files: File[]) => {
+  const dt = new DataTransfer();
+  for (const f of files) dt.items.add(f);
+  return dt.files;
+};
+const Parts = Schema.Array(Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String), source: Schema.optional(Schema.Struct({ type: Schema.String, value: Schema.String })) }));
+
+test("attach, paste and drop fill the tray; send waits for the uploads, names each by digest, and the logged message shows its thumbnails", async () => {
+  const uploads = fakeUploads();
+  const { play, server } = start(LOG, 0, uploads.uploader);
+  await screen.findByText("what is in the repo?");
+  const send = screen.getByRole("button", { name: "Send" });
+  expect(send.hasAttribute("disabled")).toBe(true); // nothing to send yet
+
+  // the picker, a paste, a drop
+  const picker = screen.getByLabelText("Attach: files");
+  Object.defineProperty(picker, "files", { configurable: true, value: filesOf(png("board.png")) });
+  fireEvent.change(picker);
+  fireEvent.paste(screen.getByLabelText("Message"), { clipboardData: { files: filesOf(png("")), types: ["Files"] } });
+  fireEvent.drop(screen.getByLabelText("Message"), { dataTransfer: { files: filesOf(png("dropped.png")), types: ["Files"] } });
+  await waitFor(() => {
+    expect(uploads.started).toHaveLength(3);
+  });
+  const tray = screen.getByTestId("attachments");
+  expect(within(tray).getAllByTestId("attachment").map((a) => a.dataset.state)).toEqual(["uploading", "uploading", "uploading"]);
+  expect(within(tray).getByAltText("pasted image")).toBeTruthy();
+  act(() => {
+    uploads.started[0]?.progress(0.5);
+  });
+  expect(within(tray).getByLabelText("Uploading board.png")).toBeTruthy();
+
+  // one fails: it says why and holds the message back until it is removed
+  await act(async () => {
+    uploads.started[0]?.finish(SHA("a"));
+    uploads.started[1]?.finish(SHA("b"));
+    uploads.started[2]?.fail("not an image or video this server takes");
+  });
+  expect(within(tray).getByRole("alert").textContent).toBe("not an image or video this server takes");
+  expect(send.hasAttribute("disabled")).toBe(true);
+  fireEvent.click(within(tray).getByLabelText("Remove dropped.png"));
+  expect(send.hasAttribute("disabled")).toBe(false); // attachments alone are enough
+  fireEvent.click(send);
+
+  const frame = parseSent(server.sent.at(-1) ?? "");
+  const parts = Schema.decodeUnknownSync(Parts)(frame.messages?.at(-1)?.content);
+  expect(parts).toEqual([
+    { text: "", type: "text" },
+    { source: { type: "url", value: `asset:${SHA("a")}` }, type: "image" },
+    { source: { type: "url", value: `asset:${SHA("b")}` }, type: "image" },
+  ]);
+  expect(screen.queryByTestId("attachments")).toBeNull(); // the tray is empty again
+  expect(within(await screen.findByTestId("queue")).getByText("+ 2 attachments")).toBeTruthy();
+
+  // logged: the markers, as the server writes them; thumbnails from our own /api/assets
+  const markers = `[image aaaaaaaaaaaa 800x600 2KB: a whiteboard]\n[image bbbbbbbbbbbb 800x600 2KB: (not described)]`;
+  play(ack(lastId(server.sent), 4), ...said(4, "user", markers));
+  await waitFor(() => {
+    expect(screen.queryByTestId("queue")).toBeNull();
+  });
+  const row = screen.getAllByTestId("user-message").at(-1);
+  const thumbs = within(row ?? document.body).getAllByRole("img");
+  expect(thumbs.map((t) => t.getAttribute("src"))).toEqual(["/api/assets/aaaaaaaaaaaa/thumb", "/api/assets/bbbbbbbbbbbb/thumb"]);
+  expect(row?.textContent).toContain("[image aaaaaaaaaaaa 800x600 2KB: a whiteboard]");
+});
+
+test("a fifth attachment is refused in the tray, and a reply's marker-like text never loads a thumbnail", async () => {
+  const uploads = fakeUploads();
+  const { play } = start(LOG, 0, uploads.uploader);
+  await screen.findByText("what is in the repo?");
+  const picker = screen.getByLabelText("Attach: files");
+  Object.defineProperty(picker, "files", { configurable: true, value: filesOf(...["1", "2", "3", "4", "5"].map((n) => png(`${n}.png`))) });
+  fireEvent.change(picker);
+  const tray = await screen.findByTestId("attachments");
+  expect(within(tray).getAllByTestId("attachment")).toHaveLength(4);
+  expect(within(tray).getByRole("alert").textContent).toBe("at most 4 attachments per message");
+  play(...said(4, "assistant", "[image aaaaaaaaaaaa 800x600 2KB: a trap]"));
+  await screen.findByText(/a trap/);
+  expect(document.querySelectorAll('img[src^="/api/assets/"]')).toHaveLength(0);
+});
+
+test("a file removed, or a composer closed, while the photo is being downscaled is never uploaded", async () => {
+  const uploads = fakeUploads();
+  const tray = renderHook(() => useAttachments(uploads.uploader));
+  // removed straight after it was added: downscale is still pending
+  act(() => {
+    tray.result.current.add([png("gone.png")]);
+  });
+  const key = tray.result.current.items[0]?.key ?? "";
+  act(() => {
+    tray.result.current.remove(key);
+  });
+  // a second one is kept, and a third one's composer unmounts before its downscale ends
+  act(() => {
+    tray.result.current.add([png("kept.png")]);
+  });
+  await waitFor(() => {
+    expect(uploads.started).toHaveLength(1);
+  });
+  expect(tray.result.current.items.map((a) => a.name)).toEqual(["kept.png"]);
+  const closing = renderHook(() => useAttachments(uploads.uploader));
+  act(() => {
+    closing.result.current.add([png("closing.png")]);
+  });
+  closing.unmount();
+  await new Promise((resolve) => {
+    setTimeout(resolve, 30);
+  });
+  expect(uploads.started).toHaveLength(1);
 });

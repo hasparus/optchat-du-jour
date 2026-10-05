@@ -8,6 +8,7 @@ import { Effect, Option, Schema, Stream } from "effect";
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
+import { isPicture } from "../media/part.ts";
 import type { ToolDef } from "../tools/files.ts";
 import type { Item } from "../providers/provider.ts";
 import type { Tokens } from "../usage.ts";
@@ -65,10 +66,14 @@ export const messagesOf = (history: readonly Item[], ttls: readonly Ttl[]) => {
         const marks: number = marked ? 0 : Math.min(item.stable ?? 0, ttls.length);
         marked ||= marks > 0;
         const blocks: Json[] = [];
-        for (const [k, text] of item.parts.entries()) {
-          if (!text) continue; // the API refuses empty text blocks
+        for (const [k, part] of item.parts.entries()) {
+          if (isPicture(part)) {
+            blocks.push({ source: { data: part.data, media_type: part.mime, type: "base64" }, type: "image" });
+            continue;
+          }
+          if (!part) continue; // the API refuses empty text blocks
           const ttl = k < marks ? ttls[k] : undefined;
-          blocks.push(ttl === undefined ? { text, type: "text" } : { cache_control: { ttl, type: "ephemeral" }, text, type: "text" });
+          blocks.push(ttl === undefined ? { text: part, type: "text" } : { cache_control: { ttl, type: "ephemeral" }, text: part, type: "text" });
         }
         push("user", blocks);
         break;

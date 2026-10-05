@@ -4,13 +4,15 @@
 // and ./api-key.ts.
 import type { Effect, Schema } from "effect";
 import type { EngineError, Tagged } from "../engines/errors.ts";
+import type { Part } from "../media/part.ts";
 import type { ToolDef } from "../tools/files.ts";
 import type { Tokens, UsageRecord } from "../usage.ts";
 
 // The conversation, provider-neutral. `stable` counts a user message's leading parts that stay
-// byte-identical from call to call (the view blocks): where a provider puts its cache marks.
+// byte-identical from call to call (the view blocks): where a provider puts its cache marks. A
+// part is text or an image (SPEC "Media"); images come only after the stable parts.
 export type Item =
-  | { readonly type: "user"; readonly parts: readonly string[]; readonly stable?: number }
+  | { readonly type: "user"; readonly parts: readonly Part[]; readonly stable?: number }
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "call"; readonly id: string; readonly name: string; readonly input: string }
   | { readonly type: "result"; readonly id: string; readonly output: string }

@@ -3,7 +3,7 @@
 // problem comes back as a message for the caller to show. The push runs in the background, so an
 // unreachable remote never holds up the end of a turn.
 import { Data, Effect, type Scope, Semaphore } from "effect";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 class GitFailed extends Data.TaggedError("GitFailed")<{ readonly message: string }> {}
@@ -57,7 +57,26 @@ const GIT_TIMEOUT = "2 minutes";
 const inTime = <A, R>(work: Effect.Effect<A, GitFailed, R>) =>
   work.pipe(Effect.timeoutOrElse({ duration: GIT_TIMEOUT, orElse: () => Effect.fail(new GitFailed({ message: `git took longer than ${GIT_TIMEOUT}` })) }));
 
-const save = (dir: string, message: string) =>
+// Files that stay out of a commit though they are new: a block in the repo's own .git/info/exclude
+// (never committed), the rest of that file kept. Only untracked files are affected, so one already
+// committed stays. The block is written whole each time: a file named in it earlier and named by
+// a message since is in the next commit.
+const OUT_BEGIN = "# optchat: left out of commits";
+const OUT_END = "# optchat: end";
+const leaveOut = (dir: string, paths: readonly string[]) =>
+  files("git exclude", () => {
+    const file = join(dir, ".git", "info", "exclude");
+    const old = existsSync(file) ? readFileSync(file, "utf8") : "";
+    const begin = old.indexOf(OUT_BEGIN);
+    const end = old.indexOf(OUT_END);
+    const kept = begin === -1 || end < begin ? old : `${old.slice(0, begin)}${old.slice(end + OUT_END.length).replace(/^\n/, "")}`;
+    if (paths.length === 0 && kept === old) return;
+    mkdirSync(join(dir, ".git", "info"), { recursive: true });
+    const block = paths.length === 0 ? "" : `${OUT_BEGIN}\n${paths.join("\n")}\n${OUT_END}\n`;
+    writeFileSync(file, `${kept}${kept === "" || kept.endsWith("\n") ? "" : "\n"}${block}`);
+  });
+
+const save = (dir: string, message: string, leftOut: readonly string[]) =>
   Effect.gen(function* () {
     // created first if missing (a fresh machine): git needs a directory to run in
     yield* files(dir, () => {
@@ -71,6 +90,7 @@ const save = (dir: string, message: string) =>
       yield* files(".gitignore", () => {
         writeFileSync(join(dir, ".gitignore"), "lock\n");
       });
+    yield* leaveOut(dir, leftOut);
     yield* must(dir, ["add", "-A"]);
     if (yield* staged(dir)) yield* must(dir, ["commit", "-q", "--no-verify", "-m", message]);
   }).pipe(inTime);
@@ -86,7 +106,9 @@ const push = (dir: string) =>
 // `persist(dir, message)`: an error message, or null once the data dir is committed. Each commit
 // is then pushed in the background, one push at a time: commits made during a push are pushed
 // by one more after it. A failing push is reported once, until a push goes through again.
-export const makePersist = (report: (message: string) => Effect.Effect<void>) =>
+// `leftOut`: paths (git's, from the repo's root, "/assets/ab/<sha>.jpg") not to commit yet, asked
+// for at each commit: the uploads no logged message names (src/media/media.ts `unreferenced`).
+export const makePersist = (report: (message: string) => Effect.Effect<void>, leftOut: () => readonly string[] = () => []) =>
   Effect.gen(function* () {
     // a single commit at once: two in the same repo would fight over index.lock (a push takes none)
     const one = yield* Semaphore.make(1);
@@ -114,7 +136,7 @@ export const makePersist = (report: (message: string) => Effect.Effect<void>) =>
         return pushes.pipe(Effect.forkIn(scope), Effect.asVoid);
       });
     return (dir: string, message: string): Effect.Effect<string | null> =>
-      one.withPermit(save(dir, message)).pipe(
+      one.withPermit(Effect.suspend(() => save(dir, message, leftOut()))).pipe(
         Effect.andThen(pushSoon(dir)), // also when nothing new was committed: a push that failed goes out again
         Effect.as(null),
         Effect.catch((error) => Effect.succeed(error.message)),

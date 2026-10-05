@@ -10,14 +10,16 @@ import { Context, Data, Effect, Layer, Schema, Stream } from "effect";
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
+import { isPicture, type Part } from "../media/part.ts";
 import type { Tokens as Usage } from "../usage.ts";
 import { type TokenError, makeTokenManager } from "./auth.ts";
 import type { Endpoints } from "./endpoints.ts";
 
-// The conversation as sent. A user message is a list of text parts, so stable context blocks stay
-// byte-stable on the wire; a function call and its output are items of their own (our tool loop).
+// The conversation as sent. A user message is a list of parts, so stable context blocks stay
+// byte-stable on the wire; an image part goes as `input_image` with a data URL (SPEC "Media"); a
+// function call and its output are items of their own (our tool loop).
 export type Turn =
-  | { readonly role: "user"; readonly parts: readonly string[] }
+  | { readonly role: "user"; readonly parts: readonly Part[] }
   | { readonly role: "assistant"; readonly text: string }
   | { readonly role: "call"; readonly id: string; readonly name: string; readonly arguments: string }
   | { readonly role: "output"; readonly id: string; readonly output: string };
@@ -41,12 +43,13 @@ export type Respond = <E extends Tagged = never>(ask: Ask<E>) => Effect.Effect<R
 export class OpenAiPlan extends Context.Service<OpenAiPlan, { readonly respond: Respond }>()("optchat/OpenAiPlan") {}
 
 const InputText = Schema.Struct({ type: Schema.Literal("input_text"), text: Schema.String });
+const InputImage = Schema.Struct({ type: Schema.Literal("input_image"), image_url: Schema.String, detail: Schema.Literal("auto") });
 const Body = Schema.Struct({
   model: Schema.String,
   instructions: Schema.String,
   input: Schema.Array(
     Schema.Union([
-      Schema.Struct({ role: Schema.Literal("user"), content: Schema.Array(InputText) }),
+      Schema.Struct({ role: Schema.Literal("user"), content: Schema.Array(Schema.Union([InputText, InputImage])) }),
       Schema.Struct({ role: Schema.Literal("assistant"), content: Schema.String }),
       Schema.Struct({ type: Schema.Literal("function_call"), call_id: Schema.String, name: Schema.String, arguments: Schema.String }),
       Schema.Struct({ type: Schema.Literal("function_call_output"), call_id: Schema.String, output: Schema.String }),
@@ -66,7 +69,12 @@ const encodeBody = Schema.encodeSync(Schema.fromJsonString(Body));
 const item = (t: Turn): (typeof Body.Type)["input"][number] => {
   switch (t.role) {
     case "user":
-      return { content: t.parts.map((text) => ({ text, type: "input_text" as const })), role: "user" };
+      return {
+        content: t.parts.map((p) =>
+          isPicture(p) ? { detail: "auto" as const, image_url: `data:${p.mime};base64,${p.data}`, type: "input_image" as const } : { text: p, type: "input_text" as const },
+        ),
+        role: "user",
+      };
     case "assistant":
       return { content: t.text, role: "assistant" };
     case "call":

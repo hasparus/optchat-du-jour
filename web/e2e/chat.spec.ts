@@ -1,5 +1,7 @@
 // The web UI against the real server and a fake `claude` (e2e/fixture.ts, e2e/server.ts), on a
 // 360 px phone screen. Every test gets its own server and an empty log (or one it seeds).
+import { Schema } from "effect";
+import sharp from "sharp";
 import { answered, expect, expectShowsLog, open, REPLY, send, test } from "./fixture";
 
 test("a message gets a reply that streams in, after its tool call", async ({ page, server }) => {
@@ -171,4 +173,30 @@ test("the server answers a missing asset with 404, and any other path with the a
   const app = await fetch(`${server.url}/some/screen`);
   expect(app.status).toBe(200);
   expect(await app.text()).toContain('<div id="root">');
+});
+
+test("an attached photo is uploaded, sent, shown in the chat with its marker, and reaches the fake claude as an image block", async ({ page, server }) => {
+  await open(page);
+  const photo = await sharp({ create: { background: "#3a7", channels: 3, height: 480, width: 640 } })
+    .png()
+    .toBuffer();
+  await page.getByLabel("Attach: files").setInputFiles({ buffer: photo, mimeType: "image/png", name: "board.png" });
+  await expect(page.getByTestId("attachment")).toHaveAttribute("data-state", "done");
+  await page.getByLabel("Message").fill("what is on the board?");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByTestId("attachments")).toBeHidden();
+
+  const row = page.getByTestId("user-message").filter({ hasText: "what is on the board?" });
+  await expect(row).toContainText(/\[image [0-9a-f]{12} 640x480 \d+KB: a picture from the fake claude\]/);
+  const thumb = row.getByRole("img");
+  await expect(thumb).toHaveAttribute("src", /^\/api\/assets\/[0-9a-f]{12}\/thumb$/);
+  await expect.poll(async () => thumb.evaluate((img) => (img instanceof HTMLImageElement ? img.naturalWidth : 0))).toBe(640);
+  await expect(page.getByText(REPLY)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("status")).toBeHidden({ timeout: 15_000 });
+  await expectShowsLog(page, server);
+
+  // the turn's opening message carried the picture, as stream-json takes it
+  const Blocks = Schema.Array(Schema.Struct({ type: Schema.String, source: Schema.optional(Schema.Struct({ type: Schema.String, media_type: Schema.String })) }));
+  const opening = Schema.decodeUnknownSync(Blocks)(server.fakeInputs("turn")[0]);
+  expect(opening.filter((b) => b.type === "image")).toEqual([{ source: { media_type: "image/jpeg", type: "base64" }, type: "image" }]);
 });

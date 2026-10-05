@@ -82,9 +82,14 @@ export type Event = typeof Event.Type;
 const decodeLine = Schema.decodeUnknownOption(Schema.fromJsonString(Event));
 export const parseEvent = (line: string): Option.Option<Event> => (line.trim() ? decodeLine(line) : Option.none());
 
-// a content block for a user message (ref §5.1): text, with an optional cache mark (E6 sets the TTL)
-export type Block = {
-  readonly type: "text";
-  readonly text: string;
-  readonly cache_control?: { readonly type: "ephemeral"; readonly ttl?: "1h" | "5m" };
-};
+// a content block for a user message (ref §5.1): text, with an optional cache mark (E6 sets the
+// TTL), or an image (SPEC "Media"). The image block's shape is the one the SDK's streaming-input
+// docs show and claude 2.1.289's own input schema takes: a base64 source with its media type.
+export type Block =
+  | {
+      readonly type: "text";
+      readonly text: string;
+      readonly cache_control?: { readonly type: "ephemeral"; readonly ttl?: "1h" | "5m" };
+    }
+  | { readonly type: "image"; readonly source: { readonly type: "base64"; readonly media_type: string; readonly data: string } };
+export type TextBlock = Extract<Block, { readonly type: "text" }>;

@@ -4,15 +4,15 @@
 // socket only when this client sends, and gives up when it closes, so a phone that only watches
 // would never see a turn the laptop started (SPEC M2 open question).
 import { Option } from "effect";
-import { ABORT, type Inbound, parseFrame, runInput } from "./protocol.ts";
+import { ABORT, type AttachmentRef, type Inbound, parseFrame, runInput } from "./protocol.ts";
 
 export type LinkStatus = "connecting" | "open" | "closed";
 
 export type Link = {
   // a message: it starts a turn, or joins the running one (device picks where a new turn runs).
   // Sent while the link is down, it goes out on the next open: what the user wrote isn't lost.
-  // `id` names the message in the server's ack.
-  readonly send: (text: string, device: string | null, id: string) => void;
+  // `id` names the message in the server's ack; `attachments` were uploaded first (PUT /api/assets).
+  readonly send: (text: string, device: string | null, id: string, attachments?: readonly AttachmentRef[]) => void;
   // the user's cancel, for whichever turn runs. Only while the link is open: kept for later, it
   // would cancel whatever turn runs after the reconnect. False when it wasn't sent.
   readonly abort: () => boolean;
@@ -111,8 +111,8 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
         statusListeners.delete(listener);
       };
     },
-    send: (text, device, id) => {
-      const frame = runInput(text, device, id);
+    send: (text, device, id, attachments = []) => {
+      const frame = runInput(text, device, id, attachments);
       if (socket && status === "open") socket.send(frame);
       else outbox.push(frame);
     },

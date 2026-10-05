@@ -17,7 +17,7 @@ import { CompactError, type Job } from "../src/compactor.ts";
 import { MASTER_TOOLS } from "../src/config.ts";
 import { type McpSeen, mcpConfig, mcpTransports } from "../src/mcp.ts";
 import { COMPACT_FILE, SCALE } from "../src/prompts.ts";
-import { makeSession, type SessionEvent } from "../src/session.ts";
+import { makeSession, noMedia, type SessionEvent } from "../src/session.ts";
 import { openStream } from "../server/agui.ts";
 import { newMsg } from "../src/store.ts";
 import { blocks, claudeCodeCompactor } from "../src/summarize/claude-code.ts";
@@ -136,7 +136,7 @@ const until = (what: string, ok: () => boolean, ms = 4000) =>
     }
   });
 
-const textOf = (b: Block | undefined) => b?.text ?? "";
+const textOf = (b: Block | undefined) => (b?.type === "text" ? b.text : "");
 const long = (n: number) => "w".repeat(n);
 
 // the compactor engine
@@ -292,7 +292,7 @@ const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
       ttl: "1h" as const,
     };
     const engine = yield* claudeCodeTurn(options);
-    const engines: TurnEngine[] = [o.prime ? engine : { ref: engine.ref, run: engine.run, warm: engine.warm }];
+    const engines: TurnEngine[] = [o.prime ? engine : { ref: engine.ref, run: engine.run, vision: engine.vision, warm: engine.warm }];
     const session = yield* makeSession({
       chat,
       commit: o.commit ?? Effect.succeed(null),
@@ -301,6 +301,7 @@ const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
       engines,
       idle: o.idle ?? "1 hour",
       logUsage: (r) => Effect.sync(() => usage.push(r)),
+      media: noMedia,
     });
     const events: SessionEvent[] = [];
     const sub = yield* PubSub.subscribe(session.events);
