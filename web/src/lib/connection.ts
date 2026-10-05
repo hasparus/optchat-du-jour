@@ -11,7 +11,8 @@ export type LinkStatus = "connecting" | "open" | "closed";
 export type Link = {
   // a message: it starts a turn, or joins the running one (device picks where a new turn runs).
   // Sent while the link is down, it goes out on the next open: what the user wrote isn't lost.
-  readonly send: (text: string, device: string | null) => void;
+  // `id` names the message in the server's ack.
+  readonly send: (text: string, device: string | null, id: string) => void;
   // the user's cancel, for whichever turn runs. Only while the link is open: kept for later, it
   // would cancel whatever turn runs after the reconnect. False when it wasn't sent.
   readonly abort: () => boolean;
@@ -110,8 +111,8 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
         statusListeners.delete(listener);
       };
     },
-    send: (text, device) => {
-      const frame = runInput(text, device);
+    send: (text, device, id) => {
+      const frame = runInput(text, device, id);
       if (socket && status === "open") socket.send(frame);
       else outbox.push(frame);
     },

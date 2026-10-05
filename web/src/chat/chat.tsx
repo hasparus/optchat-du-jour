@@ -23,13 +23,13 @@ import {
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Spinner } from "@/components/ui/spinner";
 import type { Link } from "@/lib/connection";
-import { visible, withDraft } from "@/lib/log";
-import { entryRows, type Row, rowFor } from "@/lib/rows";
+import { visible } from "@/lib/log";
+import { chatRows, entryRows, type Row, rowFor, rowIndexFor } from "@/lib/rows";
 import { type Marker as StatusMarker, queued, type Session, type SessionStore } from "@/lib/session";
 import type { Device } from "@wire";
 import { AlertCircleIcon, InfoIcon } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChatRow, RowBoundary } from "./row";
+import { ChatRow } from "./row";
 
 function status(s: Session): string | null {
   if (s.status !== "open") return s.status === "connecting" ? "connecting…" : "disconnected; reconnecting…";
@@ -55,11 +55,17 @@ function StatusRow({ marker }: { marker: StatusMarker }) {
   );
 }
 
-// the markers that belong right after row k: at or after its log index, before the next row's
-const markersAfter = (markers: readonly StatusMarker[], rows: readonly Row[], k: number) => {
-  const from = rows[k]?.id ?? 0;
-  const to = rows[k + 1]?.id ?? Number.POSITIVE_INFINITY;
-  return markers.filter((m) => m.after >= from && m.after < to);
+// The markers by the row they follow (the last one starting at or before their log index), in the
+// order they came; `above` are those over the first row. One pass, with a streamed token each.
+const placeMarkers = (markers: readonly StatusMarker[], rows: readonly Row[]) => {
+  const above: StatusMarker[] = [];
+  const after = new Map<number, StatusMarker[]>();
+  for (const m of markers) {
+    const k = rowIndexFor(rows, m.after);
+    if (k === -1) above.push(m);
+    else after.set(k, [...(after.get(k) ?? []), m]);
+  }
+  return { above, after };
 };
 
 export type ChatProps = {
@@ -81,7 +87,9 @@ export function Chat({ link, session, state, devices, target, onTargetShown }: C
   // the entries change when one is logged, the draft with every streamed piece
   const { base, draft, items: held } = state.log;
   const items = useMemo(() => visible({ base, items: held }), [base, held]);
-  const rows = useMemo(() => entryRows(withDraft(items, draft)), [items, draft]);
+  const settled = useMemo(() => entryRows(items), [items]);
+  const rows = useMemo(() => chatRows(items, settled, draft), [items, settled, draft]);
+  const placed = placeMarkers(state.markers, rows);
   const draftKey = draft ? `e${draft.i}` : null;
   const first = rows[0]?.id ?? 0;
   const busy = state.state !== null && state.state.phase !== "idle";
@@ -143,23 +151,19 @@ export function Chat({ link, session, state, devices, target, onTargetShown }: C
                 </button>
               )}
             </div>
-            {state.markers
-              .filter((m) => m.after < (rows[0]?.id ?? Number.POSITIVE_INFINITY))
-              .map((m) => (
-                <StatusRow key={`k${m.key}`} marker={m} />
-              ))}
+            {placed.above.map((m) => (
+              <StatusRow key={`k${m.key}`} marker={m} />
+            ))}
             {rows.map((row, k) => (
               <Fragment key={row.key}>
                 <MessageScrollerItem data-log-index={row.id} messageId={row.key} scrollAnchor={row.kind === "user"}>
-                  <RowBoundary text={row.kind === "tool" ? `${row.name} ${row.args}\n${row.output ?? ""}` : row.text}>
-                    <ChatRow
-                      row={row}
-                      streaming={row.key === draftKey}
-                      toolState={row.kind === "tool" && row.output !== null ? "done" : busy && row.key === lastTool ? "running" : "ended"}
-                    />
-                  </RowBoundary>
+                  <ChatRow
+                    row={row}
+                    streaming={row.key === draftKey}
+                    toolState={row.kind === "tool" && row.output !== null ? "done" : busy && row.key === lastTool ? "running" : "ended"}
+                  />
                 </MessageScrollerItem>
-                {markersAfter(state.markers, rows, k).map((m) => (
+                {placed.after.get(k)?.map((m) => (
                   <StatusRow key={`k${m.key}`} marker={m} />
                 ))}
               </Fragment>
@@ -184,12 +188,19 @@ export function Chat({ link, session, state, devices, target, onTargetShown }: C
               </QueueSectionTrigger>
               <QueueSectionContent>
                 <QueueList>
-                  {waiting.map((text, k) => (
+                  {waiting.map(({ error, text }, k) => (
                     // the same text can wait twice; the position tells them apart
                     // oxlint-disable-next-line react/no-array-index-key
                     <QueueItem key={`${k}:${text}`}>
                       <QueueItemIndicator />
-                      <QueueItemContent>{text}</QueueItemContent>
+                      <div className="min-w-0">
+                        <QueueItemContent>{text}</QueueItemContent>
+                        {error !== null && (
+                          <p className="text-xs text-destructive" data-testid="queue-error" role="alert">
+                            not logged: {error}
+                          </p>
+                        )}
+                      </div>
                     </QueueItem>
                   ))}
                 </QueueList>

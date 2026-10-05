@@ -3,7 +3,7 @@
 // keyed by the log index it starts at, so a row keeps its key (and a tool row its open state) from
 // the first streamed event to the snapshot that confirms it.
 import { splitTool } from "@wire";
-import type { Item } from "./log.ts";
+import { type Draft, draftItem, type Item, withDraft } from "./log.ts";
 
 export type Row =
   | { readonly kind: "user" | "note" | "talk"; readonly key: string; readonly id: number; readonly text: string }
@@ -41,6 +41,26 @@ export function entryRows(entries: readonly Pick<Item, "i" | "kind" | "text">[])
     }
   }
   return out;
+}
+
+// The rows with the draft streaming after them. `base` is entryRows(items), which a streamed token
+// doesn't change: the draft is one row more, unless it rewrites an entry already held.
+export function chatRows(items: readonly Item[], base: readonly Row[], draft: Draft | null): readonly Row[] {
+  if (!draft) return base;
+  if (draft.i > (items.at(-1)?.i ?? -1)) return [...base, ...entryRows([draftItem(draft)])];
+  return entryRows(withDraft(items, draft));
+}
+
+// the index in `rows` of the last row starting at or before log index i; -1 when i is above all
+export function rowIndexFor(rows: readonly Row[], i: number): number {
+  let low = 0;
+  let high = rows.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if ((rows[mid]?.id ?? 0) <= i) low = mid + 1;
+    else high = mid;
+  }
+  return low - 1;
 }
 
 // the row to scroll to for log index i: the last one starting at or before it

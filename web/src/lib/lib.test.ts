@@ -2,12 +2,12 @@
 import { EventType } from "@ag-ui/core";
 import type { Kind, UsageRecord } from "@wire";
 import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { type Entry, fakeServer, IDLE, parseSent, said, snapshot, state } from "../test/fixture";
+import { ack, type Entry, fakeServer, IDLE, parseSent, said, snapshot, state } from "../test/fixture";
 import { openLink } from "./connection";
-import { applyEvent, emptyLog, hole, type Log, visible, withDraft } from "./log";
+import { applyEvent, applyPage, emptyLog, hole, type Log, MAX_HELD, tip, visible, withDraft } from "./log";
 import type { Inbound } from "./protocol";
-import { entryRows, rowFor } from "./rows";
-import { makeSession, queued } from "./session";
+import { chatRows, entryRows, rowFor, rowIndexFor } from "./rows";
+import { makeSession, queued, type Session } from "./session";
 import { buckets, periodOf, totals } from "./stats";
 
 const tick = async (ms = 5) =>
@@ -101,7 +101,7 @@ describe("link", () => {
     await tick();
     expect(link.status()).toBe("open");
     server.drop();
-    link.send("while down", "macbook");
+    link.send("while down", "macbook", "id-1");
     expect(link.abort()).toBe(false); // kept, it would cancel whatever turn runs after the reconnect
     expect(server.sent).toHaveLength(0);
     await tick();
@@ -109,7 +109,7 @@ describe("link", () => {
     expect(statuses).toEqual(["open", "closed", "connecting", "open"]);
     expect(server.sent).toHaveLength(1);
     const frame = parseSent(server.sent[0] ?? "{}");
-    expect(frame.messages?.at(-1)).toMatchObject({ content: "while down", role: "user" });
+    expect(frame.messages?.at(-1)).toMatchObject({ content: "while down", id: "id-1", role: "user" });
     expect(frame.forwardedProps?.device).toBe("macbook");
     expect(link.abort()).toBe(true);
     expect(server.sent[1]).toBe('{"type":"abort"}');
@@ -166,10 +166,46 @@ describe("log", () => {
     log = play(log, end(3), { message: "cancelled", type: EventType.RUN_ERROR }, snapshot([...LOG, { kind: "user", text: "cancel me" }]));
     log = play(log, ...said(3, "user", "AFTER CANCEL"), run(3));
     expect(rowsOf(log).slice(2)).toEqual(["e2 user cancel me", "e3 user AFTER CANCEL"]);
-    // an older server ended neither the reply nor the run: the reply was never logged either
-    let old = play(emptyLog, snapshot(LOG), ...said(2, "user", "cancel me"), run(2), start(3), text(3, "Streamed "));
-    old = play(old, ...said(3, "user", "AFTER CANCEL"));
-    expect(rowsOf(old).slice(2)).toEqual(["e2 user cancel me", "e3 user AFTER CANCEL"]);
+  });
+
+  test("the log keeps its newest index as entries arrive, and only a recent window of them", () => {
+    let log = play(emptyLog, snapshot(LOG), ...said(2, "user", "go"), start(3), text(3, "draft"));
+    expect([log.newest, tip(log)]).toEqual([2, 3]); // the draft is not an entry yet
+    log = play(log, end(3));
+    expect([log.newest, tip(log)]).toEqual([3, 3]);
+    log = applyPage(log, [entry(0, "user", "u0")]);
+    expect(log.newest).toBe(3);
+    // a snapshot after a deep scroll up keeps the newest MAX_HELD
+    const many = Array.from({ length: MAX_HELD + 300 }, (_, i) => ({ i, kind: "user" as const, live: false, text: `m${i}` }));
+    const deep: Log = { base: 0, draft: null, items: new Map(many.map((m) => [m.i, m])), newest: many.length - 1 };
+    const next = play(deep, snapshot([{ kind: "user", text: "tail" }], many.length));
+    expect(next.items.size).toBe(MAX_HELD);
+    expect(next.items.has(many.length)).toBe(true);
+    expect(visible(next).at(0)?.i).toBe(many.length + 1 - MAX_HELD);
+    expect(hole(next)).toBeNull();
+  });
+
+  test("the draft is one row after the settled ones, which keep their objects; one that rewrites an entry replaces it", () => {
+    const tools: Entry[] = [...LOG, { kind: "tool", text: "Bash {}" }, { kind: "echo", text: "out" }, { kind: "talk", text: "done" }];
+    const log = play(emptyLog, snapshot(tools), start(5), text(5, "a"));
+    const items = visible(log);
+    const settled = entryRows(items);
+    const live = chatRows(items, settled, log.draft);
+    expect(live.slice(0, -1).every((r, k) => r === settled[k])).toBe(true);
+    expect(live.map((r) => r.id)).toEqual([0, 1, 2, 4, 5]); // the echo at 3 is the tool row's
+    const same = play(log, text(5, "b"));
+    expect(chatRows(items, settled, same.draft).at(-1)).toMatchObject({ id: 5, text: "ab" });
+    // a draft at an index already held (a late joiner's seed) replaces that entry's row
+    const rewrite = chatRows(items, settled, { i: 4, kind: "talk", text: "again" });
+    expect(rewrite.map((r) => r.id)).toEqual([0, 1, 2, 4]);
+    expect(rewrite.at(-1)).toMatchObject({ text: "again" });
+    expect([-1, 0, 1, 2, 3, 4, 9].map((i) => rowIndexFor(settled, i))).toEqual([-1, 0, 1, 2, 2, 3, 3]);
+  });
+
+  test("an older page overlapping the window replaces what it covers, without duplicates", () => {
+    let log = play(emptyLog, snapshot([{ kind: "user", text: "m100" }, { kind: "user", text: "m101" }, { kind: "user", text: "m102" }], 100));
+    log = applyPage(log, [98, 99, 100, 101].map((i) => entry(i, "user", `m${i}`)));
+    expect(rowsOf(log)).toEqual(["e98 user m98", "e99 user m99", "e100 user m100", "e101 user m101", "e102 user m102"]);
   });
 
   test("a page that joins mid-reply streams the rest; a snapshot puts the logged text in its place", () => {
@@ -190,15 +226,70 @@ describe("log", () => {
   });
 });
 
+const waiting = (session: { readonly get: () => Session }) => queued(session.get()).map((q) => (q.error === null ? q.text : `${q.text} (${q.error})`));
+const idOf = (server: { readonly sent: readonly string[] }, k: number) => parseSent(server.sent[k] ?? "{}").messages?.at(-1)?.id ?? "";
+
 describe("session", () => {
-  test("a message sent here waits in the queue until the log has it, also mid-run", async () => {
+  test("a message sent here waits in the queue until the server's ack for its id, also mid-run", async () => {
     const { server, session } = await setup();
-    session.send("old", null); // the same text as an entry already logged: still pending
-    expect(queued(session.get())).toEqual(["old"]);
+    session.send("old", null); // the same text as an entry already logged: still pending, by id
+    expect(waiting(session)).toEqual(["old"]);
     server.play(state({ phase: "running", queued: ["old"] }));
-    expect(queued(session.get())).toEqual(["old"]); // the server's copy and ours are one message
-    server.play(...said(1, "user", "old"), state({ queued: [] }));
-    expect(queued(session.get())).toEqual([]);
+    expect(waiting(session)).toEqual(["old"]); // the server's copy and ours are one message
+    server.play(ack("someone else's", 1)); // another client's message: not ours
+    expect(waiting(session)).toEqual(["old"]);
+    server.play(ack(idOf(server, 0), 1), ...said(1, "user", "old"), state({ queued: [] }));
+    expect(waiting(session)).toEqual([]);
+  });
+
+  test("two messages with the same text are told apart by their ids", async () => {
+    const { server, session } = await setup();
+    session.send("again", null);
+    session.send("again", null);
+    server.play(ack(idOf(server, 1), 1), ...said(1, "user", "again"));
+    expect(session.get().pending.map((p) => p.id)).toEqual([idOf(server, 0)]);
+    expect(waiting(session)).toEqual(["again"]);
+  });
+
+  test("a message the log refused shows as not logged with the error, until the log holds it", async () => {
+    const { server, session } = await setup();
+    session.send("lost?", null);
+    server.play(ack(idOf(server, 0), null, "disk full"));
+    expect(waiting(session)).toEqual(["lost? (disk full)"]);
+    // it stayed queued there: the next message's run logs it, with no ack of its own
+    server.play(...said(1, "user", "lost?"));
+    expect(waiting(session)).toEqual([]);
+  });
+
+  test("an ack lost to a dropped connection is made up from the snapshot after it; one for the new connection is not", async () => {
+    const log = { n: 1 };
+    const server = fakeServer(() => [snapshot([{ kind: "user", text: "old" }, ...Array.from({ length: log.n - 1 }, (): Entry => ({ kind: "user", text: "lost ack" }))]), { snapshot: { ...IDLE, messages: log.n }, type: EventType.STATE_SNAPSHOT }]);
+    const link = openLink("ws://x/ws", { retryMs: 1, socket: server.socket });
+    const session = makeSession(link);
+    await tick();
+    session.send("lost ack", null);
+    session.send("not yet", null);
+    log.n = 2; // "lost ack" was logged while the page was away; its ack went to the old socket
+    server.drop();
+    await tick(20);
+    expect(waiting(session)).toEqual(["not yet"]);
+    // sent on the new connection, its text in the log is not enough: its own ack decides
+    session.send("lost ack", null);
+    server.play(snapshot([{ kind: "user", text: "old" }, { kind: "user", text: "lost ack" }]));
+    expect(waiting(session)).toEqual(["not yet", "lost ack"]);
+  });
+
+  test("a status marker goes after the last entry the run's snapshot holds, not after a cut-off reply's index", async () => {
+    const { server, session } = await setup();
+    server.play(...said(1, "user", "cancel me"), run(1), start(2), text(2, "Streamed "));
+    server.play(end(2), { name: "info", type: EventType.CUSTOM, value: "cancelled" }, { message: "cancelled", type: EventType.RUN_ERROR });
+    expect(session.get().markers.map((m) => m.after)).toEqual([2, 2]);
+    server.play(snapshot([{ kind: "user", text: "old" }, { kind: "user", text: "cancel me" }]));
+    expect(session.get().markers.map((m) => m.after)).toEqual([1, 1]);
+    server.play(...said(2, "user", "AFTER CANCEL"));
+    const rows = entryRows(visible(session.get().log));
+    expect(rows.map((r) => r.id)).toEqual([0, 1, 2]);
+    expect(session.get().markers.every((m) => rowIndexFor(rows, m.after) === 1)).toBe(true); // before the row at 2
   });
 
   test("info and run errors become markers after the newest entry; thinking ends with text", async () => {

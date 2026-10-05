@@ -1,13 +1,13 @@
 // usage.jsonl summed up for the Stats screen (SPEC "Web UI", Stats; E11): calls, tokens and cache
 // hit rate per local day or week, split by role or engine; cold versus warm turns; failovers.
 // Pure, so the screen only draws.
-import type { UsageRecord } from "@wire";
+import { Engine, Role, type UsageRecord } from "@wire";
 
 export type Period = "day" | "week";
 export type Split = "role" | "engine";
 
-export const ROLES = ["turn", "prime", "compact", "subagent"] as const;
-export const ENGINES = ["claude-code", "openai-plan", "api-key"] as const;
+export const ROLES = Role.literals;
+export const ENGINES = Engine.literals;
 
 export type Bucket = {
   readonly period: string; // YYYY-MM-DD: the day, or the Monday that starts the week

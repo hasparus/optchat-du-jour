@@ -8,7 +8,7 @@ import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Message, MessageContent, MessageHeader } from "@/components/ui/message";
 import type { Row } from "@/lib/rows";
 import { CodeIcon, TextIcon } from "lucide-react";
-import { Component, type ReactNode, useState } from "react";
+import { Component, memo, type ReactNode, useState } from "react";
 
 const oneLine = (s: string, max = 80) => {
   const flat = s.replaceAll(/\s+/g, " ").trim();
@@ -46,7 +46,7 @@ function Reply({ text, streaming }: { text: string; streaming: boolean }) {
 }
 
 // a row that fails to render shows its text as logged, and the rest of the chat stays up
-export class RowBoundary extends Component<{ readonly text: string; readonly children: ReactNode }, { readonly failed: boolean }> {
+class RowBoundary extends Component<{ readonly text: string; readonly children: ReactNode }, { readonly failed: boolean }> {
   override state = { failed: false };
   static getDerivedStateFromError() {
     return { failed: true };
@@ -56,7 +56,17 @@ export class RowBoundary extends Component<{ readonly text: string; readonly chi
   }
 }
 
-export function ChatRow({ row, streaming, toolState }: { row: Row; streaming: boolean; toolState: ToolState }) {
+// memo: a streamed token changes one row, and the rows above it (their objects are kept, rows.ts
+// chatRows) are not drawn again
+export const ChatRow = memo(function ChatRow({ row, streaming, toolState }: { row: Row; streaming: boolean; toolState: ToolState }) {
+  return (
+    <RowBoundary text={row.kind === "tool" ? `${row.name} ${row.args}\n${row.output ?? ""}` : row.text}>
+      <RowView row={row} streaming={streaming} toolState={toolState} />
+    </RowBoundary>
+  );
+});
+
+function RowView({ row, streaming, toolState }: { row: Row; streaming: boolean; toolState: ToolState }) {
   switch (row.kind) {
     case "user":
     case "note":

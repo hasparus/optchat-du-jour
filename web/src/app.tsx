@@ -9,16 +9,44 @@ import type { Link } from "@/lib/connection";
 import type { SessionStore } from "@/lib/session";
 import { useApi } from "@/lib/use-api";
 import { MoonIcon, SunIcon } from "lucide-react";
-import { lazy, Suspense, useCallback, useState, useSyncExternalStore } from "react";
+import { Component, lazy, type ReactNode, Suspense, useCallback, useState, useSyncExternalStore } from "react";
 import { Chat } from "./chat/chat";
 import { Devices } from "./devices/devices";
 import { Memory } from "./memory/memory";
 
-// recharts is most of a chart's weight; the chat shouldn't wait for it
+// recharts is most of a chart's weight; the chat shouldn't wait for it. Its chunk can fail to load
+// (offline before the first visit; a page left open across a new build, whose old chunk is gone):
+// one more try, then the boundary below says so, and the rest of the app stays up.
+const loadStats = async () => import("./stats/stats").catch(async () => import("./stats/stats"));
 const Stats = lazy(async () => {
-  const module = await import("./stats/stats");
+  const module = await loadStats();
   return { default: module.Stats };
 });
+
+// a screen that fails to load or draw says so and offers a reload; the other screens are not taken with it
+class ScreenBoundary extends Component<{ readonly children: ReactNode }, { readonly failed: boolean }> {
+  override state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  override render(): ReactNode {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div className="space-y-2 p-4 text-sm" role="alert">
+        <p>Couldn't load this screen.</p>
+        <Button
+          onClick={() => {
+            location.reload();
+          }}
+          size="sm"
+          variant="outline"
+        >
+          Reload
+        </Button>
+      </div>
+    );
+  }
+}
 
 type Tab = "chat" | "memory" | "stats" | "devices";
 const TABS: readonly Tab[] = ["chat", "memory", "stats", "devices"];
@@ -95,9 +123,11 @@ export function App({ link, session }: { link: Link; session: SessionStore }) {
           />
         </TabsContent>
         <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="stats">
-          <Suspense fallback={<p className="p-4 text-sm text-muted-foreground">loading…</p>}>
-            <Stats />
-          </Suspense>
+          <ScreenBoundary>
+            <Suspense fallback={<p className="p-4 text-sm text-muted-foreground">loading…</p>}>
+              <Stats />
+            </Suspense>
+          </ScreenBoundary>
         </TabsContent>
         <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="devices">
           <Devices />

@@ -8,7 +8,7 @@ import { EventType } from "@ag-ui/core";
 import { Option, Schema } from "effect";
 import { api } from "./api.ts";
 import type { Link, LinkStatus } from "./connection.ts";
-import { applyEvent, applyPage, dropBelow, emptyLog, hole, type Log, lowest } from "./log.ts";
+import { applyEvent, applyPage, dropBelow, emptyLog, hole, type Log, lowest, tip } from "./log.ts";
 import type { Inbound, Patch } from "./protocol.ts";
 
 export type Marker = {
@@ -18,8 +18,17 @@ export type Marker = {
   readonly tone: "info" | "error";
 };
 
-// sent from here; `from` is the log's length then, so its entry has an index at least that
-export type Pending = { readonly key: number; readonly text: string; readonly from: number };
+// Sent from here and not in the log yet. The server's ack (CUSTOM "ack", matched on `id`, the id the
+// message went out with) says it is logged, and then it is no longer pending, or that it could not
+// be: `error`. `from` is the log's length then, so its entry has an index at least that, and `conn`
+// the connection it went out on: an ack told to an earlier one is lost, see `logged` below.
+export type Pending = {
+  readonly id: string;
+  readonly text: string;
+  readonly from: number;
+  readonly conn: number;
+  readonly error: string | null;
+};
 
 export type Session = {
   readonly status: LinkStatus;
@@ -31,19 +40,25 @@ export type Session = {
 };
 
 const MAX_MARKERS = 100;
-export const PAGE = 100; // older entries per page
+const PAGE = 100; // older entries per page
 const MAX_FILL = 500; // a wider hole under the window is dropped, not fetched
 
-export const initial: Session = { log: emptyLog, markers: [], pending: [], state: null, status: "connecting", thinking: false };
+const initial: Session = { log: emptyLog, markers: [], pending: [], state: null, status: "connecting", thinking: false };
 
-// what waits for the model: the server's untaken mid-run messages, then ours it hasn't logged
-export function queued(s: Session): string[] {
-  const out = [...(s.state?.queued ?? [])];
-  const left = [...out];
+export type Queued = { readonly text: string; readonly error: string | null };
+
+// What waits for the model: the server's untaken mid-run messages, then ours it hasn't logged. A
+// mid-run message of ours is in both lists until its ack: the server's copy stands for it.
+export function queued(s: Session): Queued[] {
+  const out: Queued[] = (s.state?.queued ?? []).map((text) => ({ error: null, text }));
+  const left = [...(s.state?.queued ?? [])];
   for (const p of s.pending) {
     const at = left.indexOf(p.text);
-    if (at === -1) out.push(p.text);
-    else left.splice(at, 1);
+    if (at === -1) out.push({ error: p.error, text: p.text });
+    else {
+      left.splice(at, 1);
+      if (p.error !== null) out[at] = { error: p.error, text: p.text };
+    }
   }
   return out;
 }
@@ -75,7 +90,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
   const messages = options.messages ?? api.messages;
   let s: Session = { ...initial, status: link.status() };
   let raw: Record<string, Schema.Json> = {};
-  let lastIndex = -1; // the newest log entry seen
+  let conns = s.status === "open" ? 1 : 0; // the connections opened so far
   let keys = 0;
   let filling = false;
   const subscribers = new Set<() => void>();
@@ -85,24 +100,30 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
     for (const f of subscribers) f();
   };
   const mark = (text: string, tone: Marker["tone"]) => {
-    set({ markers: [...s.markers, { after: lastIndex, key: keys++, text, tone }].slice(-MAX_MARKERS) });
+    set({ markers: [...s.markers, { after: tip(s.log), key: keys++, text, tone }].slice(-MAX_MARKERS) });
   };
   const applyState = (next: Record<string, Schema.Json>) => {
     raw = next;
     const state = parseState(raw);
     if (Option.isSome(state)) set({ state: state.value });
   };
-  // a user entry was logged: the oldest pending message it can be is no longer pending
+  // The server's word on one of our messages: it is logged, and the user entry follows at once, or
+  // it could not be (it stays queued there, and is logged with the next message, unannounced).
+  const acked = (id: string, error: string | null, logged: boolean) => {
+    const at = s.pending.findIndex((p) => p.id === id);
+    const p = s.pending[at];
+    if (p === undefined) return; // another client's message
+    set({ pending: logged ? s.pending.toSpliced(at, 1) : s.pending.toSpliced(at, 1, { ...p, error: error ?? "not logged" }) });
+  };
+  // A user entry was logged without an ack for us: one a failed ack told of earlier, or one sent on
+  // a connection that has dropped since (its ack, told to nobody, is lost). Only these are matched
+  // by their text, on the entry's index, as the oldest of them it can be.
   const logged = (i: number, text: string) => {
-    const at = s.pending.findIndex((p) => p.text === text && i >= p.from);
+    const at = s.pending.findIndex((p) => (p.error !== null || p.conn < conns) && p.text === text && i >= p.from);
     if (at !== -1) set({ pending: s.pending.toSpliced(at, 1) });
   };
   const setLog = (log: Log) => {
-    if (log === s.log) return;
-    let newest = log.draft?.i ?? -1;
-    for (const i of log.items.keys()) newest = Math.max(newest, i);
-    lastIndex = newest;
-    set({ log });
+    if (log !== s.log) set({ log });
   };
 
   // older entries a hole cuts off from the window (it moved up while this page slept): fetch the
@@ -136,11 +157,15 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
     const before = s.log;
     setLog(applyEvent(s.log, e));
     switch (e.type) {
-      case EventType.MESSAGES_SNAPSHOT:
-        for (const item of s.log.items.values()) if (item.kind === "user" && item.i >= s.log.base) logged(item.i, item.text);
-        set({ thinking: false });
+      case EventType.MESSAGES_SNAPSHOT: {
+        // the snapshot is the log: a marker placed after what it doesn't hold (a reply cut off by a
+        // cancel, whose index goes to the next entry) goes after its last entry instead
+        const { newest } = s.log;
+        if (s.pending.length > 0) for (const item of s.log.items.values()) if (item.kind === "user" && item.i >= s.log.base) logged(item.i, item.text);
+        set({ markers: s.markers.some((m) => m.after > newest) ? s.markers.map((m) => (m.after > newest ? { ...m, after: newest } : m)) : s.markers, thinking: false });
         if (hole(s.log)) void fill();
         return;
+      }
       case EventType.STATE_SNAPSHOT:
         applyState({ ...e.snapshot });
         return;
@@ -167,6 +192,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
       case EventType.CUSTOM:
         if (e.name === "info") mark(e.value, "info");
         else if (e.name === "thinking") set({ thinking: true });
+        else if (e.name === "ack") acked(e.value.clientId, e.value.error, e.value.messageId !== null);
         return;
       case EventType.RUN_STARTED:
       case EventType.TEXT_MESSAGE_START:
@@ -179,6 +205,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
 
   const unlisten = link.listen(event);
   const unstatus = link.onStatus((status) => {
+    if (status === "open") conns++;
     set(status === "open" ? { status } : { status, thinking: false });
   });
 
@@ -190,10 +217,13 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
         subscribers.delete(f);
       };
     },
-    // a message from the composer: shown as queued until the log has it
+    // a message from the composer: shown as queued until its ack. Sent while the link is down, it
+    // goes out on the next connection.
     send: (text: string, device: string | null) => {
-      set({ pending: [...s.pending, { from: s.state?.messages ?? 0, key: keys++, text }] });
-      link.send(text, device);
+      const id = crypto.randomUUID();
+      const conn = s.status === "open" ? conns : conns + 1;
+      set({ pending: [...s.pending, { conn, error: null, from: s.state?.messages ?? 0, id, text }] });
+      link.send(text, device, id);
     },
     // one older page under what is shown; true while there may be more
     loadOlder: async () => {

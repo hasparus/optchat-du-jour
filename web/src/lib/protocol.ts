@@ -62,19 +62,25 @@ export const Inbound = Schema.Union([
   Schema.Struct({ type: Schema.Literal(EventType.CUSTOM), name: Schema.Literal("info"), value: Schema.String }),
   Schema.Struct({ type: Schema.Literal(EventType.CUSTOM), name: Schema.Literal("thinking"), value: Schema.Struct({ tokens: Schema.Number }) }),
   Schema.Struct({ type: Schema.Literal(EventType.CUSTOM), name: Schema.Literal("usage"), value: Schema.Json }),
+  // what became of a message a client sent: logged (`messageId`, its log index) or not (`error`)
+  Schema.Struct({
+    type: Schema.Literal(EventType.CUSTOM),
+    name: Schema.Literal("ack"),
+    value: Schema.Struct({ clientId: Schema.String, messageId: Schema.NullOr(Schema.String), error: Schema.NullOr(Schema.String) }),
+  }),
 ]);
 export type Inbound = typeof Inbound.Type;
 
 const decodeFrame = Schema.decodeUnknownOption(Schema.fromJsonString(Inbound));
 export const parseFrame = (frame: string): Option.Option<Inbound> => decodeFrame(frame);
 
-// What a client sends: AG-UI's RunAgentInput, whose newest user message is the one to answer, and
-// an abort (server/app.ts Inbound)
-export const runInput = (text: string, device: string | null) =>
+// What a client sends: AG-UI's RunAgentInput, whose user message (with its id, which the server
+// acks) is the one to answer, and an abort (server/app.ts Inbound)
+export const runInput = (text: string, device: string | null, id: string) =>
   JSON.stringify({
     context: [],
     forwardedProps: device ? { device } : {},
-    messages: [{ content: text, id: crypto.randomUUID(), role: "user" }],
+    messages: [{ content: text, id, role: "user" }],
     runId: crypto.randomUUID(),
     state: {},
     threadId: "web",

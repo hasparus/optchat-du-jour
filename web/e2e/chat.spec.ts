@@ -64,6 +64,15 @@ test("cancel stops the turn; the next message gets its own bubble", async ({ pag
   await expect(page.getByText(REPLY)).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("status")).toBeHidden();
   await expectShowsLog(page, server);
+  // the "cancelled" markers stay where the cancel happened: after the cancelled turn's rows, above
+  // the next message, which took the index the cut-off reply had
+  const order = await page.locator("[data-log-index], [data-testid^=marker]").evaluateAll((els) =>
+    els.map((el) => (el instanceof HTMLElement && el.dataset.testid?.startsWith("marker") ? "marker" : el.textContent)),
+  );
+  const after = order.indexOf("AFTER CANCEL");
+  expect(order.filter((o) => o === "marker").length).toBeGreaterThan(0);
+  expect(order.lastIndexOf("marker")).toBeLessThan(after);
+  expect(order.indexOf("marker")).toBeGreaterThan(order.indexOf("this one gets cancelled"));
 });
 
 test.describe("a long log", () => {
@@ -128,4 +137,36 @@ test("a reload shows the log again from the snapshot", async ({ page, server }) 
   await expectShowsLog(page, server);
   // nothing scrolls sideways on a 360 px screen
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
+});
+
+test("a Stats screen that fails to load says so, and the chat stays up", async ({ browser, server }) => {
+  // no service worker: it would serve the chunk from its cache before the page's network sees it
+  const context = await browser.newContext({ baseURL: server.url, serviceWorkers: "block", viewport: { height: 740, width: 360 } });
+  const page = await context.newPage();
+  await open(page);
+  await page.route(/lazy\/stats-/, async (route) => route.abort());
+  await page.getByRole("tab", { name: "Stats" }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "Couldn't load this screen" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reload" })).toBeVisible();
+  // the rest of the app works
+  await page.getByRole("tab", { name: "Chat" }).click();
+  await send(page, "still usable");
+  await expect(page.getByTestId("user-message").filter({ hasText: "still usable" })).toBeVisible();
+  await page.getByRole("tab", { name: "Devices" }).click();
+  await expect(page.getByTestId("devices")).toContainText("macbook");
+  // back online, a reload gets the screen
+  await page.unroute(/lazy\/stats-/);
+  await page.reload();
+  await page.getByRole("tab", { name: "Stats" }).click();
+  await expect(page.getByTestId("stats")).toBeVisible();
+  await context.close();
+});
+
+test("the server answers a missing asset with 404, and any other path with the app", async ({ server }) => {
+  const gone = await fetch(`${server.url}/assets/lazy/stats-gone.js`);
+  const css = await fetch(`${server.url}/assets/gone.css`);
+  expect([gone.status, css.status]).toEqual([404, 404]);
+  const app = await fetch(`${server.url}/some/screen`);
+  expect(app.status).toBe(200);
+  expect(await app.text()).toContain('<div id="root">');
 });

@@ -18,7 +18,7 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: "autoUpdate",
-      includeAssets: ["icon.svg", "apple-touch-icon.png"],
+      includeManifestIcons: false, // the glob below already precaches the icons, once
       manifest: {
         name: "optchat",
         short_name: "optchat",
@@ -38,7 +38,15 @@ export default defineConfig({
         // grammars and the stats screen load on demand and are cached as they are used
         globPatterns: ["index.html", "assets/*.{js,css}", "*.{png,svg}"],
         navigateFallbackDenylist: [/^\/(api|ws|mcp)\b/],
-        runtimeCaching: [{ urlPattern: /\/assets\/.*\.js$/, handler: "CacheFirst", options: { cacheName: "chunks" } }],
+        runtimeCaching: [
+          {
+            urlPattern: /\/assets\/.*\.js$/,
+            handler: "CacheFirst",
+            // a chunk is cached only if it came back whole, and the cache keeps the newest ones (a
+            // new build's hashed names would pile up otherwise)
+            options: { cacheName: "chunks", cacheableResponse: { statuses: [200] }, expiration: { maxEntries: 60 } },
+          },
+        ],
       },
     }),
   ],

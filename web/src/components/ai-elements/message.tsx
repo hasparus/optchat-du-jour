@@ -40,17 +40,27 @@ const loadCode = async () => {
     loaded = m.code;
     return m.code;
   });
-  return loading;
+  try {
+    return await loading;
+  } catch (error) {
+    loading = null; // offline, or the chunk is gone: the next block tries again
+    throw error;
+  }
 };
 const lazyCode: CodeHighlighterPlugin = {
   getSupportedLanguages: () => loaded?.getSupportedLanguages() ?? [],
   getThemes: () => loaded?.getThemes() ?? ["github-light", "github-dark"],
   highlight: (options, callback) => {
     if (loaded) return loaded.highlight(options, callback);
-    void loadCode().then((plugin) => {
-      const result = plugin.highlight(options, callback);
-      if (result) callback?.(result);
-    });
+    loadCode().then(
+      (plugin) => {
+        const result = plugin.highlight(options, callback);
+        if (result) callback?.(result);
+      },
+      () => {
+        // plain text it stays
+      },
+    );
     return null;
   },
   name: "shiki",

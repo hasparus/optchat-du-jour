@@ -7,7 +7,7 @@ import { App } from "./app";
 import { openLink } from "./lib/connection";
 import type { Inbound } from "./lib/protocol";
 import { makeSession } from "./lib/session";
-import { type Entry, fakeServer, IDLE, parseSent, said, snapshot, state } from "./test/fixture";
+import { ack, type Entry, fakeServer, IDLE, parseSent, said, snapshot, state } from "./test/fixture";
 
 const LOG: Entry[] = [
   { kind: "user", text: "what is in the repo?" },
@@ -64,6 +64,9 @@ const sentTexts = (sent: readonly string[]) =>
     const frame = parseSent(f);
     return frame.messages ? [{ device: frame.forwardedProps?.device, text: frame.messages.at(-1)?.content }] : [];
   });
+// the id the newest message went out with, which the server's ack names
+const lastId = (sent: readonly string[]) =>
+  sent.flatMap((f) => parseSent(f).messages?.at(-1)?.id ?? []).at(-1) ?? "";
 
 test("the snapshot shows the log: messages, a collapsed tool call, markdown with a raw-text toggle", async () => {
   start();
@@ -110,12 +113,24 @@ test("sending: the message goes out with the picked device and waits in the queu
   const queue = await screen.findByTestId("queue");
   expect(within(queue).getByText("and now?")).toBeTruthy();
 
-  play(state({ phase: "running" }), ...said(4, "user", "and now?"));
+  play(state({ phase: "running" }), ack(lastId(server.sent), 4), ...said(4, "user", "and now?"));
   await waitFor(() => {
     expect(screen.queryByTestId("queue")).toBeNull();
   });
   fireEvent.click(screen.getByRole("button", { name: "Stop" }));
   expect(server.sent.at(-1)).toBe('{"type":"abort"}');
+});
+
+test("a message the log refused stays in the queue, marked not logged with the error", async () => {
+  const { play, server } = start();
+  await screen.findByText("what is in the repo?");
+  const box = screen.getByLabelText("Message");
+  fireEvent.change(box, { target: { value: "will it stick?" } });
+  fireEvent.keyDown(box, { key: "Enter" });
+  play(ack(lastId(server.sent), null, "no space left"));
+  const queue = await screen.findByTestId("queue");
+  expect(within(queue).getByText("will it stick?")).toBeTruthy();
+  expect(within(queue).getByTestId("queue-error").textContent).toBe("not logged: no space left");
 });
 
 test("info and errors show as markers in the chat", async () => {

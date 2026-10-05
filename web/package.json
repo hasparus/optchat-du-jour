@@ -11,7 +11,7 @@
     "e2e": "vite build && playwright test"
   },
   "dependencies": {
-    "@ag-ui/core": "1.0.0",
+    "@ag-ui/core": "1.0.1",
     "@shadcn/react": "0.3.1",
     "@streamdown/code": "2.0.0",
     "class-variance-authority": "0.7.1",

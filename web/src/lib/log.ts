@@ -26,9 +26,16 @@ export type Log = {
   // after it; below it, older pages, shown only as far down as they reach without a hole
   readonly base: number;
   readonly draft: Draft | null;
+  // the highest index among `items` (the draft not counted), kept as entries arrive so a streamed
+  // token never scans them all; -1 when there are none
+  readonly newest: number;
 };
 
-export const emptyLog: Log = { base: 0, draft: null, items: new Map() };
+// Entries held at most, so a long session (and a deep scroll up, then a run's snapshot) doesn't
+// grow without bound. SPEC: only a recent window is loaded; older pages are read again on scroll.
+export const MAX_HELD = 1500;
+
+export const emptyLog: Log = { base: 0, draft: null, items: new Map(), newest: -1 };
 
 // a snapshot message as a log entry (server/agui.ts toMessages, read backwards)
 function fromMessage(m: Message): Item | null {
@@ -50,14 +57,16 @@ function fromMessage(m: Message): Item | null {
 
 // A snapshot is the log's last window: it replaces everything from its first index up, and the
 // draft (a reconnect or the end of a run; what was streaming is in the log now, or never will be).
-// Older pages below it stay, except entries only live events told of: those are read again.
-export function applySnapshot(log: Log, messages: readonly Message[]): Log {
+// Older pages below it stay, except entries only live events told of: those are read again. Of
+// those, only the newest MAX_HELD are kept.
+function applySnapshot(log: Log, messages: readonly Message[]): Log {
   const fresh = messages.flatMap((m) => fromMessage(m) ?? []);
   const base = fresh[0]?.i ?? 0;
   const items = new Map<number, Item>();
   if (fresh.length > 0) for (const [i, item] of log.items) if (i < base && !item.live) items.set(i, item);
   for (const item of fresh) items.set(item.i, item);
-  return { base, draft: null, items };
+  if (items.size > MAX_HELD) for (const i of [...items.keys()].toSorted((a, b) => a - b).slice(0, items.size - MAX_HELD)) items.delete(i);
+  return { base, draft: null, items, newest: fresh.at(-1)?.i ?? -1 };
 }
 
 // A page of /api/messages is a stretch of the log as it is: it replaces what this client held for
@@ -69,17 +78,22 @@ export function applyPage(log: Log, entries: readonly { readonly i: number; read
   const items = new Map<number, Item>();
   for (const [i, item] of log.items) if (i < first || i > last) items.set(i, item);
   for (const e of entries) items.set(e.i, { i: e.i, kind: e.kind, live: false, text: e.text });
-  return { ...log, draft: log.draft && log.draft.i <= last ? null : log.draft, items };
+  return { ...log, draft: log.draft && log.draft.i <= last ? null : log.draft, items, newest: Math.max(log.newest, last) };
 }
 
-const put = (log: Log, item: Item, draft: Draft | null = log.draft): Log => ({ ...log, draft, items: new Map(log.items).set(item.i, item) });
+const put = (log: Log, item: Item, draft: Draft | null = log.draft): Log => ({
+  ...log,
+  draft,
+  items: new Map(log.items).set(item.i, item),
+  newest: Math.max(log.newest, item.i),
+});
 
-const draftItem = (d: Draft): Item =>
+export const draftItem = (d: Draft): Item =>
   d.kind === "tool" ? { i: d.i, kind: "tool", live: true, text: joinTool(d.name, d.args) } : { i: d.i, kind: d.kind, live: true, text: d.text };
 
 // A live event. The server closes a reply's text before anything else is logged and before the run
-// ends, so a draft still open when another message starts, or when the run ends, was never logged
-// (an older server cancelled without closing it): it is dropped, not kept as an entry the log lacks.
+// ends, and follows the end with a snapshot: a reply cut off by a cancel is closed here, as a live
+// entry the log lacks, and that snapshot takes it out again.
 export function applyEvent(log: Log, e: Inbound): Log {
   switch (e.type) {
     case EventType.MESSAGES_SNAPSHOT:
@@ -124,7 +138,6 @@ export function applyEvent(log: Log, e: Inbound): Log {
     }
     case EventType.RUN_FINISHED:
     case EventType.RUN_ERROR:
-      return log.draft ? { ...log, draft: null } : log;
     case EventType.STATE_SNAPSHOT:
     case EventType.STATE_DELTA:
     case EventType.RUN_STARTED:
@@ -166,3 +179,6 @@ export function hole(log: Log): { readonly before: number; readonly limit: numbe
 export function dropBelow(log: Log, index: number): Log {
   return { ...log, items: new Map([...log.items].filter(([i]) => i >= index)) };
 }
+
+// the log index status markers are placed after: the newest entry, or the draft streaming after it
+export const tip = (log: Log): number => Math.max(log.newest, log.draft?.i ?? -1);

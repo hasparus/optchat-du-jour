@@ -68,8 +68,14 @@ export const state = (s: Partial<SessionState>): Inbound => ({
 // a frame the app sent: a RunAgentInput, or the abort
 const Sent = Schema.Struct({
   type: Schema.optional(Schema.String),
-  messages: Schema.optional(Schema.Array(Schema.Struct({ content: Schema.String, role: Schema.String }))),
+  messages: Schema.optional(Schema.Array(Schema.Struct({ content: Schema.String, id: Schema.String, role: Schema.String }))),
   forwardedProps: Schema.optional(Schema.Struct({ device: Schema.optional(Schema.String) })),
+});
+// the server's word on a message: logged at `at`, or (with an error) not
+export const ack = (clientId: string, at: number | null, error: string | null = null): Inbound => ({
+  name: "ack",
+  type: EventType.CUSTOM,
+  value: { clientId, error, messageId: at === null ? null : String(at) },
 });
 export const parseSent = Schema.decodeUnknownSync(Schema.fromJsonString(Sent));
 
