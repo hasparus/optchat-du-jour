@@ -3,8 +3,8 @@
 // except the server's own (its turns use the local runner), kept alive by launchd
 // (deploy/optchat-device.plist). Which device this is comes from OPTCHAT_DEVICE; its folders and
 // port from that device's entry in optchat.config.ts. It listens on the machine's tailnet IPv4
-// address (`tailscale ip -4`, or OPTCHAT_DEVICE_HOST) and lets in the other configured devices'
-// nodes, asking Tailscale's WhoIs. OPTCHAT_DEVICE_TRUST=loopback lets in local callers only, on
+// address (`tailscale ip -4`, or OPTCHAT_DEVICE_HOST) and lets in the server's device's node only
+// (OPTCHAT_SERVER_DEVICE, else defaultDevice), asking Tailscale's WhoIs. OPTCHAT_DEVICE_TRUST=loopback lets in local callers only, on
 // 127.0.0.1 unless OPTCHAT_DEVICE_HOST says otherwise (development and tests).
 // OPTCHAT_TAILSCALE names the tailscale binary, OPTCHAT_CLAUDE the claude binary.
 import { BunRuntime, BunServices } from "@effect/platform-bun";
