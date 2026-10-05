@@ -31,6 +31,12 @@ export type Server = {
 
 const web = fileURLToPath(new URL("..", import.meta.url));
 
+// A port is picked here, released, and bound a moment later by a server that takes a while to
+// boot, and the other workers' servers bind ports of their own meanwhile (each one's fake plan
+// binds port 0, and its sign-in callback port is picked and released the same way, in
+// e2e/server.ts). So another process can take this port in between, and the server exits with
+// EADDRINUSE: that was the "the e2e server exited with 1" at startup. The port can't be handed
+// over, so a start that finds it taken is retried on a new one (`startServer`).
 const freePort = async () =>
   new Promise<number>((resolve, reject) => {
     const probe = createServer();
@@ -52,9 +58,18 @@ const seed = (home: string, from: number, count: number) => {
   appendFileSync(`${dir}/2026-01-01.jsonl`, lines);
 };
 
-async function waitUp(url: string, child: ChildProcess) {
+// the server ended before it answered, with what it said on stderr
+class Exited extends Error {
+  readonly inUse: boolean;
+  constructor(code: number, said: string) {
+    super(`the e2e server exited with ${code}: ${said.trim() || "(nothing on stderr)"}`);
+    this.inUse = /EADDRINUSE|address already in use|in use/i.test(said);
+  }
+}
+
+async function waitUp(url: string, child: ChildProcess, said: () => string) {
   for (let tries = 0; tries < 300; tries++) {
-    if (child.exitCode !== null) throw new Error(`the e2e server exited with ${child.exitCode}`);
+    if (child.exitCode !== null) throw new Exited(child.exitCode, said());
     try {
       const res = await fetch(`${url}/api/state`);
       if (res.ok) return;
@@ -81,19 +96,41 @@ async function stop(child: ChildProcess) {
 
 async function startServer(seeded: number, spent: boolean): Promise<Server & { readonly stop: () => Promise<void> }> {
   const home = mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
-  const port = await freePort();
-  const url = `http://127.0.0.1:${port}`;
+  let port = 0;
+  let url = "";
   let total = seeded;
   if (seeded > 0) seed(home, 0, seeded);
   const launch = async () => {
     const env: NodeJS.ProcessEnv = { ...process.env, E2E_HOME: home, E2E_PORT: String(port) };
     if (seeded > 0) env.E2E_QUICK_SUMMARIES = "1";
     if (spent) env.E2E_SPENT = "1";
-    const child = spawn("bun", ["e2e/server.ts"], { cwd: web, env, stdio: ["ignore", "ignore", "inherit"] });
-    await waitUp(url, child);
+    const child = spawn("bun", ["e2e/server.ts"], { cwd: web, env, stdio: ["ignore", "ignore", "pipe"] });
+    let said = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      said += chunk.toString();
+      process.stderr.write(chunk);
+    });
+    try {
+      await waitUp(url, child, () => said);
+    } catch (error) {
+      await stop(child);
+      throw error;
+    }
     return child;
   };
-  let child = await launch();
+  // the first start looks for a port that stays free; a restart keeps the one the page knows
+  const first = async () => {
+    for (let attempt = 1; ; attempt++) {
+      port = await freePort();
+      url = `http://127.0.0.1:${port}`;
+      try {
+        return await launch();
+      } catch (error) {
+        if (!(error instanceof Exited && error.inUse) || attempt === 5) throw error;
+      }
+    }
+  };
+  let child = await first();
   return {
     fakeInputs: (role) => {
       const records = readFileSync(`${home}/fake.jsonl`, "utf8")
