@@ -1,11 +1,12 @@
 #!/usr/bin/env bun
-// optchat: one-shot commands that read the data dir without the lock, plus import.
+// The `optchat` command for things that run once and exit: `view` reads the data dir without
+// taking the lock, `import-optmem` fills an empty chat from OptMem's notes.
 import { BunRuntime } from "@effect/platform-bun";
 import { Console, Effect } from "effect";
 import { importOptmem } from "../src/import.ts";
 import { streamDir } from "../src/paths.ts";
 import { loadChat } from "../src/store.ts";
-import { render, stats } from "../src/view.ts";
+import { stats, render } from "../src/view.ts";
 
 const USAGE = "usage: optchat [view | import-optmem [LOG.txt]]   (data dir: $OPTCHAT_DIR or ~/.optchat/streams/mini)";
 const [cmd, arg] = [process.argv[2], process.argv[3]];
@@ -21,15 +22,27 @@ const view = Effect.gen(function* () {
 
 const importNotes = Effect.gen(function* () {
   const mem = yield* importOptmem(dir, arg);
-  yield* Console.log(`imported ${mem.root.length} notes into ${dir}; ${mem.tree.size} free nodes built, ${mem.view.length} view lines`);
+  const facts = [`${mem.root.length} OptMem notes are now messages in ${dir}`, `free nodes: ${mem.tree.size}`, `view: ${mem.view.length} lines`];
+  yield* Console.log(facts.join("; "));
 });
 
-const usage = Effect.gen(function* () {
-  yield* Console.error(USAGE);
-  process.exitCode = cmd === "--help" || cmd === "-h" ? 0 : 2;
-});
+// asking for help is a success; anything else this command doesn't know is a usage error (2)
+const help = (asked: boolean) =>
+  Console.error(USAGE).pipe(
+    Effect.andThen(
+      Effect.sync(() => {
+        if (!asked) process.exitCode = 2;
+      }),
+    ),
+  );
 
-const command = cmd === "view" ? view : cmd === "import-optmem" ? importNotes : usage;
+const commands = new Map<string, Effect.Effect<void, { readonly message: string }>>([
+  ["--help", help(true)],
+  ["-h", help(true)],
+  ["import-optmem", importNotes],
+  ["view", view],
+]);
+const command = commands.get(cmd ?? "") ?? help(false);
 
 BunRuntime.runMain(
   command.pipe(

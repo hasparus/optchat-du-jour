@@ -2,7 +2,7 @@
 // one write and one fsync per line, and a unix-socket lock that keeps a second writer out.
 import { Data, Effect, Option, Schema } from "effect";
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, unlinkSync, writeSync } from "node:fs";
-import { connect, createServer, type Server } from "node:net";
+import { createServer, type Server, connect } from "node:net";
 import { dirname, resolve } from "node:path";
 import { VIEW } from "./config.ts";
 import { type Kind, Msg, Node } from "./records.ts";
@@ -20,23 +20,27 @@ const io = <A>(what: string, f: () => A) =>
 
 // Records carry their keys in the order the reference writes them, so both write the same
 // bytes: {i, kind, text, size, date} and {l, i, text, size}.
-export const newMsg = (i: number, kind: Kind, text: string, date = new Date()): Entry => ({
-  i,
-  kind,
-  text,
-  size: bytes(msgText({ kind, text })),
-  date: date.toISOString(),
-});
-export const newNode = (l: number, i: number, text: string) => ({ l, i, text, size: bytes(text) });
+export function newMsg(i: number, kind: Kind, text: string, at: Date = new Date()): Entry {
+  const size = bytes(msgText({ text, kind }));
+  return { i, kind, text, size, date: at.toISOString() };
+}
+export function newNode(l: number, i: number, text: string) {
+  const size = bytes(text);
+  return { l, i, text, size };
+}
 
-const fsyncPath = (path: string) => {
-  const fd = openSync(path, "r");
+// open a file, hand its descriptor to `body`, and close it whatever happens
+function withFd<A>(path: string, flags: string, body: (fd: number) => A): A {
+  const handle = openSync(path, flags);
   try {
-    fsyncSync(fd);
+    return body(handle);
   } finally {
-    closeSync(fd);
+    closeSync(handle);
   }
-};
+}
+function fsyncPath(path: string) {
+  withFd(path, "r", fsyncSync);
+}
 
 // one line, one write (more only if the OS takes it in parts), then fsync; a new file also
 // gets its directory entry synced
@@ -44,17 +48,15 @@ function appendLine(dir: string, file: string, line: string) {
   const made = mkdirSync(dir, { recursive: true }); // the first directory it had to create
   const target = `${dir}/${file}`, isNew = !existsSync(target);
   const data = Buffer.from(line, "utf8");
-  const fd = openSync(target, "a");
-  try {
-    for (let done = 0; done < data.length; ) {
+  withFd(target, "a", (fd) => {
+    let done = 0;
+    while (done < data.length) {
       const wrote = writeSync(fd, data, done, data.length - done);
       if (wrote <= 0) throw new Error(`${target}: wrote ${done} of ${data.length} bytes`);
       done += wrote;
     }
     fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
+  });
   if (isNew) fsyncPath(dir);
   // directories made just now: their entries too
   if (made === undefined) return;
@@ -62,43 +64,51 @@ function appendLine(dir: string, file: string, line: string) {
   for (let p = resolve(dir); p.length >= top.length; p = dirname(p)) fsyncPath(dirname(p));
 }
 
-export const appendMessage = (dir: string, m: Entry) =>
-  io(`cannot log message ${m.i}`, () => {
-    appendLine(`${dir}/chat/main`, `${dayOf(new Date(m.date))}.jsonl`, `${JSON.stringify(m)}\n`);
+export function appendMessage(dir: string, msg: Entry) {
+  const file = `${dayOf(new Date(msg.date))}.jsonl`;
+  return io(`cannot log message ${msg.i}`, () => {
+    appendLine(`${dir}/chat/main`, file, `${JSON.stringify(msg)}\n`);
   });
+}
 
-export const appendNode = (dir: string, n: Node, now = new Date()) =>
-  io(`cannot save node ${label(n)}`, () => {
-    appendLine(`${dir}/chat/tree`, `${dayOf(now)}.jsonl`, `${JSON.stringify(newNode(n.l, n.i, n.text))}\n`);
+export function appendNode(dir: string, record: Node, now = new Date()) {
+  const line = `${JSON.stringify(newNode(record.l, record.i, record.text))}\n`;
+  return io(`cannot save node ${label(record)}`, () => {
+    appendLine(`${dir}/chat/tree`, `${dayOf(now)}.jsonl`, line);
   });
+}
 
 export type Loaded = { readonly mem: Mem; readonly problems: readonly string[] };
 
-// a day file: YYYY-MM-DD.jsonl (ref §3); anything else in the directory is not ours to read
-const DAY_FILE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
+// a day file is named YYYY-MM-DD.jsonl (ref §3); nothing else in the directory is read
+const DAY_FILE = /^[0-9]{4}(-[0-9]{2}){2}\.jsonl$/;
 
 // The decoded lines of one stream, oldest day first. A line that doesn't decode is listed in
 // `problems` and skipped. An unterminated last line may be a write in progress: a reader leaves
 // it alone, quietly unless it decodes; the lock holder (`repair`) ends it with a newline.
 function readStream<A>(dir: string, stream: string, decode: (line: string) => Option.Option<A>, repair: boolean, problems: string[]) {
-  const path = `${dir}/chat/${stream}`, out: A[] = [];
-  if (!existsSync(path)) return out;
-  for (const file of readdirSync(path).filter((f) => DAY_FILE.test(f)).toSorted()) {
-    const lines = readFileSync(`${path}/${file}`, "utf8").split("\n");
-    const torn = lines.pop() ?? ""; // "" when the file ends with a newline
-    if (torn && repair) appendLine(path, file, "\n");
+  const folder = [dir, "chat", stream].join("/");
+  const records: A[] = [];
+  if (!existsSync(folder)) return records;
+  const days = readdirSync(folder).filter((name) => DAY_FILE.test(name)).toSorted();
+  for (const day of days) {
+    const raw = readFileSync(`${folder}/${day}`, "utf8"), where = `${stream}/${day}`;
+    if (repair && raw !== "" && !raw.endsWith("\n")) appendLine(folder, day, "\n");
+    const lines = raw.split(/\n/);
+    // the last piece is "" after a final newline, else a line whose write may still be going on
     for (const [k, line] of lines.entries()) {
-      if (!line) continue;
-      const rec = decode(line);
-      if (Option.isSome(rec)) out.push(rec.value);
-      else problems.push(`${stream}/${file}:${k + 1}: not a valid record, skipped`);
+      if (line === "") continue;
+      const decoded = decode(line);
+      if (Option.isSome(decoded)) {
+        records.push(decoded.value);
+        continue;
+      }
+      // an unfinished last line that doesn't decode is the writer's business, not a reader's
+      const unfinished = k === lines.length - 1;
+      if (repair || !unfinished) problems.push(`${where} line ${k + 1}: unreadable, ignored`);
     }
-    if (!torn) continue;
-    const rec = decode(torn);
-    if (Option.isSome(rec)) out.push(rec.value);
-    else if (repair) problems.push(`${stream}/${file}:${lines.length + 1}: not a valid record, skipped`);
   }
-  return out;
+  return records;
 }
 
 const decodeMsg = Schema.decodeUnknownOption(Schema.fromJsonString(Msg));
@@ -114,18 +124,18 @@ export const loadChat = (
     const msgs = yield* io(`cannot read ${dir}/chat/main`, () => readStream(dir, "main", decodeMsg, repair, skipped));
     const recs = yield* io(`cannot read ${dir}/chat/tree`, () => readStream(dir, "tree", decodeNode, repair, skipped));
     const mem = newMem(budget);
-    msgs.sort((a, b) => a.i - b.i);
-    for (const [k, m] of msgs.entries()) {
-      if (m.i !== k) {
-        const what = m.i < k ? `message ${m.i} is logged twice` : `message ${k} is missing`;
+    const byId = msgs.toSorted((x, y) => x.i - y.i);
+    for (const [expected, logged] of byId.entries()) {
+      if (logged.i !== expected) {
+        const what = logged.i < expected ? `message ${logged.i} is logged twice` : `message ${expected} is missing`;
         return yield* new StoreError({ message: `${dir}/chat/main: ${what}` });
       }
-      mem.root.push({ ...m, size: bytes(msgText(m)) });
+      mem.root.push({ ...logged, size: bytes(msgText(logged)) });
     }
     for (const n of recs) setNode(mem, n);
     // a reader that wants the records only (an exporter, a check) skips the fold
     if (view) refold(mem);
-    return { mem, problems: skipped };
+    return { problems: skipped, mem };
   });
 
 // Is something answering on the socket? A refused connection (its owner died) or no socket
@@ -153,7 +163,8 @@ const listen = (path: string) =>
       resume(Effect.fail(new StoreError({ message: `cannot take the lock ${path}: ${e.message}` })));
     });
     server.listen(path, () => {
-      server.unref(); // the lock alone never keeps the process alive
+      // holding a lock is no reason for the process to stay up
+      server.unref();
       resume(Effect.succeed(server));
     });
   });
