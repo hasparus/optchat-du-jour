@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // optchat-server for the end-to-end tests: the real server on its own data dir, serving the built
-// web/dist, with test/fake-claude.ts as `claude` (no model, no network). Every turn runs a tool,
+// web/dist, with test/fake-claude.ts as `claude` and an empty secrets store (no model, no key, no network). Every turn runs a tool,
 // then streams its reply slowly enough for a second page to watch it and for a cancel to land.
 // e2e/fixture.ts starts one per test:
 //   E2E_PORT  the port
@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { serverLayer } from "../../server/app.ts";
 import type { Settings } from "../../src/config.ts";
 import { DEFAULT_ENDPOINTS } from "../../src/openai/endpoints.ts";
+import { memorySecrets } from "../../src/secrets.ts";
 
 const root = new URL("../..", import.meta.url).pathname;
 const home = Bun.env.E2E_HOME ?? mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
@@ -50,6 +51,6 @@ BunRuntime.runMain(
   Effect.gen(function* () {
     yield* Effect.logInfo(`e2e optchat-server on http://127.0.0.1:${port}, home ${home}`);
     const summarize: Summarize | undefined = Bun.env.E2E_QUICK_SUMMARIES ? (job) => Effect.succeed(`summary of ${job.l}:${job.i}`) : undefined;
-    return yield* Layer.launch(serverLayer({ device: "mini", home, host: "127.0.0.1", port, settings, summarize, web: `${root}web/dist` }));
+    return yield* Layer.launch(serverLayer({ device: "mini", home, host: "127.0.0.1", port, secrets: memorySecrets(), settings, summarize, web: `${root}web/dist` }));
   }),
 );

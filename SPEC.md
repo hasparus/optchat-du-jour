@@ -33,7 +33,7 @@ Rules:
 - Its deviations from the gist (D1–D10, ref §11) apply unless this spec overrides them. Ours are numbered E1, E2, … and listed under Deviations.
 - The pure kernel is written in Bend 2 with proved laws and compiled to JavaScript (E14): `id+n` addressing, `fit`, refold and the pump's rule-3 order. It never sees text, only sizes as integers.
 - Effect is the runtime for everything with I/O, time or concurrency (E13), and owns all text: rendering, cutting, logging.
-- Tests follow ref §10: few, each a real failure scenario, with a fake `claude` and a fake compactor. No model calls in `bun test`.
+- Tests follow ref §10: few, each a real failure scenario, with a fake `claude` and a fake compactor. No model calls in `bun test`: a preload (`test/preload.ts`) makes `claude` a stub that refuses to run unless a test names a fake, and points the secrets store at an empty file, so a test that forgets a fake fails instead of reaching a real model or key. The web UI's end-to-end server runs the fake `claude` with an empty secrets store too.
 
 **Bend laws (`LAWS.bend`).** The compiler demands a proof of each on every edit:
 
@@ -385,7 +385,7 @@ Nothing listens on a public interface; the tailnet is the only way in (E9).
 - **Processes:** one launchd agent on the Mini (`optchat-server`) and one on the MacBook (`optchat-device`), each with `KeepAlive`, logs in `~/Library/Logs/optchat/`. The Mini's energy settings keep it awake.
 - **Permissions:** the master runs with `bypassPermissions` (ref D9). The device's folder allowlist only sets the working directory; it does not confine `claude`, whose Bash can reach anything that user can. The boundary is who may call the runner: the other configured devices' nodes, and no browser.
 - **Persistence:** the data dir is its own git repo, committed after every turn as in ref §10, and pushed to a private remote (E10). The push is the backup and, in M6, the sync. The session turns idle once the commit is made; the push runs in the background, one at a time, and a failing push is reported once until one goes through again.
-- **Secrets:** the ChatGPT plan token and API keys live in the macOS Keychain (`security`, service `optchat`), never in the repo or the data dir. Off macOS (Linux, dev) they go to `~/.config/optchat/secrets.json`, mode 0600, or `$OPTCHAT_SECRETS`.
+- **Secrets:** the ChatGPT plan token and API keys live in the macOS Keychain (`security`, service `optchat`), never in the repo or the data dir. Off macOS (Linux, dev) they go to `~/.config/optchat/secrets.json`, mode 0600. `$OPTCHAT_SECRETS` names such a file instead, on any machine; the tests point it at an empty one.
 
 ## Usage and cost tracking
 

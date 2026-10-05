@@ -1,0 +1,4 @@
+#!/bin/sh
+# The `claude` every test gets unless it names a fake (test/preload.ts): no test may reach a real model.
+echo "real claude is disabled in tests" >&2
+exit 1
