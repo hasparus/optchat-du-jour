@@ -85,7 +85,7 @@ Module map (ours on the right; unchanged unless noted):
 One server process on the Mac Mini owns memory; everything else is a client or a runner. Memory has a single writer, as the gist and the reference require.
 
 - **Mac Mini, `optchat-server`** (launchd): log, tree, view, compactor pump, turn loop, priming, HTTP + WebSocket API, zoom/date MCP endpoint, and the built web UI as static files.
-- **Every machine, `optchat-device`** (launchd): spawns `claude -p` locally when the server asks, streams its events back. The Mini runs one too.
+- **Every other machine, `optchat-device`** (launchd): spawns `claude -p` there when the server asks, streams its events back. The Mini needs none: the server spawns its own device's `claude` directly.
 - **Clients:** the web UI (phone, MacBook, Mini) and the terminal REPL. Both speak the same WebSocket API.
 - **Model engines:** Claude through the `claude` binary on a device; OpenAI through the Responses API with the ChatGPT plan token; an API key as overflow.
 
@@ -100,13 +100,13 @@ Clients                       Mac Mini                                   MacBook
 └────────────────┘              │               │ spawn    │ compaction                           │
  WebSocket over the tailnet     ▼               ▼          ▼             Model engines            │
                          ┌──────────┐  ┌────────────────┐  ┌──────────────────────────────┐       │
-                         │ data dir │  │ optchat-device │  │ ChatGPT Pro (Luna, Sol)      │       │
-                         │ git,     │  │ runs claude -p │─▶│ Claude Max (Opus via claude) │◀──────┘
-                         │ pushed   │  │ on the Mini    │  │ API key (overflow, budget)   │
+                         │ data dir │  │ claude -p      │  │ ChatGPT Pro (Luna, Sol)      │       │
+                         │ git,     │  │ on the Mini    │─▶│ Claude Max (Opus via claude) │◀──────┘
+                         │ pushed   │  │ (local runner) │  │ API key (overflow, budget)   │
                          └──────────┘  └────────────────┘  └──────────────────────────────┘
 ```
 
-Clients talk only to the server; the server spawns each turn's `claude -p` through a device runner and sends compactor calls to the ChatGPT plan.
+Clients talk only to the server; the server spawns each turn's `claude -p` itself when the turn is on the Mini, or through the device runner of the machine it is on, and sends compactor calls to the ChatGPT plan.
 
 Data directory on the Mini (its own git repo, as in the reference):
 
@@ -272,7 +272,7 @@ The server exposes `zoom` and `date` as an HTTP MCP server at `/mcp` on the tail
 - **Behaviour:** exactly ref §9 and gist §7.1, with the gist's tool descriptions verbatim. `zoom(id, n)` validates integers, `n` a power of 2, `id % n == 0`, `id + n ≤ T`, the node built; otherwise `No line id+n.` `zoom(id, 1)` returns `id+0|kind: text` in full and works for any existing message. `date(id)` returns local time as `2026-10-04 14:03`, or `No message N.`
 - **Read-only:** answers from the server's in-memory tree; never takes the lock.
 - **Cache stability:** the `--mcp-config` JSON is generated once per device and is identical for priming and real turns. The server name stays `optchat`, so the tool names (`mcp__optchat__zoom`, `mcp__optchat__date`) and the cached tool list are the same on every device; only the URL differs, and the URL isn't sent to the model.
-- **Auth (M1):** the server makes a secret at each start and puts it in the URL it hands the master (`/mcp?key=<secret>`); a request without it gets 403. `tailscale serve` hides the peer's address, so there is nothing for WhoIs to check. Like every route, `/mcp` also passes the loopback and Tailscale-login guard (`server/auth.ts`). Remote devices (M4) get the URL with the secret along with their turn.
+- **Auth:** a `claude` on another device calls `/mcp` at `server.publicUrl`, that is through `tailscale serve`, which hides the caller's address and adds its owner's login. So WhoIs plays no part: the guard is the secret key in the URL (made at startup, sent only inside `--mcp-config`) plus the `allowedLogins` check every route has. A `claude` on the Mini calls the loopback URL with the same key. Without `server.publicUrl` the server refuses turns on other devices rather than hand them a loopback URL and its key.
 - **Offline mode (M6):** gains `who`, plus `grep(regex, who)`, as in Intrepidus.
 
 ## Multi-machine
@@ -281,14 +281,15 @@ One chat, one memory, two pairs of hands: the Mini keeps memory and the turn loo
 
 **Device runner (`device/`).** A small Bun daemon, launchd-managed, listening on the tailnet only.
 
-- `POST /spawn` with the args, env and cwd → a WebSocket that carries stdin in and the stream-json events out. It refuses a cwd outside the configured folders.
-- Kills children on disconnect, on SIGTERM and after `KILL_GRACE`, mirroring the reference's child registry (ref §5.2).
+- `GET /spawn`, a WebSocket whose first frame carries the args, env and cwd; then stdin goes in and the stream-json events come out, and a last frame says how `claude` exited (`src/claude/wire.ts`). It refuses a cwd outside the configured folders, after resolving symlinks and `..`, and any env but `CLAUDE_CODE_PROMPT_CACHE_TTL` and `DISABLE_PROMPT_CACHING`, the two a turn and its priming set. It only ever runs the `claude` binary, never a shell, but the caller chooses its arguments: these checks keep turns alike across devices and are not a sandbox. The boundary is who may call: only the server's device (`OPTCHAT_SERVER_DEVICE`, else `defaultDevice`), by Tailscale WhoIs.
+- Kills children on disconnect, on SIGTERM and after `KILL_GRACE`, mirroring the reference's child registry (ref §5.2). Each `claude` runs in its own process group, so the kill reaches the commands it started. A daemon killed with SIGKILL (launchd stops it with SIGTERM) leaves its running children behind, for the same reason; not prevented.
+- Listens on the machine's `tailscale ip -4` address only. MagicDNS also answers AAAA, so the server resolves a device's name to IPv4 before connecting.
 - Writes nothing of its own; the master's tools change files on that machine, nothing else.
-- `GET /health` returns the `claude` version, so the server can warn when devices differ (a version change invalidates the cache once, ref §16.8).
+- `GET /health` returns the `claude` version, so the server can warn when devices differ (a version change invalidates the cache once, ref §16.8). `/api/devices` shows each device as online, offline, or refused (it answered 403: its callers or the server's node name are misconfigured).
 
 **Routing.** Each turn picks a device: an explicit picker in the UI, a `/on macbook` prefix, or the default device. The choice is stored as an extra `device` field on that turn's log entries, which readers ignore, as pi-optchat does with its `origin` field. The user's text is never changed; the tool calls' paths already show the compactor where work happened.
 
-**Device offline.** The turn fails fast with a clear notice in the UI and in the log; the failover chain may then run it on another engine with read-only tools. Never queue silently.
+**Device offline.** The turn fails fast with a clear notice in the UI and in the log; the failover chain may then run it on another engine with read-only tools. Never queue silently. The server remembers an unreachable device for 5 s, so the priming before a turn and the turn itself wait for it once and report it once.
 
 **Offline mode (M6).** If the Mini is unreachable, the MacBook runs a local server on `streams/macbook/` and pushes to the shared git remote. The Mini pulls before each turn and shows that stream read-only. Two streams means two chats until the user merges them; that is accepted, as in Intrepidus.
 
@@ -355,9 +356,9 @@ Nothing listens on a public interface; the tailnet is the only way in (E9).
 - **Publishing:** `tailscale serve --bg --https=443 http://127.0.0.1:7700` on the Mini gives `https://<mini>.<tailnet>.ts.net` with a valid certificate. Device runners listen on their tailnet address only.
 - **User auth:** `tailscale serve` adds identity headers (`Tailscale-User-Login`) to each request. The server accepts a request only if that login is in `allowedLogins` and the request came through serve on loopback; anything else gets 403.
 - **Browsers:** `/ws` drives a master with `bypassPermissions`, so a web page must not reach it from someone's browser (cross-site WebSocket hijacking, DNS rebinding, or a page on the phone riding the user's own serve identity). Every route checks `Host` (`127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>` or the host of `server.publicUrl`) and, when an `Origin` is sent, that it is the server's own origin; CLI clients send none. The threat model is written out in `server/auth.ts`.
-- **Machine auth:** `/mcp` takes the per-start secret in its URL (`?key=`), on top of the loopback and Tailscale-login guard every route has (see zoom and date over HTTP); a restart rotates it. Device runners (M4) check the caller with Tailscale's local WhoIs API against the configured device names.
-- **Processes:** two launchd agents on the Mini (`optchat-server`, `optchat-device`), one on the MacBook (`optchat-device`), each with `KeepAlive`, logs in `~/Library/Logs/optchat/`. The Mini's energy settings keep it awake.
-- **Permissions:** the master runs with `bypassPermissions` (ref D9), so it can run any command in the configured folders of the device it lands on. The device runner's folder allowlist is the boundary.
+- **Machine auth:** a device runner asks Tailscale's local WhoIs which node is calling and compares its full MagicDNS name with the other configured devices' (the URL's host plus this tailnet's suffix, so a device URL must use a name, not an IP address). Answers are cached per address for 10 s, and at most 4 WhoIs calls run at once. Before that it refuses any request with an `Origin` header: a page in a browser on an allowed machine is that machine's node too, and the server's runner sends none. `/mcp` is covered under zoom and date. No tokens to rotate.
+- **Processes:** one launchd agent on the Mini (`optchat-server`) and one on the MacBook (`optchat-device`), each with `KeepAlive`, logs in `~/Library/Logs/optchat/`. The Mini's energy settings keep it awake.
+- **Permissions:** the master runs with `bypassPermissions` (ref D9). The device's folder allowlist only sets the working directory; it does not confine `claude`, whose Bash can reach anything that user can. The boundary is who may call the runner: the other configured devices' nodes, and no browser.
 - **Persistence:** the data dir is its own git repo, committed after every turn as in ref §10, and pushed to a private remote (E10). The push is the backup and, in M6, the sync. The session turns idle once the commit is made; the push runs in the background, one at a time, and a failing push is reported once until one goes through again.
 - **Secrets:** the ChatGPT plan token and API keys live in the macOS Keychain, never in the repo or the data dir.
 
@@ -419,6 +420,7 @@ Each milestone ends with `bun test` green, the parity test passing, and a short 
 3. **M2, server and web UI.** AG-UI events over the WebSocket, the Vite app with chat, memory and stats screens, Tailscale serve, launchd, git push. Starts with a one-day spike: two browsers on one turn, one sending a mid-run message, through TanStack AI's WebSocket adapter. Done when I chat from the phone.
 4. **M3, ChatGPT-plan compactor.** `openai-plan` engine, per-level chains, the bake-off. Done when the level cutoff is set from bake-off data.
 5. **M4, MacBook as a device.** Device runner, routing, the device screen. Done when one chat edits files on both machines.
+   - *Built (2026-10-05).* `device/` is the runner: one WebSocket per process (`GET /spawn`, a handshake being a GET; the spawn request is the first frame), JSON frames tagged `Spawn`/`Stdin` in and `Spawned`/`Refused`/`Line`/`Exit` out. A process lives as long as its socket: a disconnect, the daemon's SIGTERM or the end of the request kill its process group, SIGTERM then SIGKILL after `KILL_GRACE` (tested with a child that ignores SIGTERM, and through `device/main.ts` under SIGTERM). The runner and the local runner start `claude` through one `spawnProcess` (`src/claude/process.ts`), so exit codes, signals and stderr read the same from both. Machine auth: the runner listens on `tailscale ip -4`, refuses requests with an `Origin`, and asks `tailscale whois --json` for each caller (cached, bounded), letting in nodes whose full MagicDNS name is another configured device's; `OPTCHAT_DEVICE_TRUST=loopback` lets in local callers only, for development. `RemoteRunner` (`src/claude/remote.ts`) feeds the same `makeClaude` as the local runner. Everything up to the `Spawned` frame (no runner, a refusal, a socket dropped, no answer in 15 s) is `DeviceOffline`, so the chain can fail over, and an unreachable device is remembered for 5 s; a connection lost after that ends the turn with a `ModelError`, since the turn may have changed files by then. The server's own device keeps the local runner; for others, `--system-prompt-file` is sent inline as `--system-prompt` (same bytes, same cache key), the cwd goes unexpanded so `~` is the device's home, and `--mcp-config` points at `server.publicUrl` with the same secret key (E8); without `publicUrl`, turns on other devices are refused. `/api/devices` asks each `/health` with a 2 s timeout, reports online, offline or refused, and posts an `info` once per set of differing `claude` versions among online devices. launchd templates are in `deploy/`. Not done: the web UI's device screen (the `/api/devices` data is there), and a live two-machine run over a real tailnet. Follow-up: pass `--system-prompt` inline on every device, the Mini too, so "same bytes" holds by construction rather than by inlining a file.
 6. **M5, failover.** Master chain to Sol with our own tool loop (read-only tools first), API-key overflow with a budget. Done when exhausting the Claude limit in a test switches engines without losing a message.
 7. **M6, offline mode.** Streams per device, pull and push around turns, read-only `<chat who=…>` views, `who` on zoom and date, `grep`.
 8. **M7, subagents.** Gist §9 `spawn` and `tell`; restore MASTER's subagent paragraph, which drops D5. D10 stays: background shell tasks still die with the turn.

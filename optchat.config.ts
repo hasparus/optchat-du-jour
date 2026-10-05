@@ -18,5 +18,7 @@ export default defineConfig({
     macbook: { url: "http://optchat-macbook:7710", folders: ["~/repos"] },
   },
   defaultDevice: "mini",
+  // turns on another device reach zoom and date through the server's tailnet URL (E8):
+  // server: { host: "127.0.0.1", port: 7700, publicUrl: "https://<mini>.<tailnet>.ts.net" },
   allowedLogins: [],
 });

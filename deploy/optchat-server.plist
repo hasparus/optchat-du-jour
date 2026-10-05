@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  optchat-server as a launchd agent on the machine that owns the memory (SPEC "System shape").
+  Replace __HOME__ and __REPO__, then:
+
+    mkdir -p ~/Library/Logs/optchat
+    cp deploy/optchat-server.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/optchat-server.plist
+
+  and publish it with tailscale serve in the background, https on 443, to http://127.0.0.1:7700
+  (the command is in SPEC "Tailscale, auth and operations"; XML comments can't hold its flags).
+  It listens on loopback only; `tailscale serve` publishes it to the tailnet. Set server.publicUrl
+  in optchat.config.ts to that https://<machine>.<tailnet>.ts.net address, so claude on the other
+  devices reaches zoom and date through tailscale serve (the key in the URL and allowedLogins let
+  it in); without it, turns on other devices are refused.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>optchat-server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/.bun/bin/bun</string>
+    <string>__REPO__/server/main.ts</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__REPO__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__HOME__/.local/bin:__HOME__/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/optchat/server.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/optchat/server.log</string>
+</dict>
+</plist>
