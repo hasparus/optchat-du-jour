@@ -2,7 +2,7 @@
 // optchat: the REPL, a client of optchat-server ($OPTCHAT_URL, default http://127.0.0.1:7700), and
 // one-shot commands that read the data dir without the lock, plus import.
 import { BunRuntime } from "@effect/platform-bun";
-import { Console, Effect } from "effect";
+import { Console, Data, Effect } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { loadSettings } from "../src/config.ts";
 import { importOptmem } from "../src/import.ts";
@@ -46,6 +46,8 @@ const loginOpenai = Effect.gen(function* () {
   yield* Console.log(`signed in${c.email === undefined ? "" : ` as ${c.email}`}; the compactor can use your ChatGPT plan`);
 });
 
+class NoKey extends Data.TaggedError("NoKey")<{ readonly message: string }> {}
+
 // an API key for the api-key engine, read from stdin (pasted, or piped) into the Keychain; never an argument, which ps would show
 const saveKey = (provider: keyof typeof KEY_SECRETS) =>
   Effect.gen(function* () {
@@ -54,7 +56,7 @@ const saveKey = (provider: keyof typeof KEY_SECRETS) =>
       for await (const line of console) return line.trim();
       return "";
     });
-    if (!key) return yield* Effect.fail({ message: "no key given" });
+    if (!key) return yield* new NoKey({ message: "no key given" });
     const secrets = yield* Secrets;
     yield* secrets.set(KEY_SECRETS[provider], key);
     yield* Console.log(`saved; the api-key engine can use ${provider} within the monthly budget in optchat.config.ts`);
