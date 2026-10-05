@@ -224,7 +224,7 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
         const { cwd, mcpConfig, runner } = yield* o.runnerFor(input.device);
         const claude = yield* runner
           .spawn({ args: argsFor(mcpConfig), cwd, env })
-          .pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(new ModelError({ message: e.message })))); // DeviceOffline fails over
+          .pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(new ModelError({ message: e.message })))); // DeviceOffline: priming skips quietly
         const started = yield* Clock.currentTimeMillis;
         // the view exactly as priming cut it, with no marks: Claude Code's own marks are on (D2)
         // the new messages, a blank line apart (ref §5.1), and after a failover what came before
@@ -272,7 +272,7 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
         const { cwd, mcpConfig, runner } = yield* o.runnerFor(device);
         const claude = yield* runner
           .spawn({ args: argsFor(mcpConfig), cwd, env: { ...env, DISABLE_PROMPT_CACHING: "1" } })
-          .pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(new ModelError({ message: e.message })))); // DeviceOffline fails over
+          .pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(new ModelError({ message: e.message })))); // DeviceOffline: priming skips quietly
         const started = yield* Clock.currentTimeMillis;
         const mark = { ttl: o.primeTtl, type: "ephemeral" } as const;
         const marked = cutBlocks(view).map((piece): Block => ({ cache_control: mark, text: piece, type: "text" }));

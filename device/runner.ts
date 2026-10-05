@@ -28,8 +28,9 @@ export type DeviceOptions = {
 
 export class SpawnRefused extends Data.TaggedError("SpawnRefused")<{ readonly message: string }> {}
 
-// what the server may set in claude's environment: exactly what a turn and its priming set (E6).
-// Anything else could change what claude runs (CLAUDE_CODE_SHELL_PREFIX, NODE_OPTIONS, ...).
+// what the server may set in claude's environment: exactly what a turn and its priming set (E6),
+// so a turn behaves the same on every device. Not a security boundary: the caller also sends the
+// argv, and a trusted caller drives a bypassPermissions claude anyway. Who may call is the boundary.
 const ENV: ReadonlySet<string> = new Set(["CLAUDE_CODE_PROMPT_CACHE_TTL", "DISABLE_PROMPT_CACHING"]);
 const FIRST_FRAME = "10 seconds";
 

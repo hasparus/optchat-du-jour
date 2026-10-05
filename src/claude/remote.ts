@@ -14,7 +14,7 @@ import { Health, type ToDevice, type ToolCall, ToolReply, decodeFromDevice, fram
 
 export type RemoteTimeouts = {
   readonly connect: Duration.Input; // an asleep or unreachable peer on the tailnet hangs rather than refuses
-  readonly spawn: Duration.Input; // from connecting to the Spawned frame
+  readonly spawn: Duration.Input; // from sending the Spawn frame to the Spawned frame
   readonly remember: Duration.Input; // how long an unreachable device stays offline without asking again
 };
 const TIMEOUTS: RemoteTimeouts = { connect: "5 seconds", remember: "5 seconds", spawn: "15 seconds" };
@@ -86,16 +86,21 @@ export const remoteRunner = (device: string, url: string, timeouts: Partial<Remo
     const { frames, socket } = yield* connect;
     const write = yield* socket.writer;
     const send = (f: ToDevice) => write.write(frame(f));
-    yield* send({ _tag: "Spawn", args, cwd: o.cwd, env: { ...o.env } }).pipe(Effect.mapError((e) => offline(e.message)));
-
-    const ack = yield* Queue.take(frames).pipe(
-      Effect.timeoutOption(t.spawn),
-      Effect.mapError((e) => offline(`the device runner hung up before claude started (${e.message})`)),
-    );
-    if (Option.isNone(ack)) return yield* offline("no answer to the spawn request");
-    const reply = decodeFromDevice(ack.value);
-    if (Option.isSome(reply) && reply.value._tag === "Refused") return yield* offline(`refused: ${reply.value.message}`);
-    if (Option.isNone(reply) || reply.value._tag !== "Spawned") return yield* offline("an unexpected answer to the spawn request");
+    // a runner that hangs up, stalls or answers nonsense before Spawned is remembered as unreachable,
+    // like a failed connect; a refusal is about this request (its cwd), so the next one still asks
+    const reply = yield* Effect.gen(function* () {
+      yield* send({ _tag: "Spawn", args, cwd: o.cwd, env: { ...o.env } }).pipe(Effect.mapError((e) => offline(e.message)));
+      const ack = yield* Queue.take(frames).pipe(
+        Effect.timeoutOption(t.spawn),
+        Effect.mapError((e) => offline(`the device runner hung up before claude started (${e.message})`)),
+      );
+      if (Option.isNone(ack)) return yield* offline("no answer to the spawn request");
+      const decoded = decodeFromDevice(ack.value);
+      if (Option.isNone(decoded) || (decoded.value._tag !== "Spawned" && decoded.value._tag !== "Refused"))
+        return yield* offline("an unexpected answer to the spawn request");
+      return decoded.value;
+    }).pipe(Effect.catchTag("DeviceOffline", remember));
+    if (reply._tag === "Refused") return yield* offline(`refused: ${reply.message}`);
 
     const stdin = yield* Queue.unbounded<string>();
     yield* Queue.take(stdin).pipe(

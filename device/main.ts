@@ -26,8 +26,10 @@ const main = Effect.gen(function* () {
   const port = Number(new URL(device.url).port || DEFAULT_PORT);
   const loopback = Bun.env.OPTCHAT_DEVICE_TRUST === "loopback";
 
-  // who may call: the other devices; this machine's own server runs claude without a runner
-  const others = Object.entries(settings.devices).filter(([other]) => other !== name);
+  // who may call: only the device the server runs on (OPTCHAT_SERVER_DEVICE, else defaultDevice);
+  // the server is the runner's one legitimate caller, and its own machine needs no runner
+  const server = Bun.env.OPTCHAT_SERVER_DEVICE ?? settings.defaultDevice;
+  const others = Object.entries(settings.devices).filter(([other]) => other === server && other !== name);
   let trust: Trust = { _tag: "loopback" };
   if (!loopback) {
     const suffix = yield* tailnetSuffix(tailscale);
