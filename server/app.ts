@@ -1,0 +1,260 @@
+// optchat-server (SPEC "Server, WebSocket API and CLI"): the memory, the compactor, the turn loop,
+// and their HTTP face on one port: /ws (AG-UI), /mcp (zoom and date), /api/* (read-only JSON for
+// the web UI) and / (the built web UI).
+import { BunHttpServer, BunServices } from "@effect/platform-bun";
+import { Effect, Layer, Option, PubSub, Schema } from "effect";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+import { Socket } from "effect/socket";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { openChat } from "../src/chat.ts";
+import { type Settings, MASTER_TOOLS } from "../src/config.ts";
+import { LocalRunner, Runner } from "../src/claude/process.ts";
+import type { Summarize } from "../src/compactor.ts";
+import { DeviceOffline } from "../src/engines/errors.ts";
+import { handleMcp, mcpConfig } from "../src/mcp.ts";
+import { makePersist } from "../src/persist.ts";
+import { promptFile, systemPrompt } from "../src/prompts.ts";
+import { makeSession } from "../src/session.ts";
+import { makeSummarize } from "../src/summarize/index.ts";
+import { getNode, localTime, span } from "../src/tree.ts";
+import { claudeCodeTurn } from "../src/turn/claude-code.ts";
+import type { TurnEngine } from "../src/turn/engine.ts";
+import { type UsageRecord, logUsage, readUsage } from "../src/usage.ts";
+import { PLACEHOLDER, render, viewSize } from "../src/view.ts";
+import { type AgUiEvent, makeTranslator, snapshot } from "./agui.ts";
+import { allowed } from "./auth.ts";
+
+export type ServerOptions = {
+  readonly home: string; // ~/.optchat: streams/, usage.jsonl, instructions.md, its own git repo
+  readonly settings: Settings;
+  readonly device: string; // this machine
+  readonly host: string;
+  readonly port: number;
+  readonly web?: string; // the built web UI
+  readonly summarize?: Summarize; // tests replace the compactor
+  readonly window?: number; // log entries in a client's first snapshot
+};
+
+const expand = (path: string) => path.replace(/^~(?=\/|$)/, homedir());
+
+// What a client sends: AG-UI's RunAgentInput (the newest user message is the one to answer), or an abort
+const TextPart = Schema.Struct({ text: Schema.optional(Schema.String), type: Schema.String });
+const Inbound = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("abort") }),
+  Schema.Struct({
+    forwardedProps: Schema.optional(Schema.Struct({ device: Schema.optional(Schema.String) })),
+    messages: Schema.Array(
+      Schema.Struct({ content: Schema.optional(Schema.Union([Schema.String, Schema.Array(TextPart)])), role: Schema.String }),
+    ),
+  }),
+]);
+const decodeInbound = Schema.decodeUnknownOption(Schema.fromJsonString(Inbound));
+
+const lastUserText = (messages: readonly { readonly role: string; readonly content?: string | readonly { readonly text?: string }[] }[]) => {
+  const m = messages.findLast((x) => x.role === "user");
+  if (!m?.content) return "";
+  return typeof m.content === "string" ? m.content : m.content.map((p) => p.text ?? "").join("");
+};
+
+const Before = Schema.Struct({ before: Schema.optional(Schema.NumberFromString), limit: Schema.optional(Schema.NumberFromString) });
+const NodeAt = Schema.Struct({ i: Schema.NumberFromString, l: Schema.NumberFromString });
+
+export const routes = (o: ServerOptions) =>
+  HttpRouter.use((router) =>
+    Effect.gen(function* () {
+      const { settings } = o;
+      const usagePath = `${o.home}/usage.jsonl`;
+      const stream = `${o.home}/streams/${o.device}`;
+      const thread = o.device;
+      const secret = crypto.randomUUID();
+      const local = yield* Runner;
+
+      let report = (message: string) => Effect.logInfo(message);
+      const usage = (record: UsageRecord) => logUsage(usagePath, record).pipe(Effect.flatMap((e) => (e ? report(e) : Effect.void)));
+      const summarize = o.summarize ?? (yield* makeSummarize({ log: usage, report: (m) => report(m), settings }));
+      const chat = yield* openChat(stream, { report: (m) => report(m), summarize });
+
+      const systemFile = yield* promptFile(systemPrompt(o.home));
+      const mcp = mcpConfig(`http://127.0.0.1:${o.port}/mcp?key=${secret}`);
+      const runnerFor = (device: string) =>
+        device === o.device
+          ? Effect.succeed({ cwd: settings.devices[device]?.folders[0] ? expand(settings.devices[device].folders[0]) : undefined, runner: local })
+          : Effect.fail(new DeviceOffline({ message: `${device} has no device runner yet` }));
+      const engines: TurnEngine[] = [];
+      for (const ref of settings.master.chain) {
+        const [engine, model = ""] = ref.split(/:(.*)/s);
+        if (engine !== "claude-code") continue;
+        engines.push(
+          yield* claudeCodeTurn({
+            effort: settings.master.effort,
+            logUsage: usage,
+            mcpConfig: mcp,
+            model,
+            permissionMode: settings.master.permissionMode,
+            primeTtl: settings.cache.primeTtl,
+            report: (m) => report(m),
+            runnerFor,
+            systemFile,
+            tools: settings.master.tools ?? MASTER_TOOLS,
+            ttl: settings.cache.claudeCodeTtl,
+          }),
+        );
+      }
+      const persist = yield* makePersist;
+      const session = yield* makeSession({
+        chat,
+        commit: Effect.suspend(() => persist(o.home, `chore(chat): ${chat.mem.root.length} messages`)),
+        defaultDevice: settings.defaultDevice,
+        devices: Object.keys(settings.devices),
+        engines,
+        logUsage: usage,
+      });
+      report = (message) => PubSub.publish(session.events, { message, type: "info" }).pipe(Effect.asVoid);
+      for (const p of chat.problems) yield* report(p);
+
+      const guard = (request: HttpServerRequest.HttpServerRequest) =>
+        allowed({ header: (name) => request.headers[name], remoteAddress: request.remoteAddress }, settings.allowedLogins);
+      const forbidden = HttpServerResponse.text("forbidden", { status: 403 });
+      const json = (body: unknown) => HttpServerResponse.jsonUnsafe(body);
+
+      yield* router.add("GET", "/ws", (request) =>
+        Effect.gen(function* () {
+          if (!guard(request)) return forbidden;
+          const socket = yield* request.upgrade;
+          const write = yield* socket.writer;
+          const send = (events: readonly AgUiEvent[]) => Effect.forEach(events, (e) => write.write(JSON.stringify(e)), { discard: true });
+          const live = yield* PubSub.subscribe(session.events); // before the snapshot, so nothing falls between
+          const translate = makeTranslator(thread, session.state(), () => chat.mem.root.length);
+          yield* send(snapshot(chat.mem.root.slice(-(o.window ?? 200)), session.state(), thread));
+          yield* session.primeSoon;
+          yield* PubSub.take(live).pipe(
+            Effect.flatMap((e) => send(translate(e))),
+            Effect.forever,
+            Effect.forkScoped,
+          );
+          const pull = yield* Socket.readerString(socket);
+          yield* pull.pipe(
+            Effect.flatMap((frames) =>
+              Effect.forEach(frames, (frame) =>
+                Option.match(decodeInbound(frame), {
+                  onNone: () => Effect.void,
+                  onSome: (m) => ("messages" in m ? session.input(lastUserText(m.messages), m.forwardedProps?.device) : session.cancel),
+                }),
+              ),
+            ),
+            Effect.forever,
+            Effect.ignore, // the socket closed
+          );
+          return HttpServerResponse.empty();
+        }).pipe(Effect.scoped, Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
+      );
+
+      // MCP over HTTP (E8). tailscale serve hides the peer, so the URL carries a secret, made at startup
+      yield* router.add("POST", "/mcp", (request) =>
+        Effect.gen(function* () {
+          if (request.url.split("key=")[1]?.split("&")[0] !== secret || !guard(request)) return forbidden;
+          const reply = handleMcp(chat.mem, yield* request.text);
+          return reply.body === null
+            ? HttpServerResponse.empty({ status: reply.status })
+            : HttpServerResponse.text(reply.body, { contentType: "application/json", status: reply.status });
+        }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
+      );
+      yield* router.add("GET", "/mcp", HttpServerResponse.empty({ status: 405 }));
+
+      yield* router.add("GET", "/api/state", (request) => Effect.succeed(guard(request) ? json(session.state()) : forbidden));
+
+      // the log, a page at a time, newest last; `before` is a message id
+      yield* router.add("GET", "/api/messages", (request) =>
+        Effect.gen(function* () {
+          if (!guard(request)) return forbidden;
+          const q = yield* HttpServerRequest.schemaSearchParams(Before);
+          const end = Math.min(q.before ?? chat.mem.root.length, chat.mem.root.length);
+          const start = Math.max(0, end - (q.limit ?? 100));
+          return json({ entries: chat.mem.root.slice(start, end), total: chat.mem.root.length });
+        }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
+      );
+
+      // what the model sees: each view line with its range, dates and size (SPEC "Web UI", Memory)
+      yield* router.add("GET", "/api/view", (request) =>
+        Effect.succeed(
+          guard(request)
+            ? json({
+                budget: chat.mem.budget,
+                lines: chat.mem.view.map((c) => {
+                  const { id, n } = span(c), node = getNode(chat.mem, c.l, c.i);
+                  const from = chat.mem.root[id], to = chat.mem.root[id + n - 1];
+                  return {
+                    built: node !== undefined,
+                    from: from ? localTime(from.date) : null,
+                    id,
+                    l: c.l,
+                    i: c.i,
+                    n,
+                    size: node?.size ?? null,
+                    text: node?.text ?? PLACEHOLDER,
+                    to: to ? localTime(to.date) : null,
+                  };
+                }),
+                size: viewSize(chat.mem),
+                text: render(chat.mem),
+              })
+            : forbidden,
+        ),
+      );
+
+      // one node and its two children, down to the message (the memory browser's zoom)
+      yield* router.add("GET", "/api/node", (request) =>
+        Effect.gen(function* () {
+          if (!guard(request)) return forbidden;
+          const { i, l } = yield* HttpServerRequest.schemaSearchParams(NodeAt);
+          const { id, n } = span({ i, l });
+          if (l === 0) {
+            const m = chat.mem.root[i];
+            return m ? json({ id, kind: m.kind, l, i, n, text: m.text, date: localTime(m.date) }) : HttpServerResponse.empty({ status: 404 });
+          }
+          const kids = [getNode(chat.mem, l - 1, 2 * i), getNode(chat.mem, l - 1, 2 * i + 1)];
+          return json({
+            children: kids.map((k, j) => ({ built: k !== undefined, i: 2 * i + j, l: l - 1, text: k?.text ?? null })),
+            id,
+            l,
+            i,
+            n,
+            text: getNode(chat.mem, l, i)?.text ?? null,
+          });
+        }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
+      );
+
+      yield* router.add("GET", "/api/usage", (request) => Effect.succeed(guard(request) ? json(readUsage(usagePath)) : forbidden));
+      yield* router.add("GET", "/api/devices", (request) =>
+        Effect.succeed(
+          guard(request)
+            ? json(Object.entries(settings.devices).map(([name, d]) => ({ folders: d.folders, local: name === o.device, name, url: d.url })))
+            : forbidden,
+        ),
+      );
+
+      // the built web UI; any other path is the app's (it has no router)
+      if (o.web && existsSync(`${o.web}/index.html`)) {
+        const web = o.web;
+        yield* router.add("GET", "/*", (request) =>
+          Effect.gen(function* () {
+            if (!guard(request)) return forbidden;
+            const path = new URL(request.url, "http://x").pathname;
+            const file = `${web}${path}`;
+            const found = !path.includes("..") && path !== "/" && existsSync(file);
+            return yield* HttpServerResponse.file(found ? file : `${web}/index.html`);
+          }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 404 }))),
+        );
+      }
+      return { chat, session };
+    }),
+  );
+
+export const serverLayer = (o: ServerOptions) =>
+  HttpRouter.serve(routes(o)).pipe(
+    Layer.provide(BunHttpServer.layer({ hostname: o.host, port: o.port })),
+    Layer.provide(LocalRunner),
+    Layer.provide(BunServices.layer),
+  );
+

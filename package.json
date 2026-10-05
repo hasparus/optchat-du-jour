@@ -28,6 +28,7 @@
     "vendor/*"
   ],
   "dependencies": {
+    "@ag-ui/core": "1.0.1",
     "@effect/platform-bun": "4.0.0",
     "effect": "4.0.1"
   },
