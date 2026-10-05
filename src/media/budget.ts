@@ -4,7 +4,9 @@
 // returns. This is the one place that decides, for each batch of attachments about to be sent,
 // what of them goes: thin a video's frames first, then show it as its one contact sheet, then
 // send the marker only. A high-detail image (up to 2576 px) goes at its standard-tier size
-// whenever the request could pass 20 images. Zoom's own pictures are counted by a reserve.
+// whenever the request could pass 20 images. The attachments of one call take at most
+// MAX_ATTACHED of the 100: the rest is left to the pictures the turn's tools add (zoom, Read of an
+// image file), which no one counts, so a turn that zooms or reads pictures never passes 100.
 import type { Asset, ImageAsset, VideoAsset } from "../wire.ts";
 
 export const MAX_IMAGES = 100;
@@ -13,10 +15,13 @@ export const MAX_ZOOM = 4;
 // up to this many images a request may hold some over 2000 px
 export const FEW_IMAGES = 20;
 export const WIDE_EDGE = 2000;
-// the pictures zoom may add to a turn (two answers of at most MAX_ZOOM): counted, not enforced, as
-// the MCP server does not know which turn asked. Zoom answers at most WIDE_EDGE px, so it never
-// breaks the limit on size.
+// the pictures zoom may add to a request that holds a picture over WIDE_EDGE (two answers of at
+// most MAX_ZOOM), so it stays at FEW_IMAGES: counted, not enforced, as the MCP server does not
+// know which turn asked. Zoom answers at most WIDE_EDGE px itself.
 export const ZOOM_RESERVE = 2 * MAX_ZOOM;
+// the pictures one call's attachments may take in all: the other 40 of MAX_IMAGES are the turn's
+// tools', ten zoom answers or as many Read image files, more than a turn uses
+export const MAX_ATTACHED = 60;
 // a video thinned to fewer frames than this is shown as its sheet instead
 export const MIN_FRAMES = 4;
 
@@ -76,7 +81,7 @@ export const pictureBudget = () => {
     const full = assets.reduce((n, a) => n + costOf(a, { how: "all" }), 0);
     // images are capped when the request could pass FEW_IMAGES with this batch, or already holds a wide one
     const capped = wideSent || used + full + ZOOM_RESERVE > FEW_IMAGES;
-    const room = Math.max(0, (wideSent ? FEW_IMAGES : MAX_IMAGES) - ZOOM_RESERVE - used);
+    const room = Math.max(0, (wideSent ? FEW_IMAGES - ZOOM_RESERVE : MAX_ATTACHED) - used);
     const looks = full <= room ? assets.map((): Look => ({ how: "all" })) : squeeze(assets, room);
     used += assets.reduce((n, a, k) => n + costOf(a, looks[k] ?? { how: "none" }), 0);
     if (!capped && assets.some(isWide)) wideSent = true;
