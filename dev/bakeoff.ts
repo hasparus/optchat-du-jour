@@ -339,7 +339,7 @@ const main = Effect.gen(function* () {
   const settings = yield* loadSettings(Bun.env.OPTCHAT_CONFIG ?? `${root}optchat.config.ts`);
   const messages = yield* readSource(values.from, n, skip);
   const kinds = values.kinds.split(",").map((k) => Schema.decodeUnknownSync(Schema.Literals(["user", "talk", "tool", "echo", "note"]))(k));
-  const engines = Layer.mergeAll(LocalRunner, openAiPlanLayer(settings.openai).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer]))).pipe(
+  const engines = Layer.mergeAll(LocalRunner, openAiPlanLayer(settings.openai, { report: (m) => Console.error(m) }).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer]))).pipe(
     Layer.provide(BunServices.layer),
   );
   const rows: Measured[] = [];

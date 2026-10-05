@@ -78,7 +78,9 @@ export const routes = (o: ServerOptions) =>
 
       let report = logReport;
       const usage = (record: UsageRecord) => logUsage(usagePath, record).pipe(Effect.flatMap((e) => (e ? report(e) : Effect.void)));
-      const summarize = o.summarize ?? (yield* makeSummarize({ log: usage, report: (m) => report(m), settings })).summarize;
+      // built here so that a refresh token it can't save is told to the clients, not only logged
+      const plan = yield* Layer.build(openAiPlanLayer(settings.openai, { report: (m) => report(m) }).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer])));
+      const summarize = o.summarize ?? (yield* makeSummarize({ log: usage, report: (m) => report(m), settings }).pipe(Effect.provide(plan))).summarize;
       const chat = yield* openChat(stream, { report: (m) => report(m), summarize });
 
       const systemFile = yield* promptFile(systemPrompt(o.home));
@@ -259,7 +261,6 @@ export const serverLayer = (o: ServerOptions) =>
   HttpRouter.serve(routes(o)).pipe(
     Layer.provide(BunHttpServer.layer({ hostname: o.host, port: o.port })),
     Layer.provide(LocalRunner),
-    Layer.provide(openAiPlanLayer(o.settings.openai).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer]))),
     Layer.provide(BunServices.layer),
   );
 
