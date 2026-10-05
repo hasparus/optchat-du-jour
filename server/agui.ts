@@ -54,13 +54,15 @@ export const snapshot = (entries: readonly Entry[], state: SessionState): AgUiEv
 ];
 
 // JSON Patch replacing what changed between two states (STATE_DELTA)
-const delta = (before: SessionState, after: SessionState) =>
-  Object.entries(after)
-    .filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(Object.entries(before).find(([b]) => b === k)?.[1]))
+const delta = (before: SessionState, after: SessionState) => {
+  const old: Readonly<Record<string, SessionState[keyof SessionState]>> = before;
+  return Object.entries(after)
+    .filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(old[k]))
     .map(([k, v]) => ({ op: "replace" as const, path: `/${k}`, value: v }));
+};
 
 // One translator per connection: it remembers the open text message and tool call of the turn.
-export function makeTranslator(thread: string, initial: SessionState, nextIndex: () => number) {
+export function makeTranslator(thread: string, initial: SessionState) {
   let state = initial;
   let text: string | null = null; // the live reply's message id: the log index its talk entry will get
   let tool: string | null = null;
@@ -116,7 +118,7 @@ export function makeTranslator(thread: string, initial: SessionState, nextIndex:
       case "text": {
         const start: AgUiEvent[] = [];
         if (text === null) {
-          text = String(nextIndex());
+          text = String(e.at); // where its talk entry goes, as of when the session published it
           start.push({ messageId: text, role: "assistant", type: EventType.TEXT_MESSAGE_START });
         }
         return [...start, { delta: e.delta, messageId: text, type: EventType.TEXT_MESSAGE_CONTENT }];

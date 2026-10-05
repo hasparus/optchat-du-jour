@@ -3,6 +3,7 @@
 // problem comes back as a message for the caller to show.
 import { Data, Effect, Semaphore } from "effect";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 class GitFailed extends Data.TaggedError("GitFailed")<{ readonly message: string }> {}
 
@@ -43,7 +44,7 @@ const must = (dir: string, args: readonly string[]) =>
 
 // whether anything is staged: `diff --quiet` says so by its exit code
 const staged = (dir: string) => {
-  const args = ["diff", "--cached", "--quiet"];
+  const args = ["diff", "--quiet", "--cached"];
   return git(dir, args).pipe(Effect.flatMap((r) => (r.code <= 1 ? Effect.succeed(r.code === 1) : Effect.fail(failed(args, r)))));
 };
 
@@ -58,12 +59,13 @@ const save = (dir: string, message: string) =>
     yield* files(dir, () => {
       mkdirSync(dir, { recursive: true });
     });
+    const has = (name: string) => existsSync(join(dir, name));
     // its own repo even inside another one, so `add -A` never reaches past the data dir
-    if (!existsSync(`${dir}/.git`)) yield* must(dir, ["init", "-q"]);
+    if (!has(".git")) yield* must(dir, ["init", "-q"]);
     // the lock is a socket that lives as long as its process: never history
-    if (!existsSync(`${dir}/.gitignore`))
+    if (!has(".gitignore"))
       yield* files(".gitignore", () => {
-        writeFileSync(`${dir}/.gitignore`, "lock\n");
+        writeFileSync(join(dir, ".gitignore"), "lock\n");
       });
     yield* must(dir, ["add", "-A"]);
     if (yield* staged(dir)) yield* must(dir, ["commit", "-q", "--no-verify", "-m", message]);
@@ -77,7 +79,8 @@ const save = (dir: string, message: string) =>
 
 // `persist(dir, message)`: an error message, or null when the data dir is saved (and pushed)
 export const makePersist = Effect.gen(function* () {
-  const one = yield* Semaphore.make(1); // one git at a time: two would fight over index.lock
+  // a single git at once: two in the same repo would fight over index.lock
+  const one = yield* Semaphore.make(1);
   return (dir: string, message: string): Effect.Effect<string | null> =>
     one.withPermit(
       save(dir, message).pipe(

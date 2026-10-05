@@ -22,7 +22,7 @@ import { cap, claudeCodeTurn, masterArgs } from "../src/turn/claude-code.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
 import type { UsageRecord } from "../src/usage.ts";
 
-const FAKE = new URL("fake-claude.ts", import.meta.url).pathname;
+const FAKE = `${import.meta.dir}/fake-claude.ts`;
 
 const dirs: string[] = [];
 const tmp = () => {
@@ -57,24 +57,20 @@ type Rec = typeof Rec.Type;
 const decodeRec = Schema.decodeUnknownSync(Schema.fromJsonString(Rec));
 
 const fakes: { log: string }[] = [];
-const records = (log: string): Rec[] =>
-  existsSync(log)
-    ? readFileSync(log, "utf8")
-        .split("\n")
-        .filter(Boolean)
-        .map((l) => decodeRec(l))
-    : [];
+const records = (log: string): Rec[] => {
+  if (!existsSync(log)) return [];
+  const lines = readFileSync(log, "utf8").split("\n");
+  return lines.flatMap((line) => (line === "" ? [] : [decodeRec(line)]));
+};
 
+// a process is running: it exists, and it is not a zombie (/proc/PID/stat, state after the name)
 const alive = (pid: number) => {
+  const stat = `/proc/${pid}/stat`;
+  if (!existsSync(stat)) return false;
   try {
-    process.kill(pid, 0);
+    return readFileSync(stat, "utf8").split(") ")[1]?.[0] !== "Z";
   } catch {
-    return false;
-  }
-  try {
-    return readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]?.[0] !== "Z"; // a zombie is gone too
-  } catch {
-    return false;
+    return false; // gone between the two calls
   }
 };
 
@@ -95,9 +91,9 @@ afterAll(() => {
 type Script = { turn?: unknown[]; prime?: unknown[]; compact?: unknown[] };
 
 // a fake with its script, and a Runner that starts it with that script and its own log
-function fake(script: Script = {}) {
+function scripted(script: Script = {}) {
   const dir = tmp();
-  const f = { log: `${dir}/fake.jsonl`, script: `${dir}/script.json` };
+  const f = { log: `${dir}/fake.jsonl`, script: `${dir}/plan.json` };
   writeFileSync(f.script, JSON.stringify(script));
   fakes.push(f);
   const layer = Layer.effect(
@@ -136,11 +132,10 @@ const until = (what: string, ok: () => boolean, ms = 4000) =>
 const textOf = (b: Block | undefined) => b?.text ?? "";
 const long = (n: number) => "w".repeat(n);
 
-// ---------------------------------------------------------------------------------------------
 // the compactor engine
 
 test("a compactor call: four marked context pieces at the marks, the unmarked step, its flags and env", async () => {
-  const f = fake();
+  const f = scripted();
   const ctx = Array.from({ length: 260 }, (_, k) => `${k} ${"c".repeat(395)}`); // ~104k chars: every mark is used
   const job: Job = { ctx, i: 260, l: 0, msg: newMsg(260, "user", "line one\nline two") };
   const usage: UsageRecord[] = [];
@@ -186,7 +181,7 @@ test("a compactor call: four marked context pieces at the marks, the unmarked st
 test("a line over 512 bytes is retried in the same call with the gist's text, and the shortest try is kept", async () => {
   const over = `${"x".repeat(511)}ä${"y".repeat(87)}`; // 600 bytes, with a character across the cut
   const tries = [over, "b".repeat(530), "c".repeat(700), "d".repeat(520), "e".repeat(560)];
-  const f = fake({ compact: [tries.map((t) => [{ text: t }]), [[{ text: over }], [{ text: "talk: short enough" }]]] });
+  const f = scripted({ compact: [tries.map((t) => [{ text: t }]), [[{ text: over }], [{ text: "talk: short enough" }]]] });
   const usage: UsageRecord[] = [];
   const job: Job = { ctx: ["user: earlier"], i: 3, l: 0, msg: newMsg(3, "echo", long(900)) };
   const [stubborn, quick] = await run(
@@ -216,7 +211,7 @@ test("a line over 512 bytes is retried in the same call with the gist's text, an
 });
 
 test("a hung compactor call times out and fails the node; the pump reports it once and builds it on the retry", async () => {
-  const f = fake({ compact: [[{ hang: true }], [{ text: "echo: built on the second call" }]] });
+  const f = scripted({ compact: [[{ hang: true }], [{ text: "echo: built on the second call" }]] });
   const reports: string[] = [];
   const dir = tmp();
   await run(
@@ -238,7 +233,6 @@ test("a hung compactor call times out and fails the node; the pump reports it on
   expect(f.of("compact")).toHaveLength(2); // the hung one is gone: afterEach checks it
 });
 
-// ---------------------------------------------------------------------------------------------
 // the turn, driven through the session on a real chat. The compactor is a function here, so no
 // compactor call ever starts.
 
@@ -249,7 +243,14 @@ const seedNotes = (dir: string, n: number, size: number) => {
   writeFileSync(`${dir}/chat/main/${dayOf(day)}.jsonl`, `${lines}\n`);
 };
 
-const rig = (f: ReturnType<typeof fake>, o: { readonly prime?: boolean; readonly idle?: Duration.Input; readonly seed?: number } = {}) =>
+type RigOptions = {
+  readonly prime?: boolean;
+  readonly idle?: Duration.Input;
+  readonly seed?: number;
+  readonly commit?: Effect.Effect<string | null>;
+};
+
+const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
   Effect.gen(function* () {
     const dir = tmp();
     // free level-0 lines; a few short ones make every node free, so nothing changes the view later
@@ -274,7 +275,7 @@ const rig = (f: ReturnType<typeof fake>, o: { readonly prime?: boolean; readonly
     const engines: TurnEngine[] = [o.prime ? engine : { ref: engine.ref, run: engine.run }];
     const session = yield* makeSession({
       chat,
-      commit: Effect.succeed(null),
+      commit: o.commit ?? Effect.succeed(null),
       defaultDevice: "mini",
       devices: ["mini"],
       engines,
@@ -297,7 +298,7 @@ const rig = (f: ReturnType<typeof fake>, o: { readonly prime?: boolean; readonly
 
 test("a turn's stream becomes the log in order: talk, tool, a capped echo; thinking only as its size", async () => {
   const output = `a\n${"x".repeat(40_000)}\nz`;
-  const f = fake({
+  const f = scripted({
     turn: [
       [
         { thinking: 120 },
@@ -326,6 +327,8 @@ test("a turn's stream becomes the log in order: talk, tool, a capped echo; think
       expect(echo).toEndWith("xxx\nz");
       expect(echo).toContain(`\n[… ${output.length - 30_000} chars cut …]\n`);
       expect(r.events.flatMap((e) => (e.type === "text" ? [e.delta] : []))).toEqual(["Let me look.", "Found it."]);
+      // each delta names the index its talk entry then got
+      expect(r.events.flatMap((e) => (e.type === "text" ? [e.at] : []))).toEqual([1, 4]);
       expect(r.events.flatMap((e) => (e.type === "thinking" ? [e.tokens] : []))).toEqual([120]);
       expect(r.usage.map((u) => [u.role, u.device, u.model])).toEqual([["turn", "mini", "opus"]]);
       expect(r.infos()).toEqual([]); // the optchat MCP server was connected
@@ -336,7 +339,7 @@ test("a turn's stream becomes the log in order: talk, tool, a capped echo; think
 });
 
 test("a message sent while a tool runs is taken at the tool boundary and logged as user, in the same call", async () => {
-  const f = fake({
+  const f = scripted({
     turn: [
       [
         { tool: { input: { command: "sleep 2" }, name: "Bash" } },
@@ -371,7 +374,7 @@ test("a message sent while a tool runs is taken at the tool boundary and logged 
 });
 
 test("a message that arrives after the last tool is requeued and gets a fresh call", async () => {
-  const f = fake({ turn: [[{ waitInput: true }, { text: "answer one" }], [{ text: "answer two" }]] });
+  const f = scripted({ turn: [[{ waitInput: true }, { text: "answer one" }], [{ text: "answer two" }]] });
   await run(
     f,
     Effect.gen(function* () {
@@ -394,7 +397,7 @@ test("a message that arrives after the last tool is requeued and gets a fresh ca
 });
 
 test("a cancel kills the call and logs what it never took as unanswered user messages", async () => {
-  const f = fake({ turn: [[{ text: "working on it" }, { hang: true }]] });
+  const f = scripted({ turn: [[{ text: "working on it" }, { hang: true }]] });
   await run(
     f,
     Effect.gen(function* () {
@@ -416,7 +419,7 @@ test("a cancel kills the call and logs what it never took as unanswered user mes
 });
 
 test("a refusal, an error result and a crash are reported, and each ends its turn", async () => {
-  const f = fake({
+  const f = scripted({
     turn: [
       [{ result: { stop_reason: "refusal", text: "" } }],
       [{ result: { is_error: true, text: "API Error: 500 the server broke" } }],
@@ -437,7 +440,7 @@ test("a refusal, an error result and a crash are reported, and each ends its tur
         ["user", "c"],
       ]);
       const infos = r.infos();
-      expect(infos[0]).toBe("the model refused this request (stop_reason: refusal)");
+      expect(infos[0]).toBe("declined: the model would not answer this message");
       expect(infos[1]).toBe("error: API Error: 500 the server broke");
       expect(infos[2]).toMatch(/^error: claude exited \(code 3\): crashed hard/);
       const errors = r.events.flatMap((e) => (e.type === "run-finished" ? [e.error] : []));
@@ -448,11 +451,44 @@ test("a refusal, an error result and a crash are reported, and each ends its tur
   expect(f.of("turn")).toHaveLength(3);
 });
 
-// ---------------------------------------------------------------------------------------------
+test("a blank message starts nothing; one sent while the loop winds down gets its turn; idle comes after the commit", async () => {
+  const f = scripted({ turn: [[{ text: "first answer" }], [{ text: "second answer" }]] });
+  let commits = 0;
+  const idleAt: number[] = []; // the commits done each time the session said idle
+  await run(
+    f,
+    Effect.gen(function* () {
+      const commit = Effect.sleep("150 millis").pipe(Effect.andThen(Effect.sync(() => ((commits += 1), null))));
+      const r = yield* rig(f, { commit });
+      const sub = yield* PubSub.subscribe(r.session.events);
+      yield* PubSub.take(sub).pipe(
+        Effect.tap((e) => Effect.sync(() => e.type === "state" && e.state.phase === "idle" && idleAt.push(commits))),
+        Effect.forever,
+        Effect.forkScoped,
+      );
+      yield* r.session.input("  \n ");
+      expect(r.session.state().phase).toBe("idle");
+      yield* r.session.input("first");
+      yield* until("the first run's end", () => r.events.some((e) => e.type === "run-finished"));
+      expect(r.session.state().phase).not.toBe("idle"); // committing
+      yield* r.session.input("second"); // the loop is still on, but past its last turn
+      yield* r.finished(2);
+      expect(r.log()).toEqual([
+        ["user", "first"],
+        ["talk", "first answer"],
+        ["user", "second"],
+        ["talk", "second answer"],
+      ]);
+      yield* until("the second commit", () => commits === 2 && idleAt.length > 0);
+      expect(idleAt.every((n) => n > 0)).toBe(true);
+    }),
+  );
+});
+
 // priming
 
 test("priming sends the turn's argv and the turn's view blocks with marks, plus ok", async () => {
-  const f = fake();
+  const f = scripted();
   await run(
     f,
     Effect.gen(function* () {
@@ -478,7 +514,7 @@ test("priming sends the turn's argv and the turn's view blocks with marks, plus 
 });
 
 test("an idle view is primed once in the background, and not again while it is fresh", async () => {
-  const f = fake();
+  const f = scripted();
   await run(
     f,
     Effect.gen(function* () {
@@ -496,8 +532,26 @@ test("an idle view is primed once in the background, and not again while it is f
   );
 });
 
-test("a failing priming is reported once, and the turns go on without it", async () => {
-  const f = fake({ prime: [[{ exit: 1, stderr: "not logged in" }]] });
+test("a cancel during the turn's own priming ends the wait at once; the priming call finishes in the background", async () => {
+  const f = scripted({ prime: [[{ sleep: 600 }, { text: "x" }]] });
+  await run(
+    f,
+    Effect.gen(function* () {
+      const r = yield* rig(f, { prime: true, seed: 3 });
+      yield* r.session.input("hello");
+      yield* until("the priming call", () => r.session.state().phase === "priming" && f.of("prime").length === 1);
+      yield* r.session.cancel;
+      yield* until("idle", () => r.session.state().phase === "idle");
+      expect(r.usage).toEqual([]); // the priming has not been accepted yet
+      expect(r.log().slice(3)).toEqual([["user", "hello"]]);
+      yield* until("the priming's usage", () => r.usage.some((u) => u.role === "prime"));
+      expect(f.of("turn")).toHaveLength(0);
+    }),
+  );
+});
+
+test("priming that keeps failing is reported a single time, and every turn still runs", async () => {
+  const f = scripted({ prime: [[{ exit: 1, stderr: "not logged in" }]] });
   await run(
     f,
     Effect.gen(function* () {

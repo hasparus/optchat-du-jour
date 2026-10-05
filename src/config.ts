@@ -1,7 +1,8 @@
-import { Data, Effect, Schema } from "effect";
 // The gist's constants (gist §1) and the reference's timings (ref §2, §7). Sizes are UTF-8
 // bytes, cache marks are characters. Everything that may differ per machine is in
 // optchat.config.ts instead.
+import { Data, Effect, Schema } from "effect";
+
 export const NODE = 512;
 export const VIEW = 128_000;
 export const JOBS = 8;
@@ -15,10 +16,8 @@ export const KILL_GRACE = "5 seconds";
 export const PRIME_TIMEOUT = "30 seconds";
 export const PRIME_IDLE = "1 second";
 
-// ---------------------------------------------------------------------------------------------
 // optchat.config.ts (SPEC "Constants and configuration"): engines, compactor chains per level,
 // cache TTLs, devices, who may connect.
-
 
 const Ttl = Schema.Literals(["1h", "5m"]);
 const Effort = Schema.Literals(["low", "medium", "high", "xhigh", "max"]);
@@ -41,7 +40,8 @@ export const Settings = Schema.Struct({
   devices: Schema.Record(Schema.String, Schema.Struct({ url: Schema.String, folders: Schema.Array(Schema.String) })),
   defaultDevice: Schema.String,
   allowedLogins: Schema.Array(Schema.String),
-  server: Schema.optional(Schema.Struct({ host: Schema.String, port: Schema.Int })),
+  // publicUrl: the server as the tailnet reaches it (`tailscale serve`), for claude on other devices
+  server: Schema.optional(Schema.Struct({ host: Schema.String, port: Schema.Int, publicUrl: Schema.optional(Schema.String) })),
 });
 export type Settings = typeof Settings.Type;
 
