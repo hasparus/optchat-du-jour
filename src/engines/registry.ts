@@ -9,7 +9,7 @@ import type { ApiKeys } from "../apikey/clients.ts";
 import { Runner } from "../claude/process.ts";
 import type { Job } from "../compactor.ts";
 import type { ToolBox } from "../tools/box.ts";
-import { MASTER_TOOLS, mediaSettings, type Ref, type Settings } from "../config.ts";
+import { MASTER_TOOLS, mediaSettings, type ProviderRef, type Ref, type Settings } from "../config.ts";
 import { apiKeyProvider } from "../providers/api-key.ts";
 import type { Provider } from "../providers/provider.ts";
 import { responsesProvider } from "../providers/responses.ts";
@@ -60,21 +60,19 @@ export const compactorEngine = (ref: Ref, o: CompactorNeeds): Effect.Effect<Comp
     case "openai-plan":
       return Effect.map(o.plan, (plan) => openAiPlanCompactor({ device: o.device, effort, log: o.log, model: ref.model, plan }));
     case "api-key":
-      return Effect.map(o.apiKeys, (clients) => apiKeyCompactor({ budget: o.budget, clients, device: o.device, effort, log: o.log, ref, settings: o.settings }));
+      return Effect.map(providerOf(ref, o, effort), (provider) => apiKeyCompactor({ device: o.device, log: o.log, provider }));
   }
 };
 
 // The provider of an engine that has no loop of its own (SPEC "Engines": openai-plan, the Responses
 // API on the ChatGPT plan, with `stream: true` and `store: false`; api-key, an API key's Anthropic
 // or OpenAI), built from what the ref's engine needs. Our tool loop (../turn/loop.ts) runs it.
-export const providerOf = (ref: Ref, o: EngineNeeds, effort?: string): Effect.Effect<Provider> => {
+export const providerOf = (ref: ProviderRef, o: EngineNeeds, effort?: string): Effect.Effect<Provider> => {
   switch (ref.engine) {
     case "openai-plan":
       return Effect.map(o.plan, (plan) => responsesProvider({ auth: "chatgpt-pro", effort, engine: "openai-plan", model: ref.model, respond: plan.respond }));
     case "api-key":
       return Effect.map(o.apiKeys, (clients) => apiKeyProvider({ budget: o.budget, clients, effort, ref, settings: o.settings }));
-    case "claude-code":
-      return Effect.die(new Error("claude-code runs its own loop: it has no provider"));
   }
 };
 

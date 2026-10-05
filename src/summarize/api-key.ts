@@ -9,15 +9,18 @@ import type { Job } from "../compactor.ts";
 import { CALL_TIMEOUT } from "../config.ts";
 import { type EngineError, ModelError } from "../engines/errors.ts";
 import { COMPACT_FILE } from "../prompts.ts";
-import { type ApiKeyOptions, apiKeyProvider } from "../providers/api-key.ts";
-import type { Item } from "../providers/provider.ts";
+import type { Item, Provider } from "../providers/provider.ts";
 import type { UsageRecord } from "../usage.ts";
 import { type Try, contextBlocks, sizeRetries, step } from "./step.ts";
 
-export const apiKeyCompactor = (
-  o: ApiKeyOptions & { readonly log: (record: UsageRecord) => Effect.Effect<void>; readonly device?: string; readonly timeout?: Duration.Input },
-) => {
-  const provider = apiKeyProvider(o);
+// `provider` is the api-key one, from the registry's `providerOf`
+export const apiKeyCompactor = (o: {
+  readonly provider: Provider;
+  readonly log: (record: UsageRecord) => Effect.Effect<void>;
+  readonly device?: string;
+  readonly timeout?: Duration.Input;
+}) => {
+  const { provider } = o;
   const instructions = readFileSync(COMPACT_FILE, "utf8");
   const timeout = o.timeout ?? CALL_TIMEOUT;
 

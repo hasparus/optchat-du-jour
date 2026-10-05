@@ -6,7 +6,7 @@
 import { Duration, Effect } from "effect";
 import { baseArgs } from "../claude/args.ts";
 import { Runner } from "../claude/process.ts";
-import type { Ref } from "../config.ts";
+import type { ProviderRef, Ref } from "../config.ts";
 import { failover, watchChain } from "../engines/chain.ts";
 import { type EngineError, fromResult, ModelError, UsageLimit } from "../engines/errors.ts";
 import { type EngineNeeds, providerOf } from "../engines/registry.ts";
@@ -67,7 +67,7 @@ const claudeCodeCaption = (model: string, o: CaptionNeeds): Describe => {
 };
 
 // an engine with a provider: one request with the image and the ask, no tools
-const providerCaption = (ref: Ref, o: CaptionNeeds): Describe => {
+const providerCaption = (ref: ProviderRef, o: CaptionNeeds): Describe => {
   const provider = providerOf(ref, o);
   return (input, failoverFrom) =>
     Effect.gen(function* () {

@@ -53,10 +53,13 @@ const Effort = Schema.Literals(["low", "medium", "high", "xhigh", "max"]);
 // ("api-key:anthropic/claude-opus-5-5"), and `model` is that provider's model id.
 const Model = { model: Schema.String, ref: Schema.String };
 const RefValue = Schema.Union([
-  Schema.Struct({ engine: Schema.Literals(["claude-code", "openai-plan"]), ...Model }),
+  Schema.Struct({ engine: Schema.Literal("claude-code"), ...Model }),
+  Schema.Struct({ engine: Schema.Literal("openai-plan"), ...Model }),
   Schema.Struct({ engine: Schema.Literal("api-key"), provider: Schema.Literals(["anthropic", "openai"]), ...Model }),
 ]);
 export type Ref = typeof RefValue.Type;
+// a ref whose engine runs on a provider (src/providers/): everything but claude-code, which runs its own loop
+export type ProviderRef = Exclude<Ref, { readonly engine: "claude-code" }>;
 export type ApiKeyRef = Extract<Ref, { readonly engine: "api-key" }>;
 
 export const parseRef = (ref: string): Result.Result<Ref, string> => {
