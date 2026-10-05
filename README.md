@@ -8,7 +8,7 @@ one endless chat whose history is its memory, kept as a binary summary tree.
 
 - A terminal REPL and a phone-first web app (chat, memory browser, usage stats, devices;
   installable as a PWA), both clients of one server over a WebSocket speaking AG-UI.
-- Turns run where the files are: the server hands each `claude` call to a small runner on that
+- Turns run where the files are: the server hands each `claude` call to a small runner on its
   machine. Your Tailscale login is the only identity.
 - The chat fails over from Claude Code to the ChatGPT plan to an API key with a monthly budget,
   without losing a message. The compactor has its own chain per tree level.
