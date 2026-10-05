@@ -24,7 +24,7 @@ const until = (what: string, ok: () => boolean, ms = 4000) =>
   Effect.gen(function* () {
     const deadline = Date.now() + ms;
     while (!ok()) {
-      if (Date.now() > deadline) yield* Effect.die(new Error(`timed out waiting for ${what}`));
+      if (Date.now() > deadline) return yield* Effect.die(new Error(`timed out waiting for ${what}`));
       yield* Effect.sleep("5 millis");
     }
   });
@@ -380,7 +380,7 @@ test("a cancel right after a taken message was written does not log it again", a
         run: (input, out) =>
           Effect.gen(function* () {
             yield* out.took(yield* input.mid.next);
-            yield* Effect.never;
+            return yield* Effect.never;
           }),
         vision: false,
         warm: () => Effect.void,
