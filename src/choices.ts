@@ -20,6 +20,10 @@ export const loadChoices = (path: string, report: (message: string) => Effect.Ef
     return yield* Effect.try({ catch: why, try: () => readFileSync(path, "utf8") }).pipe(Effect.flatMap((text) => decode(text).pipe(Effect.mapError(why))));
   }).pipe(Effect.catch((error) => report(`session.json can't be used (${error}): the choices start afresh`).pipe(Effect.as({}))));
 
+// What the session starts with: the saved choice, else the config's (`master.followUp`). A file
+// that names none (an older server's, with only a `lead`) never unsets the config's.
+export const startingChoices = (config: Choices, saved: Choices): Choices => ({ followUp: saved.followUp ?? config.followUp });
+
 // Written whole, through a temporary file that is fsynced before the rename (0600, like the
 // store's files), so a crash leaves the old one or the new one; a failed write is said and costs
 // only the choice's surviving a restart.

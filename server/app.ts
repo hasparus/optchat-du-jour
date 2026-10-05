@@ -23,7 +23,7 @@ import { promptFile, systemPrompt } from "../src/prompts.ts";
 import { type Secrets, SecretsLive } from "../src/secrets.ts";
 import { makeSession, type SessionEvent } from "../src/session.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
-import { loadChoices, saveChoices } from "../src/choices.ts";
+import { loadChoices, saveChoices, startingChoices } from "../src/choices.ts";
 import { makeMaster } from "../src/master.ts";
 import { type UsageRecord, logUsage } from "../src/usage.ts";
 import { allowed, policyFor } from "./auth.ts";
@@ -90,7 +90,7 @@ export const routes = (o: ServerOptions) =>
       // the master's chain as the session keeps it (src/master.ts), made here so each engine can
       // ask whether the warm processes follow it: the most recent turn's (E18)
       const master = yield* makeMaster(settings.master.chain.map((r) => r.ref));
-      const choices = { followUp: settings.master.followUp, ...(yield* loadChoices(choicesPath, report)) };
+      const choices = startingChoices({ followUp: settings.master.followUp }, yield* loadChoices(choicesPath, report));
       const engines = yield* Effect.forEach(settings.master.chain, (ref) =>
         turnEngine(ref, { ...needs, instructions, runnerFor, systemFile, toolsFor, warms: () => master.latest() === ref.ref }),
       );

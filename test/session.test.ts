@@ -5,12 +5,12 @@
 import { afterAll, expect, test } from "bun:test";
 import { type AGUIEvent, EventType } from "@ag-ui/core";
 import { Effect, PubSub } from "effect";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
 import { openStream } from "../server/agui.ts";
 import { UsageLimit } from "../src/engines/errors.ts";
-import type { Choices } from "../src/choices.ts";
+import { type Choices, loadChoices, startingChoices } from "../src/choices.ts";
 import { type FollowUp, makeSession, noMedia, type SessionEvent } from "../src/session.ts";
 import { StoreError } from "../src/store.ts";
 import type { Provider } from "../src/providers/provider.ts";
@@ -981,6 +981,32 @@ test("the clients' choices are saved as they change, and a session starts from t
       expect(saved).toEqual([{ followUp: "steer" }]);
       expect(session.state().followUp).toBe("steer");
     }).pipe(Effect.scoped),
+  );
+});
+
+// session.json: a file an older server wrote (a `lead`, no follow-up) or one that names no
+// follow-up never unsets the config's `master.followUp`; a saved one wins
+test("a saved session.json without a follow-up keeps the config's; one with it wins; one that can't be read is said", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const dir = mkdtempSync(`${tmpdir()}/oc-`);
+      dirs.push(dir);
+      const reports: string[] = [];
+      const report = (m: string) => Effect.sync(() => void reports.push(m));
+      const start = (text: string | null) =>
+        Effect.gen(function* () {
+          const path = `${dir}/session-${reports.length}-${text?.length ?? 0}.json`;
+          if (text !== null) writeFileSync(path, text);
+          return startingChoices({ followUp: "queue" }, yield* loadChoices(path, report));
+        });
+      expect(yield* start(null)).toEqual({ followUp: "queue" });
+      expect(yield* start('{"lead":"openai-plan:gpt-6.1-sol"}\n')).toEqual({ followUp: "queue" });
+      expect(yield* start("{}\n")).toEqual({ followUp: "queue" });
+      expect(yield* start('{"followUp":"steer"}\n')).toEqual({ followUp: "steer" });
+      expect(reports).toEqual([]);
+      expect(yield* start("not json")).toEqual({ followUp: "queue" });
+      expect(reports).toHaveLength(1);
+    }),
   );
 });
 
