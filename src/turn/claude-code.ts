@@ -39,7 +39,7 @@ export type ClaudeCodeTurnOptions = {
   readonly permissionMode: string;
   readonly ttl: Ttl; // the TTL of Claude Code's own marks on a turn (E6)
   readonly primeTtl: Ttl; // the TTL of the marks priming writes
-  readonly systemFile: string;
+  readonly instructions: string; // the one system prompt (gist §7.2), sent inline on every device
   // DeviceOffline when the device can't be reached or can't be used
   readonly runnerFor: (device: string) => Effect.Effect<Placement, DeviceOffline>;
   readonly report: (message: string) => Effect.Effect<void>;
@@ -52,8 +52,8 @@ export type ClaudeCodeTurnOptions = {
 
 // One argv for the turn and its priming call: any difference between the two would cost the
 // whole view in cache writes (ref §13).
-export const masterArgs = (o: Pick<ClaudeCodeTurnOptions, "effort" | "model" | "permissionMode" | "systemFile" | "tools"> & { readonly mcpConfig: string }) => [
-  ...baseArgs({ effort: o.effort, model: o.model, systemFile: o.systemFile, tools: o.tools.join(",") }),
+export const masterArgs = (o: Pick<ClaudeCodeTurnOptions, "effort" | "instructions" | "model" | "permissionMode" | "tools"> & { readonly mcpConfig: string }) => [
+  ...baseArgs({ effort: o.effort, model: o.model, system: o.instructions, tools: o.tools.join(",") }),
   "--mcp-config",
   o.mcpConfig,
   "--permission-mode",

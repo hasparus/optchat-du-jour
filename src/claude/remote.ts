@@ -9,7 +9,7 @@ import { Socket } from "effect/socket";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { DeviceOffline } from "../engines/errors.ts";
-import { ClaudeError, type Runner, type Spawn, exitText, makeClaude } from "./process.ts";
+import { type Runner, type Spawn, exitText, makeClaude } from "./process.ts";
 import { TOOL_TIMEOUT } from "../tools/files.ts";
 import { Health, type ToDevice, type ToolCall, ToolReply, decodeFromDevice, frame, inbox } from "./wire.ts";
 
@@ -40,20 +40,6 @@ export const spawnUrl = (base: URL) => {
   return u.href;
 };
 
-// --system-prompt-file names a file on the server; the device gets the same bytes inline, so the
-// system prompt, and with it the cache key, is identical on every device (SPEC "Turn and priming")
-const inlineFiles = (args: readonly string[]) =>
-  Effect.gen(function* () {
-    const k = args.indexOf("--system-prompt-file");
-    const path = args[k + 1];
-    if (k === -1 || path === undefined) return [...args];
-    const text = yield* Effect.tryPromise({
-      catch: () => new ClaudeError({ message: `cannot read ${path}` }),
-      try: async () => Bun.file(path).text(),
-    });
-    return [...args.slice(0, k), "--system-prompt", text, ...args.slice(k + 2)];
-  });
-
 export const remoteRunner = (device: string, url: string, timeouts: Partial<RemoteTimeouts> = {}): Runner["Service"] => {
   const t = { ...TIMEOUTS, ...timeouts };
   const offline = (why: string) => new DeviceOffline({ message: `${device}: ${why}` });
@@ -83,14 +69,13 @@ export const remoteRunner = (device: string, url: string, timeouts: Partial<Remo
   );
 
   const spawn = Effect.fnUntraced(function* (o: Spawn) {
-    const args = yield* inlineFiles(o.args);
     const { frames, socket } = yield* connect;
     const write = yield* socket.writer;
     const send = (f: ToDevice) => write.write(frame(f));
     // a runner that hangs up, stalls or answers nonsense before Spawned is remembered as unreachable,
     // like a failed connect; a refusal is about this request (its cwd), so the next one still asks
     const reply = yield* Effect.gen(function* () {
-      yield* send({ _tag: "Spawn", args, cwd: o.cwd, env: { ...o.env } }).pipe(Effect.mapError((e) => offline(e.message)));
+      yield* send({ _tag: "Spawn", args: [...o.args], cwd: o.cwd, env: { ...o.env } }).pipe(Effect.mapError((e) => offline(e.message)));
       const ack = yield* Queue.take(frames).pipe(
         Effect.timeoutOption(t.spawn),
         Effect.mapError((e) => offline(`the device runner hung up before claude started (${e.message})`)),

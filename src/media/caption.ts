@@ -10,7 +10,7 @@ import type { ProviderRef, Ref } from "../config.ts";
 import { failover, watchChain } from "../engines/chain.ts";
 import { type EngineError, fromResult, ModelError, UsageLimit } from "../engines/errors.ts";
 import { type EngineNeeds, providerOf } from "../engines/registry.ts";
-import { CAPTION, CAPTION_FILE } from "../prompts.ts";
+import { CAPTION } from "../prompts.ts";
 import { headOf } from "../text.ts";
 import { tokensOf, type Tokens, type UsageRecord } from "../usage.ts";
 import { cleanCaption } from "../wire.ts";
@@ -48,7 +48,7 @@ export type CaptionNeeds = EngineNeeds & { readonly runner: Runner["Service"]; r
 // `claude -p` with no tools and no settings, its own system prompt, the image and the ask in one
 // stream-json message; the result's text is the caption
 const claudeCodeCaption = (model: string, o: CaptionNeeds): Describe => {
-  const args = [...baseArgs({ model, systemFile: CAPTION_FILE, tools: "" }), "--safe-mode"];
+  const args = [...baseArgs({ model, system: CAPTION, tools: "" }), "--safe-mode"];
   return (input, failoverFrom) =>
     Effect.gen(function* () {
       const started = Date.now();

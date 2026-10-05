@@ -1,8 +1,5 @@
 // The prompts (gist §4.4, §7.2 with ref D5 and D10) and SCALE, our own line of exactly NODE bytes.
-import { Effect } from "effect";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 
 const shipped = (file: string) => `${import.meta.dir}/../prompts/${file}`;
 const contents = (path: string) => readFileSync(path, "utf8");
@@ -10,6 +7,7 @@ const contents = (path: string) => readFileSync(path, "utf8");
 const contentsIfAny = (path: string) => (existsSync(path) ? contents(path) : "");
 
 export const COMPACT_FILE = shipped("compact.txt");
+export const COMPACT = contents(COMPACT_FILE); // the claude-code compactor's system prompt, inline
 export const CAPTION_FILE = shipped("caption.txt"); // the caption call's system prompt (SPEC "Media")
 export const CAPTION = contents(CAPTION_FILE);
 export const SCALE = contents(shipped("scale.txt"));
@@ -19,17 +17,3 @@ export const SCALE = contents(shipped("scale.txt"));
 // (no date, no working directory), so it is written once and every call shares its cache entry.
 export const systemPrompt = (home: string) =>
   [contents(shipped("master.txt")), contents(shipped("view_doc.txt")), contentsIfAny(`${home}/instructions.md`)].join("\n\n");
-
-// the text as a file for --system-prompt-file, removed with the scope
-export const promptFile = (text: string) =>
-  Effect.acquireRelease(
-    Effect.sync(() => {
-      const dir = mkdtempSync(join(tmpdir(), "optchat-system-"));
-      writeFileSync(`${dir}/system.txt`, text);
-      return { dir, path: `${dir}/system.txt` };
-    }),
-    ({ dir }) =>
-      Effect.sync(() => {
-        rmSync(dir, { force: true, recursive: true });
-      }),
-  ).pipe(Effect.map(({ path }) => path));

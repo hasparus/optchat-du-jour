@@ -45,7 +45,6 @@ export type CompactorNeeds = EngineNeeds & { readonly device?: string; readonly 
 export type TurnNeeds = EngineNeeds & {
   readonly lead: () => boolean; // it is the engine of the master's chain turns run on now: the user's pick (E4, E18)
   readonly instructions: string;
-  readonly systemFile: string;
   readonly runnerFor: (device: string) => Effect.Effect<Placement, DeviceOffline>;
   readonly toolsFor: (device: string) => ToolBox;
 };
@@ -82,6 +81,7 @@ export const turnEngine = (ref: Ref, o: TurnNeeds): Effect.Effect<TurnEngine> =>
     case "claude-code":
       return claudeCodeTurn({
         effort,
+        instructions: o.instructions,
         lead: o.lead,
         logUsage: o.log,
         model: ref.model,
@@ -89,7 +89,6 @@ export const turnEngine = (ref: Ref, o: TurnNeeds): Effect.Effect<TurnEngine> =>
         primeTtl: o.settings.cache.primeTtl,
         report: o.report,
         runnerFor: o.runnerFor,
-        systemFile: o.systemFile,
         tools: tools ?? MASTER_TOOLS,
         ttl: o.settings.cache.claudeCodeTtl,
       });

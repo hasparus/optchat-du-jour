@@ -13,6 +13,7 @@ import { serverLayer } from "../server/app.ts";
 import { CompactError } from "../src/compactor.ts";
 import { parseSettings } from "../src/config.ts";
 import { DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
+import { systemPrompt } from "../src/prompts.ts";
 import { freePort } from "./ports.ts";
 
 const FAKE = new URL("fake-claude.ts", import.meta.url).pathname;
@@ -110,7 +111,8 @@ test("a turn on another device runs there, and a turn on an offline device stops
         expect(there?.cwd).toBe(macbook);
         const argv = there?.argv ?? [];
         expect(argv[argv.indexOf("--mcp-config") + 1]).toContain(`"type":"ws","url":"ws://localhost:${port}/mcp?key=`);
-        expect(argv).toContain("--system-prompt"); // the server's file, inlined
+        // inline, on every device: the server's own text, byte for byte
+        expect(argv[argv.indexOf("--system-prompt") + 1]).toBe(systemPrompt(home));
         expect(argv).not.toContain("--system-prompt-file");
 
         // that claude calls /mcp at publicUrl, i.e. through tailscale serve, which adds the caller's

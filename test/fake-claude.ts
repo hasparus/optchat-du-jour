@@ -3,7 +3,7 @@
 // §16.4). The code under test runs it when OPTCHAT_CLAUDE names this file. No model, no network.
 //
 // It tells the four kinds of call apart the way optchat starts them:
-//   caption   --system-prompt-file .../caption.txt (an attachment's caption, SPEC "Media")
+//   caption   --system-prompt is the caption prompt (an attachment's caption, SPEC "Media")
 //   compact   --safe-mode in argv (the compactor)
 //   prime     DISABLE_PROMPT_CACHING=1 without --safe-mode (a priming call)
 //   turn      anything else
@@ -49,6 +49,7 @@
 import * as Schema from "effect/Schema";
 import { appendFileSync, existsSync, readFileSync, writeSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { CAPTION } from "../src/prompts.ts";
 
 const Usage = Schema.Struct({
   cache_creation_input_tokens: Schema.optional(Schema.Number),
@@ -100,8 +101,8 @@ type LogRecord =
 
 const argv = process.argv.slice(2);
 const { env } = process;
-const systemFile = argv[argv.indexOf("--system-prompt-file") + 1] ?? "";
-const role: Role = systemFile.endsWith("/caption.txt")
+const system = argv[argv.indexOf("--system-prompt") + 1] ?? "";
+const role: Role = system === CAPTION
   ? "caption"
   : argv.includes("--safe-mode")
     ? "compact"

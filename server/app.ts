@@ -19,7 +19,7 @@ import { OpenAiPlan, openAiPlanLayer } from "../src/openai/responses.ts";
 import { makeCaptioner } from "../src/media/caption.ts";
 import { makeMedia } from "../src/media/media.ts";
 import { makePersist } from "../src/persist.ts";
-import { promptFile, systemPrompt } from "../src/prompts.ts";
+import { systemPrompt } from "../src/prompts.ts";
 import { type Secrets, SecretsLive } from "../src/secrets.ts";
 import { makeSession, type SessionEvent } from "../src/session.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
@@ -85,7 +85,6 @@ export const routes = (o: ServerOptions) =>
       const chat = yield* openChat(stream, { report, summarize: compactor.summarize });
 
       const instructions = systemPrompt(o.home); // one text for every engine and device (gist §7.2)
-      const systemFile = yield* promptFile(instructions);
       const { runnerFor, toolsFor, unreachable } = yield* makePlacements({ device: o.device, local, mem: chat.mem, port: o.port, report, secret, settings });
       // the engine turns run on is the user's pick (src/lead.ts), made here so each engine can ask
       // whether it is the one, and kept in the data dir
@@ -93,7 +92,7 @@ export const routes = (o: ServerOptions) =>
       const choices = { followUp: settings.master.followUp, ...(yield* loadChoices(choicesPath, refs, report)) };
       const lead = yield* makeLead({ initial: choices.lead, refs });
       const engines = yield* Effect.forEach(settings.master.chain, (ref) =>
-        turnEngine(ref, { ...needs, instructions, lead: () => lead.ref() === ref.ref, runnerFor, systemFile, toolsFor }),
+        turnEngine(ref, { ...needs, instructions, lead: () => lead.ref() === ref.ref, runnerFor, toolsFor }),
       );
       // attachments: the shared asset store under the home, captions by their own chain (SPEC "Media")
       const mediaConfig = mediaSettings(settings);
