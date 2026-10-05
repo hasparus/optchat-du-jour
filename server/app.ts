@@ -3,7 +3,7 @@
 // the web UI) and / (the built web UI).
 import { BunHttpServer, BunServices } from "@effect/platform-bun";
 import { Effect, Layer, Option, Predicate, PubSub, Schema } from "effect";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+import { FetchHttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -13,9 +13,12 @@ import { LocalRunner, Runner } from "../src/claude/process.ts";
 import type { Summarize } from "../src/compactor.ts";
 import { DeviceOffline } from "../src/engines/errors.ts";
 import { handleMcp, mcpConfig } from "../src/mcp.ts";
+import { endpointsOf } from "../src/openai/auth.ts";
+import { openAiPlanLayer } from "../src/openai/responses.ts";
 import { makePersist } from "../src/persist.ts";
 import { promptFile, systemPrompt } from "../src/prompts.ts";
 import { makeSession } from "../src/session.ts";
+import { SecretsLive } from "../src/secrets.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
 import { getNode, localTime, span } from "../src/tree.ts";
 import { claudeCodeTurn } from "../src/turn/claude-code.ts";
@@ -257,6 +260,7 @@ export const serverLayer = (o: ServerOptions) =>
   HttpRouter.serve(routes(o)).pipe(
     Layer.provide(BunHttpServer.layer({ hostname: o.host, port: o.port })),
     Layer.provide(LocalRunner),
+    Layer.provide(openAiPlanLayer(endpointsOf(o.settings.openai)).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer]))),
     Layer.provide(BunServices.layer),
   );
 

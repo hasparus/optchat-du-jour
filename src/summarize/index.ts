@@ -6,6 +6,7 @@ import { failover } from "../engines/chain.ts";
 import type { EngineError } from "../engines/errors.ts";
 import type { UsageRecord } from "../usage.ts";
 import { claudeCodeCompactor } from "./claude-code.ts";
+import { openAiPlanCompactor } from "./openai-plan.ts";
 
 export const makeSummarize = (o: {
   readonly settings: Settings;
@@ -14,10 +15,12 @@ export const makeSummarize = (o: {
 }) =>
   Effect.gen(function* () {
     const engines = new Map<string, (job: Job, failoverFrom: string | null) => Effect.Effect<string, EngineError>>();
+    const { effort } = o.settings.compactor;
     for (const ref of new Set(o.settings.compactor.byLevel.flatMap((b) => b.chain))) {
       const [engine, model = ""] = ref.split(/:(.*)/s);
-      if (engine !== "claude-code") continue; // loadSettings refuses a chain naming an engine not built yet
-      engines.set(ref, yield* claudeCodeCompactor({ effort: o.settings.compactor.effort, log: o.log, model, ttl: o.settings.cache.claudeCodeTtl }));
+      // loadSettings refuses a chain naming an engine not built yet
+      if (engine === "claude-code") engines.set(ref, yield* claudeCodeCompactor({ effort, log: o.log, model, ttl: o.settings.cache.claudeCodeTtl }));
+      if (engine === "openai-plan") engines.set(ref, yield* openAiPlanCompactor({ effort, log: o.log, model }));
     }
     const summarize: Summarize = (job) =>
       failover(

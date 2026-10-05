@@ -42,6 +42,16 @@ export const Settings = Schema.Struct({
   defaultDevice: Schema.String,
   allowedLogins: Schema.Array(Schema.String),
   server: Schema.optional(Schema.Struct({ host: Schema.String, port: Schema.Int })),
+  // Sign in with ChatGPT endpoints, each overriding src/openai/auth.ts DEFAULT_ENDPOINTS
+  openai: Schema.optional(
+    Schema.Struct({
+      issuer: Schema.optional(Schema.String),
+      api: Schema.optional(Schema.String),
+      registerClientId: Schema.optional(Schema.String),
+      port: Schema.optional(Schema.Int),
+      agentName: Schema.optional(Schema.String),
+    }),
+  ),
 });
 export type Settings = typeof Settings.Type;
 
@@ -52,8 +62,8 @@ export const MASTER_TOOLS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "W
 
 export class ConfigError extends Data.TaggedError("ConfigError")<{ readonly message: string }> {}
 
-// the engines this build can run; a chain naming another is a configuration error, not a failover
-export const IMPLEMENTED: readonly string[] = ["claude-code"];
+// the engines this build can run, per role; a chain naming another is a configuration error, not a failover
+export const IMPLEMENTED = { compactor: ["claude-code", "openai-plan"], master: ["claude-code"] } as const satisfies Record<string, readonly string[]>;
 
 const decodeSettings = Schema.decodeUnknownEffect(Settings);
 // what `import` of optchat.config.ts gives: its default export is checked against Settings next
@@ -68,10 +78,14 @@ export const loadSettings = (path: string) =>
     const settings = yield* decodeSettings(module).pipe(
       Effect.mapError((e) => new ConfigError({ message: `${path}: ${e.message}` })),
     );
-    const engines = [...settings.master.chain, ...settings.compactor.byLevel.flatMap((b) => b.chain)];
-    for (const ref of engines)
-      if (!IMPLEMENTED.includes(ref.split(":")[0] ?? ""))
-        return yield* new ConfigError({ message: `${path}: engine ${ref} is not implemented yet` });
+    const roles = [
+      { built: IMPLEMENTED.master, refs: settings.master.chain, role: "master" },
+      { built: IMPLEMENTED.compactor, refs: settings.compactor.byLevel.flatMap((b) => b.chain), role: "compactor" },
+    ];
+    for (const { built, refs, role } of roles)
+      for (const ref of refs)
+        if (!built.some((engine) => ref.startsWith(`${engine}:`)))
+          return yield* new ConfigError({ message: `${path}: engine ${ref} is not implemented yet as a ${role}` });
     if (!(settings.defaultDevice in settings.devices))
       return yield* new ConfigError({ message: `${path}: defaultDevice ${settings.defaultDevice} is not among the devices` });
     return settings;
