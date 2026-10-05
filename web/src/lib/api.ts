@@ -1,0 +1,18 @@
+// The read-only JSON of /api/* (SPEC "Server, WebSocket API and CLI"), decoded at the boundary.
+import { Schema } from "effect";
+import { Devices, MessagesPage, NodeView, Usage, View } from "./protocol.ts";
+
+async function get<S extends Schema.Top & { readonly DecodingServices: never }>(path: string, schema: S): Promise<S["Type"]> {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`${path}: ${res.status} ${res.statusText}`);
+  return Schema.decodeUnknownPromise(schema)(await res.json());
+}
+
+export const api = {
+  // log entries before message `before`, oldest first
+  messages: (before: number, limit = 100) => get(`/api/messages?before=${before}&limit=${limit}`, MessagesPage),
+  view: () => get("/api/view", View),
+  node: (l: number, i: number) => get(`/api/node?l=${l}&i=${i}`, NodeView),
+  usage: () => get("/api/usage", Usage),
+  devices: () => get("/api/devices", Devices),
+};

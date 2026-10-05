@@ -54,7 +54,7 @@ export const TerminalCopyButton = ({ timeout = 2000, children, className, ...pro
     try {
       await navigator.clipboard.writeText(output);
       setIsCopied(true);
-      timeoutRef.current = globalThis.setTimeout(() => {
+      timeoutRef.current = window.setTimeout(() => {
         setIsCopied(false);
       }, timeout);
     } catch {
@@ -64,7 +64,7 @@ export const TerminalCopyButton = ({ timeout = 2000, children, className, ...pro
 
   useEffect(
     () => () => {
-      globalThis.clearTimeout(timeoutRef.current);
+      window.clearTimeout(timeoutRef.current);
     },
     [],
   );

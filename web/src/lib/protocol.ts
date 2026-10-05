@@ -34,7 +34,7 @@ const Message = Schema.Union([
     id: Schema.String,
     role: Schema.Literal("assistant"),
     content: Schema.optional(Schema.String),
-    toolCalls: Schema.optional(Schema.Array(ToolCall)),
+    toolCalls: Schema.optional(Schema.mutable(Schema.Array(ToolCall))),
   }),
   Schema.Struct({ id: Schema.String, role: Schema.Literal("tool"), content: Schema.String, toolCallId: Schema.String }),
 ]);
@@ -42,9 +42,9 @@ const Message = Schema.Union([
 const Patch = Schema.Struct({ op: Schema.Literal("replace"), path: Schema.String, value: Schema.Json });
 
 export const Inbound = Schema.Union([
-  Schema.Struct({ type: Schema.Literal(EventType.MESSAGES_SNAPSHOT), messages: Schema.Array(Message) }),
-  Schema.Struct({ type: Schema.Literal(EventType.STATE_SNAPSHOT), snapshot: Schema.Json }),
-  Schema.Struct({ type: Schema.Literal(EventType.STATE_DELTA), delta: Schema.Array(Patch) }),
+  Schema.Struct({ type: Schema.Literal(EventType.MESSAGES_SNAPSHOT), messages: Schema.mutable(Schema.Array(Message)) }),
+  Schema.Struct({ type: Schema.Literal(EventType.STATE_SNAPSHOT), snapshot: Schema.Record(Schema.String, Schema.Json) }),
+  Schema.Struct({ type: Schema.Literal(EventType.STATE_DELTA), delta: Schema.mutable(Schema.Array(Patch)) }),
   Schema.Struct({ type: Schema.Literal(EventType.RUN_STARTED), threadId: Schema.String, runId: Schema.String }),
   Schema.Struct({ type: Schema.Literal(EventType.RUN_FINISHED), threadId: Schema.String, runId: Schema.String }),
   Schema.Struct({ type: Schema.Literal(EventType.RUN_ERROR), message: Schema.String }),

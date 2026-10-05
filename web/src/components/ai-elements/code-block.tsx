@@ -162,7 +162,7 @@ export const CodeBlockCopyButton = ({ timeout = 2000, children, className, ...pr
     try {
       await navigator.clipboard.writeText(code);
       setIsCopied(true);
-      timeoutRef.current = globalThis.setTimeout(() => {
+      timeoutRef.current = window.setTimeout(() => {
         setIsCopied(false);
       }, timeout);
     } catch {
@@ -172,7 +172,7 @@ export const CodeBlockCopyButton = ({ timeout = 2000, children, className, ...pr
 
   useEffect(
     () => () => {
-      globalThis.clearTimeout(timeoutRef.current);
+      window.clearTimeout(timeoutRef.current);
     },
     [],
   );

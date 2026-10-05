@@ -1,0 +1,243 @@
+// The Chat screen (SPEC "Web UI", Chat): the log in a MessageScroller, newest last, older entries
+// prepended as the top comes into view; status and errors as markers between rows; the composer
+// with send, cancel and the device picker; messages that wait for the model in a Queue above it.
+import { Queue, QueueItem, QueueItemContent, QueueItemIndicator, QueueList, QueueSection, QueueSectionContent, QueueSectionLabel, QueueSectionTrigger } from "@/components/ai-elements/queue";
+import {
+  PromptInput,
+  PromptInputBody,
+  PromptInputFooter,
+  PromptInputStop,
+  PromptInputSubmit,
+  PromptInputTextarea,
+  PromptInputTools,
+} from "@/components/ai-elements/prompt-input";
+import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerViewport,
+  useMessageScroller,
+} from "@/components/ui/message-scroller";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { Spinner } from "@/components/ui/spinner";
+import { api } from "@/lib/api";
+import type { Link } from "@/lib/connection";
+import type { Device } from "@/lib/protocol";
+import { entryRows, mergeRows, messageRows, type Row, rowFor } from "@/lib/rows";
+import { type Marker as StatusMarker, queued, type Session, type SessionStore } from "@/lib/session";
+import { useChat } from "@tanstack/ai-react";
+import { AlertCircleIcon, InfoIcon } from "lucide-react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { ChatRow } from "./row";
+
+const PAGE = 100;
+
+function status(s: Session): string | null {
+  if (s.status !== "open") return s.status === "connecting" ? "connecting…" : "disconnected; reconnecting…";
+  switch (s.state?.phase) {
+    case "waiting":
+      return `waiting for ${s.state.waiting} summaries…`;
+    case "priming":
+      return "priming the cache…";
+    case "running":
+      return s.thinking ? "thinking…" : `running on ${s.state.device}${s.state.engine ? ` (${s.state.engine})` : ""}`;
+    case "idle":
+    case undefined:
+      return null;
+  }
+}
+
+function StatusRow({ marker }: { marker: StatusMarker }) {
+  return (
+    <Marker className={marker.tone === "error" ? "text-destructive" : undefined} data-testid={`marker-${marker.tone}`} role={marker.tone === "error" ? "alert" : "status"}>
+      <MarkerIcon>{marker.tone === "error" ? <AlertCircleIcon /> : <InfoIcon />}</MarkerIcon>
+      <MarkerContent>{marker.text}</MarkerContent>
+    </Marker>
+  );
+}
+
+// the markers that belong right after row k: at or after its log index, before the next row's
+const markersAfter = (markers: readonly StatusMarker[], rows: readonly Row[], k: number) => {
+  const from = rows[k]?.id ?? 0;
+  const to = rows[k + 1]?.id ?? Number.POSITIVE_INFINITY;
+  return markers.filter((m) => m.after >= from && m.after < to);
+};
+
+export type ChatProps = {
+  readonly link: Link;
+  readonly session: SessionStore;
+  readonly state: Session;
+  readonly devices: readonly Device[];
+  // a log index to show (from the Memory screen); done() once it is in view
+  readonly target: number | null;
+  readonly onTargetShown: () => void;
+};
+
+export function Chat({ link, session, state, devices, target, onTargetShown }: ChatProps) {
+  const { messages } = useChat({ connection: link.connection, live: true });
+  const [older, setOlder] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [device, setDevice] = useState<string | null>(null);
+  const { scrollToMessage } = useMessageScroller();
+  const top = useRef<HTMLDivElement>(null);
+
+  const rows = mergeRows(older, messageRows(messages));
+  const first = rows[0]?.id ?? 0;
+  const busy = state.state !== null && state.state.phase !== "idle";
+  const waiting = queued(state);
+  const line = status(state);
+
+  // one older page, prepended; true while there may be more
+  const loadOlder = useCallback(async () => {
+    if (loading || first <= 0) return false;
+    setLoading(true);
+    try {
+      const page = await api.messages(first, PAGE);
+      const more = entryRows(page.entries);
+      setOlder((rows_) => [...more, ...rows_.filter((r) => r.id >= first)]);
+      return (page.entries[0]?.i ?? 0) > 0;
+    } catch {
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  }, [first, loading]);
+
+  // the top in view: the page before it
+  useEffect(() => {
+    const el = top.current;
+    if (!el || !("IntersectionObserver" in globalThis)) return;
+    const io = new IntersectionObserver((seen) => {
+      if (seen.some((e) => e.isIntersecting)) void loadOlder();
+    });
+    io.observe(el);
+    return () => {
+      io.disconnect();
+    };
+  }, [loadOlder]);
+
+  // "show in chat": load pages until the message is among the rows, then scroll to it
+  useEffect(() => {
+    if (target === null || loading) return;
+    if (rows.length > 0 && first > target) {
+      void loadOlder();
+      return;
+    }
+    const row = rowFor(rows, target);
+    if (row) scrollToMessage(row.key, { align: "start" });
+    onTargetShown();
+  }, [target, rows, first, loading, loadOlder, scrollToMessage, onTargetShown]);
+
+  const lastTool = rows.findLast((r) => r.kind === "tool")?.key;
+  const lastRow = rows.at(-1)?.key;
+  const picked = device ?? state.state?.device ?? devices.find((d) => d.local)?.name ?? null;
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <MessageScroller className="min-h-0 flex-1">
+        <MessageScrollerViewport aria-label="Chat" preserveScrollOnPrepend>
+          <MessageScrollerContent className="gap-4 px-4 py-4">
+            <div className="flex justify-center" ref={top}>
+              {first > 0 && (
+                <button className="text-xs text-muted-foreground underline" disabled={loading} onClick={() => void loadOlder()} type="button">
+                  {loading ? "loading…" : "earlier messages"}
+                </button>
+              )}
+            </div>
+            {state.markers
+              .filter((m) => m.after < (rows[0]?.id ?? Number.POSITIVE_INFINITY))
+              .map((m) => (
+                <StatusRow key={`k${m.key}`} marker={m} />
+              ))}
+            {rows.map((row, k) => (
+              <Fragment key={row.key}>
+                <MessageScrollerItem data-log-index={row.id} messageId={row.key} scrollAnchor={row.kind === "user"}>
+                  <ChatRow
+                    row={row}
+                    streaming={busy && row.key === lastRow}
+                    toolState={row.kind === "tool" && row.output !== null ? "done" : busy && row.key === lastTool ? "running" : "ended"}
+                  />
+                </MessageScrollerItem>
+                {markersAfter(state.markers, rows, k).map((m) => (
+                  <StatusRow key={`k${m.key}`} marker={m} />
+                ))}
+              </Fragment>
+            ))}
+          </MessageScrollerContent>
+        </MessageScrollerViewport>
+        <MessageScrollerButton />
+      </MessageScroller>
+
+      <div className="space-y-2 border-t bg-background p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+        {line !== null && (
+          <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground" data-testid="status" role="status">
+            {busy && <Spinner className="size-3" />}
+            {line}
+          </div>
+        )}
+        {waiting.length > 0 && (
+          <Queue data-testid="queue">
+            <QueueSection>
+              <QueueSectionTrigger>
+                <QueueSectionLabel count={waiting.length} label="waiting for the model" />
+              </QueueSectionTrigger>
+              <QueueSectionContent>
+                <QueueList>
+                  {waiting.map((text, k) => (
+                    // the same text can wait twice; the position tells them apart
+                    // oxlint-disable-next-line react/no-array-index-key
+                    <QueueItem key={`${k}:${text}`}>
+                      <QueueItemIndicator />
+                      <QueueItemContent>{text}</QueueItemContent>
+                    </QueueItem>
+                  ))}
+                </QueueList>
+              </QueueSectionContent>
+            </QueueSection>
+          </Queue>
+        )}
+        <PromptInput
+          onSubmit={(text) => {
+            session.send(text, device);
+          }}
+        >
+          <PromptInputBody>
+            <PromptInputTextarea aria-label="Message" placeholder={busy ? "Add to the running turn" : "Message"} />
+          </PromptInputBody>
+          <PromptInputFooter>
+            <PromptInputTools>
+              {devices.length > 1 && (
+                <NativeSelect
+                  aria-label="Device"
+                  onChange={(e) => {
+                    setDevice(e.currentTarget.value);
+                  }}
+                  size="sm"
+                  value={picked ?? ""}
+                >
+                  {devices.map((d) => (
+                    <NativeSelectOption key={d.name} value={d.name}>
+                      {d.name}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+              )}
+            </PromptInputTools>
+            <div className="flex items-center gap-1">
+              {busy && (
+                <PromptInputStop
+                  onClick={() => {
+                    link.abort();
+                  }}
+                />
+              )}
+              <PromptInputSubmit />
+            </div>
+          </PromptInputFooter>
+        </PromptInput>
+      </div>
+    </div>
+  );
+}

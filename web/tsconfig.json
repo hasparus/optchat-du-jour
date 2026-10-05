@@ -17,7 +17,7 @@
     "noImplicitOverride": true,
 
     "paths": { "@/*": ["./src/*"] },
-    "types": ["bun", "vite/client", "vite-plugin-pwa/react"]
+    "types": ["bun", "vite/client", "vite-plugin-pwa/client"]
   },
   "include": ["src", "e2e", "*.ts"]
 }
