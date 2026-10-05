@@ -20,6 +20,8 @@ export default defineConfig({
     // scripts whose output is their report
     { files: ["test/parity/**"], rules: { "no-console": "off" } },
   ],
+  // the web UI's Tailwind theme, for better-tailwindcss's class checks
+  settings: { "better-tailwindcss": { entryPoint: "web/src/index.css" } },
   rules: {
     ...unsorted,
     // An exhaustive switch over a union returns on every path; this rule can't see that, and the

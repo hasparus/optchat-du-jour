@@ -1,0 +1,51 @@
+{
+  "name": "optchat-web",
+  "description": "the web UI: chat, memory and stats (SPEC \"Web UI\")",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p . && vite build",
+    "typecheck": "tsc -p .",
+    "test": "bun test",
+    "e2e": "playwright test"
+  },
+  "dependencies": {
+    "@ag-ui/core": "1.0.0",
+    "@shadcn/react": "0.3.1",
+    "@streamdown/code": "2.0.0",
+    "@tanstack/ai": "0.64.0",
+    "@tanstack/ai-client": "0.36.1",
+    "@tanstack/ai-react": "0.29.4",
+    "ansi-to-react": "6.2.6",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "effect": "4.0.1",
+    "lucide-react": "1.52.0",
+    "radix-ui": "1.6.7",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "recharts": "3.8.0",
+    "shadcn": "4.21.1",
+    "shiki": "4.5.0",
+    "streamdown": "2.7.0",
+    "tailwind-merge": "3.7.0",
+    "tw-animate-css": "1.4.0"
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "20.14.5",
+    "@playwright/test": "1.56.1",
+    "@tailwindcss/vite": "4.3.3",
+    "@testing-library/dom": "10.4.2",
+    "@testing-library/react": "16.3.3",
+    "@types/bun": "1.4.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "happy-dom": "20.14.5",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "vite": "8.3.2",
+    "vite-plugin-pwa": "2.0.0"
+  }
+}
