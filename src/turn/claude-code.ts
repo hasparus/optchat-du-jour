@@ -212,7 +212,7 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
         const { cwd, mcpConfig, runner } = yield* o.runnerFor(input.device);
         const claude = yield* runner
           .spawn({ args: argsFor(mcpConfig), cwd, env })
-          .pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(new ModelError({ message: e.message })))); // DeviceOffline fails over
+          .pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(new ModelError({ message: e.message })))); // DeviceOffline: priming skips quietly
         const started = yield* Clock.currentTimeMillis;
         // the view exactly as priming cut it, with no marks: Claude Code's own marks are on (D2)
         yield* claude.send([...cutBlocks(input.view).map(text), text(input.texts.join("\n\n"))]);
@@ -253,7 +253,7 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
         const { cwd, mcpConfig, runner } = yield* o.runnerFor(device);
         const claude = yield* runner
           .spawn({ args: argsFor(mcpConfig), cwd, env: { ...env, DISABLE_PROMPT_CACHING: "1" } })
-          .pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(new ModelError({ message: e.message })))); // DeviceOffline fails over
+          .pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(new ModelError({ message: e.message })))); // DeviceOffline: priming skips quietly
         const started = yield* Clock.currentTimeMillis;
         const marked = cutBlocks(view).map((t): Block => ({ cache_control: { ttl: o.primeTtl, type: "ephemeral" }, text: t, type: "text" }));
         yield* claude.send([...marked, text("ok")]);
