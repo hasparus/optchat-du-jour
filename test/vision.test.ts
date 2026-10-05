@@ -267,6 +267,61 @@ test("a picture sent mid-run reaches an engine that sees with the message that c
   );
 });
 
+// SPEC "Media": after a failover the next link is sent the pictures of the mid-run messages the
+// link before took, which it sees in `earlier` only by their marker lines; a blind one gets the note
+test("a failover after a mid-run picture message sends the next link that picture, or the note to one not sent images", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const seen: { ref: string; media: TurnInput["media"]; texts: readonly string[]; earlier: TurnInput["earlier"] }[] = [];
+      const note = (ref: string, input: TurnInput) => seen.push({ earlier: input.earlier, media: input.media, ref, texts: input.texts });
+      const taker: TurnEngine = {
+        ref: "taker:x",
+        run: (input, out) =>
+          Effect.gen(function* () {
+            note("taker:x", input);
+            const m = yield* input.mid.next;
+            yield* out.took(m);
+            return yield* new UsageLimit({ message: "spent" });
+          }),
+        vision: true,
+        warm: () => Effect.void,
+      };
+      const blind: TurnEngine = {
+        ref: "blind:x",
+        run: (input) => Effect.sync(() => note("blind:x", input)).pipe(Effect.andThen(Effect.fail(new UsageLimit({ message: "spent too" })))),
+        vision: false,
+        warm: () => Effect.void,
+      };
+      const seeing: TurnEngine = {
+        ref: "seeing:x",
+        run: (input, out) => Effect.sync(() => note("seeing:x", input)).pipe(Effect.andThen(out.log("talk", "a yellow star"))),
+        vision: true,
+        warm: () => Effect.void,
+      };
+      const f = fakeMedia();
+      const star = image(4);
+      f.describe(star, "a yellow star");
+      const r = yield* rig([taker, blind, seeing], f.media);
+      yield* r.session.input("go", undefined, "c1");
+      yield* until("the first call", () => seen.length === 1);
+      yield* r.session.input("what is it?", undefined, "c2", [star]);
+      yield* until("the run's end", () => r.ended() === 1);
+      const asked = `what is it?\n[image ${shortSha(star.sha)} 1568x1176 195KB: a yellow star]`;
+      const earlier = [{ kind: "user", text: asked }] as const;
+      expect(seen).toEqual([
+        { earlier: [], media: [], ref: "taker:x", texts: ["go"] },
+        { earlier, media: [], ref: "blind:x", texts: ["go", BLIND] },
+        { earlier, media: [PIC], ref: "seeing:x", texts: ["go"] },
+      ]);
+      expect(r.log()).toEqual([
+        ["user", "go"],
+        ["user", asked],
+        ["talk", "a yellow star"],
+      ]);
+    }).pipe(Effect.scoped),
+  );
+});
+
 test("a caption that never comes is logged as not described; more than four attachments are cut to four, and said", async () => {
   await Effect.runPromise(
     Effect.gen(function* () {

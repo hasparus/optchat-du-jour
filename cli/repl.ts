@@ -295,8 +295,7 @@ export function makeScreen(o: ScreenOptions) {
         case "interrupt":
           if (busy) {
             armed = true;
-            note("cancel sent; a second Ctrl-C exits");
-            return { type: "abort" };
+            return { type: "abort" }; // `cancel` says whether it went out
           }
           if (wasArmed) return { type: "exit" };
           armed = true;
@@ -310,6 +309,11 @@ export function makeScreen(o: ScreenOptions) {
           hidePrompt();
           return { type: "suspend" };
       }
+    },
+
+    // the abort a Ctrl-C asked for went to the server, or was dropped: the socket was not open
+    cancel(sent: boolean) {
+      note(sent ? "cancel sent; a second Ctrl-C exits" : "not connected: the cancel was not sent");
     },
 
     // back from Ctrl-Z
@@ -360,6 +364,34 @@ export type ReplOptions = {
   readonly stdin?: NodeJS.ReadStream;
   readonly stdout?: NodeJS.WriteStream;
 };
+
+// What goes to the server's socket. A message sent while it is closed waits, and goes out in order
+// when it opens again. An abort never waits: sent only while it is open (false otherwise), so a
+// stale one never cancels the next turn (SPEC "Server, WebSocket API and CLI").
+export type Wire = { readonly send: (frame: string) => void };
+export const ABORT = JSON.stringify({ type: "abort" });
+export function makeLink() {
+  let socket: Wire | null = null;
+  const outbox: string[] = [];
+  return {
+    opened(ws: Wire) {
+      socket = ws;
+      for (const f of outbox.splice(0)) ws.send(f);
+    },
+    closed() {
+      socket = null;
+    },
+    send(frame: string) {
+      if (socket) socket.send(frame);
+      else outbox.push(frame);
+    },
+    abort() {
+      if (!socket) return false;
+      socket.send(ABORT);
+      return true;
+    },
+  };
+}
 
 const runInput = (text: string, id: string) =>
   JSON.stringify({
@@ -421,18 +453,12 @@ export const runRepl = (o: ReplOptions) =>
       const wsUrl = new URL("/ws", o.url);
       wsUrl.protocol = wsUrl.protocol === "https:" ? "wss:" : "ws:";
       let ws: WebSocket | null = null;
-      let open = false;
+      const link = makeLink();
       let everOpen = false;
       let closing = false;
       let ended = false; // stdin ended (piped): exit once every message sent from here is answered
       let retries = 0;
       let retryTimer: ReturnType<typeof setTimeout> | undefined;
-      const outbox: string[] = [];
-
-      const send = (frame: string) => {
-        if (open && ws) ws.send(frame);
-        else outbox.push(frame);
-      };
       const done = (failure?: string) => {
         if (closing) return;
         closing = true;
@@ -452,10 +478,10 @@ export const runRepl = (o: ReplOptions) =>
         if (!a) return;
         switch (a.type) {
           case "send":
-            send(runInput(a.text, a.id));
+            link.send(runInput(a.text, a.id));
             return;
           case "abort":
-            send(JSON.stringify({ type: "abort" }));
+            screen.cancel(link.abort());
             return;
           case "exit":
             done();
@@ -516,11 +542,10 @@ export const runRepl = (o: ReplOptions) =>
         const socket = new WebSocket(wsUrl);
         ws = socket;
         socket.addEventListener("open", () => {
-          open = true;
           everOpen = true;
           retries = 0;
           screen.connected();
-          for (const f of outbox.splice(0)) socket.send(f);
+          link.opened(socket);
         });
         socket.addEventListener("message", (m) => {
           Option.map(parseInbound(String(m.data)), (e) => {
@@ -529,7 +554,7 @@ export const runRepl = (o: ReplOptions) =>
           });
         });
         socket.addEventListener("close", () => {
-          open = false;
+          link.closed();
           if (!closing) lost();
         });
       };

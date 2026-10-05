@@ -18,6 +18,8 @@
 // reply k answering the k-th message the call starts work on (the last reply repeats); a call
 // may also be written as one reply, a plain list of actions. Actions:
 //   {text: "..."}                 a streamed text delta, then the assistant text block
+//   {synthetic: "..."}            an assistant text block of model "<synthetic>", unstreamed: how
+//                                 Claude Code reports an API error before its error result
 //   {thinking: N}                 a thinking delta of ~N tokens and an empty thinking block
 //   {tool: {name, input}}         an assistant tool_use block
 //   {toolResult: "..."}           the user event carrying that tool's result
@@ -56,6 +58,7 @@ const Usage = Schema.Struct({
 });
 const Action = Schema.Union([
   Schema.Struct({ text: Schema.String }),
+  Schema.Struct({ synthetic: Schema.String }),
   Schema.Struct({ thinking: Schema.Number }),
   Schema.Struct({ tool: Schema.Struct({ input: Schema.Json, name: Schema.String }) }),
   Schema.Struct({ toolResult: Schema.String }),
@@ -209,6 +212,8 @@ async function play(reply: Reply): Promise<boolean> {
       said.push(a.text);
       emit({ event: { delta: { text: a.text, type: "text_delta" }, index: 0, type: "content_block_delta" }, type: "stream_event" });
       emit({ message: { content: [{ text: a.text, type: "text" }], model, role: "assistant" }, type: "assistant" });
+    } else if ("synthetic" in a) {
+      emit({ message: { content: [{ text: a.synthetic, type: "text" }], model: "<synthetic>", role: "assistant" }, type: "assistant" });
     } else if ("thinking" in a) {
       start();
       emit({ event: { delta: { estimated_tokens: a.thinking, thinking: "", type: "thinking_delta" }, index: 0, type: "content_block_delta" }, type: "stream_event" });

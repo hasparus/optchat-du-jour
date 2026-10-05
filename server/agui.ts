@@ -9,6 +9,14 @@ import { type SessionState, splitTool, toolCallId } from "../src/wire.ts";
 
 export type AgUiEvent = AGUIEvent;
 
+// The tool call the next echo answers, once `e` is logged: a tool entry opens its call, an echo
+// closes it. One rule for the snapshot (toMessages) and for a connection's live events, so a
+// client that joins between a tool and its echo pairs them as the snapshot does.
+const openCall = (open: string | null, e: Entry): string | null => {
+  if (e.kind === "tool") return toolCallId(e.i);
+  return e.kind === "echo" ? null : open;
+};
+
 // the log as AG-UI messages: user and note entries are user messages (a note named "note"), talk an
 // assistant message, a tool entry an assistant message with one tool call, an echo the tool message
 // answering the nearest tool call before it
@@ -29,13 +37,13 @@ export function toMessages(entries: readonly Entry[]): Message[] {
         break;
       case "tool": {
         const { args, name } = splitTool(e.text);
-        open = toolCallId(e.i);
-        out.push({ id, role: "assistant", toolCalls: [{ function: { arguments: args, name }, id: open, type: "function" }] });
+        open = openCall(open, e);
+        out.push({ id, role: "assistant", toolCalls: [{ function: { arguments: args, name }, id: toolCallId(e.i), type: "function" }] });
         break;
       }
       case "echo":
         out.push({ content: e.text, id, role: "tool", toolCallId: open ?? toolCallId(e.i) });
-        open = null;
+        open = openCall(open, e);
         break;
     }
   }
@@ -79,7 +87,9 @@ export function openStream(o: {
   let from = o.entries.length; // the first log index this connection has not been shown
   let run: string | null = null; // the run whose RUN_STARTED it got
   let text: { id: string; sent: number } | null = null; // the open reply: its id (log index) and how much of it went out
+  // the tool call its next echo answers, from where its snapshot ends (openCall)
   let tool: string | null = null;
+  for (const e of upTo(from)) tool = openCall(tool, e);
 
   const closeText = (): AgUiEvent[] => {
     if (text === null) return [];
@@ -114,17 +124,18 @@ export function openStream(o: {
         return [...closeText(), ...whole(id, "assistant", entry.text)];
       case "tool": {
         const { args, name } = splitTool(entry.text);
-        tool = toolCallId(entry.i);
+        const call = toolCallId(entry.i);
+        tool = openCall(tool, entry);
         return [
           ...closeText(),
-          { parentMessageId: id, toolCallId: tool, toolCallName: name, type: EventType.TOOL_CALL_START },
-          { delta: args, toolCallId: tool, type: EventType.TOOL_CALL_ARGS },
-          { toolCallId: tool, type: EventType.TOOL_CALL_END },
+          { parentMessageId: id, toolCallId: call, toolCallName: name, type: EventType.TOOL_CALL_START },
+          { delta: args, toolCallId: call, type: EventType.TOOL_CALL_ARGS },
+          { toolCallId: call, type: EventType.TOOL_CALL_END },
         ];
       }
       case "echo": {
         const call = tool ?? toolCallId(entry.i);
-        tool = null;
+        tool = openCall(tool, entry);
         return [...closeText(), { content: entry.text, messageId: id, role: "tool", toolCallId: call, type: EventType.TOOL_CALL_RESULT }];
       }
       case "user":
