@@ -52,6 +52,24 @@ jobs:
           cd kernel && bend kernel.bend -o kernel.mjs
           git diff --exit-code kernel.mjs
 
+      # --verdict re-checks with BendTT, a kernel proven in Lean: it needs Lean's toolchain, and Bend
+      # builds that kernel once into ~/.bend/bendtt
+      - name: Cache Lean and the BendTT build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan
+            ~/.bend/bendtt
+          key: lean-v4.34.0-${{ hashFiles('kernel/install-bend.sh') }}
+
+      - name: Install Lean v4.34.0
+        run: |
+          if [ ! -x "$HOME/.elan/bin/lean" ]; then
+            curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+              | sh -s -- -y --no-modify-path --default-toolchain leanprover/lean4:v4.34.0
+          fi
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
       - name: Every law in LAWS.bend is proven, also by the Lean-proven kernel
         run: cd kernel && bend PROOF.bend --verdict | tee /dev/stderr | grep -qx "ALL PROOFS CHECK"
 
