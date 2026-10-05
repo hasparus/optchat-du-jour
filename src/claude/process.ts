@@ -89,7 +89,7 @@ export const LocalRunner = Layer.effect(
         extendEnv: true,
         forceKillAfter: KILL_GRACE,
         killSignal: "SIGTERM",
-        stdin: { encoding: "utf-8", stream: Stream.fromQueue(stdin).pipe(Stream.encodeText) },
+        stdin: { encoding: "utf8", stream: Stream.fromQueue(stdin).pipe(Stream.encodeText) },
       });
       const handle = yield* spawner
         .spawn(command)

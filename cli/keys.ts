@@ -8,16 +8,16 @@ export type Key =
 
 const PASTE_START = "\u001B[200~";
 const PASTE_END = "\u001B[201~";
-const CONTROL: Record<string, Key> = {
-  "\u0003": { type: "interrupt" },
-  "\u0004": { type: "eof" },
-  "\u0008": { type: "backspace" },
-  "\u0015": { type: "clear" },
-  "\u001A": { type: "suspend" },
-  "\r": { type: "enter" },
-  "\n": { type: "enter" },
-  "\u007F": { type: "backspace" },
-};
+const CONTROL = new Map<string, Key>([
+  ["\u0003", { type: "interrupt" }],
+  ["\u0004", { type: "eof" }],
+  ["\u0008", { type: "backspace" }],
+  ["\u0015", { type: "clear" }],
+  ["\u001A", { type: "suspend" }],
+  ["\r", { type: "enter" }],
+  ["\n", { type: "enter" }],
+  ["\u007F", { type: "backspace" }],
+]);
 
 // the end of an escape sequence: CSI (ESC [ ... final byte), SS3 (ESC O x), or ESC and one char
 function escapeLength(s: string, at: number): number | null {
@@ -25,8 +25,8 @@ function escapeLength(s: string, at: number): number | null {
   const next = s[at + 1];
   if (next === "[") {
     for (let k = at + 2; k < s.length; k++) {
-      const c = s.charCodeAt(k);
-      if (c >= 0x40 && c <= 0x7e) return k - at + 1;
+      const c = s.codePointAt(k) ?? 0;
+      if (c >= 0x40 && c <= 0x7E) return k - at + 1;
     }
     return null;
   }
@@ -48,9 +48,9 @@ export function makeKeys() {
     for (;;) {
       if (paste !== null) {
         const end = buf.indexOf(PASTE_END);
-        if (end < 0) {
+        if (end === -1) {
           // keep what could be the start of the end marker
-          const keep = [...Array(PASTE_END.length).keys()].findLast((k) => k > 0 && buf.endsWith(PASTE_END.slice(0, k))) ?? 0;
+          const keep = Array.from({ length: PASTE_END.length }, (_, k) => k).findLast((k) => k > 0 && buf.endsWith(PASTE_END.slice(0, k))) ?? 0;
           paste += buf.slice(0, buf.length - keep);
           buf = buf.slice(buf.length - keep);
           break;
@@ -75,11 +75,11 @@ export function makeKeys() {
         buf = buf.slice(n); // arrows and the rest: dropped
         continue;
       }
-      const control = CONTROL[c];
-      if (control) {
+      const key = CONTROL.get(c);
+      if (key) {
         flush();
         // CRLF is one Enter
-        keys.push(control);
+        keys.push(key);
         buf = buf.slice(c === "\r" && buf[1] === "\n" ? 2 : 1);
         continue;
       }

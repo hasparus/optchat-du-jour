@@ -116,7 +116,7 @@ export const makeSession = (o: {
       Effect.forEach(texts, (t) => log("user", t.text, null, t.device), { discard: true });
 
     const turn = Effect.gen(function* () {
-      while (queue.length) {
+      while (queue.length > 0) {
         device = queue.findLast((q) => q.device)?.device ?? o.defaultDevice;
         const on = device;
         if (unbuilt(chat.mem)) {
@@ -161,7 +161,7 @@ export const makeSession = (o: {
         sent = [];
         if (result._tag === "Success") queue.unshift(...leftover.map((text) => ({ device: on, text }))); // a fresh call with a new view
         else {
-          yield* info(`${failureText(result.failure)}`);
+          yield* info(failureText(result.failure));
           yield* logUnanswered(leftover.map((text) => ({ device: on, text })));
         }
         yield* publish({ error: result._tag === "Success" ? null : result.failure.message, runId, type: "run-finished" });
@@ -195,7 +195,7 @@ export const makeSession = (o: {
     const start = Effect.suspend(() => {
       if (loop) return Effect.void;
       return turn.pipe(
-        Effect.catch((e: StoreError) => info(`error: ${e.message}`)),
+        Effect.catch((error: StoreError) => info(`error: ${error.message}`)),
         Effect.onInterrupt(() => onCancel.pipe(Effect.ignore)),
         Effect.ensuring(afterLoop),
         Effect.forkIn(scope),
@@ -233,7 +233,8 @@ const failureText = (e: EngineError | StoreError) => {
       return `device offline: ${e.message}`;
     case "UsageLimit":
       return `usage limit: ${e.message}`;
-    default:
+    case "ModelError":
+    case "StoreError":
       return `error: ${e.message}`;
   }
 };

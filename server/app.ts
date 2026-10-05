@@ -2,7 +2,7 @@
 // and their HTTP face on one port: /ws (AG-UI), /mcp (zoom and date), /api/* (read-only JSON for
 // the web UI) and / (the built web UI).
 import { BunHttpServer, BunServices } from "@effect/platform-bun";
-import { Effect, Layer, Option, PubSub, Schema } from "effect";
+import { Effect, Layer, Option, Predicate, PubSub, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 import { existsSync } from "node:fs";
@@ -40,28 +40,32 @@ const expand = (path: string) => path.replace(/^~(?=\/|$)/, homedir());
 
 // What a client sends: AG-UI's RunAgentInput (the newest user message is the one to answer), or an abort
 const TextPart = Schema.Struct({ text: Schema.optional(Schema.String), type: Schema.String });
+const InboundMessage = Schema.Struct({ content: Schema.optional(Schema.Union([Schema.String, Schema.Array(TextPart)])), role: Schema.String });
 const Inbound = Schema.Union([
   Schema.Struct({ type: Schema.Literal("abort") }),
   Schema.Struct({
     forwardedProps: Schema.optional(Schema.Struct({ device: Schema.optional(Schema.String) })),
-    messages: Schema.Array(
-      Schema.Struct({ content: Schema.optional(Schema.Union([Schema.String, Schema.Array(TextPart)])), role: Schema.String }),
-    ),
+    messages: Schema.Array(InboundMessage),
   }),
 ]);
 const decodeInbound = Schema.decodeUnknownOption(Schema.fromJsonString(Inbound));
 
-const lastUserText = (messages: readonly { readonly role: string; readonly content?: string | readonly { readonly text?: string }[] }[]) => {
-  const m = messages.findLast((x) => x.role === "user");
-  if (!m?.content) return "";
-  return typeof m.content === "string" ? m.content : m.content.map((p) => p.text ?? "").join("");
+const lastUserText = (messages: readonly (typeof InboundMessage.Type)[]) => {
+  const content = messages.findLast((x) => x.role === "user")?.content ?? "";
+  return Predicate.isString(content) ? content : content.map((p) => p.text ?? "").join("");
 };
 
 const Before = Schema.Struct({ before: Schema.optional(Schema.NumberFromString), limit: Schema.optional(Schema.NumberFromString) });
 const NodeAt = Schema.Struct({ i: Schema.NumberFromString, l: Schema.NumberFromString });
 
+const logReport = (message: string) => Effect.logInfo(message);
+const forbidden = HttpServerResponse.text("forbidden", { status: 403 });
+const json = (body: Schema.Json) => HttpServerResponse.jsonUnsafe(body);
+// HttpRouter.use, renamed: the React hooks rule takes any `use(` call for a hook
+const mount = HttpRouter.use;
+
 export const routes = (o: ServerOptions) =>
-  HttpRouter.use((router) =>
+  mount((router) =>
     Effect.gen(function* () {
       const { settings } = o;
       const usagePath = `${o.home}/usage.jsonl`;
@@ -70,7 +74,7 @@ export const routes = (o: ServerOptions) =>
       const secret = crypto.randomUUID();
       const local = yield* Runner;
 
-      let report = (message: string) => Effect.logInfo(message);
+      let report = logReport;
       const usage = (record: UsageRecord) => logUsage(usagePath, record).pipe(Effect.flatMap((e) => (e ? report(e) : Effect.void)));
       const summarize = o.summarize ?? (yield* makeSummarize({ log: usage, report: (m) => report(m), settings }));
       const chat = yield* openChat(stream, { report: (m) => report(m), summarize });
@@ -115,8 +119,6 @@ export const routes = (o: ServerOptions) =>
 
       const guard = (request: HttpServerRequest.HttpServerRequest) =>
         allowed({ header: (name) => request.headers[name], remoteAddress: request.remoteAddress }, settings.allowedLogins);
-      const forbidden = HttpServerResponse.text("forbidden", { status: 403 });
-      const json = (body: unknown) => HttpServerResponse.jsonUnsafe(body);
 
       yield* router.add("GET", "/ws", (request) =>
         Effect.gen(function* () {
@@ -126,7 +128,7 @@ export const routes = (o: ServerOptions) =>
           const send = (events: readonly AgUiEvent[]) => Effect.forEach(events, (e) => write.write(JSON.stringify(e)), { discard: true });
           const live = yield* PubSub.subscribe(session.events); // before the snapshot, so nothing falls between
           const translate = makeTranslator(thread, session.state(), () => chat.mem.root.length);
-          yield* send(snapshot(chat.mem.root.slice(-(o.window ?? 200)), session.state(), thread));
+          yield* send(snapshot(chat.mem.root.slice(-(o.window ?? 200)), session.state()));
           yield* session.primeSoon;
           yield* PubSub.take(live).pipe(
             Effect.flatMap((e) => send(translate(e))),
@@ -236,7 +238,7 @@ export const routes = (o: ServerOptions) =>
 
       // the built web UI; any other path is the app's (it has no router)
       if (o.web && existsSync(`${o.web}/index.html`)) {
-        const web = o.web;
+        const { web } = o;
         yield* router.add("GET", "/*", (request) =>
           Effect.gen(function* () {
             if (!guard(request)) return forbidden;

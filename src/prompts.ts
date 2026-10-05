@@ -24,5 +24,8 @@ export const promptFile = (text: string) =>
       writeFileSync(`${dir}/system.txt`, text);
       return { dir, path: `${dir}/system.txt` };
     }),
-    ({ dir }) => Effect.sync(() => rmSync(dir, { force: true, recursive: true })),
+    ({ dir }) =>
+      Effect.sync(() => {
+        rmSync(dir, { force: true, recursive: true });
+      }),
   ).pipe(Effect.map(({ path }) => path));

@@ -47,7 +47,7 @@ export const logUsage = (path: string, record: UsageRecord) =>
   Effect.sync(() => {
     try {
       appendFileSync(path, `${JSON.stringify(record)}\n`);
-      return undefined;
+      return null;
     } catch (error) {
       return `usage.jsonl: ${error instanceof Error ? error.message : String(error)}`;
     }

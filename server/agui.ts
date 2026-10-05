@@ -1,17 +1,17 @@
 // The WebSocket speaks AG-UI events (E15, SPEC "Protocol"). The log stays the truth: a client
 // that connects gets a snapshot of its last window, then the live events of every turn, whoever
 // started it. Message ids are log indexes.
-import type { BaseEvent, Message } from "@ag-ui/core";
+import type { AGUIEvent, Message } from "@ag-ui/core";
 import { EventType } from "@ag-ui/core";
 import type { SessionEvent, SessionState } from "../src/session.ts";
 import type { Entry } from "../src/tree.ts";
 
-export type AgUiEvent = BaseEvent & Record<string, unknown>;
+export type AgUiEvent = AGUIEvent;
 
 // a tool entry is "<name> <json input>" (ref §5.3)
 export const splitTool = (text: string) => {
   const space = text.indexOf(" ");
-  return space < 0 ? { args: "", name: text } : { args: text.slice(space + 1), name: text.slice(0, space) };
+  return space === -1 ? { args: "", name: text } : { args: text.slice(space + 1), name: text.slice(0, space) };
 };
 const toolCallId = (i: number) => `t${i}`;
 
@@ -48,8 +48,8 @@ export function toMessages(entries: readonly Entry[]): Message[] {
   return out;
 }
 
-export const snapshot = (entries: readonly Entry[], state: SessionState, thread: string): AgUiEvent[] => [
-  { messages: toMessages(entries), threadId: thread, type: EventType.MESSAGES_SNAPSHOT },
+export const snapshot = (entries: readonly Entry[], state: SessionState): AgUiEvent[] => [
+  { messages: toMessages(entries), type: EventType.MESSAGES_SNAPSHOT },
   { snapshot: state, type: EventType.STATE_SNAPSHOT },
 ];
 
@@ -57,7 +57,7 @@ export const snapshot = (entries: readonly Entry[], state: SessionState, thread:
 const delta = (before: SessionState, after: SessionState) =>
   Object.entries(after)
     .filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(Object.entries(before).find(([b]) => b === k)?.[1]))
-    .map(([k, v]) => ({ op: "replace", path: `/${k}`, value: v }));
+    .map(([k, v]) => ({ op: "replace" as const, path: `/${k}`, value: v }));
 
 // One translator per connection: it remembers the open text message and tool call of the turn.
 export function makeTranslator(thread: string, initial: SessionState, nextIndex: () => number) {
@@ -130,7 +130,7 @@ export function makeTranslator(thread: string, initial: SessionState, nextIndex:
           ...closeText(),
           e.error === null
             ? { runId: e.runId, threadId: thread, type: EventType.RUN_FINISHED }
-            : { message: e.error, runId: e.runId, type: EventType.RUN_ERROR },
+            : { message: e.error, type: EventType.RUN_ERROR },
         ];
       case "info":
         return [{ name: "info", type: EventType.CUSTOM, value: e.message }];
@@ -139,7 +139,7 @@ export function makeTranslator(thread: string, initial: SessionState, nextIndex:
       case "state": {
         const ops = delta(state, e.state);
         state = e.state;
-        return ops.length ? [{ delta: ops, type: EventType.STATE_DELTA }] : [];
+        return ops.length > 0 ? [{ delta: ops, type: EventType.STATE_DELTA }] : [];
       }
     }
   };

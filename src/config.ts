@@ -56,14 +56,16 @@ export class ConfigError extends Data.TaggedError("ConfigError")<{ readonly mess
 export const IMPLEMENTED: readonly string[] = ["claude-code"];
 
 const decodeSettings = Schema.decodeUnknownEffect(Settings);
+// what `import` of optchat.config.ts gives: its default export is checked against Settings next
+const decodeModule = Schema.decodeUnknownSync(Schema.Struct({ default: Schema.Json }));
 
 export const loadSettings = (path: string) =>
   Effect.gen(function* () {
     const module = yield* Effect.tryPromise({
       catch: (cause) => new ConfigError({ message: `cannot load ${path}: ${cause instanceof Error ? cause.message : String(cause)}` }),
-      try: async (): Promise<{ readonly default?: unknown }> => import(path),
+      try: async () => decodeModule(await import(path)).default,
     });
-    const settings = yield* decodeSettings(module.default).pipe(
+    const settings = yield* decodeSettings(module).pipe(
       Effect.mapError((e) => new ConfigError({ message: `${path}: ${e.message}` })),
     );
     const engines = [...settings.master.chain, ...settings.compactor.byLevel.flatMap((b) => b.chain)];
@@ -77,4 +79,4 @@ export const loadSettings = (path: string) =>
 
 // the compactor chain for a node at `level`: the last entry whose `from` is at or below it
 export const chainFor = (settings: Settings, level: number) =>
-  settings.compactor.byLevel.filter((b) => b.from <= level).at(-1)?.chain ?? settings.compactor.byLevel[0].chain;
+  settings.compactor.byLevel.findLast((b) => b.from <= level)?.chain ?? settings.compactor.byLevel[0].chain;
