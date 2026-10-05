@@ -11,13 +11,14 @@ export const makeSummarize = (o: {
   readonly settings: Settings;
   readonly log: (record: UsageRecord) => Effect.Effect<void>;
   readonly report: (message: string) => Effect.Effect<void>;
+  readonly device?: string; // the machine the compactor calls run on
 }) =>
   Effect.gen(function* () {
     const engines = new Map<string, (job: Job, failoverFrom: string | null) => Effect.Effect<string, EngineError>>();
     for (const ref of new Set(o.settings.compactor.byLevel.flatMap((b) => b.chain))) {
       const [engine, model = ""] = ref.split(/:(.*)/s);
       if (engine !== "claude-code") continue; // loadSettings refuses a chain naming an engine not built yet
-      engines.set(ref, yield* claudeCodeCompactor({ effort: o.settings.compactor.effort, log: o.log, model, ttl: o.settings.cache.claudeCodeTtl }));
+      engines.set(ref, yield* claudeCodeCompactor({ device: o.device, effort: o.settings.compactor.effort, log: o.log, model, ttl: o.settings.cache.claudeCodeTtl }));
     }
     const summarize: Summarize = (job) =>
       failover(

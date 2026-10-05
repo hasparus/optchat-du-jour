@@ -13,7 +13,7 @@ export type EngineError = DeviceOffline | ModelError | Refusal | UsageLimit;
 const LIMIT = /usage limit|rate limit|rate_limit|overloaded|\b429\b/i;
 
 export const fromResult = (text: string, stopReason: string | null | undefined): EngineError => {
-  if (stopReason === "refusal") return new Refusal({ message: "the model refused this request" });
+  if (stopReason === "refusal") return new Refusal({ message: "the model would not answer this message" });
   if (LIMIT.test(text)) return new UsageLimit({ message: text });
   return new ModelError({ message: text });
 };

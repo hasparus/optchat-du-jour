@@ -1,7 +1,7 @@
 // The terminal REPL (ref §10), a client of the server's /ws (E1). Plain output, no redraws beyond
 // the input line, so the scrollback works. The screen is a state machine fed keys and AG-UI
 // events; `runRepl` wires it to the terminal and the socket.
-import { Effect, Option, Schema } from "effect";
+import { Data, Effect, Option, Schema } from "effect";
 import { type Key, makeKeys } from "./keys.ts";
 
 const Phase = Schema.Literals(["idle", "priming", "running", "waiting"]);
@@ -73,6 +73,8 @@ export function makeScreen(o: ScreenOptions) {
   let shownWaiting = -1;
   let headerShown = false;
   const mine: string[] = []; // sent from here, not logged yet: their user events are not shown again
+  let logging = 0; // sent from here and logged, their run not over yet
+  let offline = false; // the connection is down and the user has been told so
   const users = new Set<string>(); // the ids of user messages being logged
 
   const dim = (s: string) => (o.color ? `\u001B[2m${s}\u001B[0m` : s);
@@ -107,7 +109,8 @@ export function makeScreen(o: ScreenOptions) {
   };
 
   const header = (st: State) => {
-    note(`optchat: ${st.messages} messages · view ${kb(st.viewBytes)}/${st.budget / 1000} KB (${Math.round((100 * st.viewBytes) / st.budget)}%) · device ${st.device}`);
+    const percent = Math.round((st.viewBytes / st.budget) * 100);
+    note(`optchat: ${st.messages} messages · view ${kb(st.viewBytes)}/${st.budget / 1000} KB (${percent}%) · device ${st.device}`);
     note(o.tty ? "Ctrl-C cancels, Ctrl-D exits" : "reading messages from stdin");
   };
 
@@ -120,6 +123,9 @@ export function makeScreen(o: ScreenOptions) {
       header(st);
     }
     busy = st.phase !== "idle";
+    // idle comes after the loop committed: whatever of ours it logged has had its answer, or had
+    // its turn cancelled before it began (waiting or priming: no run, so no run end)
+    if (!busy) logging = 0;
     if (st.phase === "waiting" && st.waiting !== shownWaiting && st.waiting > 0) note(`waiting for ${st.waiting} summaries…`);
     shownWaiting = st.phase === "waiting" ? st.waiting : -1;
     showPrompt();
@@ -129,7 +135,10 @@ export function makeScreen(o: ScreenOptions) {
   const logged = (text: string) => {
     const at = mine.indexOf(text);
     if (at === -1) note(`> ${row(clean(text))}`);
-    else mine.splice(at, 1);
+    else {
+      mine.splice(at, 1);
+      logging++;
+    }
   };
 
   const sent = (text: string) => {
@@ -140,6 +149,13 @@ export function makeScreen(o: ScreenOptions) {
   return {
     get busy() {
       return busy;
+    },
+
+    // messages sent from here that are not answered yet: not logged, or logged and their run still
+    // going. One counts as answered when the run that logged it ends (or the session goes idle after
+    // logging it), never by the session's phase alone: the server may not have read it yet.
+    get unanswered() {
+      return mine.length + logging;
     },
 
     // the last view lines, before the socket's first state
@@ -179,8 +195,10 @@ export function makeScreen(o: ScreenOptions) {
           return;
         case "RUN_FINISHED":
           thinking = false;
+          logging = 0;
           return;
         case "RUN_ERROR":
+          logging = 0;
           note(`error: ${clean(e.message)}`);
           return;
         case "CUSTOM":
@@ -251,7 +269,7 @@ export function makeScreen(o: ScreenOptions) {
         case "interrupt":
           if (busy) {
             armed = true;
-            note("cancelled (Ctrl-C again exits)");
+            note("cancel sent; a second Ctrl-C exits");
             return { type: "abort" };
           }
           if (wasArmed) return { type: "exit" };
@@ -279,23 +297,36 @@ export function makeScreen(o: ScreenOptions) {
       if (!atLineStart) o.write("\n");
     },
 
-    // the socket went away or came back
-    disconnected() {
+    // the socket went away, or could not be opened: said once per outage
+    disconnected(retrying: boolean) {
       busy = false;
       mine.length = 0;
+      logging = 0;
       users.clear();
-      note("disconnected from the server; reconnecting…");
+      if (offline) return;
+      offline = true;
+      note(retrying ? "no connection to the server; trying again in the background…" : "no connection to the server");
+    },
+
+    // the socket is open again after an outage
+    connected() {
+      if (!offline) return;
+      offline = false;
+      note("connected to the server again");
     },
   };
 }
 export type Screen = ReturnType<typeof makeScreen>;
 
-// ---------------------------------------------------------------------------------------------
-
+// runRepl: the screen wired to the terminal and the socket
 const PASTE_ON = "\u001B[?2004h";
 const PASTE_OFF = "\u001B[?2004l";
-const RECONNECT_MS = 2000;
+// a lost server is tried again after 2 s, then twice as long each time, up to 30 s
+const RETRY_FIRST_MS = 2000;
+const RETRY_MAX_MS = 30_000;
 const INTRO_LINES = 5;
+
+class ReplError extends Data.TaggedError("ReplError")<{ readonly message: string }> {}
 
 export type ReplOptions = {
   readonly url: string; // http(s)://host:port of optchat-server
@@ -338,7 +369,7 @@ export const runRepl = (o: ReplOptions) =>
     if (Option.isSome(view)) {
       const lines = view.value.lines.filter((l) => l.n === 1).slice(-INTRO_LINES);
       screen.intro(
-        lines.map((l) => `${l.id}+${l.n}|${l.text}`),
+        lines.map((v) => `${v.id}+${v.n}|${v.text}`),
         view.value.lines.length,
       );
     }
@@ -359,29 +390,35 @@ export const runRepl = (o: ReplOptions) =>
     );
     yield* terminal;
 
-    yield* Effect.callback<"ended">((resume) => {
+    yield* Effect.callback<"ended", ReplError>((resume) => {
       const wsUrl = new URL("/ws", o.url);
       wsUrl.protocol = wsUrl.protocol === "https:" ? "wss:" : "ws:";
       let ws: WebSocket | null = null;
       let open = false;
+      let everOpen = false;
       let closing = false;
-      let ended = false; // stdin ended: exit once nothing runs
-      let timer: ReturnType<typeof setTimeout> | undefined;
+      let ended = false; // stdin ended (piped): exit once every message sent from here is answered
+      let retries = 0;
+      let retryTimer: ReturnType<typeof setTimeout> | undefined;
       const outbox: string[] = [];
 
       const send = (frame: string) => {
         if (open && ws) ws.send(frame);
         else outbox.push(frame);
       };
-      const done = () => {
+      const done = (failure?: string) => {
         if (closing) return;
         closing = true;
-        clearTimeout(timer);
+        clearTimeout(retryTimer);
         ws?.close();
         stdin.off("data", onData);
         stdin.pause();
         process.off("SIGCONT", onCont);
-        resume(Effect.succeed("ended"));
+        resume(failure === undefined ? Effect.succeed("ended") : Effect.fail(new ReplError({ message: failure })));
+      };
+      // piped: the input is all sent and all answered
+      const finishedPiping = () => {
+        if (ended && screen.unanswered === 0) done();
       };
       const act = (a: Action | null) => {
         if (!a) return;
@@ -428,35 +465,58 @@ export const runRepl = (o: ReplOptions) =>
         stdin.on("end", () => {
           act(screen.submit(pending));
           ended = true;
-          if (!screen.busy) done();
+          finishedPiping();
         });
       stdin.resume();
+
+      // Piped, a lost connection ends the run: what was sent may or may not have reached the server,
+      // so it exits non-zero rather than guess. At a terminal it says so once and keeps trying,
+      // backing off, until the server is back.
+      const lost = () => {
+        if (!tty) {
+          if (ended && screen.unanswered === 0) done();
+          else if (everOpen) done(`the connection to ${o.url} closed with ${screen.unanswered} message(s) unanswered`);
+          else done(`cannot reach the server at ${o.url}`);
+          return;
+        }
+        screen.disconnected(true);
+        retryTimer = setTimeout(connect, Math.min(RETRY_MAX_MS, RETRY_FIRST_MS * 2 ** retries));
+        retries++;
+      };
 
       const connect = () => {
         const socket = new WebSocket(wsUrl);
         ws = socket;
         socket.addEventListener("open", () => {
           open = true;
+          everOpen = true;
+          retries = 0;
+          screen.connected();
           for (const f of outbox.splice(0)) socket.send(f);
         });
         socket.addEventListener("message", (m) => {
           Option.map(parseInbound(String(m.data)), (e) => {
             screen.event(e);
-            if (ended && !screen.busy) done();
+            finishedPiping();
           });
         });
         socket.addEventListener("close", () => {
           open = false;
-          if (closing) return;
-          screen.disconnected();
-          if (ended) {
-            done();
-            return;
-          }
-          timer = setTimeout(connect, RECONNECT_MS);
+          if (!closing) lost();
         });
       };
       connect();
-      return Effect.sync(done);
+      return Effect.sync(() => {
+        done();
+      });
     });
-  }).pipe(Effect.scoped);
+  }).pipe(
+    Effect.scoped,
+    // the REPL's own failure: said on stderr, and the exit code is 1 (cli/optchat.ts needs nothing more)
+    Effect.catchTag("ReplError", (e) =>
+      Effect.sync(() => {
+        process.stderr.write(`optchat: ${e.message}\n`);
+        process.exitCode = 1;
+      }),
+    ),
+  );

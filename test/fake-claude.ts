@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// A stand-in for `claude -p --input-format stream-json --output-format stream-json` (ref §10,
+// Our fake `claude`: it speaks the stream-json of `claude -p` on stdin and stdout (ref §10,
 // §16.4). The code under test runs it when OPTCHAT_CLAUDE names this file. No model, no network.
 //
 // It tells the three kinds of call apart the way optchat starts them:

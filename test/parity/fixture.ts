@@ -19,7 +19,9 @@ function rng(seed: number) {
 }
 
 function words(r: () => number, n: number) {
-  return Array.from({ length: n }, () => WORDS[Math.floor(r() * WORDS.length)]).join(" ");
+  const picked: string[] = [];
+  while (picked.length < n) picked.push(WORDS[Math.floor(r() * WORDS.length)] ?? "");
+  return picked.join(" ");
 }
 
 export function fixture(count = 900, seed = 42): FixtureMsg[] {

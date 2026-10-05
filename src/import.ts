@@ -3,33 +3,44 @@
 import { Data, Effect } from "effect";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { buildFree } from "./compactor.ts";
 import { appendMessage, appendNode, loadChat, lock, newMsg } from "./store.ts";
 import type { Node } from "./records.ts";
-import { setNode } from "./tree.ts";
+import { dayOf, setNode } from "./tree.ts";
 import { refold } from "./view.ts";
 
-export const OPTMEM_LOG = `${homedir()}/.optmem/memory/LOG.txt`;
+// where OptMem keeps its notes (ref §10)
+export const OPTMEM_LOG = join(homedir(), ".optmem", "memory", "LOG.txt");
 
 export class ImportError extends Data.TaggedError("ImportError")<{ readonly message: string }> {}
 
 export type Note = { readonly n: number; readonly date: Date; readonly text: string };
 
-const RECORD = /^#(\d+) (\d{4})-(\d{2})-(\d{2}) (.*)$/s;
+// `#<n> <YYYY-MM-DD> <text>` (ref §10); the record's padding is trimmed off the text later
+const RECORD = /^#([0-9]+) ([0-9-]{10}) (.*)$/s;
 
-// LOG.txt: one `#<n> <YYYY-MM-DD> <text>` record per line, padded with spaces. Throws on the
-// first thing that is off, before anything is written.
+// the day a note was written, at noon local time, or null when the date names no real day
+function noon(day: string): Date | null {
+  const parts = day.split("-").map(Number);
+  const [year = 0, month = 0, date = 0] = parts;
+  const at = new Date(year, month - 1, date, 12);
+  return parts.length === 3 && dayOf(at) === day ? at : null;
+}
+
+// LOG.txt holds one record per line. Nothing is written until the whole file has parsed; the
+// first problem throws.
 export function parseOptmem(raw: string): Note[] {
   const notes: Note[] = [];
   for (const [k, line] of raw.split("\n").entries()) {
-    if (!line.trim()) continue;
-    const m = RECORD.exec(line);
-    if (!m) throw new ImportError({ message: `line ${k + 1}: not an OptMem record` });
-    const [n = "", y = "", mo = "", d = "", text = ""] = m.slice(1);
-    if (Number(n) !== notes.length) throw new ImportError({ message: `line ${k + 1}: expected #${notes.length}, found #${n}` });
-    const date = new Date(Number(y), Number(mo) - 1, Number(d), 12);
-    if (date.getFullYear() !== Number(y) || date.getMonth() !== Number(mo) - 1 || date.getDate() !== Number(d))
-      throw new ImportError({ message: `line ${k + 1}: bad date ${y}-${mo}-${d}` });
+    if (line.trim() === "") continue;
+    const where = `LOG.txt line ${k + 1}`;
+    const fields = RECORD.exec(line);
+    if (fields === null) throw new ImportError({ message: `${where}: no #<n> <date> <text> record here` });
+    const [n = "", day = "", text = ""] = fields.slice(1);
+    if (Number(n) !== notes.length) throw new ImportError({ message: `${where}: note #${n} where #${notes.length} should be` });
+    const date = noon(day);
+    if (date === null) throw new ImportError({ message: `${where}: ${day} is not a calendar date` });
     notes.push({ date, n: notes.length, text: text.trim() });
   }
   return notes;
@@ -44,15 +55,16 @@ export const importOptmem = (dir: string, path = OPTMEM_LOG) =>
     Effect.gen(function* () {
       const notes = yield* Effect.try({
         catch: (e) => (e instanceof ImportError ? e : new ImportError({ message: `cannot read ${path}: ${String(e)}` })),
-        try: () => parseOptmem(readFileSync(path, "utf8")),
+        try: () => parseOptmem(readFileSync(path, { encoding: "utf8" })),
       });
       yield* lock(dir);
       const { mem } = yield* loadChat(dir);
-      if (mem.root.length > 0) return yield* new ImportError({ message: `${dir} already holds ${mem.root.length} messages; import only into an empty chat` });
+      const present = mem.root.length;
+      if (present !== 0) return yield* new ImportError({ message: `refusing to import: ${dir} is not empty (${present} messages logged)` });
       for (const note of notes) {
-        const m = newMsg(note.n, "note", note.text, note.date);
-        yield* appendMessage(dir, m);
-        mem.root.push(m);
+        const entry = newMsg(note.n, "note", note.text, note.date);
+        yield* appendMessage(dir, entry);
+        mem.root.push(entry);
       }
       // saved and kept, not fitted: the fold below sees them all
       const keep = (n: Node) =>

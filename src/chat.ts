@@ -1,6 +1,7 @@
-// The running chat: the lock, the memory and the pump, alive for as long as the scope is.
-import { type Duration, Effect } from "effect";
-import { type Commit, makePump, type Summarize } from "./compactor.ts";
+// openChat: one writer's whole chat. It holds the lock, owns the memory and runs the pump until
+// its scope closes.
+import { Effect, Semaphore } from "effect";
+import { type Commit, makePump, type PumpOptions } from "./compactor.ts";
 import type { Kind } from "./records.ts";
 import { appendMessage, appendNode, loadChat, lock, newMsg, type StoreError } from "./store.ts";
 import type { Entry, Mem } from "./tree.ts";
@@ -10,43 +11,45 @@ export type Chat = {
   readonly dir: string;
   readonly mem: Mem;
   readonly problems: readonly string[];
-  // every message is logged and fsynced, then the pump looks for work (gist §7)
+  // gist §7: a message reaches the disk (written and synced) before anything else happens to it;
+  // only then is the compactor given the chance to start on it
   readonly kick: Effect.Effect<void, StoreError>;
-  readonly log: (kind: Kind, text: string, extra?: { readonly device?: string }) => Effect.Effect<Entry, StoreError>;
+  readonly log: (kind: Kind, body: string, extra?: { readonly device?: string }) => Effect.Effect<Entry, StoreError>;
 };
 
 // The pump's commit: a node is on disk (fsynced) before memory knows it, so the view never
 // leans on a summary a crash could lose. addNode refits the view.
-export const committer =
-  (dir: string, mem: Mem): Commit =>
-  (n) =>
-    Effect.gen(function* () {
-      yield* appendNode(dir, n);
-      addNode(mem, n);
-    });
+export function committer(dir: string, mem: Mem): Commit {
+  return (n) =>
+    appendNode(dir, n).pipe(
+      Effect.map(() => {
+        addNode(mem, n);
+      }),
+    );
+}
 
-export const openChat = Effect.fn("openChat")(function* (
-  dir: string,
-  o: {
-    readonly budget?: number;
-    readonly jobs?: number;
-    readonly report?: (message: string) => Effect.Effect<void>;
-    readonly retry?: Duration.Input;
-    readonly summarize: Summarize;
-  },
-) {
+export const openChat = Effect.fn("openChat")(function* (dir: string, o: PumpOptions & { readonly budget?: number }) {
   yield* lock(dir);
   const { mem, problems } = yield* loadChat(dir, { budget: o.budget });
-  const pump = yield* makePump({ commit: committer(dir, mem), jobs: o.jobs, mem, report: o.report, retry: o.retry, summarize: o.summarize });
-  const log = (kind: Kind, text: string, extra: { readonly device?: string } = {}) =>
-    Effect.gen(function* () {
-      const m = { ...newMsg(mem.root.length, kind, text), ...extra };
-      yield* appendMessage(dir, m);
-      addMessage(mem, m);
-      // the message is stored: a pump that cannot start now is reported, and log still succeeds
-      yield* pump.nudge;
-      return m;
+  const commit = committer(dir, mem);
+  const pump = yield* makePump({ ...o, commit, mem });
+  // one message stored at a time, so two concurrent logs never take the same id
+  const storing = yield* Semaphore.make(1);
+  const store = (kind: Kind, body: string, extra: { readonly device?: string }) =>
+    Effect.suspend(() => {
+      const id = mem.root.length;
+      const entry = { ...newMsg(id, kind, body), ...extra };
+      return appendMessage(dir, entry).pipe(
+        Effect.map(() => {
+          addMessage(mem, entry);
+          return entry;
+        }),
+      );
     });
-  yield* pump.kick; // catch up: the free nodes and whatever the last run left unbuilt
+  // once the message is stored, logging it has succeeded: a pump that cannot start is reported
+  const log: Chat["log"] = (kind, body, extra = {}) =>
+    storing.withPermit(store(kind, body, extra)).pipe(Effect.tap(() => pump.nudge));
+  // at startup there may be work already: free nodes to build, nodes an earlier run never finished
+  yield* pump.kick;
   return { dir, kick: pump.kick, log, mem, problems } satisfies Chat;
 });

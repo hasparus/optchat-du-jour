@@ -18,6 +18,7 @@ export type CompactorOptions = {
   readonly effort: string;
   readonly ttl: "1h" | "5m";
   readonly log: (record: UsageRecord) => Effect.Effect<void>;
+  readonly device?: string; // where the call runs, for its usage record: the server's own machine
   readonly timeout?: Duration.Input; // CALL_TIMEOUT
 };
 
@@ -33,7 +34,7 @@ export function step(job: Job): string {
 // one call to the next, so the next call reads them from the cache.
 export function blocks(job: Job, ttl: "1h" | "5m"): Block[] {
   const chat = ["<chat>", ...job.ctx, "</chat>"].join("\n");
-  const context = cutBlocks(chat).map((text): Block => ({ cache_control: { ttl, type: "ephemeral" }, text, type: "text" }));
+  const context = cutBlocks(chat).map((piece): Block => ({ cache_control: { ttl, type: "ephemeral" }, text: piece, type: "text" }));
   return [...context, { text: step(job), type: "text" }];
 }
 
@@ -80,7 +81,7 @@ export const claudeCodeCompactor = (o: CompactorOptions) =>
             auth: "claude-max",
             cold: isCold(usage),
             date: new Date(yield* Clock.currentTimeMillis).toISOString(),
-            device: null,
+            device: o.device ?? null,
             engine: "claude-code",
             failoverFrom,
             level: job.l,
@@ -91,11 +92,12 @@ export const claudeCodeCompactor = (o: CompactorOptions) =>
           });
           if (result.is_error || result.stop_reason === "refusal")
             return yield* fromResult(result.result ?? `the call ended with ${result.subtype ?? "an error"}`, result.stop_reason);
-          const line = (result.result ?? "").trim();
-          if (!line) return yield* new ModelError({ message: "the compactor answered with an empty line" });
-          tries.push(line);
-          if (bytes(line) <= NODE || tries.length >= TRIES) return shortest(tries);
-          message = [{ text: retryText(line), type: "text" }];
+          const answer = result.result?.trim() ?? "";
+          if (answer === "") return yield* new ModelError({ message: "the compactor answered with an empty line" });
+          tries.push(answer);
+          const fits = bytes(answer) <= NODE;
+          if (fits || tries.length === TRIES) return shortest(tries);
+          message = [{ text: retryText(answer), type: "text" }];
         }
       }).pipe(
         Effect.scoped, // the process ends with the node
