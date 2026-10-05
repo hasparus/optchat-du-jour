@@ -1,7 +1,7 @@
 // The REPL's screen: what reaches the terminal when the server's events and the user's keys interleave.
 import { describe, expect, test } from "bun:test";
 import { Option } from "effect";
-import { type Action, type Inbound, makeScreen, parseInbound } from "../cli/repl.ts";
+import { ABORT, type Action, type Inbound, makeLink, makeScreen, parseInbound } from "../cli/repl.ts";
 
 const IDLE = { budget: 128_000, device: "mini", messages: 3, phase: "idle", viewBytes: 1000, waiting: 0 } satisfies Record<string, string | number>;
 
@@ -128,6 +128,14 @@ describe("repl screen", () => {
     expect(t.out().match(/> lost/g)).toHaveLength(1); // its echo as it was sent
   });
 
+  test("a cancel the socket could not send is said, not claimed", () => {
+    const t = screen();
+    t.s.cancel(true);
+    t.s.cancel(false);
+    expect(t.out()).toContain("cancel sent; a second Ctrl-C exits\n");
+    expect(t.out()).toContain("not connected: the cancel was not sent\n");
+  });
+
   test("a lost connection is told once, and so is its return", () => {
     const t = screen();
     t.s.disconnected(true);
@@ -137,5 +145,31 @@ describe("repl screen", () => {
     t.s.connected();
     expect(t.out().match(/no connection to the server/g)).toHaveLength(1);
     expect(t.out().match(/connected to the server again/g)).toHaveLength(1);
+  });
+});
+
+// SPEC "Server, WebSocket API and CLI": a client sends an abort only while connected, so a stale
+// one never cancels the next turn; messages wait for the socket and go out in order
+describe("repl link", () => {
+  test("while closed a message waits and an abort is dropped; once open both go straight out", () => {
+    const wire: string[] = [];
+    const ws = { send: (f: string) => void wire.push(f) };
+    const link = makeLink();
+    link.send("first");
+    expect(link.abort()).toBe(false);
+    link.send("second");
+    expect(wire).toEqual([]);
+    link.opened(ws);
+    expect(wire).toEqual(["first", "second"]); // no abort: the turn "first" starts is not cancelled
+    expect(link.abort()).toBe(true);
+    link.send("third");
+    expect(wire).toEqual(["first", "second", ABORT, "third"]);
+    link.closed();
+    expect(link.abort()).toBe(false);
+    link.send("fourth");
+    expect(wire).toHaveLength(4);
+    link.opened(ws);
+    expect(wire.at(-1)).toBe("fourth");
+    expect(wire.filter((f) => f === ABORT)).toHaveLength(1);
   });
 });
