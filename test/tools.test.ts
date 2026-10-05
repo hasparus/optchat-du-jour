@@ -54,6 +54,35 @@ test("Read, Glob and Grep stay inside the folders through .., symlinks and absol
   expect(box.defs.map((d) => d.name)).toEqual(["Read", "Glob", "Grep", "zoom", "date"]);
 });
 
+test("a Grep pattern that backtracks without end times out, and the server stays responsive meanwhile", async () => {
+  const folder = tmp();
+  // (a+)+$ takes exponential time on a's ending in b: about half a second a line at 28 a's, so
+  // 300 lines are minutes (a single longer line is cut short by the engine's own backtrack limit)
+  writeFileSync(`${folder}/evil.txt`, `${"a".repeat(28)}b\n`.repeat(300));
+  writeFileSync(`${folder}/fine.txt`, "needle\n");
+  const run = await Effect.runPromise(makeFileTools([folder], { timeout: "1 second" }).pipe(Effect.provide(BunServices.layer)));
+
+  // the event loop keeps ticking while the search spins in its own thread
+  let last = performance.now(), worst = 0;
+  const tick = setInterval(() => {
+    const now = performance.now();
+    worst = Math.max(worst, now - last);
+    last = now;
+  }, 10);
+  const started = performance.now();
+  const reply = await Effect.runPromise(run("Grep", { path: `${folder}/evil.txt`, pattern: "(a+)+$" }));
+  const took = performance.now() - started;
+  clearInterval(tick);
+
+  expect(reply).toBe("Error: Grep took longer than 1s");
+  expect(took).toBeLessThan(3000);
+  expect(worst).toBeLessThan(500);
+
+  // the next search starts afresh, and a plain one in the same folder is answered
+  expect(await Effect.runPromise(run("Grep", { pattern: "needle" }))).toBe(`${folder}/fine.txt`);
+  expect(await Effect.runPromise(run("Grep", { pattern: "(" }))).toStartWith("Error: bad pattern");
+});
+
 test("the device runner's POST /tool answers a trusted caller and refuses a browser", async () => {
   const folder = tmp();
   writeFileSync(`${folder}/notes.txt`, "hello\n");

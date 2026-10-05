@@ -3,9 +3,10 @@
 // no shell. Every path is resolved first (`~`, `..`, symlinks) and must land in one of the
 // folders, as the device runner checks a spawn's cwd (SPEC "Multi-machine"). The device runner
 // serves these on POST /tool; the server's own device runs the same code in-process.
-import { Data, Effect, FileSystem, Option, Schema } from "effect";
+import { Data, Duration, Effect, FileSystem, Option, Schema } from "effect";
 import { isAbsolute, resolve } from "node:path";
 import { expandHome } from "../paths.ts";
+import { type GrepJob, binary } from "./grep-search.ts";
 
 export class Outside extends Data.TaggedError("Outside")<{ readonly message: string }> {}
 
@@ -32,6 +33,7 @@ const GREP_BYTES = 1_000_000; // a bigger file is skipped by Grep
 const OUTPUT = 100_000; // characters of output at most; the log keeps CAP of it
 const MATCHES = 1000; // paths from Glob at most
 export const TOOL_TIMEOUT = "30 seconds";
+const GREP_WORKER = new URL("grep-worker.ts", import.meta.url);
 
 // what the model gets to call: JSON schemas without descriptions inside, the tool's own text above
 export type ToolDef = { readonly name: string; readonly description: string; readonly parameters: Schema.Json };
@@ -94,7 +96,6 @@ const decodeGrep = Schema.decodeUnknownOption(GrepInput);
 class Refused extends Data.TaggedError("Refused")<{ readonly message: string }> {}
 
 const failed = (cause: unknown) => new Refused({ message: cause instanceof Error ? cause.message : String(cause) });
-const binary = (text: string) => text.slice(0, 8000).includes("\u0000");
 
 // output cut at OUTPUT characters, saying so
 const bounded = (lines: readonly string[]) => {
@@ -111,12 +112,35 @@ const bounded = (lines: readonly string[]) => {
 // a pattern stays below the folder it searches: no absolute patterns, no `..`
 const relativePattern = (pattern: string) => !pattern.startsWith("/") && !pattern.startsWith("~") && !pattern.split("/").includes("..");
 
+// The search runs in a Worker, so a pattern that backtracks without end blocks the worker and
+// nothing else: the timeout (or an interrupt) terminates it.
+const search = (job: GrepJob) =>
+  Effect.callback<readonly string[], Refused>((resume) => {
+    const worker = new Worker(GREP_WORKER);
+    const done = (result: Effect.Effect<readonly string[], Refused>) => {
+      worker.terminate();
+      resume(result);
+    };
+    worker.addEventListener("message", (event: MessageEvent<{ readonly lines?: readonly string[]; readonly error?: string }>) => {
+      const { lines, error } = event.data;
+      done(lines === undefined ? Effect.fail(new Refused({ message: error ?? "the search failed" })) : Effect.succeed(lines));
+    });
+    worker.addEventListener("error", (event) => {
+      done(Effect.fail(new Refused({ message: event.message })));
+    });
+    worker.postMessage(job);
+    return Effect.sync(() => {
+      worker.terminate();
+    }); // interrupted: the timeout, a cancelled turn
+  });
+
 export type FileTools = (name: string, input: Schema.Json) => Effect.Effect<string>;
 
 // The tools for one device's folders (as configured, `~` being this machine's home). Every
 // failure is the tool's answer, as text: the model reads it and carries on.
-export const makeFileTools = (folders: readonly string[]) =>
+export const makeFileTools = (folders: readonly string[], o: { readonly timeout?: Duration.Input } = {}) =>
   Effect.gen(function* () {
+    const timeout = o.timeout ?? TOOL_TIMEOUT;
     const fs = yield* FileSystem.FileSystem;
     const home = expandHome(folders[0] ?? "~");
     const inside = (path: string) =>
@@ -178,27 +202,11 @@ export const makeFileTools = (folders: readonly string[]) =>
     const grep = (i: typeof GrepInput.Type) =>
       Effect.gen(function* () {
         const base = yield* inside(i.path ?? home);
-        const regex = yield* Effect.try({ catch: (e) => new Refused({ message: `bad pattern: ${failed(e).message}` }), try: () => new RegExp(i.pattern, i.case_insensitive ? "i" : "") });
+        yield* Effect.try({ catch: (e) => new Refused({ message: `bad pattern: ${failed(e).message}` }), try: () => new RegExp(i.pattern, i.case_insensitive ? "i" : "") });
         const info = yield* fs.stat(base).pipe(Effect.mapError(failed));
         const files = info.type === "File" ? [base] : yield* scan(base, i.glob ?? "**/*");
-        const mode = i.output_mode ?? "files_with_matches";
-        const out: string[] = [];
-        let size = 0;
-        for (const file of files) {
-          if (size > OUTPUT) break;
-          const text = yield* fs.stat(file).pipe(
-            Effect.flatMap((s) => (Number(s.size) > GREP_BYTES ? Effect.succeed("") : fs.readFileString(file))),
-            Effect.orElseSucceed(() => ""),
-          );
-          if (text === "" || binary(text)) continue;
-          const hits = text.split("\n").flatMap((line, k) => (regex.test(line) ? [`${file}:${k + 1}:${line.length > LINE_CHARS ? `${line.slice(0, LINE_CHARS)}[…]` : line}`] : []));
-          if (hits.length === 0) continue;
-          const lines = mode === "content" ? hits : [mode === "count" ? `${file}:${hits.length}` : file];
-          out.push(...lines);
-          size += lines.reduce((n, l) => n + l.length + 1, 0);
-          yield* Effect.yieldNow; // a big tree must not starve the rest of the process
-        }
-        return out.length === 0 ? "No matches found" : bounded(out);
+        const lines = yield* search({ files, ignoreCase: i.case_insensitive === true, lineChars: LINE_CHARS, maxBytes: GREP_BYTES, mode: i.output_mode ?? "files_with_matches", outputChars: OUTPUT, pattern: i.pattern });
+        return lines.length === 0 ? "No matches found" : bounded(lines);
       });
 
     const run: FileTools = (name, input) => {
@@ -215,7 +223,7 @@ export const makeFileTools = (folders: readonly string[]) =>
         }
       };
       return call().pipe(
-        Effect.timeoutOrElse({ duration: TOOL_TIMEOUT, orElse: () => Effect.fail(new Refused({ message: `${name} took longer than ${TOOL_TIMEOUT}` })) }),
+        Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.fail(new Refused({ message: `${name} took longer than ${Duration.format(Duration.fromInputUnsafe(timeout))}` })) }),
         Effect.catch((error) => Effect.succeed(`Error: ${error.message}`)),
       );
     };
