@@ -36,13 +36,13 @@ export const retryText = (line: string) =>
   `That line is ${bytes(line)} bytes; the limit is ${NODE}. It must end where it is cut here:\n${cut(line)}| ← LIMIT`;
 
 // done once the last try fits or the tries run out
-export const enough = (tries: readonly string[], limit: number) => {
+const enough = (tries: readonly string[]) => {
   const last = tries.at(-1);
-  return last !== undefined && (bytes(last) <= NODE || tries.length >= limit);
+  return last !== undefined && (bytes(last) <= NODE || tries.length >= TRIES);
 };
 
 // the node's text: the shortest try in bytes, the first of equals (gist §4.3)
-export function shortest(tries: readonly string[]): string {
+function shortest(tries: readonly string[]): string {
   let best = tries[0] ?? "";
   for (const t of tries) if (bytes(t) < bytes(best)) best = t;
   return best;
@@ -62,7 +62,6 @@ export const sizeRetries = (o: {
   readonly failoverFrom: string | null;
   readonly log: (record: UsageRecord) => Effect.Effect<void>;
   readonly ask: (t: Try) => Effect.Effect<Answer, EngineError>;
-  readonly tries?: number; // TRIES
 }): Effect.Effect<string, EngineError> =>
   Effect.gen(function* () {
     const tries: string[] = [];
@@ -95,7 +94,7 @@ export const sizeRetries = (o: {
       const line = answer.text.trim();
       if (!line) return yield* new ModelError({ message: `${o.engine}: the compactor answered with an empty line` });
       tries.push(line);
-      if (enough(tries, o.tries ?? TRIES)) return shortest(tries);
+      if (enough(tries)) return shortest(tries);
       retry = { line, text: retryText(line) };
     }
   });

@@ -29,7 +29,7 @@ const SCOPE = "openid profile email offline_access resource.invoke chatgpt.token
 const PLAN_SCOPE = "chatgpt.tokens.use.direct";
 const authorizeUrl = (e: Endpoints) => `${e.issuer}/api/accounts/authorize`;
 const tokenUrl = (e: Endpoints) => `${e.issuer}/api/accounts/oauth/token`;
-export const redirectUri = (e: Endpoints) => `http://127.0.0.1:${e.port}/auth/callback`;
+const redirectUri = (e: Endpoints) => `http://127.0.0.1:${e.port}/auth/callback`;
 const TOKEN_TIMEOUT = "30 seconds";
 
 // What we keep, as one small JSON secret: only what outlives a process. Access and ID tokens
@@ -72,7 +72,7 @@ const decodeClaims = Schema.decodeUnknownEffect(Schema.fromJsonString(IdClaims))
 const signInFail = (what: string) => (e: { readonly message: string }) => new SignInError({ message: `${what}: ${e.message}` });
 
 const base64url = (b: Buffer) => b.toString("base64url");
-export const pkcePair = () => {
+const pkcePair = () => {
   const verifier = base64url(randomBytes(32));
   return { challenge: base64url(createHash("sha256").update(verifier).digest()), verifier };
 };
@@ -82,7 +82,7 @@ const SKEW = 60_000; // clock skew allowed on `exp`, ms
 // The ID token comes straight from the token endpoint over TLS, which OIDC Core §3.1.3.7 accepts in
 // place of checking its signature; issuer, audience, expiry, nonce (at sign-in) and subject (on a
 // refresh: the same account) are still checked.
-export const checkIdToken = (
+const checkIdToken = (
   token: string,
   o: { readonly issuer: string; readonly clientId: string; readonly nonce?: string; readonly subject?: string },
 ) =>
