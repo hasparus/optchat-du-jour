@@ -6,7 +6,7 @@ import { JOBS, RETRY } from "./config.ts";
 import { offers } from "./kernel.ts";
 import type { Node } from "./records.ts";
 import { newNode, type StoreError } from "./store.ts";
-import { built, type Coord, entry, type Entry, freeText, label, type Mem, node, nodes, ready } from "./tree.ts";
+import { built, children, type Coord, end, entry, type Entry, freeText, label, type Mem, node, nodes, ready } from "./tree.ts";
 import { context } from "./view.ts";
 
 // one compactor call: the context lines (bare, gist §4.2) and the message or the two children
@@ -25,11 +25,16 @@ const reason = (cause: Cause.Cause<unknown>) => {
   return error instanceof Error ? error.message : String(error);
 };
 
-// What a call for (l, i) sees, taken now: the view lines before message i for a leaf, up to
-// the node's last message for a merge.
-export function makeJob(mem: Mem, l: number, i: number): Job {
-  if (l === 0) return { ctx: context(mem, i), i, l, msg: entry(mem, i) };
-  return { a: node(mem, l - 1, 2 * i).text, b: node(mem, l - 1, 2 * i + 1).text, ctx: context(mem, (i + 1) * 2 ** l), i, l };
+// The call for node c, with the context as the view stands now. A merge sees every view line
+// up to its own last message and gets its children's texts; a message's summary sees only the
+// lines before that message.
+export function makeJob(mem: Mem, c: Coord): Job {
+  const { i, l } = c;
+  if (l > 0) {
+    const [left, right] = children(c);
+    return { a: node(mem, left.l, left.i).text, b: node(mem, right.l, right.i).text, ctx: context(mem, end(c)), i, l };
+  }
+  return { ctx: context(mem, i), i, l, msg: entry(mem, i) };
 }
 
 // Every node whose source fits in NODE bytes, without a model call. Bottom-up, each committed
@@ -37,8 +42,8 @@ export function makeJob(mem: Mem, l: number, i: number): Job {
 export const buildFree = (mem: Mem, commit: Commit) =>
   Effect.gen(function* () {
     for (const c of nodes(mem.root.length)) {
-      if (built(mem, c.l, c.i) || !ready(mem, c.l, c.i)) continue;
-      const text = freeText(mem, c.l, c.i);
+      if (built(mem, c.l, c.i) || !ready(mem, c)) continue;
+      const text = freeText(mem, c);
       if (text !== null) yield* commit(newNode(c.l, c.i, text));
     }
   });
@@ -46,7 +51,6 @@ export const buildFree = (mem: Mem, commit: Commit) =>
 export type Pump = {
   // build the free nodes, then start what rule 3 allows; call it after every change
   readonly kick: Effect.Effect<void, StoreError>;
-  readonly busy: ReadonlySet<string>;
 };
 
 export const makePump = (o: {
@@ -58,7 +62,7 @@ export const makePump = (o: {
   readonly report?: ((message: string) => Effect.Effect<void>) | undefined;
 }) =>
   Effect.gen(function* () {
-    const { mem, commit, summarize } = o;
+    const { commit, mem, summarize } = o;
     const jobs = o.jobs ?? JOBS, retry = o.retry ?? RETRY, report = o.report ?? ((m: string) => Console.error(m));
     const scope = yield* Effect.scope;
     const busy = new Set<string>(), reported = new Set<string>();
@@ -99,10 +103,10 @@ export const makePump = (o: {
         if (busy.has(name)) continue;
         busy.add(name);
         // the context is taken here, in the state rule 3 just checked
-        yield* Effect.forkIn(run(c, makeJob(mem, c.l, c.i)), scope);
+        yield* Effect.forkIn(run(c, makeJob(mem, c)), scope);
       }
     });
 
     const kick: Effect.Effect<void, StoreError> = one.withPermit(Effect.andThen(buildFree(mem, commit), start));
-    return { busy, kick } satisfies Pump;
+    return { kick } satisfies Pump;
   });
