@@ -234,24 +234,26 @@ const waiting = (session: { readonly get: () => Session }) => queued(session.get
 const idOf = (server: { readonly sent: readonly string[] }, k: number) => parseSent(server.sent[k] ?? "{}").messages?.at(-1)?.id ?? "";
 
 describe("session", () => {
-  // a pick kept for later would settle whatever turn waits after the reconnect, maybe retrying the
-  // engine that just hit its limit: the user never chose that
-  test("a model pick goes out only while connected and says when it didn't; the follow-up setting waits for the connection", async () => {
+  // a resume kept for later would settle whatever turn waits after the reconnect, maybe retrying
+  // the engine that just hit its limit: the user never chose that
+  test("a resume goes out only while connected and says when it didn't; the follow-up setting and a message wait for the connection", async () => {
     const server = fakeServer(() => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT }]);
     const link = openLink("ws://x/ws", { socket: server.socket }); // it opens once this test yields
     const session = makeSession(link);
-    expect(session.pick("openai-plan:gpt-6.1-sol")).toBe(false);
-    expect(session.get().markers.map((m) => m.text)).toEqual(["not connected: the model was not changed"]);
+    expect(session.resume("openai-plan:gpt-6.1-sol")).toBe(false);
+    expect(session.get().markers.map((m) => m.text)).toEqual(["not connected: the resume was not sent"]);
     link.configure({ followUp: "queue" });
+    session.send("for sol", null, [], undefined, "openai-plan:gpt-6.1-sol");
     await tick();
     const { sent } = server;
-    expect(sent.map((f) => parseSent(f))).toEqual([{ followUp: "queue", type: "settings" }]); // no pick replayed
-    expect(session.pick("openai-plan:gpt-6.1-sol")).toBe(true);
-    expect(parseSent(sent.at(-1) ?? "")).toEqual({ lead: "openai-plan:gpt-6.1-sol", type: "settings" });
+    // no resume replayed; the message names its engine
+    expect(sent.map((f) => parseSent(f))).toMatchObject([{ followUp: "queue", type: "settings" }, { forwardedProps: { engine: "openai-plan:gpt-6.1-sol" } }]);
+    expect(session.resume("openai-plan:gpt-6.1-sol")).toBe(true);
+    expect(parseSent(sent.at(-1) ?? "")).toEqual({ engine: "openai-plan:gpt-6.1-sol", type: "resume" });
   });
 
   test("a take-back asked for and not answered is forgotten on a reconnect, so it can be asked again", async () => {
-    const held = [{ clientId: "q1", queued: true, text: "for later" }];
+    const held = [{ clientId: "q1", engine: "claude-code:opus", queued: true, text: "for later" }];
     const server = fakeServer(() => [snapshot([]), { snapshot: { ...IDLE, pending: held, phase: "running" }, type: EventType.STATE_SNAPSHOT }]);
     const link = openLink("ws://x/ws", { retryMs: 1, socket: server.socket });
     const session = makeSession(link);
@@ -269,7 +271,7 @@ describe("session", () => {
     const { server, session } = await setup();
     session.send("old", null); // the same text as an entry already logged: still pending, by id
     expect(waiting(session)).toEqual(["old"]);
-    server.play(state({ phase: "running", pending: [{ clientId: idOf(server, 0), queued: false, text: "old" }] }));
+    server.play(state({ phase: "running", pending: [{ clientId: idOf(server, 0), engine: "claude-code:opus", queued: false, text: "old" }] }));
     expect(waiting(session)).toEqual(["old"]); // the server's copy and ours are one message
     server.play(ack("someone else's", 1)); // another client's message: not ours
     expect(waiting(session)).toEqual(["old"]);
@@ -329,14 +331,14 @@ describe("session", () => {
   });
 
   test("a message sent on a connection that dropped is kept, marked, unless the log or the server's queue has it", async () => {
-    let heldThere: readonly { readonly clientId: string | null; readonly queued: boolean; readonly text: string }[] = [];
+    let heldThere: readonly { readonly clientId: string | null; readonly engine: string; readonly queued: boolean; readonly text: string }[] = [];
     const server = fakeServer(() => [snapshot([{ kind: "user", text: "old" }]), { snapshot: { ...IDLE, messages: 1, pending: heldThere }, type: EventType.STATE_SNAPSHOT }]);
     const link = openLink("ws://x/ws", { retryMs: 1, socket: server.socket });
     const session = makeSession(link);
     await tick();
     session.send("in flight", null);
     session.send("held there", null);
-    heldThere = [{ clientId: idOf(server, 1), queued: false, text: "held there" }]; // the server had it, in any state of its inbox, when the socket dropped
+    heldThere = [{ clientId: idOf(server, 1), engine: "claude-code:opus", queued: false, text: "held there" }]; // the server had it, in any state of its inbox, when the socket dropped
     server.drop();
     await tick(20);
     expect(waiting(session)).toEqual(["held there", `in flight (${UNSENT})`]);
@@ -346,14 +348,14 @@ describe("session", () => {
   });
 
   test("after a reconnect the server's copy is told by the client id, not the text: of two equal texts only the lost one is marked", async () => {
-    let heldThere: readonly { readonly clientId: string | null; readonly queued: boolean; readonly text: string }[] = [];
+    let heldThere: readonly { readonly clientId: string | null; readonly engine: string; readonly queued: boolean; readonly text: string }[] = [];
     const server = fakeServer(() => [snapshot([{ kind: "user", text: "old" }]), { snapshot: { ...IDLE, messages: 1, pending: heldThere }, type: EventType.STATE_SNAPSHOT }]);
     const link = openLink("ws://x/ws", { retryMs: 1, socket: server.socket });
     const session = makeSession(link);
     await tick();
     session.send("same", null);
     session.send("same", null);
-    heldThere = [{ clientId: idOf(server, 1), queued: false, text: "same" }]; // held while it waited for summaries: the second one only
+    heldThere = [{ clientId: idOf(server, 1), engine: "claude-code:opus", queued: false, text: "same" }]; // held while it waited for summaries: the second one only
     server.drop();
     await tick(20);
     expect(session.get().pending.map((p) => p.error)).toEqual([UNSENT, null]);

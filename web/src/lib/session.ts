@@ -32,6 +32,7 @@ export type Pending = {
   readonly from: number;
   readonly conn: number;
   readonly error: string | null;
+  readonly engine?: string; // the engine of the master's chain it was sent for
 };
 
 // a message this client took back, for the composer to hold again; `key` tells one from the next
@@ -72,6 +73,7 @@ export type Queued = {
   readonly error: string | null;
   readonly where: "queued" | "sent" | "sending" | "failed";
   readonly back: "server" | "local" | null;
+  readonly engine: string | null; // the engine of the master's chain it is for (null: not said)
 };
 
 // Is this user entry's text the message sent as `p`? The same text, or with attachments the typed
@@ -96,6 +98,7 @@ export function queued(s: Session): Queued[] {
     out.push({
       back: m.queued && m.clientId !== null ? "server" : null,
       clientId: m.clientId,
+      engine: m.engine,
       error,
       key: m.clientId ?? `server ${k}`,
       media: m.media ?? [],
@@ -105,7 +108,16 @@ export function queued(s: Session): Queued[] {
   }
   for (const p of s.pending)
     if (!held.has(p.id))
-      out.push({ back: p.error === null ? null : "local", clientId: p.id, error: p.error, key: p.id, media: p.media, text: p.text, where: p.error === null ? "sending" : "failed" });
+      out.push({
+        back: p.error === null ? null : "local",
+        clientId: p.id,
+        engine: p.engine ?? null,
+        error: p.error,
+        key: p.id,
+        media: p.media,
+        text: p.text,
+        where: p.error === null ? "sending" : "failed",
+      });
   return out;
 }
 
@@ -132,7 +144,7 @@ export type SessionOptions = {
   readonly messages?: (before: number, limit: number) => Promise<{ readonly entries: readonly { readonly i: number; readonly kind: Kind; readonly text: string }[] }>;
 };
 
-export function makeSession(link: Pick<Link, "listen" | "onStatus" | "pick" | "send" | "status" | "takeBack">, options: SessionOptions = {}) {
+export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | "send" | "status" | "takeBack">, options: SessionOptions = {}) {
   const messages = options.messages ?? api.messages;
   // what was sent before a reload and never acked: the snapshots tell below whether it got there
   const kept = loadSent().map((m): Pending => ({ ...m, conn: 0, error: null }));
@@ -149,7 +161,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "pick" | "s
   let restores = 0;
 
   const set = (next: Partial<Session>) => {
-    if (next.pending && next.pending !== s.pending) saveSent(next.pending.map(({ from, id, media, text }) => ({ from, id, media, text })));
+    if (next.pending && next.pending !== s.pending) saveSent(next.pending.map(({ engine, from, id, media, text }) => ({ engine, from, id, media, text })));
     s = { ...s, ...next };
     for (const f of subscribers) f();
   };
@@ -277,7 +289,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "pick" | "s
         return;
       case EventType.RUN_ERROR:
         set({ thinking: false });
-        // a turn that stopped for a pick says why in its own prompt, not here as well
+        // a turn that stopped for a model says why in its own prompt, not here as well
         if (s.state?.phase !== "needs-model") mark(e.message, "error");
         return;
       case EventType.CUSTOM:
@@ -311,12 +323,13 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "pick" | "s
     },
     // a message from the composer, with the attachments it uploaded: shown as queued until its
     // ack. Sent while the link is down, it goes out on the next connection. `followUp`: when it
-    // asks for the other behavior than the session's ("send now" or "queue")
-    send: (text: string, device: string | null, media: readonly Asset[] = [], followUp?: FollowUp) => {
+    // asks for the other behavior than the session's ("send now" or "queue"); `engine`: the
+    // composer's model when it was sent
+    send: (text: string, device: string | null, media: readonly Asset[] = [], followUp?: FollowUp, engine?: string) => {
       const id = crypto.randomUUID();
       const conn = s.status === "open" ? conns : conns + 1;
-      set({ pending: [...s.pending, { conn, error: null, from: s.state?.messages ?? 0, id, media, text }] });
-      link.send(text, device, id, media.map(refOf), followUp);
+      set({ pending: [...s.pending, { conn, engine, error: null, from: s.state?.messages ?? 0, id, media, text }] });
+      link.send(text, device, id, media.map(refOf), followUp, engine);
     },
     // A waiting message back into the composer: one the server holds is asked for (it answers
     // with "taken-back"); one it doesn't hold is ours alone, and comes back at once. False when it
@@ -330,11 +343,12 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "pick" | "s
       set({ asking: [...s.asking, q.clientId] });
       return true;
     },
-    // A model pick: only while connected (a pick kept for later would settle whatever turn waits
-    // after the reconnect, which the user never chose); said when it wasn't sent.
-    pick: (lead: string) => {
-      if (link.pick(lead)) return true;
-      mark("not connected: the model was not changed", "error");
+    // A turn waiting for a model goes on, on `engine`: only while connected (a resume kept for
+    // later would settle whatever turn waits after the reconnect, which the user never chose);
+    // said when it wasn't sent.
+    resume: (engine: string) => {
+      if (link.resume(engine)) return true;
+      mark("not connected: the resume was not sent", "error");
       return false;
     },
     // the reader reached the chat's newest end, or left it: only there are the oldest entries dropped

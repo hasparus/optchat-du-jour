@@ -1,5 +1,5 @@
 // GET /ws (SPEC "Protocol", E15): one WebSocket per client, AG-UI events out; RunAgentInput frames,
-// aborts, take-backs and settings in. Every client watches the same server-owned session.
+// aborts, take-backs, settings and resumes in. Every client watches the same server-owned session.
 import { Effect, Option, Predicate, PubSub, Schema } from "effect";
 import { type HttpRouter, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
@@ -9,11 +9,12 @@ import { type Asset, FollowUp, shortSha } from "../../src/wire.ts";
 import { type AgUiEvent, openStream } from "../agui.ts";
 
 // What a client sends: AG-UI's RunAgentInput (its user messages not seen before are the ones to
-// answer), an abort, a take-back of a held message by the id its sender gave it, or a change to
-// the session's settings. A user message's content is its text, or AG-UI's parts: text, and image
+// answer), an abort, a take-back of a held message by the id its sender gave it, a change to the
+// session's settings, or the resume of a turn waiting for a model on an engine of the master's chain. A user message's content is its text, or AG-UI's parts: text, and image
 // or video parts whose source is a URL "asset:<sha256>", an upload PUT /api/assets stored
 // (SPEC "Media"). The server finds each in its own store; a client never names a path.
-// `forwardedProps.followUp` asks for the other follow-up behavior for this one message.
+// `forwardedProps.followUp` asks for the other follow-up behavior for this one message;
+// `forwardedProps.engine` names the engine of the master's chain it is for (the chain's first if none).
 const Source = Schema.Struct({ type: Schema.String, value: Schema.String });
 const ContentPart = Schema.Struct({ text: Schema.optional(Schema.String), type: Schema.String, source: Schema.optional(Source) });
 const InboundMessage = Schema.Struct({
@@ -25,9 +26,10 @@ type InboundMessage = typeof InboundMessage.Type;
 const Inbound = Schema.Union([
   Schema.Struct({ type: Schema.Literal("abort") }),
   Schema.Struct({ type: Schema.Literal("take-back"), clientId: Schema.String }),
-  Schema.Struct({ type: Schema.Literal("settings"), followUp: Schema.optional(FollowUp), lead: Schema.optional(Schema.String) }),
+  Schema.Struct({ type: Schema.Literal("settings"), followUp: Schema.optional(FollowUp) }),
+  Schema.Struct({ type: Schema.Literal("resume"), engine: Schema.String }),
   Schema.Struct({
-    forwardedProps: Schema.optional(Schema.Struct({ device: Schema.optional(Schema.String), followUp: Schema.optional(FollowUp) })),
+    forwardedProps: Schema.optional(Schema.Struct({ device: Schema.optional(Schema.String), followUp: Schema.optional(FollowUp), engine: Schema.optional(Schema.String) })),
     messages: Schema.Array(InboundMessage),
   }),
 ]);
@@ -107,8 +109,8 @@ export const wsRoute = (
         }).pipe(Effect.map((found) => found.flat()));
       const handle = (m: Inbound) => {
         if ("messages" in m) {
-          const { device, followUp } = m.forwardedProps ?? {};
-          return Effect.forEach(fresh(m.messages), (x) => attached(x).pipe(Effect.flatMap((media) => o.session.input(textOf(x), device, x.id, media, followUp))), {
+          const { device, engine, followUp } = m.forwardedProps ?? {};
+          return Effect.forEach(fresh(m.messages), (x) => attached(x).pipe(Effect.flatMap((media) => o.session.input(textOf(x), device, x.id, media, followUp, engine))), {
             discard: true,
           });
         }
@@ -118,7 +120,9 @@ export const wsRoute = (
           case "take-back":
             return o.session.takeBack(m.clientId);
           case "settings":
-            return o.session.configure({ followUp: m.followUp, lead: m.lead });
+            return o.session.configure({ followUp: m.followUp });
+          case "resume":
+            return o.session.resume(m.engine);
         }
       };
       const pull = yield* Socket.readerString(socket);

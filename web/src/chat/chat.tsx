@@ -30,11 +30,13 @@ import type { Link } from "@/lib/connection";
 import { visible } from "@/lib/log";
 import { chatRows, entryRows, type Row, rowFor, rowIndexFor } from "@/lib/rows";
 import { type Marker as StatusMarker, type Queued, queued, type Session, type SessionStore } from "@/lib/session";
-import { type Device, type SessionState, shortSha } from "@wire";
+import { type Device, engineLabel, type SessionState, shortSha } from "@wire";
 import { AlertCircleIcon, FilmIcon, InfoIcon, Undo2Icon } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Uploader } from "@/lib/attach";
+import { loadModel, saveModel } from "@/lib/draft";
 import { Composer } from "./composer";
+import { shortLabel } from "./pickers";
 import { ChatRow } from "./row";
 
 function status(s: Session): string | null {
@@ -74,10 +76,12 @@ const placeMarkers = (markers: readonly StatusMarker[], rows: readonly Row[]) =>
 };
 
 // One message in the queue: its text, its attachments' thumbnails (our own /api/assets, as the
-// chat shows a logged message's), where it stands, and a take-back while it is still held.
-// `asking`: its take-back is asked for and not answered yet (a reconnect forgets that)
-function Waiting({ q, asking, onTakeBack }: { readonly q: Queued; readonly asking: boolean; readonly onTakeBack: () => void }) {
+// chat shows a logged message's), where it stands, its engine when it is not the composer's
+// `model`, and a take-back while it is still held. `asking`: its take-back is asked for and not
+// answered yet (a reconnect forgets that)
+function Waiting({ q, asking, model, onTakeBack }: { readonly q: Queued; readonly asking: boolean; readonly model: string | null; readonly onTakeBack: () => void }) {
   const queuedHere = q.where === "queued";
+  const other = q.engine !== null && q.engine !== model ? engineLabel(q.engine) : null;
   return (
     <QueueItem data-state={q.where} data-testid="queue-item">
       <QueueItemIndicator className={queuedHere ? "border-dashed" : q.where === "sent" ? "border-primary bg-primary/30" : undefined} />
@@ -101,9 +105,14 @@ function Waiting({ q, asking, onTakeBack }: { readonly q: Queued; readonly askin
             )}
           </div>
         )}
-        {q.where !== "failed" && (
-          <p className="text-[11px] text-muted-foreground" data-testid="queue-where">
-            {queuedHere ? "queued for the next turn" : q.where === "sent" ? "the turn has it" : "sending…"}
+        {(q.where !== "failed" || other !== null) && (
+          <p className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+            {other !== null && (
+              <span className="shrink-0 rounded-sm border px-1 font-medium text-foreground" data-testid="queue-engine" title={`for ${other}`}>
+                {shortLabel(other)}
+              </span>
+            )}
+            {q.where !== "failed" && <span data-testid="queue-where">{queuedHere ? "queued for the next turn" : q.where === "sent" ? "the turn has it" : "sending…"}</span>}
           </p>
         )}
         {q.error !== null && (
@@ -129,9 +138,10 @@ function Waiting({ q, asking, onTakeBack }: { readonly q: Queued; readonly askin
 }
 
 // A turn stopped on a usage limit or an offline device: which engine and why, and a button per
-// engine to go on with (the stopped one again is a retry; another that hit a limit is disabled,
-// with why). Stop, in the composer, ends the turn instead.
-function NeedsModel({ session, state }: { readonly session: Pick<SessionStore, "pick">; readonly state: SessionState }) {
+// engine to resume it on (the stopped one again is a retry; another that hit a limit is disabled,
+// with why). A resume is the one model frame the page sends; the composer's picker follows it.
+// Stop, in the composer, ends the turn instead.
+function NeedsModel({ session, state, onModel }: { readonly session: Pick<SessionStore, "resume">; readonly state: SessionState; readonly onModel: (ref: string) => void }) {
   const { stopped } = state;
   if (stopped === null) return null;
   return (
@@ -148,13 +158,13 @@ function NeedsModel({ session, state }: { readonly session: Pick<SessionStore, "
               disabled={out}
               key={e.ref}
               onClick={() => {
-                session.pick(e.ref);
+                if (session.resume(e.ref)) onModel(e.ref);
               }}
               size="sm"
               title={e.down !== null && !again ? `unavailable: ${e.down}` : undefined}
               variant={again ? "outline" : "default"}
             >
-              {again ? `Try ${e.label} again` : e.label}
+              {again ? `Try ${e.label} again` : `Continue with ${e.label}`}
             </Button>
           );
         })}
@@ -177,6 +187,15 @@ export type ChatProps = {
 export function Chat({ link, session, state, devices, target, onTargetShown, uploader }: ChatProps) {
   const [loading, setLoading] = useState(false);
   const [device, setDevice] = useState<string | null>(null);
+  // the model picker: this page's own, kept in localStorage; one the chain no longer has (or none)
+  // shows as the chain's first
+  const [chosen, setChosen] = useState(loadModel);
+  const engines = state.state?.engines ?? [];
+  const model = engines.some((e) => e.ref === chosen) ? chosen : (engines[0]?.ref ?? null);
+  const onModel = useCallback((ref: string) => {
+    setChosen(ref);
+    saveModel(ref);
+  }, []);
   const { scrollToMessage } = useMessageScroller();
   // at the newest end (nothing more to scroll to): the store may drop what is far out of sight
   const atEnd = !useMessageScrollerScrollable().end;
@@ -281,7 +300,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
             {line}
           </div>
         )}
-        {state.state?.phase === "needs-model" && <NeedsModel session={session} state={state.state} />}
+        {state.state?.phase === "needs-model" && <NeedsModel onModel={onModel} session={session} state={state.state} />}
         {waiting.length > 0 && (
           <Queue data-testid="queue">
             <QueueSection>
@@ -291,7 +310,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
               <QueueSectionContent>
                 <QueueList>
                   {waiting.map((q) => (
-                    <Waiting asking={q.clientId !== null && state.asking.includes(q.clientId)} key={q.key} onTakeBack={() => {
+                    <Waiting asking={q.clientId !== null && state.asking.includes(q.clientId)} key={q.key} model={model} onTakeBack={() => {
                         session.takeBack(q);
                       }} q={q} />
                   ))}
@@ -305,7 +324,9 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
           device={device}
           devices={devices}
           link={link}
+          model={model}
           onDevice={setDevice}
+          onModel={onModel}
           open={state.status === "open"}
           picked={picked}
           restored={state.restored}

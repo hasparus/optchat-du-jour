@@ -294,22 +294,25 @@ test("/api/node takes a level and an index that are non-negative integers, and k
 // each follow-up behavior a STATE_DELTA sets
 const followUps = (es: readonly Inbound[]) => es.flatMap((e) => (e.type === "STATE_DELTA" ? e.delta.flatMap((op) => (op.path === "/followUp" ? [op.value] : [])) : []));
 
-// SPEC "Protocol": the settings and take-back frames are decoded by their schema; a malformed one
-// is dropped like any frame the server can't read, and a well-formed one that names nothing it has
-// is answered, never acted on
-test("settings and take-back frames over /ws: checked by their schema, shared through the state, saved in the data dir", async () => {
+// SPEC "Protocol": the settings, resume and take-back frames are decoded by their schema; a
+// malformed one is dropped like any frame the server can't read, and a well-formed one that names
+// nothing it has, or comes when nothing waits for it, is answered, never acted on
+test("settings, resume and take-back frames over /ws: checked by their schema, shared through the state, saved in the data dir", async () => {
   const web = client();
   await web.opened;
   await web.until((es) => es.some((e) => e.type === "STATE_SNAPSHOT"));
   web.ws.send(JSON.stringify({ followUp: "sideways", type: "settings" })); // not a behavior: dropped
   web.ws.send(JSON.stringify({ type: "take-back" })); // no client id: dropped
-  web.ws.send(JSON.stringify({ lead: "nope:x", type: "settings" }));
+  web.ws.send(JSON.stringify({ type: "resume" })); // no engine: dropped
+  web.ws.send(JSON.stringify({ engine: "nope:x", type: "resume" }));
+  web.ws.send(JSON.stringify({ engine: "claude-code:opus", type: "resume" })); // no turn waits for one
   web.ws.send(JSON.stringify({ clientId: "never-sent", type: "take-back" }));
   web.ws.send(JSON.stringify({ followUp: "queue", type: "settings" }));
   await web.until((es) => followUps(es).length === 1);
   expect(followUps(web.events)).toEqual(["queue"]);
   const infos = web.events.flatMap((e) => (e.type === "CUSTOM" && e.name === "info" ? [e.value] : []));
   expect(infos).toContain("nope:x is not an engine of the master's chain (claude-code:opus)");
+  expect(infos).toContain("no turn waits for a model: nothing to resume");
   const back = web.events.flatMap((e) => (e.type === "CUSTOM" && e.name === "taken-back" ? [e.value] : []));
   expect(back).toEqual([{ clientId: "never-sent", error: "the server holds no such message", text: null }]);
   expect(readFileSync(`${env.OPTCHAT_HOME}/session.json`, "utf8")).toBe('{"followUp":"queue"}\n');

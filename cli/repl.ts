@@ -16,9 +16,9 @@ const State = Schema.Struct({
   // what a message sent mid-run does, and the messages the server holds: a queued one waits for the next turn
   followUp: Schema.optional(FollowUp),
   pending: Schema.optional(Schema.Array(Schema.Struct({ clientId: Schema.NullOr(Schema.String), text: Schema.String, queued: Schema.optional(Schema.Boolean) }))),
-  // the engines turns may run on, the one they run on, and the one that stopped a turn waiting for a pick
+  // the engines a message may be for (the first when it names none), and the one that stopped a
+  // turn waiting for a resume
   engines: Schema.optional(Schema.Array(Schema.Struct({ ref: Schema.String, label: Schema.String, down: Schema.NullOr(Schema.String) }))),
-  lead: Schema.optional(Schema.String),
   stopped: Schema.optional(Schema.NullOr(Schema.Struct({ ref: Schema.String, label: Schema.String, why: Schema.String }))),
 });
 type State = typeof State.Type;
@@ -63,9 +63,10 @@ const ViewLines = Schema.Struct({ lines: Schema.Array(Schema.Struct({ id: Schema
 const decodeView = Schema.decodeUnknownOption(ViewLines);
 
 export type Action =
-  | { readonly type: "send"; readonly text: string; readonly id: string } // id: the AG-UI message id
+  // id: the AG-UI message id; engine: the one `/model` chose here, if any (else the chain's first)
+  | { readonly type: "send"; readonly text: string; readonly id: string; readonly engine?: string }
   | { readonly type: "follow-up"; readonly followUp: typeof FollowUp.Type } // "/steer" or "/queue" typed alone
-  | { readonly type: "pick"; readonly lead: string } // "/model <n>": the engine turns run on
+  | { readonly type: "resume"; readonly engine: string } // "/resume [<n>]": a turn waiting for a model goes on there
   | { readonly type: "abort" | "exit" | "suspend" };
 
 export type ScreenOptions = {
@@ -104,8 +105,9 @@ export function makeScreen(o: ScreenOptions) {
   const queued = new Set<string>(); // the ids of messages sent from here that the user was told wait for the next turn
   let followUp: string | null = null;
   let engines: NonNullable<State["engines"]> = [];
-  let lead = "";
-  let stuck = false; // a turn waits for a pick
+  let model: string | null = null; // the engine `/model` chose for messages sent from here; null: none named
+  let stopped: State["stopped"] = null; // the engine that stopped the turn waiting for a resume, and why
+  let stuck = false; // a turn waits for a resume
 
   const dim = (s: string) => (o.color ? `\u001B[2m${s}\u001B[0m` : s);
   const row = (s: string) => {
@@ -141,7 +143,7 @@ export function makeScreen(o: ScreenOptions) {
   const header = (st: State) => {
     const percent = Math.round((st.viewBytes / st.budget) * 100);
     note(`optchat: ${st.messages} messages · view ${kb(st.viewBytes)}/${st.budget / 1000} KB (${percent}%) · device ${st.device}${st.followUp ? ` · follow-ups ${st.followUp}` : ""}`);
-    note(o.tty ? "Ctrl-C cancels, Ctrl-D exits, /steer or /queue sets what a message sent mid-run does, /model picks the engine" : "reading messages from stdin");
+    note(o.tty ? "Ctrl-C cancels, Ctrl-D exits, /steer or /queue sets what a message sent mid-run does, /model picks the model for your messages" : "reading messages from stdin");
   };
 
   const applyState = (next: Record<string, Schema.Json>) => {
@@ -154,12 +156,11 @@ export function makeScreen(o: ScreenOptions) {
     } else if (st.followUp && followUp !== null && st.followUp !== followUp) note(`follow-ups: ${st.followUp === "queue" ? "queued for the next turn" : "steer the running turn"}`);
     followUp = st.followUp ?? null;
     engines = st.engines ?? [];
-    if (st.lead && lead !== "" && st.lead !== lead) note(`model: ${engines.find((e) => e.ref === st.lead)?.label ?? st.lead}`);
-    lead = st.lead ?? "";
-    // a turn stopped on a usage limit or an offline device waits for /model: why, said once
+    stopped = st.stopped ?? null;
+    // a turn stopped on a usage limit or an offline device waits for /resume: why, said once
     const nowStuck = st.phase === "needs-model";
-    const why = st.stopped ? `${st.stopped.label} stopped: ${clean(st.stopped.why)}. ` : "";
-    if (nowStuck && !stuck) listModels(`${why}${o.tty ? "/model <n> picks one to go on (the same one again retries), Ctrl-C stops:" : "A turn waits for a model to be picked; nothing here can pick one."}`);
+    const why = stopped ? `${stopped.label} stopped: ${clean(stopped.why)}. ` : "";
+    if (nowStuck && !stuck) listModels(`${why}${o.tty ? "/resume tries it again, /resume <n> goes on with another, Ctrl-C stops:" : "A turn waits for a model; nothing here can resume it."}`);
     stuck = nowStuck;
     // ours that the server holds for the next turn while one runs: said once each
     for (const m of st.pending ?? [])
@@ -194,23 +195,42 @@ export function makeScreen(o: ScreenOptions) {
     note(`not logged: ${clean(error ?? "")}`);
   };
 
-  // the engines, numbered for /model, the one in use marked, a down one with why
+  // the engine messages from here are for: the one /model chose, else the chain's first
+  const current = () => model ?? engines[0]?.ref ?? null;
+  // the engines, numbered for /model and /resume, the one in use here marked, a down one with why
   const listModels = (head: string) => {
     note(head);
-    for (const [k, e] of engines.entries()) note(`  ${k + 1}. ${e.label}${e.ref === lead ? " (in use)" : ""}${e.down === null ? "" : ` (unavailable: ${clean(e.down)})`}`);
+    for (const [k, e] of engines.entries()) note(`  ${k + 1}. ${e.label}${e.ref === current() ? " (in use)" : ""}${e.down === null ? "" : ` (unavailable: ${clean(e.down)})`}`);
   };
-  // "/model" alone lists them; "/model 2" or "/model <ref>" picks one
-  const model = (arg: string): Action | null => {
+  const engineAt = (arg: string) => engines[Number(arg) - 1] ?? engines.find((e) => e.ref === arg);
+  // "/model" alone lists them; "/model 2" or "/model <ref>" picks the one this REPL's next
+  // messages are for. It is this REPL's own choice: nothing is sent.
+  const chooseModel = (arg: string) => {
     if (arg === "") {
-      listModels("models (/model <n> picks one):");
+      listModels("models (/model <n> picks the one for your next messages):");
+      return;
+    }
+    const chosen = engineAt(arg);
+    if (!chosen) {
+      note(`no model ${arg}: /model lists them`);
+      return;
+    }
+    model = chosen.ref;
+    note(`model: ${chosen.label}, for your next messages`);
+  };
+  // "/resume" retries the engine that stopped the waiting turn; "/resume 2" or "/resume <ref>"
+  // goes on with that one
+  const resume = (arg: string): Action | null => {
+    if (!stuck || !stopped) {
+      note("no turn waits for a model");
       return null;
     }
-    const chosen = engines[Number(arg) - 1] ?? engines.find((e) => e.ref === arg);
+    const chosen = arg === "" ? { ref: stopped.ref } : engineAt(arg);
     if (!chosen) {
       note(`no model ${arg}: /model lists them`);
       return null;
     }
-    return { lead: chosen.ref, type: "pick" };
+    return { engine: chosen.ref, type: "resume" };
   };
 
   // a held message of ours that a client (another, or this one) took back: it is not answered
@@ -227,7 +247,7 @@ export function makeScreen(o: ScreenOptions) {
     const id = crypto.randomUUID();
     mine.push(id);
     busy = true;
-    return { id, text, type: "send" };
+    return model === null ? { id, text, type: "send" } : { engine: model, id, text, type: "send" };
   };
 
   return {
@@ -247,7 +267,7 @@ export function makeScreen(o: ScreenOptions) {
       return failed;
     },
 
-    // a turn waits for a model to be picked (piped, nothing will pick one)
+    // a turn waits for a model (piped, nothing will resume it)
     get stuck() {
       return stuck;
     },
@@ -294,7 +314,7 @@ export function makeScreen(o: ScreenOptions) {
           logging = 0;
           return;
         case "RUN_ERROR":
-          // a turn stopped for a pick is not over: its messages wait, and why was said with the models
+          // a turn stopped for a resume is not over: its messages wait, and why was said with the models
           if (stuck) return;
           failed += logging; // ours that this run logged ended unanswered with it
           logging = 0;
@@ -368,9 +388,14 @@ export function makeScreen(o: ScreenOptions) {
             return { followUp: text === "/steer" ? "steer" : "queue", type: "follow-up" };
           }
           if (text === "/model" || text.startsWith("/model ")) {
-            const picked = model(text.slice("/model".length).trim());
+            chooseModel(text.slice("/model".length).trim());
             showPrompt();
-            return picked;
+            return null;
+          }
+          if (text === "/resume" || text.startsWith("/resume ")) {
+            const resumed = resume(text.slice("/resume".length).trim());
+            showPrompt();
+            return resumed;
           }
           return sent(text);
         }
@@ -398,9 +423,9 @@ export function makeScreen(o: ScreenOptions) {
       note(sent ? "cancel sent; a second Ctrl-C exits" : "not connected: the cancel was not sent");
     },
 
-    // the /model pick went to the server (the state will say it), or was dropped: not connected
-    picked(sent: boolean) {
-      if (!sent) note("not connected: the model was not changed; /model again once connected");
+    // the /resume went to the server (the state will say it), or was dropped: not connected
+    resumed(sent: boolean) {
+      if (!sent) note("not connected: the resume was not sent; /resume again once connected");
     },
 
     // back from Ctrl-Z
@@ -446,10 +471,22 @@ const INTRO_LINES = 5;
 
 class ReplError extends Data.TaggedError("ReplError")<{ readonly message: string }> {}
 
+// the parts of a terminal the REPL uses: process.stdin and process.stdout, or a test's own
+export type TermIn = {
+  readonly isTTY?: boolean;
+  setRawMode(raw: boolean): void;
+  on(event: "data", listener: (chunk: Uint8Array) => void): void;
+  on(event: "end", listener: () => void): void;
+  off(event: "data", listener: (chunk: Uint8Array) => void): void;
+  pause(): void;
+  resume(): void;
+};
+export type TermOut = { readonly isTTY?: boolean; readonly columns?: number; write(s: string): void };
+
 export type ReplOptions = {
   readonly url: string; // http(s)://host:port of optchat-server
-  readonly stdin?: NodeJS.ReadStream;
-  readonly stdout?: NodeJS.WriteStream;
+  readonly stdin?: TermIn;
+  readonly stdout?: TermOut;
 };
 
 // What goes to the server's socket. A message sent while it is closed waits, and goes out in order
@@ -475,8 +512,8 @@ export function makeLink() {
     abort() {
       return this.now(ABORT);
     },
-    // a frame that only means something now (an abort, a model pick: kept for later, it would
-    // settle whatever turn waits after the reconnect); false when it was not sent
+    // a frame that only means something now (an abort, a resume: kept for later, it would settle
+    // whatever turn waits after the reconnect); false when it was not sent
     now(frame: string) {
       if (!socket) return false;
       socket.send(frame);
@@ -485,10 +522,11 @@ export function makeLink() {
   };
 }
 
-const runInput = (text: string, id: string) =>
+// a message, for `engine` of the master's chain when /model chose one (else the server's first)
+const runInput = (text: string, id: string, engine?: string) =>
   JSON.stringify({
     context: [],
-    forwardedProps: {},
+    forwardedProps: engine === undefined ? {} : { engine },
     messages: [{ content: text, id, role: "user" }],
     runId: crypto.randomUUID(),
     state: {},
@@ -504,9 +542,9 @@ const fetchIntro = (base: string) =>
 
 export const runRepl = (o: ReplOptions) =>
   Effect.gen(function* () {
-    const stdin = o.stdin ?? process.stdin;
-    const stdout = o.stdout ?? process.stdout;
-    const tty = stdin.isTTY;
+    const stdin: TermIn = o.stdin ?? process.stdin;
+    const stdout: TermOut = o.stdout ?? process.stdout;
+    const tty = stdin.isTTY === true;
     const write = (s: string) => {
       try {
         stdout.write(s);
@@ -514,7 +552,7 @@ export const runRepl = (o: ReplOptions) =>
         // the terminal is gone (SIGHUP when the window closes): nothing left to show
       }
     };
-    const screen = makeScreen({ color: stdout.isTTY, columns: () => stdout.columns || 80, tty, write });
+    const screen = makeScreen({ color: stdout.isTTY === true, columns: () => (stdout.columns !== undefined && stdout.columns > 0 ? stdout.columns : 80), tty, write });
 
     const view = yield* fetchIntro(o.url);
     if (Option.isSome(view)) {
@@ -564,14 +602,14 @@ export const runRepl = (o: ReplOptions) =>
       // piped: the input is all sent and all answered; one the server could not log, or whose run
       // ended in an error (a refusal, a spent plan, a cancel), makes the exit code non-zero
       const finishedPiping = () => {
-        if (ended && screen.stuck) done("a turn stopped and waits for a model to be picked (optchat at a terminal: /model)");
+        if (ended && screen.stuck) done("a turn stopped and waits for a model (optchat at a terminal: /resume)");
         else if (ended && screen.unanswered === 0) done(screen.failed > 0 ? `${screen.failed} message(s) not answered: not logged, or their run ended in an error` : undefined);
       };
       const act = (a: Action | null) => {
         if (!a) return;
         switch (a.type) {
           case "send":
-            link.send(runInput(a.text, a.id));
+            link.send(runInput(a.text, a.id, a.engine));
             return;
           case "abort":
             screen.cancel(link.abort());
@@ -579,8 +617,8 @@ export const runRepl = (o: ReplOptions) =>
           case "follow-up":
             link.send(JSON.stringify({ followUp: a.followUp, type: "settings" })); // a setting may wait for the connection, unlike an abort
             return;
-          case "pick":
-            screen.picked(link.now(JSON.stringify({ lead: a.lead, type: "settings" })));
+          case "resume":
+            screen.resumed(link.now(JSON.stringify({ engine: a.engine, type: "resume" })));
             return;
           case "exit":
             done();

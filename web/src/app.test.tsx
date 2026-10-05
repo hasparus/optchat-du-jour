@@ -486,7 +486,7 @@ test("queue: a held message shows as queued with its attachments; take-back asks
   const { play, server } = start();
   await screen.findByText("what is in the repo?");
   type("typed meanwhile");
-  play(state({ followUp: "queue", pending: [{ clientId: "q1", media: [photo(SHA("d"))], queued: true, text: "for later" }], phase: "running" }));
+  play(state({ followUp: "queue", pending: [{ clientId: "q1", engine: "claude-code:opus", media: [photo(SHA("d"))], queued: true, text: "for later" }], phase: "running" }));
   const item = await screen.findByTestId("queue-item");
   expect(item.dataset.state).toBe("queued");
   expect(within(item).getByTestId("queue-where").textContent).toBe("queued for the next turn");
@@ -504,9 +504,9 @@ test("queue: a held message shows as queued with its attachments; take-back asks
 test("too late to take back: the page says so and the message stays the turn's", async () => {
   const { play } = start();
   await screen.findByText("what is in the repo?");
-  play(state({ pending: [{ clientId: "q1", queued: true, text: "racing" }], phase: "running" }));
+  play(state({ pending: [{ clientId: "q1", engine: "claude-code:opus", queued: true, text: "racing" }], phase: "running" }));
   fireEvent.click(await screen.findByRole("button", { name: "Take back: racing" }));
-  play(state({ pending: [{ clientId: "q1", queued: false, text: "racing" }] }), { name: "taken-back", type: EventType.CUSTOM, value: { clientId: "q1", error: "too late: the model has it", media: [], text: null } });
+  play(state({ pending: [{ clientId: "q1", engine: "claude-code:opus", queued: false, text: "racing" }] }), { name: "taken-back", type: EventType.CUSTOM, value: { clientId: "q1", error: "too late: the model has it", media: [], text: null } });
   const marker = await screen.findByTestId("marker-info");
   expect(marker.textContent).toContain("couldn't take it back: too late: the model has it");
   expect(box().value).toBe("");
@@ -539,34 +539,57 @@ test("while a turn runs: send follows the follow-up setting, the other button an
   expect(frames(server.sent).at(-1)?.forwardedProps?.followUp).toBe("queue");
 });
 
-test("the follow-up setting and the model are the server's: the composer sends the change, and shows what the state says", async () => {
-  const { play, server } = start();
+test("the follow-up setting is the server's: the composer sends the change, and shows what the state says", async () => {
+  const { server } = start();
   await screen.findByText("what is in the repo?");
   fireEvent.click(screen.getByRole("button", { name: "Follow-ups: steer" }));
   fireEvent.click(await screen.findByRole("button", { name: /^Queue/ }));
   expect(frames(server.sent).at(-1)).toMatchObject({ followUp: "queue", type: "settings" });
+});
 
+test("the model picker is this page's own: switching it sends nothing; each message names the model picked when it was sent", async () => {
+  const { play, server } = start();
+  await screen.findByText("what is in the repo?");
   const model = screen.getByLabelText<HTMLSelectElement>("Model");
   expect([...model.options].map((o) => o.textContent)).toEqual(["Claude Opus (Claude Code)", "GPT-6.1 Sol (ChatGPT plan)"]);
-  expect(within(screen.getByTestId("model-picker")).getByText("Opus")).toBeTruthy();
+  expect(within(screen.getByTestId("model-picker")).getByText("Opus")).toBeTruthy(); // none picked: the chain's first
+  const before = server.sent.length;
   fireEvent.change(model, { target: { value: "openai-plan:gpt-6.1-sol" } });
-  expect(frames(server.sent).at(-1)).toMatchObject({ lead: "openai-plan:gpt-6.1-sol", type: "settings" });
-  // the server's word: Sol leads, Opus is down with why
+  fireEvent.change(model, { target: { value: "claude-code:opus" } });
+  fireEvent.change(model, { target: { value: "openai-plan:gpt-6.1-sol" } });
+  expect(server.sent).toHaveLength(before); // nothing went out
+  expect(within(screen.getByTestId("model-picker")).getByText("GPT-6.1 Sol")).toBeTruthy();
+  expect(localStorage.getItem("optchat:model")).toBe("openai-plan:gpt-6.1-sol");
+  type("hello Sol");
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  expect(frames(server.sent).at(-1)).toMatchObject({ forwardedProps: { engine: "openai-plan:gpt-6.1-sol" }, messages: [{ content: "hello Sol" }] });
+  // the queue names a message's model only where it isn't the picker's
+  play(
+    state({
+      pending: [
+        { clientId: "a", engine: "claude-code:opus", queued: true, text: "for opus" },
+        { clientId: "b", engine: "openai-plan:gpt-6.1-sol", queued: true, text: "for sol" },
+      ],
+      phase: "running",
+    }),
+  );
+  const [opus, sol] = await screen.findAllByTestId("queue-item");
+  expect(within(opus ?? document.body).getByTestId("queue-engine").textContent).toBe("Opus");
+  expect(within(sol ?? document.body).queryByTestId("queue-engine")).toBeNull();
+  // the server's word on the engines: Opus is down, with why
   play(
     state({
       engines: [
         { down: "Claude AI usage limit reached", label: "Claude Opus (Claude Code)", ref: "claude-code:opus" },
         { down: null, label: "GPT-6.1 Sol (ChatGPT plan)", ref: "openai-plan:gpt-6.1-sol" },
       ],
-      lead: "openai-plan:gpt-6.1-sol",
     }),
   );
-  expect(within(screen.getByTestId("model-picker")).getByText("GPT-6.1 Sol")).toBeTruthy();
-  const [opus] = [...screen.getByLabelText<HTMLSelectElement>("Model").options];
-  expect([opus?.disabled, opus?.textContent]).toEqual([true, "Claude Opus (Claude Code): unavailable, Claude AI usage limit reached"]);
+  const [down] = [...screen.getByLabelText<HTMLSelectElement>("Model").options];
+  expect([down?.disabled, down?.textContent]).toEqual([true, "Claude Opus (Claude Code): unavailable, Claude AI usage limit reached"]);
 });
 
-test("a turn stopped on a usage limit: every client shows why and the engines to go on with; a pick is sent", async () => {
+test("a turn stopped on a usage limit: every client shows why and the engines to go on with; a button resumes, and the picker follows it", async () => {
   const { play, server } = start();
   await screen.findByText("what is in the repo?");
   play(
@@ -584,19 +607,24 @@ test("a turn stopped on a usage limit: every client shows why and the engines to
   const alert = await screen.findByTestId("needs-model");
   expect(alert.textContent).toContain("Claude Opus (Claude Code): usage limit: Claude AI usage limit reached. Pick a model to go on.");
   expect(screen.queryByTestId("marker-error")).toBeNull();
-  // a message sent while it waits meets the turn as a running one would: it joins once the pick
-  // comes, or (the other button) waits for the next turn
-  expect(box().getAttribute("placeholder")).toBe("Add to the turn, once a model is picked");
+  // a message sent while it waits meets the turn as a running one would: it joins once the turn
+  // goes on, or (the other button) waits for the next turn
+  expect(box().getAttribute("placeholder")).toBe("Add to the turn, once it goes on");
   type("meanwhile");
   expect(screen.getByRole("button", { name: "Queue for the next turn" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
   type("");
-  expect(screen.getByTestId("model-picker").className).toContain("ring-destructive");
   expect(screen.queryByTestId("status")).toBeNull();
-  fireEvent.click(within(alert).getByRole("button", { name: "GPT-6.1 Sol (ChatGPT plan)" }));
-  expect(frames(server.sent).at(-1)).toMatchObject({ lead: "openai-plan:gpt-6.1-sol", type: "settings" });
+  // moving the picker resumes nothing
+  const before = server.sent.length;
+  fireEvent.change(screen.getByLabelText("Model"), { target: { value: "openai-plan:gpt-6.1-sol" } });
+  fireEvent.change(screen.getByLabelText("Model"), { target: { value: "claude-code:opus" } });
+  expect(server.sent).toHaveLength(before);
+  fireEvent.click(within(alert).getByRole("button", { name: "Continue with GPT-6.1 Sol (ChatGPT plan)" }));
+  expect(frames(server.sent).at(-1)).toEqual({ engine: "openai-plan:gpt-6.1-sol", type: "resume" });
+  expect(within(screen.getByTestId("model-picker")).getByText("GPT-6.1 Sol")).toBeTruthy();
   fireEvent.click(within(alert).getByRole("button", { name: "Try Claude Opus (Claude Code) again" }));
-  expect(frames(server.sent).at(-1)).toMatchObject({ lead: "claude-code:opus", type: "settings" });
+  expect(frames(server.sent).at(-1)).toEqual({ engine: "claude-code:opus", type: "resume" });
 });
 
 test("on a keyboard, Up in an empty composer recalls this client's sent messages, Down goes back; edited, it stays", async () => {

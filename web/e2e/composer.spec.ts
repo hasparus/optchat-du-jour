@@ -1,6 +1,7 @@
 // The composer against the real server (SPEC "Web UI", Chat; "Turn and priming"): a draft that
-// outlives a reload, follow-ups queued for the next turn, sent now, or taken back, and the model
-// picker, also when a usage limit stops a turn. 360 px wide, like the other specs.
+// outlives a reload, follow-ups queued for the next turn, sent now, or taken back, the model
+// picker (this page's own: each message names its model), and the resume after a usage limit.
+// 360 px wide, like the other specs.
 import type { Page } from "@playwright/test";
 import { answered, expect, expectShowsLog, open, REPLY, send, SOL_REPLY, test } from "./fixture";
 
@@ -88,7 +89,7 @@ test("send now: while the session queues, the other button hands a message to th
   await expectShowsLog(page, server);
 });
 
-test("the model picker: a turn on GPT-6.1 Sol is served by the ChatGPT plan; the pick is the server's", async ({ browser, page, server }) => {
+test("the model picker: a message sent on GPT-6.1 Sol is served by the ChatGPT plan, one sent back on Opus by claude; the pick is this page's", async ({ browser, page, server }) => {
   await open(page);
   const model = page.getByLabel("Model");
   await expect(model.locator("option")).toHaveText(["Claude Opus (Claude Code)", "GPT-6.1 Sol (ChatGPT plan)"]);
@@ -97,32 +98,42 @@ test("the model picker: a turn on GPT-6.1 Sol is served by the ChatGPT plan; the
   await send(page, "hello Sol");
   await expect(page.getByText(SOL_REPLY)).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("status")).toBeHidden({ timeout: 15_000 });
+  expect(server.fakeInputs("turn")).toEqual([]); // claude was never asked
+  await model.selectOption("claude-code:opus");
+  await send(page, "hello Opus");
+  await expect(page.getByText(REPLY)).toBeVisible({ timeout: 15_000 });
+  await answered(page, "hello Opus");
   const log = await server.log();
-  expect(log.map((e) => [e.kind, e.text])).toEqual([
+  expect(log.filter((e) => e.kind !== "tool" && e.kind !== "echo").map((e) => [e.kind, e.text])).toEqual([
     ["user", "hello Sol"],
     ["talk", SOL_REPLY],
+    ["user", "hello Opus"],
+    ["talk", REPLY],
   ]);
-  expect(server.fakeInputs("turn")).toEqual([]); // claude was never asked
-  // another page, and this one after a reload, show the same pick
+  expect(JSON.stringify(server.fakeInputs("turn"))).toContain("hello Opus");
+  // the pick is this page's: it outlives a reload, and another page shows its own
+  await model.selectOption("openai-plan:gpt-6.1-sol");
+  await page.reload();
+  await expect(page.getByTestId("model-picker")).toContainText("GPT-6.1 Sol");
   const other = await browser.newPage({ baseURL: server.url, viewport: { height: 740, width: 360 } });
   await open(other);
-  await expect(other.getByTestId("model-picker")).toContainText("GPT-6.1 Sol");
+  await expect(other.getByTestId("model-picker")).toContainText("Opus");
   await other.close();
+  await expectShowsLog(page, server, "indexes");
 });
 
 test.describe("a spent Claude plan", () => {
   test.use({ spent: true });
 
-  test("a usage limit stops the turn and waits; picking another model answers the held message there", async ({ page, server }) => {
+  test("a usage limit stops the turn and waits; its alert's button resumes it on another model, which answers there", async ({ page, server }) => {
     await open(page);
     await send(page, "are you there?");
     const alert = page.getByTestId("needs-model");
     await expect(alert).toContainText("Claude Opus (Claude Code): usage limit: Claude AI usage limit reached");
-    await expect(page.getByTestId("model-picker")).toHaveClass(/ring-destructive/);
     // held, not answered and not lost
     const held = await server.log();
     expect(held.map((e) => e.kind)).toEqual(["user"]);
-    await alert.getByRole("button", { name: "GPT-6.1 Sol (ChatGPT plan)" }).click();
+    await alert.getByRole("button", { name: "Continue with GPT-6.1 Sol (ChatGPT plan)" }).click();
     await expect(page.getByText(SOL_REPLY)).toBeVisible({ timeout: 15_000 });
     await expect(alert).toBeHidden();
     await expect(page.getByTestId("model-picker")).toContainText("GPT-6.1 Sol");

@@ -94,11 +94,12 @@ const contentOf = (text: string, attachments: readonly AttachmentRef[]) =>
 
 // What a client sends (server/routes/ws.ts Inbound): AG-UI's RunAgentInput, whose user message
 // (with its id, which the server acks) is the one to answer, with `followUp` when it asks for the
-// other behavior than the session's; an abort; a take-back; a change to the session's settings.
-export const runInput = (text: string, device: string | null, id: string, attachments: readonly AttachmentRef[] = [], followUp?: FollowUp) =>
+// other behavior than the session's and `engine`, the engine of the master's chain it is for; an
+// abort; a take-back; a change to the session's settings; the resume of a turn waiting for a model.
+export const runInput = (text: string, device: string | null, id: string, attachments: readonly AttachmentRef[] = [], followUp?: FollowUp, engine?: string) =>
   JSON.stringify({
     context: [],
-    forwardedProps: { device: device ?? undefined, followUp }, // an unset one is left out of the JSON
+    forwardedProps: { device: device ?? undefined, engine, followUp }, // an unset one is left out of the JSON
     messages: [{ content: contentOf(text, attachments), id, role: "user" }],
     runId: crypto.randomUUID(),
     state: {},
@@ -107,5 +108,6 @@ export const runInput = (text: string, device: string | null, id: string, attach
   });
 export const ABORT = JSON.stringify({ type: "abort" });
 export const takeBackFrame = (clientId: string) => JSON.stringify({ clientId, type: "take-back" });
-export type Settings = { readonly followUp?: FollowUp; readonly lead?: string };
+export type Settings = { readonly followUp?: FollowUp };
 export const settingsFrame = (change: Settings) => JSON.stringify({ ...change, type: "settings" });
+export const resumeFrame = (engine: string) => JSON.stringify({ engine, type: "resume" });

@@ -233,8 +233,8 @@ test("a message that comes in while the loop winds down after a defect gets its 
 });
 
 // E4: the master never fails over by itself. A usage limit stops the turn and holds what it was
-// answering until a client picks an engine; the picked one carries on from the log (E16).
-test("a usage limit mid-turn stops the turn and waits for a pick: no second engine is called; the pick carries on with what was logged and the untaken messages, once each", async () => {
+// answering until a client resumes it on an engine, which carries on from the log (E16).
+test("a usage limit mid-turn stops the turn and waits for a resume: no second engine is called; the engine resumed on carries on with what was logged and the untaken messages, once each", async () => {
   await Effect.runPromise(
     Effect.gen(function* () {
       const seen: { earlier: TurnInput["earlier"]; texts: readonly string[]; mid: string[]; from: string | null }[] = [];
@@ -281,10 +281,11 @@ test("a usage limit mid-turn stops the turn and waits for a pick: no second engi
       expect(r.session.state().stopped).toEqual({ label: "x (first)", ref: "first:x", why: "usage limit: spent" });
       expect(r.session.state().engines.find((e) => e.ref === "first:x")?.down).toBe("spent");
       // what the stopped call never took is held again while no call runs: it can be taken back
-      expect(r.session.state().pending).toEqual([{ clientId: "b1", queued: true, text: "same" }]);
-      // sent while it waits: it runs with the rest once a model is picked
+      expect(r.session.state().pending).toEqual([{ clientId: "b1", engine: "first:x", queued: true, text: "same" }]);
+      // sent while it waits, for the stopped engine (the chain's first): it goes with the rest to
+      // the engine the turn is resumed on
       yield* r.session.input("meanwhile", undefined, "c1");
-      yield* r.session.configure({ lead: "second:x" });
+      yield* r.session.resume("second:x");
       yield* until("idle", r.idle);
       expect(r.log()).toEqual([
         ["user", "go"],
@@ -315,7 +316,7 @@ test("a usage limit mid-turn stops the turn and waits for a pick: no second engi
         "end: ok",
       ]);
       expect(r.session.state().pending).toEqual([]);
-      expect([r.session.state().stopped, r.session.state().lead]).toEqual([null, "second:x"]);
+      expect(r.session.state().stopped).toBeNull();
     }).pipe(Effect.scoped),
   );
 });
@@ -348,7 +349,7 @@ test("text an engine streamed and never logged is dropped at the stop, so the pi
       yield* r.session.input("go");
       yield* until("the stop", () => r.session.state().phase === "needs-model");
       expect(r.session.live()).toBeNull(); // its run is over: one that joins now sees no reply
-      yield* r.session.configure({ lead: "second:x" });
+      yield* r.session.resume("second:x");
       yield* until("the second engine's text", () => r.session.live()?.reply?.text === "Done.");
       // one that joins now gets the second engine's reply only
       const late = openStream({ entries: r.chat.mem.root, live: r.session.live(), state: r.session.state(), thread: "mini", window: 50 });
@@ -462,8 +463,8 @@ test("a message sent while the turn waits for its first log write is in the stat
       yield* r.session.input("during", "mac", "c2");
       // "go" is the turn's now; "during" is held, so it can still be taken back
       expect(r.session.state().pending).toEqual([
-        { clientId: "c1", queued: false, text: "go" },
-        { clientId: "c2", queued: true, text: "during" },
+        { clientId: "c1", engine: "fake:x", queued: false, text: "go" },
+        { clientId: "c2", engine: "fake:x", queued: true, text: "during" },
       ]);
       yield* until("both turns", () => r.events.filter((e) => e.type === "run-finished").length === 2);
       expect(turns).toEqual(["go@mini", "during@mac"]);
@@ -543,7 +544,7 @@ test("queue: a message sent mid-run waits for the next turn, shown as queued; th
       yield* r.session.input("go", undefined, "c1");
       yield* until("the run", () => r.events.some((e) => e.type === "run-started"));
       yield* r.session.input("later", undefined, "c2");
-      expect(r.session.state().pending).toEqual([{ clientId: "c2", queued: true, text: "later" }]);
+      expect(r.session.state().pending).toEqual([{ clientId: "c2", engine: "fake:x", queued: true, text: "later" }]);
       g.gate.open = true;
       yield* until("both turns", () => r.events.filter((e) => e.type === "run-finished").length === 2);
       expect(g.calls).toEqual([
@@ -721,8 +722,9 @@ test("queue across a stop: the queued message stays held, is not handed to the p
       yield* r.session.input("next", undefined, "c2");
       gate.open = true;
       yield* until("the stop", () => r.session.state().phase === "needs-model");
-      expect(r.session.state().pending).toEqual([{ clientId: "c2", queued: true, text: "next" }]);
-      yield* r.session.configure({ lead: "second:x" });
+      // queued for the stopped engine: it goes to the engine the turn is resumed on, for the next turn
+      expect(r.session.state().pending).toEqual([{ clientId: "c2", engine: "first:x", queued: true, text: "next" }]);
+      yield* r.session.resume("second:x");
       yield* until("two turns", () => r.events.filter((e) => e.type === "run-finished").length === 3);
       expect(seen).toEqual([
         { mid: [], ref: "first:x", texts: ["go"] },
@@ -739,10 +741,9 @@ test("queue across a stop: the queued message stays held, is not handed to the p
       expect(r.said().filter((x) => x.startsWith("ack"))).toEqual(["ack c1: 0", "ack c2: 3"]);
       expect(r.session.state().pending).toEqual([]);
 
-      // back on the first, which is spent again: a cancel while waiting for a pick logs what is
-      // held, unanswered, and the session goes idle
+      // back on the first (no engine named: the chain's first), which is spent again: a cancel while
+      // waiting for a resume logs what is held, unanswered, and the session goes idle
       yield* until("idle", r.idle);
-      yield* r.session.configure({ lead: "first:x" });
       firstCalls = 0;
       gate.open = true;
       yield* r.session.input("again", undefined, "c3");
@@ -788,7 +789,7 @@ test("a steered message behind one for another device is not offered either: the
   );
 });
 
-test("the lead: turns run on the picked engine only; its usage limit waits for a pick (the same one again is a retry); a ref not in the chain is refused", async () => {
+test("a turn runs on its messages' engine; its usage limit waits for a resume (the same one again is a retry); a resume on a ref not in the chain, or with no turn stopped, is refused", async () => {
   await Effect.runPromise(
     Effect.gen(function* () {
       const ran: string[] = [];
@@ -807,22 +808,23 @@ test("the lead: turns run on the picked engine only; its usage limit waits for a
         warm: () => Effect.void,
       });
       const r = yield* rig([engine("a:x"), engine("b:x"), engine("c:x")]);
-      expect([r.session.state().engines.map((e) => e.ref), r.session.state().lead]).toEqual([["a:x", "b:x", "c:x"], "a:x"]);
-      yield* r.session.configure({ lead: "b:x" });
-      yield* r.session.configure({ lead: "z:x" });
-      expect(r.session.state().lead).toBe("b:x");
-      yield* until("the refusal", () => r.said().includes("info: z:x is not an engine of the master's chain (a:x, b:x, c:x)"));
-      yield* r.session.input("go");
+      expect(r.session.state().engines.map((e) => e.ref)).toEqual(["a:x", "b:x", "c:x"]);
+      yield* r.session.resume("b:x");
+      yield* until("the refusal", () => r.said().includes("info: no turn waits for a model: nothing to resume"));
+      yield* r.session.input("go", undefined, "c1", [], undefined, "b:x");
       yield* until("the stop", () => r.session.state().phase === "needs-model");
-      // b is down now, with why, for the picker
+      // b is down now, with why, for the pickers
       expect(r.session.state().engines.map((e) => [e.label, e.down])).toEqual([
         ["x (a)", null],
         ["x (b)", "spent"],
         ["x (c)", null],
       ]);
-      // its limit is over: the same pick again retries it, and it answers
+      yield* r.session.resume("z:x");
+      yield* until("the refusal", () => r.said().includes("info: z:x is not an engine of the master's chain (a:x, b:x, c:x)"));
+      expect(r.session.state().phase).toBe("needs-model");
+      // its limit is over: a resume on it again retries it, and it answers
       limited.delete("b:x");
-      yield* r.session.configure({ lead: "b:x" });
+      yield* r.session.resume("b:x");
       yield* until("idle", r.idle);
       expect(ran).toEqual(["b:x", "b:x"]);
       // the retry's note doesn't say another engine began the turn
@@ -831,6 +833,7 @@ test("the lead: turns run on the picked engine only; its usage limit waits for a
         ["user", "go"],
         ["talk", "b:x"],
       ]);
+      expect(r.said().at(-2)).toBe("info: x (b) stopped (usage limit: spent); tried again");
       expect(r.session.state().engines.every((e) => e.down === null)).toBe(true);
     }).pipe(Effect.scoped),
   );
@@ -838,6 +841,119 @@ test("the lead: turns run on the picked engine only; its usage limit waits for a
 
 // an engine that answers with its own ref
 const answering = (ref: string): TurnEngine => ({ ref, run: (_input, out) => out.log("talk", ref), vision: false, warm: () => Effect.void });
+
+// SPEC "Turn and priming": a message names the engine it is for, and the device rule holds for
+// engines too: a message for another engine than the running turn's is not offered to its call,
+// even when it steers; it waits with every one sent after it, and each turn runs on its own engine
+test("two engines run as two turns in send order: a mid-run message for another engine is held, not offered, with every one after it", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const a = gated("a:x"), b = gated("b:x");
+      const r = yield* rig([a.engine, b.engine]);
+      yield* r.session.input("go", undefined, "c1", [], undefined, "a:x");
+      yield* until("the run", () => r.events.some((e) => e.type === "run-started"));
+      yield* r.session.input("for b", undefined, "c2", [], undefined, "b:x");
+      yield* r.session.input("for a", undefined, "c3", [], undefined, "a:x"); // steers, but behind one for b
+      expect(r.session.state().pending.map((m) => [m.clientId, m.engine, m.queued])).toEqual([
+        ["c2", "b:x", true],
+        ["c3", "a:x", true],
+      ]);
+      a.gate.open = b.gate.open = true;
+      yield* until("three turns", () => r.events.filter((e) => e.type === "run-finished").length === 3);
+      expect([a.calls, b.calls]).toEqual([
+        [
+          { device: "mini", texts: ["go"], took: [] },
+          { device: "mini", texts: ["for a"], took: [] },
+        ],
+        [{ device: "mini", texts: ["for b"], took: [] }],
+      ]);
+      expect(r.log().map(([, t]) => t)).toEqual(["go", "answer 1", "for b", "answer 1", "for a", "answer 2"]);
+      expect(r.said().filter((x) => x.startsWith("ack"))).toEqual(["ack c1: 0", "ack c2: 2", "ack c3: 4"]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("a message that names no engine is for the chain's first; one that names an engine the chain doesn't have is too, and is said", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const r = yield* rig([answering("a:x"), answering("b:x")]);
+      yield* r.session.input("plain", undefined, "c1");
+      yield* until("idle", r.idle);
+      yield* r.session.input("odd", undefined, "c2", [], undefined, "z:x");
+      yield* until("two turns", () => r.events.filter((e) => e.type === "run-finished").length === 2);
+      expect(r.log()).toEqual([
+        ["user", "plain"],
+        ["talk", "a:x"],
+        ["user", "odd"],
+        ["talk", "a:x"],
+      ]);
+      expect(r.said()).toContain("info: z:x is not an engine of the master's chain: the message is for x (a)");
+    }).pipe(Effect.scoped),
+  );
+});
+
+// SPEC "Engines": a resume hands the stopped turn's held messages (what its call never took, and
+// what was sent for its engine since) to the engine it names; a message sent meanwhile for another
+// engine waits behind them, and gets a turn of its own on its engine
+test("needs-model, then a resume on another engine: the stopped turn's held messages go there; one sent meanwhile for a third engine waits behind them", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const seen: { ref: string; texts: readonly string[]; took: string[] }[] = [];
+      let firstCalls = 0;
+      // offered a mid-run message, it never takes it, and hits its limit (the first call only)
+      const first: TurnEngine = {
+        ref: "first:x",
+        run: (input, out) =>
+          Effect.gen(function* () {
+            seen.push({ ref: "first:x", texts: input.texts, took: [] });
+            if (++firstCalls > 1) return yield* out.log("talk", "first");
+            yield* out.log("talk", "on it");
+            yield* input.mid.next;
+            return yield* new UsageLimit({ message: "spent" });
+          }),
+        vision: false,
+        warm: () => Effect.void,
+      };
+      const taking = (ref: string): TurnEngine => ({
+        ref,
+        run: (input, out) =>
+          Effect.gen(function* () {
+            const call: (typeof seen)[number] = { ref, texts: input.texts, took: [] };
+            seen.push(call);
+            for (const m of yield* input.mid.ready) {
+              call.took.push(m.text);
+              yield* out.took(m);
+            }
+            yield* out.log("talk", ref.split(":")[0] ?? ref);
+          }),
+        vision: false,
+        warm: () => Effect.void,
+      });
+      const r = yield* rig([first, taking("second:x"), taking("third:x")]);
+      yield* r.session.input("go", undefined, "c1");
+      yield* until("the reply", () => r.log().some(([kind]) => kind === "talk"));
+      yield* r.session.input("untaken", undefined, "c2");
+      yield* until("the stop", () => r.session.state().phase === "needs-model");
+      yield* r.session.input("for third", undefined, "c3", [], undefined, "third:x");
+      yield* r.session.input("for first", undefined, "c4", [], undefined, "first:x");
+      expect(r.session.state().pending.map((m) => [m.clientId, m.engine, m.queued])).toEqual([
+        ["c2", "first:x", true],
+        ["c3", "third:x", true],
+        ["c4", "first:x", true],
+      ]);
+      yield* r.session.resume("second:x");
+      yield* until("three runs after the stop", () => r.events.filter((e) => e.type === "run-finished").length === 4);
+      expect(seen).toEqual([
+        { ref: "first:x", texts: ["go"], took: [] },
+        { ref: "second:x", texts: ["go"], took: ["untaken"] },
+        { ref: "third:x", texts: ["for third"], took: [] },
+        { ref: "first:x", texts: ["for first"], took: [] },
+      ]);
+      expect(r.log().map(([, t]) => t)).toEqual(["go", "on it", "untaken", "second", "for third", "third", "for first", "first"]);
+      expect(r.said().filter((x) => x.startsWith("ack"))).toEqual(["ack c1: 0", "ack c2: 2", "ack c3: 4", "ack c4: 6"]);
+    }).pipe(Effect.scoped),
+  );
+});
 
 test("the clients' choices are saved as they change, and a session starts from the saved ones", async () => {
   await Effect.runPromise(
@@ -848,7 +964,7 @@ test("the clients' choices are saved as they change, and a session starts from t
       const chat = yield* openChat(dir, { summarize: (job) => Effect.succeed(`summary ${job.l}.${job.i}`) });
       const session = yield* makeSession({
         chat,
-        choices: { followUp: "queue", lead: "b:x" },
+        choices: { followUp: "queue" },
         commit: Effect.succeed(null),
         defaultDevice: "mini",
         devices: ["mini"],
@@ -858,10 +974,10 @@ test("the clients' choices are saved as they change, and a session starts from t
         media: noMedia,
         saveChoices: (c) => Effect.sync(() => saved.push(c)),
       });
-      expect([session.state().followUp, session.state().lead]).toEqual(["queue", "b:x"]);
+      expect(session.state().followUp).toBe("queue");
       yield* session.configure({ followUp: "steer" });
-      yield* session.configure({ lead: "a:x" });
-      expect(saved).toEqual([{ followUp: "steer", lead: "b:x" }, { followUp: "steer" }]);
+      expect(saved).toEqual([{ followUp: "steer" }]);
+      expect(session.state().followUp).toBe("steer");
     }).pipe(Effect.scoped),
   );
 });
@@ -1039,7 +1155,7 @@ test("a stop for a pick: the state comes before the run's end; messages sent whi
         ["c3", true],
       ]);
       yield* r.session.takeBack("c2");
-      yield* r.session.configure({ lead: "second:x" });
+      yield* r.session.resume("second:x");
       yield* until("idle", r.idle);
       expect(took).toEqual(["and this"]);
       expect(r.log().map(([, t]) => t)).toEqual(["go", "on it", "and this", "done"]);

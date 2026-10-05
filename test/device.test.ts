@@ -383,7 +383,6 @@ test("a connection lost mid-turn is a ModelError, so the chain doesn't run the t
       Effect.gen(function* () {
         const engine = yield* claudeCodeTurn({
           effort: "high",
-          lead: () => true,
           logUsage: () => Effect.void,
           model: "opus",
           permissionMode: "bypassPermissions",
@@ -393,6 +392,7 @@ test("a connection lost mid-turn is a ModelError, so the chain doesn't run the t
           systemFile: "/dev/null",
           tools: MASTER_TOOLS,
           ttl: "1h",
+          warms: () => true,
         });
         const input = { device: "macbook", earlier: [], media: [], mid: { next: Effect.never, ready: Effect.succeed([]) }, texts: ["edit it"], view: "<chat>\n</chat>" };
         const out = { info: () => Effect.void, log: () => Effect.void, text: () => Effect.void, thinking: () => Effect.void, took: () => Effect.void, usage: () => Effect.void };

@@ -44,10 +44,10 @@ export type ClaudeCodeTurnOptions = {
   readonly runnerFor: (device: string) => Effect.Effect<Placement, DeviceOffline>;
   readonly report: (message: string) => Effect.Effect<void>;
   readonly logUsage: TurnEvents["usage"];
-  // whether this is the engine turns run on now (the user's pick, E4): the session has only its
-  // spawns started ahead (E18), so only it starts them again when a device moves to another MCP
-  // transport. Asked each time, since a pick can change it.
-  readonly lead: () => boolean;
+  // whether the warm processes follow this engine (it ran the most recent turn, or heads the chain
+  // before any, E18): the session has only its spawns started ahead, so only it starts them again
+  // when a device moves to another MCP transport. Asked each time, since each turn can change it.
+  readonly warms: () => boolean;
 };
 
 // One argv for the turn and its priming call: any difference between the two would cost the
@@ -252,13 +252,14 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
       );
 
     // What one claude shows of optchat goes to its device's transport (E8): init's status, or why
-    // it ended before any init. A device moved to another transport is warmed again by the lead
-    // engine (the one picked), so its next spawns, with the new --mcp-config, find processes started ahead and the
-    // stale ones close. Another engine's move leaves them to the session's next warm, when it goes
-    // idle: started now, its own spawns would take the lead's place.
+    // it ended before any init. A device moved to another transport is warmed again by the engine
+    // the warm processes follow (the most recent turn's), so its next spawns, with the new
+    // --mcp-config, find processes started ahead and the stale ones close. Another engine's move
+    // leaves them to the session's next warm, when it goes idle: started now, its own spawns would
+    // take that engine's place.
     const mcpWatch = (device: string, p: Placement) => {
       let init = false;
-      const tell = (seen: McpSeen) => p.mcpSeen(seen).pipe(Effect.flatMap((moved) => (moved && o.lead() ? warm(device) : Effect.void)));
+      const tell = (seen: McpSeen) => p.mcpSeen(seen).pipe(Effect.flatMap((moved) => (moved && o.warms() ? warm(device) : Effect.void)));
       return {
         ended: (e: ModelError) => Effect.suspend(() => (init ? Effect.void : tell({ ended: e.message }))),
         init: (status: string) =>
