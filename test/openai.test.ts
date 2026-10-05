@@ -13,6 +13,7 @@ import { COMPACT_FILE } from "../src/prompts.ts";
 import { SECURITY_LINE_MAX, Secrets, SecretsError, keychainLine, memorySecrets } from "../src/secrets.ts";
 import { newMsg } from "../src/store.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
+import { blocks } from "../src/summarize/claude-code.ts";
 import { openAiPlanCompactor } from "../src/summarize/openai-plan.ts";
 import { bytes } from "../src/tree.ts";
 import type { UsageRecord } from "../src/usage.ts";
@@ -49,6 +50,7 @@ const Body = Schema.Struct({
   store: Schema.Boolean,
   stream: Schema.Boolean,
   model: Schema.String,
+  reasoning: Schema.optional(Schema.Struct({ effort: Schema.String })),
   input: Schema.Array(Schema.Struct({ role: Schema.String, content: Schema.Union([Schema.String, Schema.Array(Schema.Struct({ text: Schema.String }))]) })),
 });
 const decodeBody = Schema.decodeUnknownSync(Schema.fromJsonString(Body));
@@ -173,9 +175,7 @@ const settings = (byLevel: Settings["compactor"]["byLevel"]): Settings => ({
   openai: DEFAULT_ENDPOINTS,
 });
 
-test("429 subscription_sharing_usage_limit_exceeded moves the node to the next engine, which logs failoverFrom; levels pick their chain", async () => {
-  const secrets = memorySecrets();
-  const e = await signedIn(secrets);
+const compactors = async (secrets: Layer.Layer<Secrets>, e: Endpoints) => {
   const records: UsageRecord[] = [], reports: string[] = [], spawned: Spawn[] = [];
   const summarize = await Effect.runPromise(
     makeSummarize({
@@ -187,28 +187,93 @@ test("429 subscription_sharing_usage_limit_exceeded moves the node to the next e
       ]),
     }).pipe(Effect.provide([plan(e, secrets), fakeRunner(spawned)])),
   );
+  return { records, reports, spawned, summarize };
+};
+
+test("429 subscription_sharing_usage_limit_exceeded moves the node to the next engine, which logs failoverFrom; levels pick their chain", async () => {
+  const secrets = memorySecrets();
+  const { records, reports, spawned, summarize } = await compactors(secrets, await signedIn(secrets));
 
   fake.state.seen.length = 0;
   fake.state.script = [{ code: "subscription_sharing_usage_limit_exceeded", status: 429 }];
   expect(await Effect.runPromise(summarize(leaf("hi")))).toBe("user: written by sonnet");
   expect(reports).toHaveLength(1);
-  expect(reports[0]).toContain("openai-plan:gpt-6-luna → claude-code:sonnet");
+  expect(reports[0]).toMatch(/^openai-plan:gpt-6-luna unavailable: .*429.*; compacting on claude-code:sonnet$/);
   expect(records).toHaveLength(1);
   expect(records[0]).toMatchObject({ engine: "claude-code", failoverFrom: "openai-plan:gpt-6-luna", level: 0 });
   expect(spawned).toHaveLength(1);
 
-  // the limit can also come mid-stream; a level-3 merge goes to Sol first
+  // still spent: no second notice
+  fake.state.script = [{ code: "subscription_sharing_usage_limit_exceeded", status: 429 }];
+  await Effect.runPromise(summarize(leaf("again")));
+  expect(reports).toHaveLength(1);
+
+  // the limit can also come mid-stream, its usage logged; a level-3 merge goes to Sol first
   fake.state.seen.length = 0;
+  records.length = 0;
   fake.state.script = [{ failed: "subscription_sharing_usage_limit_exceeded" }];
   expect(await Effect.runPromise(summarize({ a: "user: a", b: "user: b", ctx: [], i: 0, l: 3 }))).toBe("user: written by sonnet");
   expect(bodies()[0]!.model).toBe("gpt-6.1-sol");
-  expect(spawned).toHaveLength(2);
+  expect(spawned).toHaveLength(3);
+  expect(records.map((r) => [r.engine, r.usage.output])).toEqual([
+    ["openai-plan", 7],
+    ["claude-code", 5],
+  ]);
+  expect(reports[1]).toMatch(/^openai-plan:gpt-6.1-sol unavailable: .*; compacting on claude-code:sonnet$/);
 
-  // a model error is the answer, not a reason to move on
+  // Luna answers again: said once
+  fake.state.script = [{ text: "user: luna again" }];
+  expect(await Effect.runPromise(summarize(leaf("hi")))).toBe("user: luna again");
+  expect(reports[2]).toBe("openai-plan:gpt-6-luna back: compacting on it again");
+  expect(reports).toHaveLength(3);
+  // and a later failover is told again
+  fake.state.script = [{ code: "subscription_sharing_usage_limit_exceeded", status: 429 }];
+  await Effect.runPromise(summarize(leaf("hi")));
+  expect(reports[3]).toMatch(/^openai-plan:gpt-6-luna unavailable: /);
+
+  // a model error is the answer, not a reason to move on; an incomplete response still logs its usage
+  records.length = 0;
   fake.state.script = [{ code: "server_error", status: 500 }];
   const error = await Effect.runPromise(Effect.flip(summarize(leaf("hi"))));
   expect(error.message).toContain("500");
-  expect(spawned).toHaveLength(2);
+  fake.state.script = [{ incomplete: "max_output_tokens" }];
+  const cut = await Effect.runPromise(Effect.flip(summarize(leaf("hi"))));
+  expect(cut.message).toContain("incomplete response (max_output_tokens)");
+  expect(spawned).toHaveLength(4);
+  expect(records).toHaveLength(1);
+  expect(records[0]).toMatchObject({ attempt: 1, engine: "openai-plan", model: "fake-luna", usage: { cacheRead: 0, cacheWrite: 0, input: 1000, output: 7 } });
+});
+
+test("not signed in, the compactor runs on the next engine and says so; a token endpoint down is an error, not a failover", async () => {
+  const signedOut = await compactors(memorySecrets(), endpoints());
+  expect(await Effect.runPromise(signedOut.summarize(leaf("hi")))).toBe("user: written by sonnet");
+  expect(signedOut.spawned).toHaveLength(1);
+  expect(signedOut.reports).toHaveLength(1);
+  expect(signedOut.reports[0]).toMatch(/^openai-plan:gpt-6-luna unavailable: .*not signed in.*; compacting on claude-code:sonnet$/);
+
+  const secrets = memorySecrets();
+  const down = await compactors(secrets, await signedIn(secrets));
+  fake.state.tokenStatus = 500;
+  const error = await Effect.runPromise(Effect.flip(down.summarize(leaf("hi"))));
+  fake.state.tokenStatus = null;
+  expect(error.message).toContain("token endpoint 500");
+  expect(down.spawned).toHaveLength(0);
+  expect(down.reports).toHaveLength(0);
+});
+
+test("both compactor engines send the same input: openai-plan's parts are claude-code's blocks, cut at 50k / 80k / 100k", async () => {
+  const secrets = memorySecrets();
+  const e = await signedIn(secrets);
+  const compact = await Effect.runPromise(openAiPlanCompactor({ effort: "low", log: () => Effect.void, model: "gpt-6-luna" }).pipe(Effect.provide(plan(e, secrets))));
+  const job: Job = { ctx: Array.from({ length: 3000 }, (_, k) => `user: line ${k} ${"y".repeat(40)}`), i: 3000, l: 0, msg: newMsg(3000, "user", "hi\nthere") };
+  fake.state.seen.length = 0;
+  await Effect.runPromise(compact(job, null));
+  const [sent] = bodies();
+  const parts = sent!.input[0]!.content;
+  const texts = blocks(job, "1h").map((b) => b.text);
+  expect(texts).toHaveLength(5); // four context pieces, then the step
+  expect(Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ text: Schema.String })))(parts).map((p) => p.text)).toEqual(texts);
+  expect(sent!.reasoning).toEqual({ effort: "low" });
 });
 
 const respondWith = (layer: Layer.Layer<OpenAiPlan>) => (text: string) =>

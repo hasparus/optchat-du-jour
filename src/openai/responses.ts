@@ -7,7 +7,7 @@
 import { Context, Data, Effect, Layer, Option, Schema, Stream } from "effect";
 import { Sse } from "effect/encoding";
 import { HttpClient, HttpClientRequest } from "effect/http";
-import { type EngineError, ModelError, Refusal, UsageLimit } from "../engines/errors.ts";
+import { type EngineError, ModelError, Refusal, type Spent, UsageLimit } from "../engines/errors.ts";
 import type { Tokens as Usage } from "../usage.ts";
 import { type Endpoints, type TokenError, makeTokenManager } from "./auth.ts";
 
@@ -61,8 +61,12 @@ const json = <S extends Schema.Top>(schema: S) => Schema.decodeUnknownEffect(Sch
 const typeOf = json(Schema.Struct({ type: Schema.String }));
 const delta = json(Schema.Struct({ delta: Schema.String }));
 const completed = json(Schema.Struct({ response: Schema.Struct({ model: Schema.optional(Schema.String), usage: Schema.optional(Schema.NullOr(ApiUsage)) }) }));
-const failed = json(Schema.Struct({ response: Schema.Struct({ error: Schema.optional(Schema.NullOr(ApiError)) }) }));
-const incomplete = json(Schema.Struct({ response: Schema.Struct({ incomplete_details: Schema.optional(Schema.NullOr(Schema.Struct({ reason: Schema.optional(Schema.String) }))) }) }));
+// a response that ended badly may still say what it cost
+const Ended = { model: Schema.optional(Schema.String), usage: Schema.optional(Schema.NullOr(ApiUsage)) };
+const failed = json(Schema.Struct({ response: Schema.Struct({ ...Ended, error: Schema.optional(Schema.NullOr(ApiError)) }) }));
+const incomplete = json(
+  Schema.Struct({ response: Schema.Struct({ ...Ended, incomplete_details: Schema.optional(Schema.NullOr(Schema.Struct({ reason: Schema.optional(Schema.String) }))) }) }),
+);
 const errorEvent = json(Schema.Struct({ code: Schema.optional(Schema.NullOr(Schema.String)), message: Schema.optional(Schema.String), error: Schema.optional(ApiError) }));
 const ErrorBody = Schema.Struct({ error: ApiError });
 const decodeErrorBody = Schema.decodeUnknownOption(Schema.fromJsonString(ErrorBody));
@@ -70,10 +74,10 @@ const decodeErrorBody = Schema.decodeUnknownOption(Schema.fromJsonString(ErrorBo
 // a spent or rate-limited plan, or a plan this user may not share: the chain moves on (E4)
 const LIMIT = /usage_limit|rate_limit|insufficient_quota|not_eligible|quota/;
 
-export const classify = (status: number | null, code: string | null | undefined, message: string | undefined): EngineError => {
+export const classify = (status: number | null, code: string | null | undefined, message: string | undefined, spent: Spent = {}): EngineError => {
   const text = `openai-plan: ${[status, code, message].filter((x) => x !== null && x !== undefined && x !== "").join(" ")}`;
-  if (status === 429 || (code !== null && code !== undefined && LIMIT.test(code))) return new UsageLimit({ message: text });
-  return new ModelError({ message: text });
+  if (status === 429 || (code !== null && code !== undefined && LIMIT.test(code))) return new UsageLimit({ ...spent, message: text });
+  return new ModelError({ ...spent, message: text });
 };
 
 export const usageOf = (u: typeof ApiUsage.Type | null | undefined): Usage => {
@@ -81,6 +85,9 @@ export const usageOf = (u: typeof ApiUsage.Type | null | undefined): Usage => {
   // OpenAI counts cached tokens inside input_tokens; ours keeps them apart, as Anthropic does
   return { cacheRead: cached, cacheWrite: 0, input: (u?.input_tokens ?? 0) - cached, output: u?.output_tokens ?? 0 };
 };
+
+const spentOf = (r: { readonly model?: string | undefined; readonly usage?: typeof ApiUsage.Type | null | undefined }, model: string): Spent =>
+  r.usage ? { model: r.model ?? model, usage: usageOf(r.usage) } : {};
 
 class Unauthorized extends Data.TaggedError("Unauthorized")<{ readonly message: string }> {}
 
@@ -99,12 +106,13 @@ const onEvent = (model: string) => (r: Read, data: string): Effect.Effect<Read, 
         return { ...r, done: { model: response.model ?? model, text: r.text, usage: usageOf(response.usage) } };
       }
       case "response.failed": {
-        const { error } = (yield* failed(data)).response;
-        return yield* classify(null, error?.code, error?.message ?? "response.failed");
+        const { response } = yield* failed(data);
+        return yield* classify(null, response.error?.code, response.error?.message ?? "response.failed", spentOf(response, model));
       }
       case "response.incomplete": {
-        const reason = (yield* incomplete(data)).response.incomplete_details?.reason ?? "no reason given";
-        return yield* new ModelError({ message: `openai-plan: incomplete response (${reason})` });
+        const { response } = yield* incomplete(data);
+        const reason = response.incomplete_details?.reason ?? "no reason given";
+        return yield* new ModelError({ ...spentOf(response, model), message: `openai-plan: incomplete response (${reason})` });
       }
       case "error": {
         const e = yield* errorEvent(data);
@@ -132,7 +140,7 @@ export const readStream = (stream: Stream.Stream<Uint8Array, EngineError>, model
       }),
     );
     const r = Option.getOrUndefined(last);
-    if (r?.refusal) return yield* new Refusal({ message: `openai-plan refused: ${r.refusal.slice(0, 300)}` });
+    if (r?.refusal) return yield* new Refusal({ message: `openai-plan refused: ${r.refusal.slice(0, 300)}`, model: r.done?.model, usage: r.done?.usage });
     if (!r?.done) return yield* new ModelError({ message: "openai-plan: the stream ended without response.completed" });
     return r.done;
   });

@@ -7,7 +7,8 @@ import { createHash } from "node:crypto";
 export type Answer =
   | { readonly text: string; readonly cached?: number }
   | { readonly status: number; readonly code: string } // an HTTP error with an OpenAI error body
-  | { readonly failed: string }; // the stream starts, then response.failed
+  | { readonly failed: string } // the stream starts, then response.failed, with usage
+  | { readonly incomplete: string }; // the stream starts, then response.incomplete, with usage
 
 export type Seen = { readonly token: string; readonly body: string };
 
@@ -88,10 +89,13 @@ export function fakeOpenAi() {
         const answer = state.script.shift() ?? { text: "user: ok" };
         if ("status" in answer) return json({ error: { code: answer.code, message: "limit" } }, answer.status);
         type Event = Parameters<typeof sse>[0];
+        const usage = { input_tokens: 1000, input_tokens_details: { cached_tokens: 0 }, output_tokens: 7 };
         const events: Event[] =
           "failed" in answer
-            ? [{ type: "response.created" }, { response: { error: { code: answer.failed, message: "stopped" } }, type: "response.failed" }]
-            : [
+            ? [{ type: "response.created" }, { response: { error: { code: answer.failed, message: "stopped" }, usage }, type: "response.failed" }]
+            : "incomplete" in answer
+              ? [{ type: "response.created" }, { response: { incomplete_details: { reason: answer.incomplete }, model: "fake-luna", usage }, type: "response.incomplete" }]
+              : [
                 { type: "response.created" },
                 ...[...answer.text.match(/.{1,40}/gsu) ?? []].map((delta) => ({ delta, type: "response.output_text.delta" })),
                 {

@@ -1,10 +1,13 @@
 // What every compactor engine sends (SPEC "Compactor calls", gist §4.2–§4.3), whatever carries it:
-// the context as <chat> and bare view lines cut at MARKS, the step under it, and the retry text
-// for a line over NODE. Engine-neutral and pure; the engines add only their transport and marks.
+// the context as <chat> and bare view lines cut at MARKS, the step under it, the retry text for a
+// line over NODE, and the size retries themselves. The engines add only their transport and marks.
+import { Clock, Effect } from "effect";
 import type { Job } from "../compactor.ts";
-import { MARKS, NODE } from "../config.ts";
+import { MARKS, NODE, TRIES } from "../config.ts";
+import { type EngineError, ModelError } from "../engines/errors.ts";
 import { SCALE } from "../prompts.ts";
 import { bytes } from "../tree.ts";
+import { type Tokens, type UsageRecord, isCold } from "../usage.ts";
 import { cutBlocks, flat } from "../view.ts";
 
 // The context pieces: <chat>, the bare lines, </chat>, cut at the marks. No ids anywhere: shown
@@ -44,3 +47,55 @@ export function shortest(tries: readonly string[]): string {
   for (const t of tries) if (bytes(t) < bytes(best)) best = t;
   return best;
 }
+
+// One try: the first message (attempt 1), or the retry text that answers the line before it.
+export type Try = { readonly attempt: number; readonly retry: { readonly line: string; readonly text: string } | null };
+export type Answer = { readonly text: string; readonly usage: Tokens; readonly model: string | null };
+
+// The size retries (gist §4.3), for any engine: ask, log what the try cost, and retry in the same
+// conversation until the line fits or TRIES are spent; the shortest try wins. Every try that
+// reports usage gets its usage.jsonl line (E11), a failed one too when the engine knows its cost.
+export const sizeRetries = (o: {
+  readonly job: Job;
+  readonly engine: UsageRecord["engine"];
+  readonly auth: UsageRecord["auth"];
+  readonly failoverFrom: string | null;
+  readonly log: (record: UsageRecord) => Effect.Effect<void>;
+  readonly ask: (t: Try) => Effect.Effect<Answer, EngineError>;
+  readonly tries?: number; // TRIES
+}): Effect.Effect<string, EngineError> =>
+  Effect.gen(function* () {
+    const tries: string[] = [];
+    let retry: Try["retry"] = null;
+    for (;;) {
+      const attempt = tries.length + 1;
+      const sent = yield* Clock.currentTimeMillis;
+      const record = (usage: Tokens, model: string | null) =>
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis;
+          yield* o.log({
+            attempt,
+            auth: o.auth,
+            cold: isCold(usage),
+            date: new Date(now).toISOString(),
+            device: null,
+            engine: o.engine,
+            failoverFrom: o.failoverFrom,
+            level: o.job.l,
+            model,
+            ms: now - sent,
+            role: "compact",
+            usage,
+          });
+        });
+      const answer: Answer = yield* o.ask({ attempt, retry }).pipe(
+        Effect.tapError((e) => ("usage" in e && e.usage !== undefined ? record(e.usage, e.model ?? null) : Effect.void)),
+      );
+      yield* record(answer.usage, answer.model);
+      const line = answer.text.trim();
+      if (!line) return yield* new ModelError({ message: `${o.engine}: the compactor answered with an empty line` });
+      tries.push(line);
+      if (enough(tries, o.tries ?? TRIES)) return shortest(tries);
+      retry = { line, text: retryText(line) };
+    }
+  });
