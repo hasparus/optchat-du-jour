@@ -3,7 +3,7 @@
 
 import Base
 import ./kernel.bend as K
-import ./LAWS.bend as Laws
+import ./kspec.bend as KS
 
 # Refutations
 # -----------
@@ -196,26 +196,26 @@ def not_true(b: Bool, f: {b == True{} : Bool} -> Empty) -> {b == False{} : Bool}
 # Lists
 # -----
 
-def length_len(+ps: List<&2, K.Part>, +acc: Nat) -> {Nat.add(Laws.Len(K.Part, ps), acc) == K.length(ps, acc) : Nat}:
+def length_len(+ps: List<&2, K.Part>, +acc: Nat) -> {Nat.add(KS.Len(K.Part, ps), acc) == K.length(ps, acc) : Nat}:
   match ps:
     case Nil{}:
       {==}
     case Con{_, r}:
-      %length_len(r, 1n+acc) : {1n+Nat.add(Laws.Len(K.Part, r), acc) == _ : Nat}
-      add_succ_r(Laws.Len(K.Part, r), acc)
+      %length_len(r, 1n+acc) : {1n+Nat.add(KS.Len(K.Part, r), acc) == _ : Nat}
+      add_succ_r(KS.Len(K.Part, r), acc)
 
 # a merge of an allowed pair shortens the list by one
-def len_merge(ps: List<&2, K.Part>, k: Nat, h: {Laws.PairAt(ps, k) == True{} : Bool})
-  -> {1n+Laws.Len(K.Part, K.merge_at(ps, k)) == Laws.Len(K.Part, ps) : Nat}:
+def len_merge(ps: List<&2, K.Part>, k: Nat, h: {KS.PairAt(ps, k) == True{} : Bool})
+  -> {1n+KS.Len(K.Part, KS.merge_s(ps, k)) == KS.Len(K.Part, ps) : Nat}:
   match ps k:
     case Nil{} _:
-      Empty.absurd({1n+Laws.Len(K.Part, K.merge_at(Nil{}, k)) == 0n : Nat}, false_true(h))
+      Empty.absurd({1n+KS.Len(K.Part, KS.merge_s(Nil{}, k)) == 0n : Nat}, false_true(h))
     case Con{a, Nil{}} 0n:
-      Empty.absurd({1n+Laws.Len(K.Part, K.merge_at([a], 0n)) == 1n : Nat}, false_true(h))
+      Empty.absurd({1n+KS.Len(K.Part, KS.merge_s([a], 0n)) == 1n : Nat}, false_true(h))
     case Con{a, Con{b, more}} 0n:
       {==}
     case Con{a, rest} 1n+j:
-      %len_merge(rest, j, h) : {2n+Laws.Len(K.Part, K.merge_at(rest, j)) == 1n+_ : Nat}
+      %len_merge(rest, j, h) : {2n+KS.Len(K.Part, KS.merge_s(rest, j)) == 1n+_ : Nat}
       {==}
 
 # a cons is not Nil: ListD(_, P) is P at a cons and Unit at Nil
@@ -248,7 +248,7 @@ def Drop(k: Nat, ps: List<&2, K.Part>) -> List<&2, K.Part>:
 # PairAt(ps0, k) only looks at the suffix from k
 def drop_pair(ps0: List<&2, K.Part>, k: Nat, -a: K.Part, -b: K.Part, -more: List<&2, K.Part>,
   e: {Drop(k, ps0) == a <> b <> more : List<&2, K.Part>})
-  -> {Laws.PairAt(ps0, k) == K.mergeable(a, b) : Bool}:
+  -> {KS.PairAt(ps0, k) == K.mergeable(a, b) : Bool}:
   match ps0 k:
     case Nil{} 0n:
       %e : ListD(_, {False{} == K.mergeable(a, b) : Bool})
@@ -257,7 +257,7 @@ def drop_pair(ps0: List<&2, K.Part>, k: Nat, -a: K.Part, -b: K.Part, -more: List
       %e : ListD(_, {False{} == K.mergeable(a, b) : Bool})
       Unit{}
     case Con{h, t} 0n:
-      %e : {Laws.PairHead(h, t) == Laws.PairAt(_, 0n) : Bool}
+      %e : {KS.PairHead(h, t) == KS.PairAt(_, 0n) : Bool}
       {==}
     case Con{_, t} 1n+j:
       drop_pair(t, j, a, b, more, e)

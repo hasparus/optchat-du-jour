@@ -1,6 +1,11 @@
 # The laws of the fold kernel (SPEC "Bend laws"). This file states them;
 # PROOF.bend proves them, and `bend PROOF.bend` must print ALL PROOFS CHECK.
 # Change a law only when the spec changes; never to make a proof go through.
+#
+# The words below are the spec's, defined here from Base alone: where a
+# law says "siblings", "merge" or "size", it does not ask the kernel what
+# those mean. Only the kernel's data types (Part, Coord, Msg) and the
+# functions the laws are about are imported.
 
 import Base
 import ./kernel.bend as K
@@ -24,6 +29,13 @@ def Nth(-A: Data, xs: List<&2, A>, k: Nat, d: A) -> A:
     case Con{_, t} 1n+j:
       Nth(A, t, j, d)
 
+# node (l, i) covers the messages [Start(l, i), Start(l, i) + Width(l))
+def Start(l: Nat, i: Nat) -> Nat:
+  Nat.mul(i, Nat.pow(2n, l))
+
+def Width(l: Nat) -> Nat:
+  Nat.pow(2n, l)
+
 # ps tiles the messages [s, e): each line starts where the one before it
 # ended, the first at s, and the last ends at e. No gap, no overlap.
 def Tiles(ps: List<&2, K.Part>, s: Nat, e: Nat) -> Type:
@@ -32,37 +44,89 @@ def Tiles(ps: List<&2, K.Part>, s: Nat, e: Nat) -> Type:
       {s == e : Nat}
     case Con{p, rest}:
       K.Part{+l, i, _, _, _} = p
-      ({K.start(l, i) == s : Nat} & Tiles(rest, Nat.add(s, K.pow2(l)), e))
+      ({Start(l, i) == s : Nat} & Tiles(rest, Nat.add(s, Width(l)), e))
 
-def PairHead(a: K.Part, rest: List<&2, K.Part>) -> Bool:
+def NonEmpty(xs: List<&2, Nat>) -> Type:
+  match xs:
+    case Nil{}:
+      Empty
+    case Con{_, _}:
+      Unit
+
+# a and b are the lines (l, 2j) and (l, 2j + 1), and their parent is
+# built: a line carries the sizes of its built ancestors, nearest first
+def Siblings(a: K.Part, b: K.Part) -> Type:
+  K.Part{la, ia, _, _, ua} = a
+  K.Part{lb, ib, _, _, _} = b
+  ({la == lb : Nat} & (&j: Nat -> {ia == Nat.double(j) : Nat}) & {ib == 1n+ia : Nat} & NonEmpty(ua))
+
+def PairHead(a: K.Part, rest: List<&2, K.Part>) -> Type:
   match rest:
     case Nil{}:
-      False{}
+      Empty
     case Con{b, _}:
-      K.mergeable(a, b)
+      Siblings(a, b)
 
-# lines k and k+1 of ps are siblings whose parent is built
-def PairAt(ps: List<&2, K.Part>, k: Nat) -> Bool:
+# lines k and k + 1 of ps are siblings whose parent is built
+def PairAt(ps: List<&2, K.Part>, k: Nat) -> Type:
   match ps k:
     case Nil{} _:
-      False{}
+      Empty
     case Con{a, rest} 0n:
       PairHead(a, rest)
     case Con{_, rest} 1n+j:
       PairAt(rest, j)
 
-# qs comes from ps by exactly n merges, each of a pair PairAt allows
+# the parent of (l, 2j): (l + 1, j), built, with the size of the first
+# built ancestor and the rest above it
+def ParentOf(a: K.Part) -> K.Part:
+  K.Part{l, i, s, b, ups} = a
+  match ups:
+    case Nil{}:
+      K.Part{l, i, s, b, Nil{}}
+    case Con{u, us}:
+      K.Part{1n+l, Nat.div(i, 2n), u, True{}, us}
+
+def MergeHead(a: K.Part, rest: List<&2, K.Part>) -> List<&2, K.Part>:
+  match rest:
+    case Nil{}:
+      [a]
+    case Con{_, more}:
+      ParentOf(a) <> more
+
+# ps with lines k and k + 1 replaced by the parent of line k; every other
+# line as it was
+def Merged(ps: List<&2, K.Part>, k: Nat) -> List<&2, K.Part>:
+  match ps k:
+    case Nil{} _:
+      Nil{}
+    case Con{a, rest} 0n:
+      MergeHead(a, rest)
+    case Con{a, rest} 1n+j:
+      a <> Merged(rest, j)
+
+# qs comes from ps by exactly n merges, each of a sibling pair whose parent
+# is built
 def Merges(n: Nat, ps: List<&2, K.Part>, qs: List<&2, K.Part>) -> Type:
   match n:
     case 0n:
       {qs == ps : List<&2, K.Part>}
     case 1n+m:
-      &k: Nat -> ({PairAt(ps, k) == True{} : Bool} & Merges(m, K.merge_at(ps, k), qs))
+      &k: Nat -> (PairAt(ps, k) & Merges(m, Merged(ps, k), qs))
+
+# the view's size: its lines' sizes added up
+def Total(ps: List<&2, K.Part>) -> Nat:
+  match ps:
+    case Nil{}:
+      0n
+    case Con{p, rest}:
+      K.Part{_, _, s, _, _} = p
+      Nat.add(s, Total(rest))
 
 # what fit leaves behind: a view within budget, or one where no pair can
 # merge
 def Fits(budget: Nat, ps: List<&2, K.Part>) -> Type:
-  {Nat.is_gt(K.size(ps), budget) == False{} : Bool} | (@k: Nat -> {PairAt(ps, k) == False{} : Bool})
+  {Nat.is_gt(Total(ps), budget) == False{} : Bool} | (@k: Nat -> PairAt(ps, k) -> Empty)
 
 # node (l, i) is present (one entry per node in levels[l]); and built
 def Present(levels: List<&2, List<&2, Bool>>, l: Nat, i: Nat) -> Bool:
@@ -71,29 +135,58 @@ def Present(levels: List<&2, List<&2, Bool>>, l: Nat, i: Nat) -> Bool:
 def Built(levels: List<&2, List<&2, Bool>>, l: Nat, i: Nat) -> Bool:
   Nth(Bool, Nth(List<&2, Bool>, levels, l, Nil{}), i, False{})
 
-# an offer rule 3 allows: the node exists and is unbuilt; at level 0 every
-# view line before the message is built, above it both children are built
-# and every view line before the node's end is built
-def Allowed(levels: List<&2, List<&2, Bool>>, head: Nat, c: K.Coord) -> Type:
+# every view line that starts before message x is built
+def BuiltBefore(ps: List<&2, K.Part>, x: Nat) -> Type:
+  match ps:
+    case Nil{}:
+      Unit
+    case Con{p, rest}:
+      K.Part{+l, i, _, b, _} = p
+      (({Nat.is_lt(Start(l, i), x) == True{} : Bool} -> {b == True{} : Bool}) & BuiltBefore(rest, x))
+
+# some view line starts at x and is unbuilt
+def UnbuiltAt(ps: List<&2, K.Part>, x: Nat) -> Type:
+  match ps:
+    case Nil{}:
+      Empty
+    case Con{p, rest}:
+      K.Part{+l, i, _, b, _} = p
+      (({Start(l, i) == x : Nat} & {b == False{} : Bool}) | UnbuiltAt(rest, x))
+
+# where a node's stretch ends, for rule 3 (gist §4.1): message i itself for
+# a level-0 node (everything before it must be summarized), the end of
+# the stretch for a merge
+def End(c: K.Coord) -> Nat:
+  K.Coord{l, i} = c
+  match l:
+    case 0n:
+      i
+    case 1n+m:
+      Start(1n+m, 1n+i)
+
+# an offer rule 3 allows (gist §4.1): the node exists and is unbuilt, its
+# sources exist (above level 0, both children are built), and every view
+# line before the node's end is built
+def Allowed(levels: List<&2, List<&2, Bool>>, ps: List<&2, K.Part>, c: K.Coord) -> Type:
   K.Coord{l, i} = c
   match l:
     case 0n:
       ({Present(levels, 0n, i) == True{} : Bool}
         & {Built(levels, 0n, i) == False{} : Bool}
-        & {Nat.is_le(i, head) == True{} : Bool})
+        & BuiltBefore(ps, i))
     case 1n+m:
       ({Present(levels, 1n+m, i) == True{} : Bool}
         & {Built(levels, 1n+m, i) == False{} : Bool}
         & {Built(levels, m, Nat.double(i)) == True{} : Bool}
         & {Built(levels, m, 1n+Nat.double(i)) == True{} : Bool}
-        & {Nat.is_le(K.start(1n+m, 1n+i), head) == True{} : Bool})
+        & BuiltBefore(ps, Start(1n+m, 1n+i)))
 
-def AllAllowed(levels: List<&2, List<&2, Bool>>, head: Nat, cs: List<&2, K.Coord>) -> Type:
+def AllAllowed(levels: List<&2, List<&2, Bool>>, ps: List<&2, K.Part>, cs: List<&2, K.Coord>) -> Type:
   match cs:
     case Nil{}:
       Unit
     case Con{c, rest}:
-      (Allowed(levels, head, c) & AllAllowed(levels, head, rest))
+      (Allowed(levels, ps, c) & AllAllowed(levels, ps, rest))
 
 # what coords answers names the node id+n: it starts at id, covers n
 # messages and ends within the chat
@@ -103,8 +196,8 @@ def Names(m: Maybe<&2, K.Coord>, id: Nat, n: Nat, T: Nat) -> Type:
       Unit
     case Some{c}:
       K.Coord{+l, i} = c
-      ({K.start(l, i) == id : Nat}
-        & {K.pow2(l) == n : Nat}
+      ({Start(l, i) == id : Nat}
+        & {Width(l) == n : Nat}
         & {Nat.is_le(Nat.add(id, n), T) == True{} : Bool})
 
 # 1. The view tiles messages 0 to T with no gap and no overlap
@@ -134,11 +227,11 @@ law tiles_fit:
 law span_start:
   for +l: Nat
   for +i: Nat
-  {K.start(l, i) == Nat.mul(i, Nat.pow(2n, l)) : Nat}
+  {K.start(l, i) == Start(l, i) : Nat}
 
 law span_size:
   for +l: Nat
-  {K.pow2(l) == Nat.pow(2n, l) : Nat}
+  {K.pow2(l) == Width(l) : Nat}
 
 law coords_names:
   for +id: Nat
@@ -170,7 +263,15 @@ law fit_fits:
 #    the first unbuilt view line
 # ------------------------------------------------------------------------
 
+# first is the first unbuilt view line's start (or T when there is none):
+# every line before it is built
+law first_first:
+  for +T: Nat
+  for +ps: List<&2, K.Part>
+  Tiles(ps, 0n, T) -> (BuiltBefore(ps, K.first(T, ps)) & ({K.first(T, ps) == T : Nat} | UnbuiltAt(ps, K.first(T, ps))))
+
 law offers_allowed:
   for +levels: List<&2, List<&2, Bool>>
-  for +head: Nat
-  AllAllowed(levels, head, K.offers(levels, head))
+  for +T: Nat
+  for +ps: List<&2, K.Part>
+  Tiles(ps, 0n, T) -> AllAllowed(levels, ps, K.offers(levels, K.first(T, ps)))
