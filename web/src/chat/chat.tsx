@@ -19,6 +19,7 @@ import {
   MessageScrollerItem,
   MessageScrollerViewport,
   useMessageScroller,
+  useMessageScrollerScrollable,
 } from "@/components/ui/message-scroller";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Spinner } from "@/components/ui/spinner";
@@ -80,6 +81,11 @@ export function Chat({ link, session, state, devices, target, onTargetShown }: C
   const [loading, setLoading] = useState(false);
   const [device, setDevice] = useState<string | null>(null);
   const { scrollToMessage } = useMessageScroller();
+  // at the newest end (nothing more to scroll to): the store may drop what is far out of sight
+  const atEnd = !useMessageScrollerScrollable().end;
+  useEffect(() => {
+    session.scrolled(atEnd);
+  }, [session, atEnd]);
   const top = useRef<HTMLDivElement>(null);
 
   // the entries change when one is logged, the draft with every streamed piece

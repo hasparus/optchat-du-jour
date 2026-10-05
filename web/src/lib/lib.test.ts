@@ -4,10 +4,10 @@ import type { Kind, UsageRecord } from "@wire";
 import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { ack, type Entry, fakeServer, IDLE, parseSent, said, snapshot, state } from "../test/fixture";
 import { openLink } from "./connection";
-import { applyEvent, applyPage, emptyLog, hole, type Log, MAX_HELD, tip, visible, withDraft } from "./log";
+import { applyEvent, applyPage, emptyLog, hole, type Log, MAX_HELD, tip, trimHeld, visible, withDraft } from "./log";
 import type { Inbound } from "./protocol";
 import { chatRows, entryRows, rowFor, rowIndexFor } from "./rows";
-import { makeSession, queued, type Session } from "./session";
+import { makeSession, queued, type Session, UNSENT } from "./session";
 import { buckets, periodOf, totals } from "./stats";
 
 const tick = async (ms = 5) =>
@@ -175,10 +175,14 @@ describe("log", () => {
     expect([log.newest, tip(log)]).toEqual([3, 3]);
     log = applyPage(log, [entry(0, "user", "u0")]);
     expect(log.newest).toBe(3);
-    // a snapshot after a deep scroll up keeps the newest MAX_HELD
+    // a snapshot after a deep scroll up keeps all of it while the reader is still up there…
     const many = Array.from({ length: MAX_HELD + 300 }, (_, i) => ({ i, kind: "user" as const, live: false, text: `m${i}` }));
     const deep: Log = { base: 0, draft: null, items: new Map(many.map((m) => [m.i, m])), newest: many.length - 1 };
-    const next = play(deep, snapshot([{ kind: "user", text: "tail" }], many.length));
+    const tail = snapshot([{ kind: "user", text: "tail" }], many.length);
+    const reading = applyEvent(deep, tail, { trim: false });
+    expect(reading.items.size).toBe(many.length + 1);
+    expect(trimHeld(reading).items.size).toBe(MAX_HELD); // …and back at the newest end, only the newest MAX_HELD
+    const next = play(deep, tail);
     expect(next.items.size).toBe(MAX_HELD);
     expect(next.items.has(many.length)).toBe(true);
     expect(visible(next).at(0)?.i).toBe(many.length + 1 - MAX_HELD);
@@ -256,8 +260,21 @@ describe("session", () => {
     session.send("lost?", null);
     server.play(ack(idOf(server, 0), null, "disk full"));
     expect(waiting(session)).toEqual(["lost? (disk full)"]);
-    // it stayed queued there: the next message's run logs it, with no ack of its own
+    // it stayed queued there: the next message's run logs it, and its text is matched even
+    // without the ack that comes with it
     server.play(...said(1, "user", "lost?"));
+    expect(waiting(session)).toEqual([]);
+  });
+
+  test("an entry acked to another message is never claimed by text, also when the ack was another client's", async () => {
+    const { server, session } = await setup();
+    session.send("same", null);
+    server.play(ack(idOf(server, 0), null, "disk full"));
+    // this page's second "same" and another client's are logged, each with its own ack
+    session.send("same", null);
+    server.play(ack(idOf(server, 1), 1), ...said(1, "user", "same"), ack("someone else's", 2), ...said(2, "user", "same"));
+    expect(waiting(session)).toEqual(["same (disk full)"]);
+    server.play(ack(idOf(server, 0), 3), ...said(3, "user", "same"));
     expect(waiting(session)).toEqual([]);
   });
 
@@ -272,11 +289,29 @@ describe("session", () => {
     log.n = 2; // "lost ack" was logged while the page was away; its ack went to the old socket
     server.drop();
     await tick(20);
-    expect(waiting(session)).toEqual(["not yet"]);
+    // "not yet" went out on the old socket too, and neither the log nor the queue has it
+    expect(waiting(session)).toEqual([`not yet (${UNSENT})`]);
     // sent on the new connection, its text in the log is not enough: its own ack decides
     session.send("lost ack", null);
     server.play(snapshot([{ kind: "user", text: "old" }, { kind: "user", text: "lost ack" }]));
-    expect(waiting(session)).toEqual(["not yet", "lost ack"]);
+    expect(waiting(session)).toEqual([`not yet (${UNSENT})`, "lost ack"]);
+  });
+
+  test("a message sent on a connection that dropped is kept, marked, unless the log or the server's queue has it", async () => {
+    let queuedThere: readonly string[] = [];
+    const server = fakeServer(() => [snapshot([{ kind: "user", text: "old" }]), { snapshot: { ...IDLE, messages: 1, queued: queuedThere }, type: EventType.STATE_SNAPSHOT }]);
+    const link = openLink("ws://x/ws", { retryMs: 1, socket: server.socket });
+    const session = makeSession(link);
+    await tick();
+    session.send("in flight", null);
+    session.send("held there", null);
+    queuedThere = ["held there"]; // the server had it, mid-run, when the socket dropped
+    server.drop();
+    await tick(20);
+    expect(waiting(session)).toEqual(["held there", `in flight (${UNSENT})`]);
+    // the log takes it after all: it is gone from the queue
+    server.play(...said(1, "user", "in flight"));
+    expect(waiting(session)).toEqual(["held there"]);
   });
 
   test("a status marker goes after the last entry the run's snapshot holds, not after a cut-off reply's index", async () => {

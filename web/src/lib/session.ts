@@ -3,12 +3,12 @@
 // mid-run messages), status markers from CUSTOM info and RUN_ERROR, whether the model is thinking,
 // and the messages sent from here that the log doesn't hold yet. Every AG-UI event and every page of
 // /api/messages comes through here; the screens only draw it.
-import { type Kind, SessionState } from "@wire";
+import { type Kind, logIndex, SessionState } from "@wire";
 import { EventType } from "@ag-ui/core";
 import { Option, Schema } from "effect";
 import { api } from "./api.ts";
 import type { Link, LinkStatus } from "./connection.ts";
-import { applyEvent, applyPage, dropBelow, emptyLog, hole, type Log, lowest, tip } from "./log.ts";
+import { applyEvent, applyPage, dropBelow, emptyLog, hole, type Log, lowest, tip, trimHeld } from "./log.ts";
 import type { Inbound, Patch } from "./protocol.ts";
 
 export type Marker = {
@@ -40,6 +40,9 @@ export type Session = {
 };
 
 const MAX_MARKERS = 100;
+const MAX_ACKED = 1000; // log indexes of acked messages remembered
+// what a message sent on a connection that dropped is marked with when the server shows no sign of it
+export const UNSENT = "it may not have reached the server: send it again";
 const PAGE = 100; // older entries per page
 const MAX_FILL = 500; // a wider hole under the window is dropped, not fetched
 
@@ -93,6 +96,10 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
   let conns = s.status === "open" ? 1 : 0; // the connections opened so far
   let keys = 0;
   let filling = false;
+  let atEnd = true; // the reader is at the chat's newest end: what scrolled out of sight may be dropped
+  // the log indexes the server acked to any client: those entries are that client's message, so
+  // never one of ours matched by its text
+  const ackedAt = new Set<number>();
   const subscribers = new Set<() => void>();
 
   const set = (next: Partial<Session>) => {
@@ -109,18 +116,43 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
   };
   // The server's word on one of our messages: it is logged, and the user entry follows at once, or
   // it could not be (it stays queued there, and is logged with the next message, unannounced).
-  const acked = (id: string, error: string | null, logged: boolean) => {
+  const acked = (id: string, error: string | null, index: number | null) => {
+    if (index !== null) {
+      ackedAt.add(index);
+      for (const old of ackedAt) {
+        if (ackedAt.size <= MAX_ACKED) break;
+        ackedAt.delete(old); // the oldest first
+      }
+    }
     const at = s.pending.findIndex((p) => p.id === id);
     const p = s.pending[at];
     if (p === undefined) return; // another client's message
-    set({ pending: logged ? s.pending.toSpliced(at, 1) : s.pending.toSpliced(at, 1, { ...p, error: error ?? "not logged" }) });
+    set({ pending: index === null ? s.pending.toSpliced(at, 1, { ...p, error: error ?? "not logged" }) : s.pending.toSpliced(at, 1) });
   };
   // A user entry was logged without an ack for us: one a failed ack told of earlier, or one sent on
   // a connection that has dropped since (its ack, told to nobody, is lost). Only these are matched
-  // by their text, on the entry's index, as the oldest of them it can be.
+  // by their text, on the entry's index, as the oldest of them it can be, and never on an index
+  // whose ack named another message.
   const logged = (i: number, text: string) => {
+    if (ackedAt.has(i)) return;
     const at = s.pending.findIndex((p) => (p.error !== null || p.conn < conns) && p.text === text && i >= p.from);
     if (at !== -1) set({ pending: s.pending.toSpliced(at, 1) });
+  };
+  // After a reconnect: a message sent on a connection that dropped, which the log doesn't hold and
+  // the server doesn't hold either (not among its queued), may have been lost with the socket. It
+  // is marked so, and stays in the queue; the log taking it later clears it as above.
+  const unsent = () => {
+    const queuedThere = [...(s.state?.queued ?? [])];
+    const marked = s.pending.map((p) => {
+      if (p.conn >= conns || p.error !== null) return p;
+      const k = queuedThere.indexOf(p.text);
+      if (k !== -1) {
+        queuedThere.splice(k, 1);
+        return p;
+      }
+      return { ...p, error: UNSENT };
+    });
+    if (marked.some((p, k) => p !== s.pending[k])) set({ pending: marked });
   };
   const setLog = (log: Log) => {
     if (log !== s.log) set({ log });
@@ -155,7 +187,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
 
   const event = (e: Inbound) => {
     const before = s.log;
-    setLog(applyEvent(s.log, e));
+    setLog(applyEvent(s.log, e, { trim: atEnd }));
     switch (e.type) {
       case EventType.MESSAGES_SNAPSHOT: {
         // the snapshot is the log: a marker placed after what it doesn't hold (a reply cut off by a
@@ -166,8 +198,10 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
         if (hole(s.log)) void fill();
         return;
       }
+      // a connection's first word, after the log's snapshot
       case EventType.STATE_SNAPSHOT:
         applyState({ ...e.snapshot });
+        unsent();
         return;
       case EventType.STATE_DELTA:
         applyState(patch(raw, e.delta));
@@ -192,7 +226,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
       case EventType.CUSTOM:
         if (e.name === "info") mark(e.value, "info");
         else if (e.name === "thinking") set({ thinking: true });
-        else if (e.name === "ack") acked(e.value.clientId, e.value.error, e.value.messageId !== null);
+        else if (e.name === "ack") acked(e.value.clientId, e.value.error, e.value.messageId === null ? null : logIndex(e.value.messageId));
         return;
       case EventType.RUN_STARTED:
       case EventType.TEXT_MESSAGE_START:
@@ -224,6 +258,11 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
       const conn = s.status === "open" ? conns : conns + 1;
       set({ pending: [...s.pending, { conn, error: null, from: s.state?.messages ?? 0, id, text }] });
       link.send(text, device, id);
+    },
+    // the reader reached the chat's newest end, or left it: only there are the oldest entries dropped
+    scrolled: (end: boolean) => {
+      atEnd = end;
+      if (end) setLog(trimHeld(s.log));
     },
     // one older page under what is shown; true while there may be more
     loadOlder: async () => {
