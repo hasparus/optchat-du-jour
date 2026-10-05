@@ -470,15 +470,27 @@ test("a message sent before a reload that never reached the server is marked, an
   expect(screen.queryByTestId("queue")).toBeNull();
 });
 
-test("one sent before a reload that is older than the loaded window is unknown: dropped, not offered to send again; another tab's list is not this one's", async () => {
-  localStorage.setItem(sentKey, JSON.stringify({ at: Date.now(), sent: [{ from: 4, id: "old-1", media: [], text: "long ago" }] }));
+test("one sent before a reload that is older than the loaded window is looked for in the log below it: found, it is done; missing, it is offered to send again; another tab's list is not this one's", async () => {
+  localStorage.setItem(
+    sentKey,
+    JSON.stringify({
+      at: Date.now(),
+      sent: [
+        { from: 4, id: "old-1", media: [], text: "long ago" },
+        { from: 90, id: "old-2", media: [], text: "older message 99" },
+      ],
+    }),
+  );
   localStorage.setItem("optchat:sent:another-tab", JSON.stringify({ at: Date.now(), sent: [{ from: 100, id: "theirs", media: [], text: "the other tab's" }] }));
-  start(LOG, 100); // the window starts at 100: entry 4 is far below it
+  start(LOG, 100); // the window starts at 100: entries 4 and 90 are below it; /api/messages has 98 and 99
   await screen.findByText("what is in the repo?");
+  const item = await screen.findByTestId("queue-item");
   await waitFor(() => {
-    expect(localStorage.getItem(sentKey)).toBeNull();
+    expect(within(item).getByTestId("queue-error").textContent).toContain("send it again");
   });
-  expect(screen.queryByTestId("queue")).toBeNull();
+  expect(screen.getAllByTestId("queue-item")).toHaveLength(1);
+  expect(item.textContent).toContain("long ago");
+  expect(localStorage.getItem(sentKey)).not.toContain("older message 99");
   expect(localStorage.getItem("optchat:sent:another-tab")).toContain("the other tab's");
 });
 

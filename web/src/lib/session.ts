@@ -57,6 +57,7 @@ const MAX_ACKED = 1000; // log indexes of acked messages remembered
 export const UNSENT = "it may not have reached the server: send it again";
 const PAGE = 100; // older entries per page
 const MAX_FILL = 500; // a wider hole under the window is dropped, not fetched
+const PROBE = 500; // entries per /api/messages page when looking for messages sent before a reload
 
 const initial: Session = { asking: [], log: emptyLog, markers: [], pending: [], restored: null, state: null, status: "connecting", thinking: false };
 
@@ -213,14 +214,40 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
   // After a reconnect: a message sent on a connection that dropped, which the log doesn't hold and
   // the server doesn't hold either (its id is not among the state's pending), may have been lost
   // with the socket. It is marked so, and stays in the queue; the log taking it later clears it as
-  // above.
-  // One sent before the window this page holds (the log grew past it meanwhile) can't be told
-  // from the entries it doesn't see: it is dropped, neither marked nor offered to send again.
+  // above. One sent before the window this page holds (the log grew past it meanwhile) is looked
+  // for in the entries from where it could be up to the window (`below`), and marked only if they
+  // don't have it either.
+  const unheard = (p: Pending, there: ReadonlySet<string | null>) => p.conn < conns && p.error === null && !there.has(p.id);
   const unsent = () => {
     const there = new Set((s.state?.pending ?? []).map((m) => m.clientId));
-    const known = s.pending.filter((p) => p.conn >= conns || p.error !== null || there.has(p.id) || p.from >= lowest(s.log));
-    const marked = known.map((p) => (p.conn >= conns || p.error !== null || there.has(p.id) ? p : { ...p, error: UNSENT }));
-    if (marked.length !== s.pending.length || marked.some((p, k) => p !== s.pending[k])) set({ pending: marked });
+    const low = lowest(s.log);
+    const marked = s.pending.map((p) => (unheard(p, there) && p.from >= low ? { ...p, error: UNSENT } : p));
+    if (marked.some((p, k) => p !== s.pending[k])) set({ pending: marked });
+    const older = s.pending.filter((p) => unheard(p, there) && p.from < low);
+    if (older.length > 0) void below(older, low);
+  };
+  // The log's entries from the oldest of `older` up to `low`, a page at a time, matched oldest
+  // first as the window's are; those still unheard of after that are marked. Offline again, they
+  // wait as they are, and the next snapshot looks again.
+  const below = async (older: readonly Pending[], low: number) => {
+    const from = Math.min(...older.map((p) => p.from));
+    const found: { readonly i: number; readonly kind: Kind; readonly text: string }[] = [];
+    try {
+      for (let before = low; before > from; ) {
+        const page = await messages(before, Math.min(PROBE, before - from));
+        const first = page.entries[0]?.i;
+        found.unshift(...page.entries);
+        if (first === undefined || first >= before) break;
+        before = first;
+      }
+    } catch {
+      return;
+    }
+    for (const e of found) if (e.kind === "user") logged(e.i, e.text);
+    const there = new Set((s.state?.pending ?? []).map((m) => m.clientId));
+    const ids = new Set(older.map((p) => p.id));
+    const marked = s.pending.map((p) => (ids.has(p.id) && unheard(p, there) ? { ...p, error: UNSENT } : p));
+    if (marked.some((p, k) => p !== s.pending[k])) set({ pending: marked });
   };
   const setLog = (log: Log) => {
     if (log !== s.log) set({ log });

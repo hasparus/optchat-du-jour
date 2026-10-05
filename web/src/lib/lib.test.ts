@@ -4,6 +4,7 @@ import type { Kind, UsageRecord } from "@wire";
 import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { ack, type Entry, fakeServer, IDLE, parseSent, said, snapshot, state } from "../test/fixture";
 import { openLink } from "./connection";
+import { sentKey } from "./draft";
 import { applyEvent, applyPage, emptyLog, hole, type Log, MAX_HELD, tip, trimHeld, visible, withDraft } from "./log";
 import type { Inbound } from "./protocol";
 import { chatRows, entryRows, rowFor, rowIndexFor } from "./rows";
@@ -250,6 +251,18 @@ describe("session", () => {
     expect(sent.map((f) => parseSent(f))).toMatchObject([{ followUp: "queue", type: "settings" }, { forwardedProps: { engine: "openai-plan:gpt-6.1-sol" } }]);
     expect(session.resume("openai-plan:gpt-6.1-sol")).toBe(true);
     expect(parseSent(sent.at(-1) ?? "")).toEqual({ engine: "openai-plan:gpt-6.1-sol", type: "resume" });
+  });
+
+  test("messages sent before a reload from below the loaded window are looked for in /api/messages up to it; only the missing are offered to send again", async () => {
+    const sent = [
+      { from: 10, id: "a", media: [], text: "m12" },
+      { from: 20, id: "b", media: [], text: "never logged" },
+    ];
+    localStorage.setItem(sentKey, JSON.stringify({ at: Date.now(), sent }));
+    const { asked, session } = longLog({ n: 700 }); // the window holds 500..699
+    await tick(20);
+    expect(asked).toEqual(["500/490"]); // from the oldest one's `from` to the window, one page
+    expect(waiting(session)).toEqual([`never logged (${UNSENT})`]);
   });
 
   test("a take-back asked for and not answered is forgotten on a reconnect, so it can be asked again", async () => {
