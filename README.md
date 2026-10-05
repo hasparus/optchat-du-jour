@@ -1,45 +1,45 @@
 # optchat-du-jour
 
-Our own [OptChat](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449):
+an implementation of [OptChat](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449):
 one endless chat whose history is its memory, kept as a binary summary tree.
-A fresh view every turn. [SPEC.md](./SPEC.md) is the build spec.
+[SPEC.md](./SPEC.md) is the build spec.
 
 ## Features
 
-- **Gist-exact memory.** The log, tree, view and `optchat view` output are byte-for-byte
-  compatible with [shitty-optchat](https://github.com/gebeer/shitty-optchat)'s files, checked in CI.
-- **One server, many clients.** A terminal REPL and a phone-first web app (chat, memory browser,
-  usage stats, devices; installable as a PWA) share one WebSocket speaking AG-UI events, and
-  every client sees a turn live.
-- **Turns on any machine.** Each turn's `claude` runs where the files are, through a small device
-  runner on the tailnet. Tailscale is the only auth.
-- **Engine failover.** Claude Code, the ChatGPT plan, then an API key with a monthly budget,
-  without losing a message. The compactor's engine is chosen per tree level.
-- **A proven kernel.** The view fold is written in [Bend 2](https://github.com/bendlang/bend),
-  its laws (tiling, sizes, merge order, what the pump may offer) proved in CI.
-- **Fast turns.** No wait for cache priming, a warm `claude` per device, and `zoom`/`date` over
-  MCP on a WebSocket.
-- **Pictures and short videos.** Attach, paste, drop or shoot them in the web app. The log keeps a
-  captioned marker line per attachment; engines that can see get the real images, now and on `zoom`.
-- **Usage tracking.** Every model call lands in `usage.jsonl` (engine, cache reads, cold/warm,
-  failovers, dollars), charted in the web app.
+- A terminal REPL and a phone-first web app (chat, memory browser, usage stats, devices;
+  installable as a PWA), both clients of one server over a WebSocket speaking AG-UI.
+- Turns run where the files are: the server hands each `claude` call to a small runner on its
+  machine. Your Tailscale login is the only identity.
+- The chat fails over from Claude Code to the ChatGPT plan to an API key with a monthly budget,
+  without losing a message. The compactor has its own chain per tree level.
+- The view fold is a [Bend 2](https://github.com/bendlang/bend) kernel, with proofs of its tiling,
+  sizes, fit's merges and the pump's offers.
+- A turn never waits for cache priming. On the server's machine an idle `claude` is already
+  started, so the turn skips its boot. `zoom` and `date` go over MCP on a WebSocket.
+- Pictures and short videos from the web app. The log keeps one captioned marker line per
+  attachment; models that take images get the images, in the turn and from `zoom`.
+- `usage.jsonl` records every model call (engine, cache reads, cold/warm, failovers, dollars), and
+  the web app charts it.
 
 ## Run
 
-You need Bun, ffmpeg (for video), the `claude` CLI logged in on each machine that runs turns, and Tailscale for the
-phone and other machines (the server listens on 127.0.0.1 only;
-`tailscale serve --bg --https=443 http://127.0.0.1:7700` publishes it). Edit `optchat.config.ts`
-first: `devices`, `defaultDevice`, `allowedLogins` (your Tailscale login; an empty list refuses
-everything that comes through `tailscale serve`) and `server.publicUrl` if turns run on another
-machine. The ChatGPT plan and API keys are optional: `bun cli/optchat.ts login openai`, `bun cli/optchat.ts key anthropic|openai`.
+You need Bun, ffmpeg (for video), the `claude` CLI logged in on each machine that runs turns,
+and Tailscale. The server listens on 127.0.0.1; `tailscale serve --bg --https=443 http://127.0.0.1:7700`
+publishes it. First edit `optchat.config.ts`: `devices`, `defaultDevice`, `allowedLogins` (your
+Tailscale login; an empty list refuses everyone) and, if turns run on another machine,
+`server.publicUrl`.
 
 ```sh
 bun install
-bun run build                               # once: the web app into web/dist, which the server serves
-bun server/main.ts                          # data in ~/.optchat; the web app at http://127.0.0.1:7700
-bun cli/optchat.ts                          # the REPL (OPTCHAT_URL to point elsewhere)
-OPTCHAT_DEVICE=macbook bun device/main.ts   # a device runner, named as in optchat.config.ts
+bun link                  # puts `optchat` on PATH (~/.bun/bin), pointing at this checkout
+bun run build             # once: the web app into web/dist, which the server serves
+optchat server            # data in ~/.optchat; the web app at http://127.0.0.1:7700
+optchat                   # the REPL (OPTCHAT_URL to point elsewhere)
+optchat device macbook    # a device runner, named as in optchat.config.ts
 ```
+
+The other engines are optional: `optchat login openai` for the ChatGPT plan,
+`optchat key anthropic|openai` for API keys.
 
 ## Develop
 
