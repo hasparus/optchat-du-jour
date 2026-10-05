@@ -329,6 +329,45 @@ test("a message that arrives while the turn waits for a caption waits for its ow
   );
 });
 
+test("a message sent while the turn waits for a caption is logged before one sent during the run", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      let calls = 0;
+      const seeing: TurnEngine = {
+        ref: "seeing:x",
+        run: (input, out) =>
+          Effect.gen(function* () {
+            calls++;
+            if (calls === 1) {
+              const m = yield* input.mid.next;
+              yield* out.took(m);
+            }
+            yield* out.log("talk", `reply ${calls}`);
+          }),
+        vision: true,
+        warm: () => Effect.void,
+      };
+      const f = fakeMedia();
+      const r = yield* rig([seeing], f.media);
+      const a = image(1);
+      yield* r.session.input("A", undefined, "c1", [a]);
+      yield* until("a's caption asked for", () => f.waiting.has(a.sha));
+      yield* r.session.input("B, sent during the wait", undefined, "c2");
+      f.describe(a, "caption A");
+      yield* until("the call", () => calls === 1);
+      yield* r.session.input("C, sent during the run", undefined, "c3");
+      yield* until("both runs' ends", () => r.ended() === 2);
+      expect(r.log()).toEqual([
+        ["user", `A\n[image ${shortSha(a.sha)} 1568x1176 195KB: caption A]`],
+        ["user", "B, sent during the wait"],
+        ["talk", "reply 1"],
+        ["user", "C, sent during the run"],
+        ["talk", "reply 2"],
+      ]);
+    }).pipe(Effect.scoped),
+  );
+});
+
 test("a mid-run message is offered with the caption it is logged with, though the caption comes after it", async () => {
   await Effect.runPromise(
     Effect.gen(function* () {

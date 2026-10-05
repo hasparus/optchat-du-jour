@@ -205,6 +205,7 @@ export const makeMedia = (o: {
       made.set(id, shas);
       return shas;
     };
+    // Rescans every user entry and lists assets/ on each commit: linear in both, fine for one person's chat.
     const unreferenced = (texts: Iterable<string>) => {
       const named = new Set<string>();
       for (const text of texts) if (text.endsWith("]")) for (const m of splitMarkers(text).markers) for (const sha of madeOf(m.sha)) named.add(sha);

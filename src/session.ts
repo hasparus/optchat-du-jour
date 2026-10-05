@@ -348,8 +348,9 @@ export const makeSession = (o: {
           yield* enter("waiting");
           yield* settle(chat.mem);
         }
-        // This turn's messages are the ones held now; one that comes in meanwhile waits for the next
-        // turn. Their captions are waited for together, briefly, before any is logged.
+        // This turn's messages are the ones held now; their captions are waited for together, briefly,
+        // before any is logged. One that comes in meanwhile is offered to the call below, ahead of any
+        // sent later, so the log keeps the order they were sent in.
         const batch = held();
         yield* captioned(batch);
         const view = render(chat.mem); // BEFORE the new messages are logged (gist §7)
@@ -357,6 +358,7 @@ export const makeSession = (o: {
         const runId = yield* logQueued(batch, on);
         const since = chat.mem.root.length; // what this turn's engines log starts here
         accepting = true;
+        for (const m of held()) m.state = "offered"; // came in while the captions or the log were awaited
         const out: TurnEvents = {
           info,
           log: (kind, text) => logPublished(kind, text, runId, on),
