@@ -19,7 +19,12 @@ export default defineConfig({
     ...overrides,
     // a script whose output is its report
     { files: ["test/parity/**"], rules: { "no-console": "off" } },
+    // shadcn's registry components import React as a namespace, which this rule reads as importing
+    // PropsWithChildren; none of them use it
+    { files: ["web/src/components/ui/**"], rules: { "no-restricted-imports": "off" } },
   ],
+  // the web UI's Tailwind theme, for better-tailwindcss's class checks
+  settings: { "better-tailwindcss": { entryPoint: "web/src/index.css" } },
   rules: {
     ...unsorted,
     // An exhaustive switch over a union returns on every path; this rule can't see that, and the
