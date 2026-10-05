@@ -294,8 +294,11 @@ export const makeSession = (o: {
       }).pipe(Effect.forever, Effect.forkIn(scope));
     }
     yield* warm;
+    // the view changed (the memory's listener, a plain callback): the state goes out and priming is
+    // asked for, in a fiber of the session's own scope and services, not a detached one
+    const runFork = yield* FiberSet.makeRuntime();
     const onViewChange = () => {
-      Effect.runFork(Effect.andThen(tell, primeLater));
+      runFork(Effect.andThen(tell, primeLater));
     };
     chat.mem.listeners.add(onViewChange);
     yield* Effect.addFinalizer(() => Effect.sync(() => chat.mem.listeners.delete(onViewChange)));
