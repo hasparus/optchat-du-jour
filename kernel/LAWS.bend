@@ -229,7 +229,7 @@ law coords_names:
   Names(K.coords(id, n, T), id, n, T)
 
 # 3. fit merges only an adjacent sibling pair whose parent is built, and
-#    never splits a part
+#    never splits a part; a view within budget it leaves as it is
 # ----------------------------------------------------------------------
 
 law fit_merges:
@@ -239,6 +239,13 @@ law fit_merges:
   exs n: Nat
   Merges(n, ps, K.fit(T, budget, ps))
 
+# fit merges nothing unless it must
+law fit_within:
+  for +T: Nat
+  for +budget: Nat
+  for +ps: List<&2, K.Part>
+  {Nat.is_gt(Total(ps), budget) == False{} : Bool} -> {K.fit(T, budget, ps) == ps : List<&2, K.Part>}
+
 # 4. After fit, the view's size is at most VIEW, or no pair can be merged
 # -----------------------------------------------------------------------
 
@@ -247,14 +254,6 @@ law fit_fits:
   for +budget: Nat
   for +ps: List<&2, K.Part>
   Fits(budget, K.fit(T, budget, ps))
-
-# and a view already within budget is left as it is: fit merges nothing
-# unless it must
-law fit_within:
-  for +T: Nat
-  for +budget: Nat
-  for +ps: List<&2, K.Part>
-  {Nat.is_gt(Total(ps), budget) == False{} : Bool} -> {K.fit(T, budget, ps) == ps : List<&2, K.Part>}
 
 # 5. Rule 3 never offers a node whose children are unbuilt, nor one beyond
 #    the first unbuilt view line

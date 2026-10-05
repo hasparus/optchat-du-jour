@@ -31,7 +31,7 @@ Rules:
 
 - Everything the reference measured (ref §14) is taken as given until our own runs disagree. Re-run its probes after any Claude Code upgrade.
 - Its deviations from the gist (D1–D10, ref §11) apply unless this spec overrides them. Ours are numbered E1, E2, … and listed under Deviations.
-- The pure kernel is written in Bend 2 and compiled to JavaScript (E14): `id+n` addressing, `fit`, refold and the pump's rule 3. The laws under "Bend laws" are proved; the rest of its behaviour, which pair `fit` merges among them, is tested against a model. It never sees text, only sizes as integers.
+- The pure kernel is written in Bend 2 and compiled to JavaScript (E14): `id+n` addressing, `fit`, refold and the pump's rule 3. The laws under "Bend laws" are proved; what they leave open (which pair `fit` merges, and the completeness gaps listed there) is tested against a model and the reference. It never sees text, only sizes as integers.
 - Effect is the runtime for everything with I/O, time or concurrency (E13), and owns all text: rendering, cutting, logging.
 - Tests follow ref §10: few, each a real failure scenario, with a fake `claude` and a fake compactor. No model calls in `bun test`: a preload (`test/preload.ts`) makes `claude` a stub that refuses to run unless a test names a fake, and points the secrets store at an empty file, so a test that forgets a fake fails instead of reaching a real model or key. The web UI's end-to-end server runs the fake `claude` with an empty secrets store too.
 
@@ -43,7 +43,7 @@ Rules:
 4. After `fit`, the view's size is at most `VIEW`, or no pair can be merged.
 5. Rule 3 never offers a node whose children are unbuilt, nor one beyond the first unbuilt view line.
 
-Not proved, and said so: which pair `fit` merges. That it is the most due one, ties to the leftmost (gist §5.2), is checked by `test/kernel.test.ts` against a literal model of gist §4.1/§5.2 on seeded random runs, and by the parity test against the reference, not by a law: a proof needs the cross-multiplied due comparison to be transitive, i.e. Nat lemmas on multiplication (monotonicity, cancellation by a positive power of two) that the proofs don't have yet. Laws 2 and 5 are soundness only (an `offers` that offered nothing, or a `coords` that answered "No line" to every address, would satisfy them), and no law says the refold equals appending and fitting the whole log (see the open questions).
+Not proved, and said so: which pair `fit` merges. That it is the most due one, ties to the leftmost (gist §5.2), is checked by `test/kernel.test.ts` against a literal model of gist §4.1/§5.2 on seeded random runs, and by the parity test against the reference, not by a law: a proof needs the cross-multiplied due comparison to be transitive, i.e. Nat lemmas on multiplication (monotonicity, cancellation by a positive power of two) that the proofs don't have yet. Two laws are soundness only: `coords_names` (law 2; `span_start` and `span_size` are exact) would hold for a `coords` that answered "No line" to every address, and `offers_allowed` (law 5) for an `offers` that offered nothing. And no law says the refold equals appending and fitting the whole log (see the open questions).
 
 The parity test runs the compiled kernel against the reference, which also guards against bugs in Bend's young compiler. If the M0 spike shows the JS output can't be called cleanly from TypeScript, the kernel is written in TypeScript and the laws become property tests.
 
