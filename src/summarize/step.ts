@@ -89,7 +89,7 @@ export const sizeRetries = (o: {
           });
         });
       const answer: Answer = yield* o.ask({ attempt, retry }).pipe(
-        Effect.tapError((e) => ("usage" in e && e.usage !== undefined ? record(e.usage, e.model ?? null) : Effect.void)),
+        Effect.tapError((e) => (e._tag !== "DeviceOffline" && e.spent !== undefined ? record(e.spent.usage, e.spent.model) : Effect.void)),
       );
       yield* record(answer.usage, answer.model);
       const line = answer.text.trim();

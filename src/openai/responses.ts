@@ -74,10 +74,10 @@ const decodeErrorBody = Schema.decodeUnknownOption(Schema.fromJsonString(ErrorBo
 // a spent or rate-limited plan, or a plan this user may not share: the chain moves on (E4)
 const LIMIT = /usage_limit|rate_limit|insufficient_quota|not_eligible|quota/;
 
-export const classify = (status: number | null, code: string | null | undefined, message: string | undefined, spent: Spent = {}): EngineError => {
+export const classify = (status: number | null, code: string | null | undefined, message: string | undefined, spent?: Spent): EngineError => {
   const text = `openai-plan: ${[status, code, message].filter((x) => x !== null && x !== undefined && x !== "").join(" ")}`;
-  if (status === 429 || (code !== null && code !== undefined && LIMIT.test(code))) return new UsageLimit({ ...spent, message: text });
-  return new ModelError({ ...spent, message: text });
+  if (status === 429 || (code !== null && code !== undefined && LIMIT.test(code))) return new UsageLimit({ message: text, spent });
+  return new ModelError({ message: text, spent });
 };
 
 export const usageOf = (u: typeof ApiUsage.Type | null | undefined): Usage => {
@@ -86,8 +86,8 @@ export const usageOf = (u: typeof ApiUsage.Type | null | undefined): Usage => {
   return { cacheRead: cached, cacheWrite: 0, input: (u?.input_tokens ?? 0) - cached, output: u?.output_tokens ?? 0 };
 };
 
-const spentOf = (r: { readonly model?: string | undefined; readonly usage?: typeof ApiUsage.Type | null | undefined }, model: string): Spent =>
-  r.usage ? { model: r.model ?? model, usage: usageOf(r.usage) } : {};
+const spentOf = (r: { readonly model?: string | undefined; readonly usage?: typeof ApiUsage.Type | null | undefined }, model: string): Spent | undefined =>
+  r.usage ? { model: r.model ?? model, usage: usageOf(r.usage) } : undefined;
 
 class Unauthorized extends Data.TaggedError("Unauthorized")<{ readonly message: string }> {}
 
@@ -112,7 +112,7 @@ const onEvent = (model: string) => (r: Read, data: string): Effect.Effect<Read, 
       case "response.incomplete": {
         const { response } = yield* incomplete(data);
         const reason = response.incomplete_details?.reason ?? "no reason given";
-        return yield* new ModelError({ ...spentOf(response, model), message: `openai-plan: incomplete response (${reason})` });
+        return yield* new ModelError({ message: `openai-plan: incomplete response (${reason})`, spent: spentOf(response, model) });
       }
       case "error": {
         const e = yield* errorEvent(data);
@@ -140,7 +140,7 @@ export const readStream = (stream: Stream.Stream<Uint8Array, EngineError>, model
       }),
     );
     const r = Option.getOrUndefined(last);
-    if (r?.refusal) return yield* new Refusal({ message: `openai-plan refused: ${r.refusal.slice(0, 300)}`, model: r.done?.model, usage: r.done?.usage });
+    if (r?.refusal) return yield* new Refusal({ message: `openai-plan refused: ${r.refusal.slice(0, 300)}`, spent: r.done ? { model: r.done.model, usage: r.done.usage } : undefined });
     if (!r?.done) return yield* new ModelError({ message: "openai-plan: the stream ended without response.completed" });
     return r.done;
   });

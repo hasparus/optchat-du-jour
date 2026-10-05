@@ -4,8 +4,8 @@ import { Data } from "effect";
 import type { Tokens } from "../usage.ts";
 
 // What a failed call still cost, when the engine knows: usage.jsonl gets a line for it too (E11).
-export type Spent = { readonly usage?: Tokens | undefined; readonly model?: string | null | undefined };
-type Fields = { readonly message: string } & Spent;
+export type Spent = { readonly usage: Tokens; readonly model: string | null };
+type Fields = { readonly message: string; readonly spent?: Spent | undefined };
 
 export class UsageLimit extends Data.TaggedError("UsageLimit")<Fields> {}
 export class DeviceOffline extends Data.TaggedError("DeviceOffline")<{ readonly message: string }> {}
@@ -17,8 +17,8 @@ export type EngineError = DeviceOffline | ModelError | Refusal | UsageLimit;
 // Claude Code reports a spent plan or a rate limit as an error result whose text says so
 const LIMIT = /usage limit|rate limit|rate_limit|overloaded|\b429\b/i;
 
-export const fromResult = (text: string, stopReason: string | null | undefined, spent: Spent = {}): EngineError => {
-  if (stopReason === "refusal") return new Refusal({ ...spent, message: "the model refused this request" });
-  if (LIMIT.test(text)) return new UsageLimit({ ...spent, message: text });
-  return new ModelError({ ...spent, message: text });
+export const fromResult = (text: string, stopReason: string | null | undefined, spent?: Spent): EngineError => {
+  if (stopReason === "refusal") return new Refusal({ message: "the model refused this request", spent });
+  if (LIMIT.test(text)) return new UsageLimit({ message: text, spent });
+  return new ModelError({ message: text, spent });
 };
