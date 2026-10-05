@@ -52,8 +52,9 @@ export function fakeSummary(job: Job): string {
 // The lagging replay (SPEC "Parity test"): the compactor runs behind the log, as it does in a real
 // session, instead of catching up after every message. Messages go in batches without waiting;
 // between batches the driver lets a few compactor calls finish, one at a time, and a call fails
-// when `failsOn` says so for its node and attempt, then waits RETRY_MS for its retry. Each driver
-// passes `gate().call` as its compactor (one job at a time) and releases calls with `release`.
+// when `failsOn` says so for its node and attempt, then rests RETRY_MS before its retry. Each
+// driver passes `gate().call` as its compactor (one job at a time) and releases calls with
+// `release`, which waits on the pump's state, never on the clock.
 export const RETRY_MS = 2;
 export type Lag = { readonly batch: readonly FixtureMsg[]; readonly calls: number };
 
@@ -101,27 +102,35 @@ export function gate() {
   return { call, calls, waiting: () => waiting };
 }
 
-// Let the next call finish: wait until one is in flight, or until the compactor has caught up
-// (false), then release it and give the pump time to commit, fit, start the next call and let any
-// retry timer fire. A call that never comes is a hung pump, and fails the replay.
-export async function release(g: ReturnType<typeof gate>, caughtUp: () => boolean): Promise<boolean> {
-  const deadline = Date.now() + 10_000;
-  for (;;) {
-    const w = g.waiting();
-    if (w !== null) {
-      w.go();
-      await Bun.sleep(4 * RETRY_MS);
-      return true;
-    }
-    if (caughtUp()) return false;
-    if (Date.now() > deadline) throw new Error("the compactor neither called nor caught up for 10 s");
+// The state the driver acts in: a compactor call in flight, or nothing left to build. With one
+// job at a time both pumps start nothing else while a call runs or a failed node rests (it holds
+// the slot), so logging or releasing now gives both implementations the same state to decide
+// from, whatever the machine's load. Never a fixed sleep: a pump that hasn't started its next call
+// yet, or a retry timer that hasn't fired, is simply waited for. A pump that does neither for a
+// minute is hung, and fails the replay.
+export async function settled(g: ReturnType<typeof gate>, caughtUp: () => boolean): Promise<void> {
+  const deadline = Date.now() + 60_000;
+  while (g.waiting() === null && !caughtUp()) {
+    if (Date.now() > deadline) throw new Error("the compactor neither called nor caught up for 60 s");
     await Bun.sleep(1);
   }
+}
+
+// Let the call in flight finish (false when there is none: everything is built), then wait until
+// the next one is in flight or everything is built.
+export async function release(g: ReturnType<typeof gate>, caughtUp: () => boolean): Promise<boolean> {
+  await settled(g, caughtUp);
+  const w = g.waiting();
+  if (w === null) return false;
+  w.go();
+  await settled(g, caughtUp);
+  return true;
 }
 
 // the lagging replay itself, for either implementation; it prints the calls it saw, in order
 export async function replayLagging(o: { readonly log: (m: FixtureMsg) => Promise<void>; readonly caughtUp: () => boolean; readonly gate: ReturnType<typeof gate> }) {
   for (const step of lagging()) {
+    await settled(o.gate, o.caughtUp);
     for (const m of step.batch) await o.log(m);
     for (let c = 0; c < step.calls; c++) if (!(await release(o.gate, o.caughtUp))) break;
   }
