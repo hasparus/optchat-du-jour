@@ -22,25 +22,37 @@ export type Mem = {
 
 export const newMem = (budget = VIEW): Mem => ({ budget, listeners: new Set(), root: [], tree: new Map(), view: [] });
 
-export const bytes = (s: string) => Buffer.byteLength(s, "utf8");
+export const bytes = (text: string) => Buffer.byteLength(text);
 export const msgText = (m: { readonly kind: string; readonly text: string }) => `${m.kind}: ${m.text}`;
 
-const key = (l: number, i: number) => `${l}:${i}`;
-export const getNode = (mem: Mem, l: number, i: number) => mem.tree.get(key(l, i));
-export const built = (mem: Mem, l: number, i: number) => mem.tree.has(key(l, i));
+// where node (l, i) sits in mem.tree
+const slot = (l: number, i: number) => `${l}:${i}`;
+export const getNode = (mem: Mem, l: number, i: number) => mem.tree.get(slot(l, i));
+export const built = (mem: Mem, l: number, i: number) => getNode(mem, l, i) !== undefined;
 
 // the first record of a node is the node; a later one for the same (l, i) changes nothing
 export function setNode(mem: Mem, n: Node) {
-  const k = key(n.l, n.i);
+  const k = slot(n.l, n.i);
   if (!mem.tree.has(k)) mem.tree.set(k, { i: n.i, l: n.l, size: bytes(n.text), text: n.text });
 }
 
-// the id+n name of a node (gist §3 "Addressing")
-export const span = (c: Coord) => ({ id: c.i * 2 ** c.l, n: 2 ** c.l });
-export const label = (c: Coord) => {
-  const { id, n } = span(c);
-  return `${id}+${n}`;
-};
+// the id+n address of a node (gist §3 "Addressing"): its first message and how many it covers
+export function span({ l, i }: Coord) {
+  const n = 2 ** l;
+  return { id: i * n, n };
+}
+// its name in the view, "id+n"
+export function label(c: Coord): string {
+  const where = span(c);
+  return `${where.id}+${where.n}`;
+}
+// one past the last message a node covers
+export const end = (c: Coord) => span(c).id + span(c).n;
+// the two nodes one level down that a merge is made from
+export const children = ({ l, i }: Coord): readonly [Coord, Coord] => [
+  { i: 2 * i, l: l - 1 },
+  { i: 2 * i + 1, l: l - 1 },
+];
 
 // every node over a full pair of messages in a chat of T: level 0 first, each level oldest first
 export function* nodes(T: number): Generator<Coord> {
@@ -60,13 +72,16 @@ export function node(mem: Mem, l: number, i: number): Built {
 }
 
 // what a node is made from exists: its message, or both its children
-export const ready = (mem: Mem, l: number, i: number) =>
-  l === 0 ? i < mem.root.length : built(mem, l - 1, 2 * i) && built(mem, l - 1, 2 * i + 1);
+export function ready(mem: Mem, c: Coord) {
+  if (c.l > 0) return children(c).every((k) => built(mem, k.l, k.i));
+  return c.i < mem.root.length;
+}
 
-// gist §3 "Free nodes": a source that already fits in NODE bytes is the node itself
-export function freeText(mem: Mem, l: number, i: number): string | null {
-  const text = l === 0 ? msgText(entry(mem, i)) : `${node(mem, l - 1, 2 * i).text}\n${node(mem, l - 1, 2 * i + 1).text}`;
-  return bytes(text) <= NODE ? text : null;
+// gist §3 "Free nodes": a node needs no model call when what it would summarize (its message as
+// "kind: text", or its children's texts a line apart) is NODE bytes or less; that is its text
+export function freeText(mem: Mem, c: Coord): string | null {
+  const source = c.l > 0 ? children(c).map((k) => node(mem, k.l, k.i).text).join("\n") : msgText(entry(mem, c.i));
+  return bytes(source) > NODE ? null : source;
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");

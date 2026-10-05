@@ -33,7 +33,7 @@ class Model {
         const due = (this.T - this.start(a)) / 2 ** (a.l + 2);
         if (due > most) [best, most] = [k, due];
       }
-      if (best < 0) break; // wait until a parent is built
+      if (best === -1) return; // no pair has its parent yet: over budget until one is built
       const a = this.view[best]!, b = this.view[best + 1]!, up = { i: a.i / 2, l: a.l + 1 };
       total += this.size(up) - this.size(a) - this.size(b);
       this.view.splice(best, 2, up);
@@ -71,8 +71,9 @@ class Model {
     const out: Coord[] = [], head = this.first();
     for (let l = 0; 2 ** l <= this.T; l++)
       for (let i = 0; (i + 1) * 2 ** l <= this.T; i++) {
-        const end = l === 0 ? i : (i + 1) * 2 ** l;
-        if (!this.built(l, i) && this.ready(l, i) && end <= head) out.push({ i, l });
+        // a message's own summary waits for the lines before it; a merge for all it covers
+        const upTo = l > 0 ? (i + 1) * 2 ** l : i;
+        if (!this.built(l, i) && this.ready(l, i) && upTo <= head) out.push({ i, l });
       }
     return out;
   }
@@ -106,7 +107,6 @@ function rng(seed: number) {
 const CHARS = ["a", "b", " ", "\n", "ä", "ß", "日", "本", "😀", "\u{10348}"];
 const text = (r: () => number, max: number) =>
   Array.from({ length: 1 + Math.floor(r() * max) }, () => CHARS[Math.floor(r() * CHARS.length)]).join("");
-
 
 // `appends`: the share of steps that log a message; low, the compactor keeps up, high, it lags
 function run(seed: number, budget: number, steps: number, appends: number) {

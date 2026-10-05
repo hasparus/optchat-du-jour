@@ -6,7 +6,7 @@ import { connect, createServer, type Server } from "node:net";
 import { dirname, resolve } from "node:path";
 import { VIEW } from "./config.ts";
 import { type Kind, Msg, Node } from "./records.ts";
-import { bytes, dayOf, type Entry, type Mem, msgText, newMem, setNode } from "./tree.ts";
+import { bytes, dayOf, type Entry, label, type Mem, msgText, newMem, setNode } from "./tree.ts";
 import { refold } from "./view.ts";
 
 export class StoreError extends Data.TaggedError("StoreError")<{ readonly message: string }> {}
@@ -38,13 +38,19 @@ const fsyncPath = (path: string) => {
   }
 };
 
-// one line, one write, then fsync; a new file also gets its directory entry synced
+// one line, one write (more only if the OS takes it in parts), then fsync; a new file also
+// gets its directory entry synced
 function appendLine(dir: string, file: string, line: string) {
   const made = mkdirSync(dir, { recursive: true }); // the first directory it had to create
-  const path = `${dir}/${file}`, isNew = !existsSync(path);
-  const fd = openSync(path, "a");
+  const target = `${dir}/${file}`, isNew = !existsSync(target);
+  const data = Buffer.from(line, "utf8");
+  const fd = openSync(target, "a");
   try {
-    writeSync(fd, line);
+    for (let done = 0; done < data.length; ) {
+      const wrote = writeSync(fd, data, done, data.length - done);
+      if (wrote <= 0) throw new Error(`${target}: wrote ${done} of ${data.length} bytes`);
+      done += wrote;
+    }
     fsyncSync(fd);
   } finally {
     closeSync(fd);
@@ -62,11 +68,14 @@ export const appendMessage = (dir: string, m: Entry) =>
   });
 
 export const appendNode = (dir: string, n: Node, now = new Date()) =>
-  io(`cannot save node (${n.l}, ${n.i})`, () => {
+  io(`cannot save node ${label(n)}`, () => {
     appendLine(`${dir}/chat/tree`, `${dayOf(now)}.jsonl`, `${JSON.stringify(newNode(n.l, n.i, n.text))}\n`);
   });
 
 export type Loaded = { readonly mem: Mem; readonly problems: readonly string[] };
+
+// a day file: YYYY-MM-DD.jsonl (ref §3); anything else in the directory is not ours to read
+const DAY_FILE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
 
 // The decoded lines of one stream, oldest day first. A line that doesn't decode is listed in
 // `problems` and skipped. An unterminated last line may be a write in progress: a reader leaves
@@ -74,9 +83,8 @@ export type Loaded = { readonly mem: Mem; readonly problems: readonly string[] }
 function readStream<A>(dir: string, stream: string, decode: (line: string) => Option.Option<A>, repair: boolean, problems: string[]) {
   const path = `${dir}/chat/${stream}`, out: A[] = [];
   if (!existsSync(path)) return out;
-  for (const file of readdirSync(path).filter((f) => f.endsWith(".jsonl")).toSorted()) {
-    const raw = readFileSync(`${path}/${file}`, "utf8");
-    const lines = raw.split("\n");
+  for (const file of readdirSync(path).filter((f) => DAY_FILE.test(f)).toSorted()) {
+    const lines = readFileSync(`${path}/${file}`, "utf8").split("\n");
     const torn = lines.pop() ?? ""; // "" when the file ends with a newline
     if (torn && repair) appendLine(path, file, "\n");
     for (const [k, line] of lines.entries()) {
@@ -101,10 +109,11 @@ export const loadChat = (
   o: { readonly budget?: number; readonly repair?: boolean; readonly view?: boolean } = {},
 ): Effect.Effect<Loaded, StoreError> =>
   Effect.gen(function* () {
-    const problems: string[] = [], repair = o.repair ?? true;
-    const msgs = yield* io(`cannot read ${dir}/chat/main`, () => readStream(dir, "main", decodeMsg, repair, problems));
-    const recs = yield* io(`cannot read ${dir}/chat/tree`, () => readStream(dir, "tree", decodeNode, repair, problems));
-    const mem = newMem(o.budget ?? VIEW);
+    const { budget = VIEW, repair = true, view = true } = o;
+    const skipped: string[] = [];
+    const msgs = yield* io(`cannot read ${dir}/chat/main`, () => readStream(dir, "main", decodeMsg, repair, skipped));
+    const recs = yield* io(`cannot read ${dir}/chat/tree`, () => readStream(dir, "tree", decodeNode, repair, skipped));
+    const mem = newMem(budget);
     msgs.sort((a, b) => a.i - b.i);
     for (const [k, m] of msgs.entries()) {
       if (m.i !== k) {
@@ -114,8 +123,9 @@ export const loadChat = (
       mem.root.push({ ...m, size: bytes(msgText(m)) });
     }
     for (const n of recs) setNode(mem, n);
-    if (o.view ?? true) refold(mem);
-    return { mem, problems };
+    // a reader that wants the records only (an exporter, a check) skips the fold
+    if (view) refold(mem);
+    return { mem, problems: skipped };
   });
 
 // Is something answering on the socket? A refused connection (its owner died) or no socket
@@ -160,11 +170,11 @@ const release = (server: Server) =>
 // a live owner; one that refuses connections is stale and is taken over.
 export const lock = (dir: string) =>
   Effect.gen(function* () {
-    const path = `${dir}/lock`;
+    const socket = `${dir}/lock`;
     yield* io(`cannot create ${dir}`, () => mkdirSync(dir, { recursive: true }));
-    if (yield* answers(path)) return yield* new Locked({ message: `another optchat is already running on ${dir}` });
-    yield* io(`cannot remove the stale lock ${path}`, () => {
-      if (existsSync(path)) unlinkSync(path);
+    if (yield* answers(socket)) return yield* new Locked({ message: `another optchat is already running on ${dir}` });
+    yield* io(`cannot remove the stale lock ${socket}`, () => {
+      if (existsSync(socket)) unlinkSync(socket);
     });
-    return yield* Effect.acquireRelease(listen(path), release).pipe(Effect.asVoid);
+    return yield* Effect.acquireRelease(listen(socket), release).pipe(Effect.asVoid);
   });
