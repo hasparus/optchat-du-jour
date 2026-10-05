@@ -98,7 +98,7 @@ test("when not every video can keep 4 frames, the first attachments in order kee
   expect(kept([clip(1), still(60), clip(2)], holding(58)).looks).toEqual(["sheet", "all", "none"]);
   // a still first keeps its place, then one sheet; the second video is a marker
   expect(kept([still(60), clip(1), clip(2)], holding(58)).looks).toEqual(["all", "sheet", "none"]);
-  // and a still sent after the videos is the one left out, though a thinned video could have made room
+  // and a still sent after the videos is the one left out: with room < videos + stills, thinning (room >= stills + 4 per video) was never possible
   expect(kept([clip(1), clip(2), still(60)], holding(58)).looks).toEqual(["sheet", "sheet", "none"]);
 
   // 5 pictures of room for two videos: 2 frames each is under MIN_FRAMES, so both are sheets

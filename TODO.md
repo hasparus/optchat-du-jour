@@ -21,6 +21,9 @@ Everything is built and tested against fakes. Each check below needs a real logi
 - [ ] Gist §8 Responses fields: `prompt_cache_breakpoint`, `reasoning.encrypted_content`, `reasoning.context` (SPEC M5).
 - [ ] `input_image` and PDFs on the plan route, before `media.planImages` goes on (SPEC Media).
 - [ ] Does prefix caching count against limits at a discount, and stay warm across bursts? (SPEC M3)
+- [ ] Does the compactor fit the ChatGPT Pro weekly limit alongside Codex work? (SPEC Usage and cost tracking)
+- [ ] One real compactor call on the plan route, with `instructions` seen on the wire (SPEC M3)
+- [ ] Luna's level-0 quality: retries per node, how much of the user's wording survives (SPEC M3)
 - [ ] The bake-off: `dev/bakeoff.ts` over ~500 real messages for Luna, Sol, Sonnet and a split; set the level cutoff (SPEC M3).
 
 ## API keys
@@ -33,7 +36,7 @@ Everything is built and tested against fakes. Each check below needs a real logi
 
 - [ ] The phone over Tailscale as a PWA: install, reconnect, chat (SPEC M2).
 - [ ] A live two-machine run over a real tailnet: one chat edits files on both machines (SPEC M4).
-- [ ] Real-claude latency smoke with `dev/latency.ts` (SPEC Turn and priming).
+- [ ] Re-measure latency with real claude after the inline system prompt change, `dev/latency.ts` (SPEC Turn and priming).
 
 ## Media
 
