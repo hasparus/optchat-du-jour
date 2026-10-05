@@ -80,7 +80,7 @@ Module map (ours on the right; unchanged unless noted):
 | — | `server/` | New: Bun.serve, WebSocket API, Tailscale identity check |
 | — | `device/` | New: the device runner on each machine |
 
-**Parity test.** A script replays a fixture log through both implementations with the same deterministic fake compactor, then compares the reference's `optchat view` output with ours, byte for byte. It runs in CI against a pinned reference commit.
+**Parity test.** A script replays a fixture log through both implementations with the same deterministic fake compactor, then compares the reference's `optchat view` output with ours, byte for byte. It runs in CI against a pinned reference commit. It replays twice: caught up (the compactor finishes everything after each message), and lagging (`test/parity/fixture.ts`: 1,400 messages logged in batches ahead of the compactor, its calls released one at a time between batches, about one in five failing and retried after a short `retry`), where the order of the compactor's calls must match too, not only the log, tree and view. Only options the reference's `openChat` already takes are used (`summarize`, `jobs`, `retryMs`); its checkout is never changed. The lagging replay is the one that sees rule 3's order: a pump that started its offers in another order passes the caught-up replay and fails this one.
 
 ## System shape
 
