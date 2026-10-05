@@ -1,0 +1,43 @@
+{
+  "name": "@hasparus/oxlint-config",
+  "version": "0.4.0",
+  "description": "my shared oxlint config",
+  "license": "MIT",
+  "files": [
+    "anti-slop",
+    "oxlint.config.ts",
+    "oxlint.config.js"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./oxlint.config.ts",
+      "default": "./oxlint.config.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "oxlint --deny-warnings --ignore-pattern \"anti-slop/**\"",
+    "prepublishOnly": "bun run build",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@oxlint/plugins": "1.78.0",
+    "eslint-plugin-better-tailwindcss": "4.0.2",
+    "eslint-plugin-perfectionist": "5.4.0",
+    "eslint-plugin-sonarjs": "4.2.0"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.7",
+    "oxlint": "1.78.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "oxlint": "^1.78.0",
+    "oxlint-tsgolint": ">=0.22.1"
+  }
+}

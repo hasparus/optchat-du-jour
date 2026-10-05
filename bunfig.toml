@@ -1,0 +1,4 @@
+[test]
+# the vendored packages keep their own suites (bun run --filter '*' test)
+root = "./test"
+
