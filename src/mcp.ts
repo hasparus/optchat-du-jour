@@ -4,6 +4,7 @@
 import { Effect, Option, Schema } from "effect";
 import type { McpTransport } from "./config.ts";
 import { address } from "./kernel.ts";
+import { wireJson } from "./text.ts";
 import { type Built, children, type Coord, type Entry, getNode, label, localTime, type Mem } from "./tree.ts";
 import { flat } from "./view.ts";
 
@@ -44,16 +45,15 @@ export function openNode(mem: Mem, id: number, n: number): Opened | null {
 
 // Line id+n opened into its two halves, or for n = 1 the message itself, whole. A merge that is
 // not built yet is no line at all; a single message always opens, since the view tells the model
-// to zoom a line that has no summary yet. What it answers goes to a model, so it is made
-// well-formed: a lone surrogate in an old log line becomes U+FFFD, not a request refused.
+// to zoom a line that has no summary yet.
 export function zoom(mem: Mem, id: number, n: number): string {
   const found = openNode(mem, id, n);
   if (!found) return noLine(id, n);
-  if ("message" in found) return `${id}+0|${found.message.kind}: ${found.message.text}`.toWellFormed();
+  if ("message" in found) return `${id}+0|${found.message.kind}: ${found.message.text}`;
   const [left, right] = found.halves;
   // a parent is only built after its children: a missing half is a broken tree
   if (!found.node || !left?.node || !right?.node) return noLine(id, n);
-  return `${label(left.at)}|${flat(left.node.text)}\n${label(right.at)}|${flat(right.node.text)}`.toWellFormed();
+  return `${label(left.at)}|${flat(left.node.text)}\n${label(right.at)}|${flat(right.node.text)}`;
 }
 
 // the local date and time of message id, "YYYY-MM-DD HH:MM"
@@ -101,7 +101,8 @@ type Initialized = {
 };
 type Result = Initialized | ToolResult | { readonly tools: typeof TOOLS } | Record<string, never>;
 
-const respond = (id: Id, result: Result): Reply => ({ body: JSON.stringify({ id, jsonrpc: "2.0", result }), status: 200 });
+// a tool's answer goes to the model with its strings made well-formed (wireJson)
+const respond = (id: Id, result: Result): Reply => ({ body: wireJson({ id, jsonrpc: "2.0", result }), status: 200 });
 const failure = (id: Id, code: number, message: string, status = 200): Reply => ({
   body: JSON.stringify({ error: { code, message }, id, jsonrpc: "2.0" }),
   status,

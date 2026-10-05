@@ -14,6 +14,7 @@ import { isPicture } from "../media/part.ts";
 import type { ToolDef } from "../tools/files.ts";
 import type { Item } from "../providers/provider.ts";
 import type { Tokens } from "../usage.ts";
+import { wireJson } from "../text.ts";
 import type { Writes } from "./budget.ts";
 
 export const ANTHROPIC_API = "https://api.anthropic.com";
@@ -106,7 +107,8 @@ const Body = Schema.Struct({
   cache_control: Schema.Struct({ type: Schema.Literal("ephemeral") }),
   stream: Schema.Literal(true),
 });
-const encodeBody = Schema.encodeSync(Schema.fromJsonString(Body));
+// every string made well-formed on the way out (wireJson)
+const encodeBody = (body: typeof Body.Type) => wireJson(Schema.encodeSync(Body)(body));
 
 export const requestBody = (ask: MessagesAsk<Tagged>) => {
   const tools = ask.tools === undefined || ask.tools.length === 0 ? undefined : ask.tools;

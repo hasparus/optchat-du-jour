@@ -19,6 +19,7 @@ import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
 import { isPicture, type Part } from "../media/part.ts";
+import { wireJson } from "../text.ts";
 import type { Tokens as Usage } from "../usage.ts";
 import { type TokenError, makeTokenManager } from "./auth.ts";
 import type { Endpoints } from "./endpoints.ts";
@@ -100,7 +101,8 @@ const Body = Schema.Struct({
   stream: Schema.Literal(true),
   store: Schema.Literal(false),
 });
-const encodeBody = Schema.encodeSync(Schema.fromJsonString(Body));
+// every string made well-formed on the way out (wireJson)
+const encodeBody = (b: typeof Body.Type) => wireJson(Schema.encodeSync(Body)(b));
 
 const BREAKPOINT = { mode: "explicit" } as const;
 
