@@ -106,7 +106,7 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
   const port = freePort(), devicePort = freePort();
   const settings = parseSettings({
     allowedLogins: [],
-    cache: { apiKeyTtls: ["1h"], claudeCodeTtl: "1h", primeTtl: "1h" },
+    cache: { apiKeyTtls: ["5m"], claudeCodeTtl: "1h", primeTtl: "1h" },
     compactor: { byLevel: [{ chain: ["claude-code:sonnet"], from: 0 }], effort: "medium" },
     defaultDevice: "mini",
     devices: {
@@ -237,7 +237,7 @@ test("a compactor failover reaches every socket as the state's down list, and a 
   const port = freePort();
   const settings = parseSettings({
     allowedLogins: [],
-    cache: { apiKeyTtls: ["1h"], claudeCodeTtl: "1h", primeTtl: "1h" },
+    cache: { apiKeyTtls: ["5m"], claudeCodeTtl: "1h", primeTtl: "1h" },
     compactor: { byLevel: [{ chain: ["openai-plan:gpt-6-luna", "claude-code:sonnet"], from: 0 }], effort: "medium" },
     defaultDevice: "mini",
     devices: { mini: { folders: [data], url: "http://127.0.0.1:9" } },

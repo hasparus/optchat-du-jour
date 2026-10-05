@@ -57,7 +57,7 @@ const settings = parseSettings({
     openaiUrl: `${openai.base}/v1`,
     prices: { "anthropic/claude-opus-5-5": { cacheRead: 0, input: 1, output: 1 }, "openai/gpt-6": { cacheRead: 0, input: 1, output: 1 } },
   },
-  cache: { apiKeyTtls: ["1h"], claudeCodeTtl: "1h", primeTtl: "1h" },
+  cache: { apiKeyTtls: ["5m"], claudeCodeTtl: "1h", primeTtl: "1h" },
   compactor: { byLevel: [{ chain: ["claude-code:sonnet"], from: 0 }], effort: "medium" },
   defaultDevice: "mini",
   devices: { mini: { folders: [], url: "http://127.0.0.1:9" } },
@@ -114,7 +114,7 @@ test("api-key turns send the picture: an Anthropic image block after the cached 
   const sent = Schema.decodeUnknownSync(Schema.fromJsonString(AnthropicBody))(anthropic.state.seen.at(-1));
   const [first] = sent.messages;
   expect(first?.content.map((b) => b.type)).toEqual(["text", "text", "image", "text"]);
-  expect(first?.content[0]).toEqual({ cache_control: { ttl: "1h", type: "ephemeral" }, text: VIEW, type: "text" });
+  expect(first?.content[0]).toEqual({ text: VIEW, type: "text" }); // one piece, under the first cut: the request end caches it
   expect(first?.content[1]?.text).toBe("image 111111111111:");
   expect(first?.content[2]).toEqual({ source: { data: PIC.data, media_type: "image/jpeg", type: "base64" }, type: "image" });
   expect(first?.content[3]?.text).toContain("[image 111111111111 1568x1176 195KB: a red square]");

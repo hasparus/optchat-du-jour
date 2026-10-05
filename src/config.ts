@@ -37,6 +37,19 @@ export const TOOL_ROUNDS = 40;
 // cache TTLs, devices, who may connect.
 
 const Ttl = Schema.Literals(["1h", "5m"]);
+// The view marks on an API key's Anthropic requests (gist §8): one entry per mark, at most 3 (the
+// fourth breakpoint Anthropic allows is the request end's), and 5-minute only. The 1-hour TTL of
+// E6 is for the Claude subscription, which has no per-token bill; on a key a 1-hour write costs
+// 2× input against 1.25×, and gist §8 measured it not worth it (checklist item 10).
+const ApiKeyTtls = Schema.Array(Ttl).check(
+  Schema.makeFilter((ttls: readonly (typeof Ttl.Type)[]) =>
+    ttls.length > 3
+      ? "cache.apiKeyTtls takes at most 3 entries: 3 view marks, and the request end is the fourth (gist §8)"
+      : ttls.includes("1h")
+        ? 'cache.apiKeyTtls takes "5m" entries only: gist §8 rules out 1-hour entries on a per-token bill (E6 covers the Claude subscription only)'
+        : true,
+  ),
+);
 // How claude reaches /mcp (E8). "ws" is a type Claude Code's config schema takes but does not
 // document (probed on 2.1.289: it connects, with subprotocol "mcp" and no Origin); "http" is.
 export const McpTransport = Schema.Literals(["ws", "http"]);
@@ -100,7 +113,7 @@ export const Settings = Schema.Struct({
     byLevel: Schema.NonEmptyArray(Schema.Struct({ from: Schema.Int, chain: Chain })),
     effort: Effort,
   }),
-  cache: Schema.Struct({ claudeCodeTtl: Ttl, primeTtl: Ttl, apiKeyTtls: Schema.Array(Ttl) }),
+  cache: Schema.Struct({ claudeCodeTtl: Ttl, primeTtl: Ttl, apiKeyTtls: ApiKeyTtls }),
   devices: Schema.Record(Schema.String, Schema.Struct({ url: Schema.String, folders: Schema.Array(Schema.String) })),
   defaultDevice: Schema.String,
   allowedLogins: Schema.Array(Schema.String),
@@ -167,10 +180,6 @@ export const loadSettings = (path: string) =>
     const settings = yield* decodeSettings(module).pipe(
       Effect.mapError((e) => new ConfigError({ message: `${path}: ${e.message}` })),
     );
-    // Anthropic takes at most 4 marks, and 1-hour entries must come before 5-minute ones
-    const ttls = settings.cache.apiKeyTtls;
-    if (ttls.length > 4 || ttls.some((t, k) => t === "1h" && ttls.slice(0, k).includes("5m")))
-      return yield* new ConfigError({ message: `${path}: cache.apiKeyTtls takes at most 4 entries, every "1h" before any "5m"` });
     for (const [name, d] of Object.entries(settings.devices))
       // http only: the runner listens on the tailnet address itself, and RemoteRunner dials its IPv4
       if (!URL.canParse(d.url) || new URL(d.url).protocol !== "http:")

@@ -1,5 +1,6 @@
 // The api-key engine as a provider (./provider.ts; SPEC "Engines", api-key: overflow only):
-// Anthropic with our own cache marks (`cache.apiKeyTtls`) or OpenAI's Responses API, each call
+// Anthropic with gist §8's cache layout (`cache.apiKeyTtls` view marks and the request end, all
+// 5-minute) or OpenAI's Responses API, each call
 // first asking the monthly budget and then priced from the table in optchat.config.ts (SPEC
 // "Usage and cost tracking"). The master runs it in our tool loop with the read-only tools; the
 // compactor (src/summarize/api-key.ts) runs it with none.
@@ -48,7 +49,7 @@ export const apiKeyProvider = (o: ApiKeyOptions): Provider => {
           system: c.instructions,
           toolChoice: c.final ? "none" : "auto",
           tools: c.tools,
-          ttls: o.settings.cache.apiKeyTtls,
+          marks: o.settings.cache.apiKeyTtls.length, // each a 5-minute entry: config.ts takes no other
         });
         const cut = reply.stop === "max_tokens" ? `the reply reached its ${apiKey.maxTokens ?? MAX_TOKENS}-token limit` : undefined;
         return { cut, dollars: dollarsOf(price, reply.usage, reply.writes), items: reply.items, model: reply.model, usage: reply.usage };

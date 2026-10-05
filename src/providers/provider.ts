@@ -8,11 +8,13 @@ import type { Part } from "../media/part.ts";
 import type { ToolDef } from "../tools/files.ts";
 import type { Tokens, UsageRecord } from "../usage.ts";
 
-// The conversation, provider-neutral. `stable` counts a user message's leading parts that stay
-// byte-identical from call to call (the view blocks): where a provider puts its cache marks. A
-// part is text or an image (SPEC "Media"); images come only after the stable parts.
+// The conversation, provider-neutral. `marks` counts a user message's leading parts that each end
+// at one of the view's cache marks (gist §8: the view, or a compactor's context, cut at MARKS; the
+// piece after the last cut ends where the view does and is not one of them): a provider puts its
+// cache breakpoint after each, the same ones in every request. A part is text or an image (SPEC
+// "Media"); images come only after the view.
 export type Item =
-  | { readonly type: "user"; readonly parts: readonly Part[]; readonly stable?: number }
+  | { readonly type: "user"; readonly parts: readonly Part[]; readonly marks?: number }
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "call"; readonly id: string; readonly name: string; readonly input: string }
   | { readonly type: "result"; readonly id: string; readonly output: string }
