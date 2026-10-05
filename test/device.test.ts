@@ -405,7 +405,7 @@ test("a connection lost mid-turn is a ModelError, so the chain doesn't run the t
                 }),
             },
           ],
-          () => Effect.void,
+          { moved: () => Effect.void },
         ).pipe(Effect.flip);
       }),
   );

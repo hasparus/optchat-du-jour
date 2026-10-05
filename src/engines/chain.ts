@@ -10,21 +10,23 @@ export type Link<A, E extends Failure> = { readonly ref: string; readonly run: (
 
 const movesOn = (e: Failure) => e._tag === "UsageLimit" || e._tag === "DeviceOffline";
 
-// Every engine call any chain starts gets the next number, so a watcher can tell a call that
-// began before an engine changed state from one that began after.
-let begun = 0;
+// What a chain tells its watcher: each call it starts (`begin` numbers it, so a watcher can tell
+// a call that began before an engine changed state from one that began after), each move to the
+// next engine, and each answer.
+export type Watcher = {
+  readonly begin?: () => number;
+  readonly moved: (from: string, to: string, why: string, started: number) => Effect.Effect<void>;
+  readonly answered?: (ref: string, started: number) => Effect.Effect<void>;
+};
 
-export const failover = <A, E extends Failure>(
-  links: readonly Link<A, E>[],
-  moved: (from: string, to: string, why: string, started: number) => Effect.Effect<void>,
-  answered: (ref: string, started: number) => Effect.Effect<void> = () => Effect.void,
-): Effect.Effect<A, E> => {
+export const failover = <A, E extends Failure>(links: readonly Link<A, E>[], watcher: Watcher): Effect.Effect<A, E> => {
+  const { answered = () => Effect.void, begin = () => 0, moved } = watcher;
   const go = (k: number, from: string | null): Effect.Effect<A, E> => {
     const link = links[k];
     if (!link) return Effect.die(new Error("an empty engine chain"));
     const next = links[k + 1];
     return Effect.suspend(() => {
-      const started = ++begun;
+      const started = begin();
       const attempt = link.run(from).pipe(Effect.tap(() => answered(link.ref, started)));
       if (!next) return attempt;
       return attempt.pipe(
@@ -49,10 +51,12 @@ export type DownList = { readonly now: () => readonly Down[]; readonly changes: 
 // is back. `down` is the list right now, for a client that connects later; `changed` runs after
 // each notice.
 export const watchChain = (report: (message: string) => Effect.Effect<void>, doing: string, changed: Effect.Effect<void> = Effect.void) => {
+  let begun = 0; // the calls the watched chain has started
   const down = new Map<string, string>(); // ref → why
   const flipped = new Map<string, number>(); // ref → the last call number when it went down or came back
   const stale = (ref: string, started: number) => started <= (flipped.get(ref) ?? 0);
   return {
+    begin: () => ++begun,
     answered: (ref: string, started: number) => {
       if (!down.has(ref) || stale(ref, started)) return Effect.void;
       down.delete(ref);

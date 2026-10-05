@@ -319,8 +319,7 @@ test("with calls in flight, an engine is back only when a call started after it 
         },
         { ref: "claude", run: () => Effect.succeed("claude") },
       ],
-      watch.moved,
-      watch.answered,
+      watch,
     );
   const capped = new UsageLimit({ message: "429 cap" });
   // the nth call, once it is waiting on the plan

@@ -281,12 +281,14 @@ export const makeSession = (o: {
         const base = { device: on, texts, view };
         const result = yield* failover(
           o.engines.map((e) => ({ ref: e.ref, run: (from: string | null) => call(e, base, from, out, since) })),
-          // a failover mid-turn keeps what was logged: the next engine is told and carries on from it
-          (from, to, why) =>
-            Effect.suspend(() => {
-              const done = chat.mem.root.length - since;
-              return info(`${from} → ${to}: ${why}${done > 0 ? ` (after ${done} logged entries; ${to} carries on from them)` : ""}`);
-            }),
+          {
+            // a failover mid-turn keeps what was logged: the next engine is told and carries on from it
+            moved: (from, to, why) =>
+              Effect.suspend(() => {
+                const done = chat.mem.root.length - since;
+                return info(`${from} → ${to}: ${why}${done > 0 ? ` (after ${done} logged entries; ${to} carries on from them)` : ""}`);
+              }),
+          },
         ).pipe(Effect.result);
         yield* Effect.uninterruptible(
           Effect.gen(function* () {

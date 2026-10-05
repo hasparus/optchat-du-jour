@@ -22,8 +22,7 @@ export const makeSummarize = (o: CompactorNeeds) =>
           const run = engines.get(ref);
           return run ? [{ ref, run: (from: string | null) => run(job, from) }] : [];
         }),
-        watch.moved,
-        watch.answered,
+        watch,
       ).pipe(Effect.mapError((e) => new CompactError({ message: e.message })));
     // the engines down right now, with why: for the UI, so compaction never runs elsewhere unseen
     const down: DownList = { changes, now: watch.down };
