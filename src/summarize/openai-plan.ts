@@ -17,6 +17,7 @@ export type OpenAiPlanCompactorOptions = {
   readonly model: string;
   readonly effort: string;
   readonly log: (record: UsageRecord) => Effect.Effect<void>;
+  readonly device?: string; // where the call runs, for its usage record: the server's own machine
   readonly timeout?: Duration.Input; // CALL_TIMEOUT
 };
 
@@ -35,7 +36,7 @@ export const openAiPlanCompactor = (o: OpenAiPlanCompactorOptions) =>
         if (t.retry !== null) input.push({ role: "assistant", text: t.retry.line }, { parts: [t.retry.text], role: "user" });
         return plan.respond({ effort: o.effort, input: [...input], instructions, model: o.model });
       };
-      return sizeRetries({ ask, auth: "chatgpt-pro", engine: "openai-plan", failoverFrom, job, log: o.log });
+      return sizeRetries({ ask, auth: "chatgpt-pro", device: o.device, engine: "openai-plan", failoverFrom, job, log: o.log });
     };
 
     return (job: Job, failoverFrom: string | null = null): Effect.Effect<string, EngineError> =>

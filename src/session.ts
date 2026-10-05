@@ -1,9 +1,9 @@
 // The session (ref §5.2, E1): the one turn loop the server owns. Messages queue up and start a
 // turn; a message sent while a turn runs is steered into it. Every client sees the same events.
-import { type Duration, Effect, Fiber, PubSub, Queue, type Scope } from "effect";
+import { type Duration, Effect, Fiber, Option, PubSub, Queue, type Scope } from "effect";
 import { PRIME_IDLE } from "./config.ts";
 import type { Chat } from "./chat.ts";
-import { failover } from "./engines/chain.ts";
+import { type Down, failover } from "./engines/chain.ts";
 import type { EngineError } from "./engines/errors.ts";
 import type { StoreError } from "./store.ts";
 import type { Entry } from "./tree.ts";
@@ -22,14 +22,18 @@ export type SessionState = {
   readonly budget: number;
   readonly messages: number;
   readonly queued: readonly string[]; // sent mid-run, not taken by the call yet
+  readonly down: readonly Down[]; // compactor engines down right now, with why (SPEC "Policy": never unseen)
 };
 
 export type SessionEvent =
   | { readonly type: "logged"; readonly entry: Entry; readonly runId: string | null }
-  | { readonly type: "text"; readonly delta: string; readonly runId: string }
+  // `at`: the log index the reply's talk entry will get, taken when the delta is published;
+  // `offset`: where the delta starts in that reply's text so far
+  | { readonly type: "text"; readonly delta: string; readonly runId: string; readonly at: number; readonly offset: number }
   | { readonly type: "thinking"; readonly tokens: number; readonly runId: string }
   | { readonly type: "run-started"; readonly runId: string }
-  | { readonly type: "run-finished"; readonly runId: string; readonly error: string | null }
+  // every run-started gets exactly one, also after a cancel; `logged`: the log's length by then
+  | { readonly type: "run-finished"; readonly runId: string; readonly error: string | null; readonly logged: number }
   | { readonly type: "info"; readonly message: string }
   | { readonly type: "usage"; readonly record: UsageRecord }
   | { readonly type: "state"; readonly state: SessionState };
@@ -43,7 +47,13 @@ export type Session = {
   readonly state: () => SessionState;
   // a client connected: a message usually follows, so prime the view (SPEC "Turn and priming")
   readonly primeSoon: Effect.Effect<void>;
+  // the run going on, and the reply it is streaming (not logged yet), for a client joining now
+  readonly live: () => LiveRun | null;
+  // publish the state again: something it shows changed outside the session (a compactor engine)
+  readonly tell: Effect.Effect<void>;
 };
+
+export type LiveRun = { readonly runId: string; readonly reply: { readonly at: number; readonly text: string } | null };
 
 // "/on macbook ..." picks the device for that turn; the text stays as typed
 export const deviceOf = (text: string, devices: readonly string[]) => {
@@ -59,6 +69,7 @@ export const makeSession = (o: {
   readonly commit: Effect.Effect<string | null>; // persist the data dir; an error message or null
   readonly logUsage: (record: UsageRecord) => Effect.Effect<void>;
   readonly idle?: Duration.Input; // PRIME_IDLE
+  readonly compactorDown?: () => readonly Down[]; // makeSummarize's `down`
 }): Effect.Effect<Session, never, Scope.Scope> =>
   Effect.gen(function* () {
     const { chat } = o;
@@ -70,41 +81,77 @@ export const makeSession = (o: {
     let phase: Phase = "idle", device = o.defaultDevice, engine: string | null = null;
     let steer: Queue.Queue<string> | null = null;
     let sent: Sent[] = [];
-    let loop: Fiber.Fiber<void> | null = null;
+    let running = false; // the turn loop is on: set before its fiber starts, cleared as it ends
+    let loop: Fiber.Fiber<void> | null = null; // that fiber, for a cancel
+    let storeFailed = false; // the loop ended on a store error: what is still queued waits for the next message
+
+    // what the running call has been given but not taken yet
+    const notTaken = () => sent.flatMap((m) => (m.taken ? [] : [m.text]));
 
     const state = (): SessionState => ({
       budget: chat.mem.budget,
       device,
+      down: o.compactorDown?.() ?? [],
       engine,
       messages: chat.mem.root.length,
       phase,
-      queued: sent.filter((s) => !s.taken).map((s) => s.text),
+      queued: notTaken(),
       viewBytes: viewSize(chat.mem),
       waiting: unbuilt(chat.mem),
     });
     const tell = Effect.suspend(() => publish({ state: state(), type: "state" }));
     const enter = (p: Phase) => Effect.suspend(() => ((phase = p), tell));
 
-    const log = (kind: Entry["kind"], text: string, runId: string | null, on: string | null) =>
-      chat.log(kind, text, on ? { device: on } : {}).pipe(Effect.tap((entry) => publish({ entry, runId, type: "logged" })));
+    // the run whose RUN_STARTED went out, and the text it is streaming at log index `at`
+    let current: { runId: string; reply: { at: number; text: string } | null } | null = null;
+    const live = (): LiveRun | null => current && { reply: current.reply && { ...current.reply }, runId: current.runId };
 
-    // the view changed (a message, a node): quiet and idle for PRIME_IDLE, prime it in the background
-    const primer = o.engines[0]?.prime;
-    let idleTimer: Fiber.Fiber<void> | null = null;
-    const scope = yield* Effect.scope;
-    const primeLater = Effect.suspend(() => {
-      if (!primer) return Effect.void;
-      const previous = idleTimer;
-      return Effect.gen(function* () {
-        if (previous) yield* Fiber.interrupt(previous);
-        idleTimer = yield* Effect.sleep(o.idle ?? PRIME_IDLE).pipe(
-          Effect.andThen(
-            Effect.suspend(() => (loop || !allBuilt(chat.mem) ? Effect.void : primer(render(chat.mem), o.defaultDevice))),
-          ),
-          Effect.forkIn(scope),
-        );
+    const log = (kind: Entry["kind"], text: string, runId: string | null, on: string | null) =>
+      chat.log(kind, text, on ? { device: on } : {}).pipe(
+        Effect.tap((entry) =>
+          Effect.suspend(() => {
+            if (current) current.reply = null; // the streamed text is logged now, or was left behind
+            return publish({ entry, runId, type: "logged" });
+          }),
+        ),
+      );
+
+    // live reply text: buffered for clients that join mid-reply, each delta with its place in it
+    const stream = (delta: string, runId: string) =>
+      Effect.suspend(() => {
+        const at = chat.mem.root.length;
+        if (current && current.reply?.at !== at) current.reply = { at, text: "" };
+        const offset = current?.reply?.text.length ?? 0;
+        if (current?.reply) current.reply.text += delta;
+        return publish({ at, delta, offset, runId, type: "text" });
       });
-    });
+
+    // the one end of a run: published before anything else is logged, so a reply left open
+    // (a cancel, a crash) is closed before its log index goes to another entry
+    const endRun = (error: string | null) =>
+      Effect.suspend(() => {
+        if (!current) return Effect.void;
+        const { runId } = current;
+        current = null;
+        return publish({ error, logged: chat.mem.root.length, runId, type: "run-finished" });
+      });
+
+    // the view changed (a message, a node): once it has been quiet for PRIME_IDLE and no turn runs,
+    // prime it in the background. One fiber debounces every change, so bursts start one timer.
+    const primer = o.engines[0]?.prime;
+    const scope = yield* Effect.scope;
+    const changes = yield* Queue.sliding<true>(1);
+    const primeLater = Queue.offer(changes, true);
+    if (primer) {
+      const quiet = o.idle ?? PRIME_IDLE;
+      yield* Effect.gen(function* () {
+        yield* Queue.take(changes);
+        while (Option.isSome(yield* Queue.take(changes).pipe(Effect.timeoutOption(quiet)))) {
+          // changed again within PRIME_IDLE: wait for quiet from here
+        }
+        if (!running && allBuilt(chat.mem)) yield* primer(render(chat.mem), o.defaultDevice);
+      }).pipe(Effect.forever, Effect.forkIn(scope));
+    }
     const onViewChange = () => {
       Effect.runFork(Effect.andThen(tell, primeLater));
     };
@@ -114,6 +161,23 @@ export const makeSession = (o: {
     // the messages nobody answered stay in the log (gist §7: nothing is lost)
     const logUnanswered = (texts: readonly { text: string; device: string | null }[]) =>
       Effect.forEach(texts, (t) => log("user", t.text, null, t.device), { discard: true });
+
+    // The queued texts become user entries. Each leaves the queue only once it is in the log, and
+    // the whole pass is uninterruptible, so a cancel finds every message logged or still queued.
+    const logQueued = (on: string) =>
+      Effect.gen(function* () {
+        const texts: string[] = [];
+        let first: number | null = null;
+        for (let n = queue.length; n > 0; n--) {
+          const head = queue[0];
+          if (!head) break;
+          const entry = yield* log("user", head.text, null, on);
+          queue.shift();
+          texts.push(head.text);
+          first ??= entry.i;
+        }
+        return { runId: String(first ?? chat.mem.root.length), texts };
+      }).pipe(Effect.uninterruptible);
 
     const turn = Effect.gen(function* () {
       while (queue.length > 0) {
@@ -127,26 +191,24 @@ export const makeSession = (o: {
         const lead = o.engines[0];
         if (lead?.prime) {
           yield* enter("priming");
-          yield* lead.prime(view, on);
+          // a fiber of the session's own: a cancel stops this wait, the priming call itself finishes (ref §6)
+          yield* Fiber.join(yield* Effect.forkIn(lead.prime(view, on), scope));
         }
-        const texts = queue.splice(0);
-        let runId = "";
-        for (const t of texts) {
-          const entry = yield* log("user", t.text, null, on);
-          runId ||= String(entry.i);
-        }
+        yield* enter("running");
+        const { runId, texts } = yield* logQueued(on);
         steer = yield* Queue.unbounded<string>();
         sent = [];
-        const input = { device: on, sent, steer, texts: texts.map((t) => t.text), view };
+        const input = { device: on, sent, steer, texts, view };
         const out: TurnEvents = {
           info,
           log: (kind, text) => log(kind, text, runId, on).pipe(Effect.asVoid),
-          text: (delta) => publish({ delta, runId, type: "text" }),
+          text: (delta) => stream(delta, runId),
           thinking: (tokens) => publish({ runId, tokens, type: "thinking" }),
           usage: (record) => o.logUsage(record).pipe(Effect.andThen(publish({ record, type: "usage" }))),
         };
+        current = { reply: null, runId };
         yield* publish({ runId, type: "run-started" });
-        yield* enter("running");
+        yield* tell;
         const result = yield* failover(
           o.engines.map((e) => ({
             ref: e.ref,
@@ -154,48 +216,69 @@ export const makeSession = (o: {
           })),
           (from, to, why) => info(`${from} → ${to}: ${why}`),
         ).pipe(Effect.result);
-        engine = null;
-        // messages the call never took, and those still on their way to it
-        const leftover = [...sent.filter((s) => !s.taken).map((s) => s.text), ...(yield* Queue.clear(steer))];
-        steer = null;
-        sent = [];
-        if (result._tag === "Success") queue.unshift(...leftover.map((text) => ({ device: on, text }))); // a fresh call with a new view
-        else {
-          yield* info(failureText(result.failure));
-          yield* logUnanswered(leftover.map((text) => ({ device: on, text })));
-        }
-        yield* publish({ error: result._tag === "Success" ? null : result.failure.message, runId, type: "run-finished" });
+        yield* Effect.uninterruptible(
+          Effect.gen(function* () {
+            engine = null;
+            // messages the call never took, and those still on their way to it; closed first, so
+            // nothing more can be steered into a call that is over
+            const closed = steer;
+            steer = null;
+            const untaken = notTaken();
+            sent = [];
+            const leftover = [...untaken, ...(closed ? yield* Queue.clear(closed) : [])].map((text) => ({ device: on, text }));
+            // after a result they get a fresh call with a new view; after a failure they stay in the log, unanswered
+            if (result._tag === "Success") {
+              queue.unshift(...leftover);
+              yield* endRun(null);
+            } else {
+              yield* info(failureText(result.failure));
+              yield* endRun(result.failure.message);
+              yield* logUnanswered(leftover);
+            }
+          }),
+        );
       }
     });
 
+    // The loop is over: the data dir is committed before the session says "idle", so a client that
+    // sees idle sees the commit. A message that came in while the loop wound down starts it again.
     const afterLoop = Effect.gen(function* () {
-      loop = null;
-      phase = "idle";
       engine = null;
+      yield* endRun("the turn stopped"); // a run the loop left without an end (a defect)
       const failed = yield* o.commit;
       if (failed) yield* info(`git: ${failed}`);
-      yield* tell;
-      yield* primeLater;
+      yield* Effect.suspend(() => {
+        running = false;
+        loop = null;
+        if (queue.length > 0 && !storeFailed) return start;
+        storeFailed = false;
+        phase = "idle";
+        return tell.pipe(Effect.andThen(primeLater));
+      });
     });
 
     // a cancel: the queued and the untaken messages are logged unanswered, the call is killed
     const onCancel = Effect.suspend(() => {
-      const left = [...queue, ...sent.filter((s) => !s.taken).map((s) => ({ device, text: s.text }))];
+      const left = [...queue, ...notTaken().map((text) => ({ device, text }))];
       queue = [];
       sent = [];
       const pending = steer;
       steer = null;
       return Effect.gen(function* () {
         const more = pending ? yield* Queue.clear(pending) : [];
+        const inRun = current !== null;
+        yield* endRun("cancelled"); // the run's end says it
         yield* logUnanswered([...left, ...more.map((text) => ({ device, text }))]);
-        yield* info("cancelled");
+        if (!inRun) yield* info("cancelled"); // before any run started: waiting or priming
       });
     });
 
-    const start = Effect.suspend(() => {
-      if (loop) return Effect.void;
+    const start: Effect.Effect<void> = Effect.suspend(() => {
+      if (running) return Effect.void;
+      running = true;
+      phase = "running"; // until the loop says what it waits for: never "idle" while it is on
       return turn.pipe(
-        Effect.catch((error: StoreError) => info(`error: ${error.message}`)),
+        Effect.catch((error: StoreError) => Effect.sync(() => (storeFailed = true)).pipe(Effect.andThen(info(`error: ${error.message}`)))),
         Effect.onInterrupt(() => onCancel.pipe(Effect.ignore)),
         Effect.ensuring(afterLoop),
         Effect.forkIn(scope),
@@ -206,6 +289,7 @@ export const makeSession = (o: {
 
     const input = (text: string, on?: string) =>
       Effect.gen(function* () {
+        if (text.trim() === "") return; // nothing to answer: no turn, no empty user entry
         const picked = on && o.devices.includes(on) ? on : deviceOf(text, o.devices);
         if (steer && phase === "running") {
           yield* Queue.offer(steer, text);
@@ -219,16 +303,16 @@ export const makeSession = (o: {
 
     const cancel = Effect.suspend(() => (loop ? Fiber.interrupt(loop) : Effect.void));
     const primeSoon = Effect.suspend(() =>
-      !primer || loop || !allBuilt(chat.mem) ? Effect.void : primer(render(chat.mem), o.defaultDevice).pipe(Effect.forkIn(scope), Effect.asVoid),
+      !primer || running || !allBuilt(chat.mem) ? Effect.void : primer(render(chat.mem), o.defaultDevice).pipe(Effect.forkIn(scope), Effect.asVoid),
     );
 
-    return { cancel, events, input, primeSoon, state };
+    return { cancel, events, input, live, primeSoon, state, tell };
   });
 
 const failureText = (e: EngineError | StoreError) => {
   switch (e._tag) {
     case "Refusal":
-      return "the model refused this request (stop_reason: refusal)";
+      return `declined: ${e.message}`;
     case "DeviceOffline":
       return `device offline: ${e.message}`;
     case "UsageLimit":

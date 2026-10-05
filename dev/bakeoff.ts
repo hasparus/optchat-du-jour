@@ -83,7 +83,7 @@ export type Replayed = {
 // the node the current compactor call is for, read where its usage is logged
 const CurrentNode = Context.Reference<string | null>("bakeoff/CurrentNode", { defaultValue: () => null });
 
-const unbuiltOf = (mem: Mem) => [...nodes(mem.root.length)].filter((c) => !built(mem, c.l, c.i)).map((c) => `${c.l}.${c.i}`);
+const unbuiltOf = (mem: Mem) => [...nodes(mem.root.length)].filter((c) => !built(mem, c)).map((c) => `${c.l}.${c.i}`);
 
 // One contender: log each message as a live chat would, wait until the view is summarized (a
 // turn waits for that too, gist §6), then let the pump finish every node. At the deadline it
@@ -203,7 +203,7 @@ export function wordsKept(mem: Mem, levels: readonly number[] = [0, 2, 3], kinds
     let total = 0, quoted = 0, recall = 0;
     for (const m of mem.root) {
       if (!kinds.includes(m.kind)) continue;
-      const n = getNode(mem, l, m.i >> l);
+      const n = getNode(mem, { i: m.i >> l, l });
       if (!n) continue;
       const have = runs(words(n.text));
       for (const s of sentences(m.text)) {

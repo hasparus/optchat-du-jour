@@ -17,6 +17,7 @@ export type CompactorOptions = {
   readonly effort: string;
   readonly ttl: "1h" | "5m";
   readonly log: (record: UsageRecord) => Effect.Effect<void>;
+  readonly device?: string; // where the call runs, for its usage record: the server's own machine
   readonly timeout?: Duration.Input; // CALL_TIMEOUT
 };
 
@@ -49,7 +50,7 @@ export const claudeCodeCompactor = (o: CompactorOptions) =>
               return yield* fromResult(result.result ?? `the call ended with ${result.subtype ?? "an error"}`, result.stop_reason, { model, usage });
             return { model, text: result.result ?? "", usage };
           });
-        return yield* sizeRetries({ ask, auth: "claude-max", engine: "claude-code", failoverFrom, job, log: o.log });
+        return yield* sizeRetries({ ask, auth: "claude-max", device: o.device, engine: "claude-code", failoverFrom, job, log: o.log });
       }).pipe(
         Effect.scoped, // the process ends with the node
         Effect.timeoutOrElse({

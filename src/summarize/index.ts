@@ -13,13 +13,17 @@ import { claudeCodeCompactor } from "./claude-code.ts";
 import { openAiPlanCompactor } from "./openai-plan.ts";
 
 type Compact = (job: Job, failoverFrom: string | null) => Effect.Effect<string, EngineError>;
-type Options = { readonly settings: Settings; readonly log: (record: UsageRecord) => Effect.Effect<void> };
+type Options = {
+  readonly settings: Settings;
+  readonly log: (record: UsageRecord) => Effect.Effect<void>;
+  readonly device?: string; // the machine the compactor calls run on
+};
 
 // how each compactor engine is built for a model, one per engine in IMPLEMENTED.compactor
 const builders = {
   "claude-code": (model: string, o: Options) =>
-    claudeCodeCompactor({ effort: o.settings.compactor.effort, log: o.log, model, ttl: o.settings.cache.claudeCodeTtl }),
-  "openai-plan": (model: string, o: Options) => openAiPlanCompactor({ effort: o.settings.compactor.effort, log: o.log, model }),
+    claudeCodeCompactor({ device: o.device, effort: o.settings.compactor.effort, log: o.log, model, ttl: o.settings.cache.claudeCodeTtl }),
+  "openai-plan": (model: string, o: Options) => openAiPlanCompactor({ device: o.device, effort: o.settings.compactor.effort, log: o.log, model }),
 } satisfies Record<Ref<"compactor">["engine"], (model: string, o: Options) => Effect.Effect<Compact, never, Runner | OpenAiPlan>>;
 
 export const makeSummarize = (o: Options & { readonly report: (message: string) => Effect.Effect<void> }) =>

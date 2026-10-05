@@ -59,6 +59,7 @@ export const sizeRetries = (o: {
   readonly job: Job;
   readonly engine: UsageRecord["engine"];
   readonly auth: UsageRecord["auth"];
+  readonly device?: string | undefined; // where the call runs (the server's own machine)
   readonly failoverFrom: string | null;
   readonly log: (record: UsageRecord) => Effect.Effect<void>;
   readonly ask: (t: Try) => Effect.Effect<Answer, EngineError>;
@@ -77,7 +78,7 @@ export const sizeRetries = (o: {
             auth: o.auth,
             cold: isCold(usage),
             date: new Date(now).toISOString(),
-            device: null,
+            device: o.device ?? null,
             engine: o.engine,
             failoverFrom: o.failoverFrom,
             level: o.job.l,
@@ -92,7 +93,7 @@ export const sizeRetries = (o: {
       );
       yield* record(answer.usage, answer.model);
       const line = answer.text.trim();
-      if (!line) return yield* new ModelError({ message: `${o.engine}: the compactor answered with an empty line` });
+      if (!line) return yield* new ModelError({ message: "the compactor answered with an empty line" });
       tries.push(line);
       if (enough(tries)) return shortest(tries);
       retry = { line, text: retryText(line) };
