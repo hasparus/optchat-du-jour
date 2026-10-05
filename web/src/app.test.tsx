@@ -534,6 +534,9 @@ test("while a turn runs: send follows the follow-up setting, the other button an
   expect(box().getAttribute("placeholder")).toBe("Queue a follow-up");
   type("queued one");
   expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy(); // stopping doesn't need the draft cleared
+  // beside send's filled arrow, stop is outlined in the destructive color, so the two never look alike
+  expect(screen.getByRole("button", { name: "Stop" }).className).toContain("text-destructive");
+  expect(screen.getByRole("button", { name: "Send" }).className).not.toContain("text-destructive");
   fireEvent.click(screen.getByRole("button", { name: "Send" }));
   type("right now");
   fireEvent.click(screen.getByRole("button", { name: "Send now" }));

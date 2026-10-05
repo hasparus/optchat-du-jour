@@ -265,9 +265,20 @@ export const PromptInputSubmit = ({ className, variant = "default", size = "icon
 export type PromptInputStopProps = ComponentProps<typeof InputGroupButton>;
 
 // the submit button turns into this while a turn runs and there is nothing to send: with text or
-// an attachment it is send again, since a message sent during a turn joins it or waits for the next
-export const PromptInputStop = ({ className, variant = "default", size = "icon-sm", children, ...props }: PromptInputStopProps) => (
-  <InputGroupButton aria-label="Stop" className={cn("rounded-full", className)} size={size} type="button" variant={variant} {...props}>
+// an attachment it is send again, since a message sent during a turn joins it or waits for the next.
+// Outlined in the destructive color, so beside send's filled arrow it never reads as send.
+export const PromptInputStop = ({ className, variant = "outline", size = "icon-sm", children, ...props }: PromptInputStopProps) => (
+  <InputGroupButton
+    aria-label="Stop"
+    className={cn(
+      "rounded-full border-destructive text-destructive hover:bg-destructive/10 hover:text-destructive dark:border-destructive dark:text-destructive dark:hover:bg-destructive/20",
+      className,
+    )}
+    size={size}
+    type="button"
+    variant={variant}
+    {...props}
+  >
     {children ?? <SquareIcon className="size-3.5 fill-current" />}
   </InputGroupButton>
 );

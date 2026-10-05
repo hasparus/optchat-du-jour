@@ -240,7 +240,6 @@ export function Composer({ link, session, state, busy, open, devices, device, on
                 link.abort();
               }}
               title="Stop the turn"
-              variant={content ? "secondary" : "default"}
             />
           )}
           {(!busy || content) && <PromptInputSubmit aria-describedby={hint} disabled={blocked !== null || !content} title={blocked ?? sendLabel} />}
