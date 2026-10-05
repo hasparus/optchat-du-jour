@@ -15,7 +15,8 @@ import { claudeCodeTurn } from "../src/turn/claude-code.ts";
 import { freePort } from "./ports.ts";
 
 const ECHO = new URL("echo-claude.ts", import.meta.url).pathname;
-const MAIN = new URL("../device/main.ts", import.meta.url).pathname;
+// the daemon as people start it: `optchat device NAME`
+const CLI = new URL("../cli/optchat.ts", import.meta.url).pathname;
 
 const dirs: string[] = [];
 const tmp = () => {
@@ -211,8 +212,8 @@ test("the daemon's SIGTERM kills the claude it runs", async () => {
       master: { chain: ["claude-code:opus"], effort: "high", permissionMode: "bypassPermissions" },
     })};\n`,
   );
-  const daemon = Bun.spawn([MAIN], {
-    env: { ...Bun.env, OPTCHAT_CLAUDE: ECHO, OPTCHAT_CONFIG: config, OPTCHAT_DEVICE: "macbook", OPTCHAT_DEVICE_HOST: "127.0.0.1", OPTCHAT_DEVICE_TRUST: "loopback" },
+  const daemon = Bun.spawn([CLI, "device", "macbook"], {
+    env: { ...Bun.env, OPTCHAT_CLAUDE: ECHO, OPTCHAT_CONFIG: config, OPTCHAT_DEVICE_HOST: "127.0.0.1", OPTCHAT_DEVICE_TRUST: "loopback" },
     stderr: "pipe",
     stdout: "pipe",
   });

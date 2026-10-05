@@ -9,7 +9,7 @@ import { serverLayer } from "./app.ts";
 
 const root = `${import.meta.dir}/../`;
 
-const main = Effect.gen(function* () {
+export const main = Effect.gen(function* () {
   const settings = yield* loadSettings(Bun.env.OPTCHAT_CONFIG ?? `${root}optchat.config.ts`);
   const device = Bun.env.OPTCHAT_DEVICE ?? settings.defaultDevice;
   yield* Effect.logInfo(`optchat-server: ${HOME}/streams/${device}, http://${settings.server?.host ?? "127.0.0.1"}:${settings.server?.port ?? 7700}`);
@@ -25,4 +25,4 @@ const main = Effect.gen(function* () {
   );
 });
 
-BunRuntime.runMain(main);
+if (import.meta.main) BunRuntime.runMain(main);
