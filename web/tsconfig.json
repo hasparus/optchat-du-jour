@@ -17,7 +17,8 @@
     "noImplicitOverride": true,
 
     "paths": { "@/*": ["./src/*"], "@wire": ["../src/wire.ts"] },
-    "types": ["bun", "vite/client", "vite-plugin-pwa/client"]
+    "types": ["bun", "vite/client", "vite-plugin-pwa/client"],
+    "plugins": [{ "name": "@effect/language-service" }]
   },
   "include": ["src", "e2e", "*.ts"]
 }
