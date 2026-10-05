@@ -4,10 +4,11 @@ import { EventType } from "@ag-ui/core";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { App } from "./app";
-import { useAttachments } from "./chat/composer";
+import { useAttachments } from "./chat/use-attachments";
 import type { Uploader } from "./lib/attach";
 import { openLink } from "./lib/connection";
 import type { Inbound } from "./lib/protocol";
+import { sentKey } from "./lib/draft";
 import { makeSession } from "./lib/session";
 import { ack, type Entry, fakeServer, IDLE, parseSent, said, snapshot, state } from "./test/fixture";
 import type { Asset } from "@wire";
@@ -424,9 +425,9 @@ test("the draft, its text and its finished uploads, survives the page; it is cle
   ]);
   expect(localStorage.getItem("optchat:draft")).toBeNull();
   // sent and not acked yet: kept, so a reload finds it in the server's queue or says it may be lost
-  expect(localStorage.getItem("optchat:sent")).toContain("half a thought");
+  expect(localStorage.getItem(sentKey)).toContain("half a thought");
   again.play(ack(lastId(again.server.sent), 4));
-  expect(localStorage.getItem("optchat:sent")).toBeNull();
+  expect(localStorage.getItem(sentKey)).toBeNull();
 });
 
 test("with no storage at all (a private window), the composer works and keeps nothing", async () => {
@@ -456,7 +457,7 @@ test("with no storage at all (a private window), the composer works and keeps no
 });
 
 test("a message sent before a reload that never reached the server is marked, and taken back into the composer from here", async () => {
-  localStorage.setItem("optchat:sent", JSON.stringify([{ from: 4, id: "lost-1", media: [photo(SHA("c"))], text: "did it go?" }]));
+  localStorage.setItem(sentKey, JSON.stringify({ at: Date.now(), sent: [{ from: 4, id: "lost-1", media: [photo(SHA("c"))], text: "did it go?" }] }));
   start();
   const queue = await screen.findByTestId("queue");
   // neither the log nor the server's queue has it
@@ -467,6 +468,18 @@ test("a message sent before a reload that never reached the server is marked, an
   expect(box().value).toBe("did it go?");
   expect(within(screen.getByTestId("attachments")).getByRole("img").getAttribute("src")).toBe("/api/assets/cccccccccccc/thumb");
   expect(screen.queryByTestId("queue")).toBeNull();
+});
+
+test("one sent before a reload that is older than the loaded window is unknown: dropped, not offered to send again; another tab's list is not this one's", async () => {
+  localStorage.setItem(sentKey, JSON.stringify({ at: Date.now(), sent: [{ from: 4, id: "old-1", media: [], text: "long ago" }] }));
+  localStorage.setItem("optchat:sent:another-tab", JSON.stringify({ at: Date.now(), sent: [{ from: 100, id: "theirs", media: [], text: "the other tab's" }] }));
+  start(LOG, 100); // the window starts at 100: entry 4 is far below it
+  await screen.findByText("what is in the repo?");
+  await waitFor(() => {
+    expect(localStorage.getItem(sentKey)).toBeNull();
+  });
+  expect(screen.queryByTestId("queue")).toBeNull();
+  expect(localStorage.getItem("optchat:sent:another-tab")).toContain("the other tab's");
 });
 
 test("queue: a held message shows as queued with its attachments; take-back asks the server and puts it back into the composer", async () => {
@@ -500,7 +513,7 @@ test("too late to take back: the page says so and the message stays the turn's",
   expect(screen.queryByRole("button", { name: "Take back: racing" })).toBeNull();
 });
 
-test("while a turn runs: send follows the follow-up setting, the other button and Ctrl+Enter send the other way; with nothing to send, send is stop", async () => {
+test("while a turn runs: send follows the follow-up setting, the other button and Ctrl+Enter send the other way; stop stays beside send, and with nothing to send, send is stop", async () => {
   const { play, server } = start();
   await screen.findByText("what is in the repo?");
   play(state({ followUp: "queue", phase: "running" }));
@@ -508,7 +521,7 @@ test("while a turn runs: send follows the follow-up setting, the other button an
   expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
   expect(box().getAttribute("placeholder")).toBe("Queue a follow-up");
   type("queued one");
-  expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy(); // stopping doesn't need the draft cleared
   fireEvent.click(screen.getByRole("button", { name: "Send" }));
   type("right now");
   fireEvent.click(screen.getByRole("button", { name: "Send now" }));
@@ -571,6 +584,13 @@ test("a turn stopped on a usage limit: every client shows why and the engines to
   const alert = await screen.findByTestId("needs-model");
   expect(alert.textContent).toContain("Claude Opus (Claude Code): usage limit: Claude AI usage limit reached. Pick a model to go on.");
   expect(screen.queryByTestId("marker-error")).toBeNull();
+  // a message sent while it waits meets the turn as a running one would: it joins once the pick
+  // comes, or (the other button) waits for the next turn
+  expect(box().getAttribute("placeholder")).toBe("Add to the turn, once a model is picked");
+  type("meanwhile");
+  expect(screen.getByRole("button", { name: "Queue for the next turn" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
+  type("");
   expect(screen.getByTestId("model-picker").className).toContain("ring-destructive");
   expect(screen.queryByTestId("status")).toBeNull();
   fireEvent.click(within(alert).getByRole("button", { name: "GPT-6.1 Sol (ChatGPT plan)" }));

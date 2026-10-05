@@ -234,6 +234,37 @@ const waiting = (session: { readonly get: () => Session }) => queued(session.get
 const idOf = (server: { readonly sent: readonly string[] }, k: number) => parseSent(server.sent[k] ?? "{}").messages?.at(-1)?.id ?? "";
 
 describe("session", () => {
+  // a pick kept for later would settle whatever turn waits after the reconnect, maybe retrying the
+  // engine that just hit its limit: the user never chose that
+  test("a model pick goes out only while connected and says when it didn't; the follow-up setting waits for the connection", async () => {
+    const server = fakeServer(() => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT }]);
+    const link = openLink("ws://x/ws", { socket: server.socket }); // it opens once this test yields
+    const session = makeSession(link);
+    expect(session.pick("openai-plan:gpt-6.1-sol")).toBe(false);
+    expect(session.get().markers.map((m) => m.text)).toEqual(["not connected: the model was not changed"]);
+    link.configure({ followUp: "queue" });
+    await tick();
+    const { sent } = server;
+    expect(sent.map((f) => parseSent(f))).toEqual([{ followUp: "queue", type: "settings" }]); // no pick replayed
+    expect(session.pick("openai-plan:gpt-6.1-sol")).toBe(true);
+    expect(parseSent(sent.at(-1) ?? "")).toEqual({ lead: "openai-plan:gpt-6.1-sol", type: "settings" });
+  });
+
+  test("a take-back asked for and not answered is forgotten on a reconnect, so it can be asked again", async () => {
+    const held = [{ clientId: "q1", queued: true, text: "for later" }];
+    const server = fakeServer(() => [snapshot([]), { snapshot: { ...IDLE, pending: held, phase: "running" }, type: EventType.STATE_SNAPSHOT }]);
+    const link = openLink("ws://x/ws", { retryMs: 1, socket: server.socket });
+    const session = makeSession(link);
+    await tick();
+    const [q] = queued(session.get());
+    if (!q) throw new Error("nothing queued");
+    expect(session.takeBack(q)).toBe(true);
+    expect(session.get().asking).toEqual(["q1"]);
+    server.drop(); // the answer goes to the old socket
+    await tick(20);
+    expect(session.get().asking).toEqual([]);
+  });
+
   test("a message sent here waits in the queue until the server's ack for its id, also mid-run", async () => {
     const { server, session } = await setup();
     session.send("old", null); // the same text as an entry already logged: still pending, by id

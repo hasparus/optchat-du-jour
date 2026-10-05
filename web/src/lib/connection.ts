@@ -20,8 +20,11 @@ export type Link = {
   readonly abort: () => boolean;
   // a held message back, by the id it was sent with; like a cancel, only while the link is open
   readonly takeBack: (clientId: string) => boolean;
-  // the session's settings; sent while the link is down, they go out on the next open
-  readonly configure: (change: Settings) => void;
+  // the follow-up setting; sent while the link is down, it goes out on the next open
+  readonly configure: (change: Pick<Settings, "followUp">) => void;
+  // a model pick: like a cancel, only while the link is open (kept for later, it would settle
+  // whatever turn waits for a pick after the reconnect). False when it wasn't sent.
+  readonly pick: (lead: string) => boolean;
   readonly listen: (listener: (event: Inbound) => void) => () => void;
   readonly onStatus: (listener: (status: LinkStatus) => void) => () => void;
   readonly status: () => LinkStatus;
@@ -132,6 +135,11 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
     },
     configure: (change) => {
       deliver(settingsFrame(change));
+    },
+    pick: (lead) => {
+      if (!socket || status !== "open") return false;
+      socket.send(settingsFrame({ lead }));
+      return true;
     },
     status: () => status,
   };

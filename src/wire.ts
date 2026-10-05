@@ -179,6 +179,9 @@ export const UsageRecord = Schema.Struct({
   usage: Tokens,
   cold: Schema.Boolean,
   attempt: Schema.Number,
+  // the engine this call took over from: the link before it in a compactor's or caption's chain
+  // (a failover), or for a turn, the engine a usage limit or an offline device stopped before the
+  // user picked this one (E4); null for a first call
   failoverFrom: Schema.NullOr(Schema.String),
   ms: Schema.Number,
   dollars: Schema.optional(Schema.Number),

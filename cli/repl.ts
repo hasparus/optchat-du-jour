@@ -2,10 +2,10 @@
 // the input line, so the scrollback works. The screen is a state machine fed keys and AG-UI
 // events; `runRepl` wires it to the terminal and the socket.
 import { Data, Effect, Option, Schema } from "effect";
+import { FollowUp } from "../src/wire.ts";
 import { type Key, makeKeys } from "./keys.ts";
 
 const Phase = Schema.Literals(["idle", "running", "waiting", "needs-model"]);
-const FollowUp = Schema.Literals(["steer", "queue"]);
 const State = Schema.Struct({
   phase: Phase,
   device: Schema.String,
@@ -398,6 +398,11 @@ export function makeScreen(o: ScreenOptions) {
       note(sent ? "cancel sent; a second Ctrl-C exits" : "not connected: the cancel was not sent");
     },
 
+    // the /model pick went to the server (the state will say it), or was dropped: not connected
+    picked(sent: boolean) {
+      if (!sent) note("not connected: the model was not changed; /model again once connected");
+    },
+
     // back from Ctrl-Z
     redraw() {
       showPrompt();
@@ -468,8 +473,13 @@ export function makeLink() {
       else outbox.push(frame);
     },
     abort() {
+      return this.now(ABORT);
+    },
+    // a frame that only means something now (an abort, a model pick: kept for later, it would
+    // settle whatever turn waits after the reconnect); false when it was not sent
+    now(frame: string) {
       if (!socket) return false;
-      socket.send(ABORT);
+      socket.send(frame);
       return true;
     },
   };
@@ -570,7 +580,7 @@ export const runRepl = (o: ReplOptions) =>
             link.send(JSON.stringify({ followUp: a.followUp, type: "settings" })); // a setting may wait for the connection, unlike an abort
             return;
           case "pick":
-            link.send(JSON.stringify({ lead: a.lead, type: "settings" }));
+            screen.picked(link.now(JSON.stringify({ lead: a.lead, type: "settings" })));
             return;
           case "exit":
             done();

@@ -24,6 +24,7 @@ import { type Secrets, SecretsLive } from "../src/secrets.ts";
 import { makeSession, type SessionEvent } from "../src/session.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
 import { loadChoices, saveChoices } from "../src/choices.ts";
+import { makeLead } from "../src/lead.ts";
 import { type UsageRecord, logUsage } from "../src/usage.ts";
 import { allowed, policyFor } from "./auth.ts";
 import { makePlacements } from "./placement.ts";
@@ -86,11 +87,13 @@ export const routes = (o: ServerOptions) =>
       const instructions = systemPrompt(o.home); // one text for every engine and device (gist §7.2)
       const systemFile = yield* promptFile(instructions);
       const { runnerFor, toolsFor, unreachable } = yield* makePlacements({ device: o.device, local, mem: chat.mem, port: o.port, report, secret, settings });
-      // the engine turns run on is the user's pick, which the session knows: asked when needed, as
-      // the engines are built before it
-      let leading = () => settings.master.chain[0].ref;
+      // the engine turns run on is the user's pick (src/lead.ts), made here so each engine can ask
+      // whether it is the one, and kept in the data dir
+      const refs = settings.master.chain.map((r) => r.ref);
+      const choices = { followUp: settings.master.followUp, ...(yield* loadChoices(choicesPath, refs, report)) };
+      const lead = yield* makeLead({ initial: choices.lead, refs });
       const engines = yield* Effect.forEach(settings.master.chain, (ref) =>
-        turnEngine(ref, { ...needs, instructions, lead: () => leading() === ref.ref, runnerFor, systemFile, toolsFor }),
+        turnEngine(ref, { ...needs, instructions, lead: () => lead.ref() === ref.ref, runnerFor, systemFile, toolsFor }),
       );
       // attachments: the shared asset store under the home, captions by their own chain (SPEC "Media")
       const mediaConfig = mediaSettings(settings);
@@ -109,11 +112,11 @@ export const routes = (o: ServerOptions) =>
         devices: Object.keys(settings.devices),
         engines,
         events,
-        choices: { followUp: settings.master.followUp, ...loadChoices(choicesPath) },
+        choices,
+        lead,
         saveChoices: saveChoices(choicesPath, report),
         logUsage: usage,
       });
-      leading = () => session.state().lead;
       for (const p of chat.problems) yield* report(p);
       if (unreachable.length > 0) {
         const notice = `server.publicUrl is not set: turns on ${unreachable.join(", ")} are refused, since claude there could not reach zoom and date`;

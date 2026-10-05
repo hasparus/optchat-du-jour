@@ -4,6 +4,7 @@
 import { Data, Effect, Result, Schema, SchemaIssue, SchemaTransformation } from "effect";
 import { Endpoints } from "./openai/endpoints.ts";
 import { Engine } from "./usage.ts";
+import { FollowUp } from "./wire.ts";
 
 // a summary line's target size, and the most a free node may hold
 export const NODE = 512;
@@ -98,10 +99,10 @@ export const Settings = Schema.Struct({
     effort: Effort,
     permissionMode: Schema.String,
     tools: Schema.optional(Schema.Array(Schema.String)),
-    // what a message sent while a turn runs does when the server starts (SPEC "Turn and
+    // what a message sent while a turn runs does until a client chooses (SPEC "Turn and
     // priming"): "steer" (the default) offers it to the running call, "queue" holds it for the
-    // next turn; clients change it at runtime (`settings` over /ws), until the server restarts
-    followUp: Schema.optional(Schema.Literals(["steer", "queue"])),
+    // next turn; a client's choice (`settings` over /ws) is kept in session.json and wins
+    followUp: Schema.optional(FollowUp),
   }),
   compactor: Schema.Struct({
     byLevel: Schema.NonEmptyArray(Schema.Struct({ from: Schema.Int, chain: Chain })),

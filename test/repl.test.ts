@@ -223,4 +223,20 @@ describe("repl link", () => {
     expect(wire.at(-1)).toBe("fourth");
     expect(wire.filter((f) => f === ABORT)).toHaveLength(1);
   });
+
+  // a pick kept for later would settle whatever turn waits after the reconnect, maybe retrying
+  // the engine that just hit its limit: the user never chose that
+  test("a model pick goes out only while connected, and the screen says when it didn't", () => {
+    const wire: string[] = [];
+    const link = makeLink();
+    const pick = JSON.stringify({ lead: "openai-plan:gpt-6.1-sol", type: "settings" });
+    expect(link.now(pick)).toBe(false);
+    link.opened({ send: (f: string) => void wire.push(f) });
+    expect(wire).toEqual([]);
+    expect(link.now(pick)).toBe(true);
+    expect(wire).toEqual([pick]);
+    const t = screen();
+    t.s.picked(false);
+    expect(t.out()).toContain("not connected: the model was not changed; /model again once connected\n");
+  });
 });

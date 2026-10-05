@@ -42,12 +42,45 @@ export const saveDraft = (d: Draft) => {
 
 // A message sent from here, kept until its ack says it is logged: after a reload the session store
 // finds it in the log, in the server's queue, or neither ("it may not have reached the server").
+// Kept per tab (its id in sessionStorage, which a reload or a restored tab keeps), so two tabs
+// never overwrite each other's; a list a closed tab left is dropped after a week.
 export const Sent = Schema.Struct({ id: Schema.String, text: Schema.String, media: Schema.Array(Asset), from: Schema.Number });
 export type Sent = typeof Sent.Type;
+const Kept = Schema.Struct({ at: Schema.Number, sent: Schema.Array(Sent) });
+const WEEK = 7 * 24 * 3600 * 1000;
 
-export const loadSent = (): readonly Sent[] => load(SENT, Schema.Array(Sent)) ?? [];
+// this tab's id: kept across its reloads; a fresh one per page where sessionStorage can't be used
+const tab = (() => {
+  try {
+    const id = sessionStorage.getItem("optchat:tab") ?? crypto.randomUUID();
+    sessionStorage.setItem("optchat:tab", id);
+    return id;
+  } catch {
+    return crypto.randomUUID();
+  }
+})();
+export const sentKey = `${SENT}:${tab}`;
+
+// other tabs' lists older than a week: their tabs are gone
+const prune = () => {
+  try {
+    const keys = Array.from({ length: localStorage.length }, (_, k) => localStorage.key(k) ?? "");
+    for (const key of keys) {
+      if (!key.startsWith(`${SENT}:`) || key === sentKey) continue;
+      const kept = load(key, Kept);
+      if (kept === null || Date.now() - kept.at > WEEK) localStorage.removeItem(key);
+    }
+  } catch {
+    // no storage: nothing kept to prune
+  }
+};
+
+export const loadSent = (): readonly Sent[] => {
+  prune();
+  return load(sentKey, Kept)?.sent ?? [];
+};
 export const saveSent = (sent: readonly Sent[]) => {
-  write(SENT, sent.length === 0 ? null : JSON.stringify(sent));
+  write(sentKey, sent.length === 0 ? null : JSON.stringify({ at: Date.now(), sent }));
 };
 
 export const loadHistory = (): readonly string[] => load(HISTORY, Schema.Array(Schema.String)) ?? [];

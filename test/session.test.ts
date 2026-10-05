@@ -280,7 +280,8 @@ test("a usage limit mid-turn stops the turn and waits for a pick: no second engi
       expect(seen).toEqual([]); // no failover
       expect(r.session.state().stopped).toEqual({ label: "x (first)", ref: "first:x", why: "usage limit: spent" });
       expect(r.session.state().engines.find((e) => e.ref === "first:x")?.down).toBe("spent");
-      expect(r.session.state().pending).toEqual([{ clientId: "b1", queued: false, text: "same" }]);
+      // what the stopped call never took is held again while no call runs: it can be taken back
+      expect(r.session.state().pending).toEqual([{ clientId: "b1", queued: true, text: "same" }]);
       // sent while it waits: it runs with the rest once a model is picked
       yield* r.session.input("meanwhile", undefined, "c1");
       yield* r.session.configure({ lead: "second:x" });
@@ -981,6 +982,77 @@ test("a message for another device sent while the turn waits for summaries gets 
       gate.open = true;
       yield* until("four turns", () => r.events.filter((e) => e.type === "run-finished").length === 4);
       expect(turns).toEqual(["A@mini", `${long}@mini`, "on mini@mini", "on mac@mac"]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+// SPEC "Engines", a turn stopped for a pick: clients get the state (phase needs-model, `stopped`)
+// before the run's end, nothing else says it, and the pick's notice is the record; while it waits
+// no call runs, so a message sent meanwhile is held (it can be taken back) and joins the resumed
+// call in send order; the resumed run has a run id of its own
+test("a stop for a pick: the state comes before the run's end; messages sent while waiting are held, can be taken back, and join the resumed run in send order", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const took: string[] = [];
+      const spent: TurnEngine = {
+        ref: "first:x",
+        run: (_input, out) => out.log("talk", "on it").pipe(Effect.andThen(Effect.fail(new UsageLimit({ message: "spent" })))),
+        vision: false,
+        warm: () => Effect.void,
+      };
+      const next: TurnEngine = {
+        ref: "second:x",
+        run: (input, out) =>
+          Effect.gen(function* () {
+            for (const m of yield* input.mid.ready) {
+              took.push(m.text);
+              yield* out.took(m);
+            }
+            yield* out.log("talk", "done");
+          }),
+        vision: false,
+        warm: () => Effect.void,
+      };
+      const r = yield* rig([spent, next]);
+      const sub = yield* PubSub.subscribe(r.session.events);
+      const watched = openStream({ entries: r.chat.mem.root, live: null, state: r.session.state(), thread: "mini", window: 50 });
+      const seen: AGUIEvent[] = [];
+      yield* PubSub.take(sub).pipe(
+        Effect.tap((e) => Effect.sync(() => seen.push(...watched.translate(e)))),
+        Effect.forever,
+        Effect.forkScoped,
+      );
+      yield* r.session.input("go", undefined, "c1");
+      yield* until("the stop", () => r.session.state().phase === "needs-model");
+      yield* until("the run's end", () => seen.some((e) => e.type === EventType.RUN_ERROR));
+      // the state that says why comes first; no info says it again
+      const phaseAt = seen.findIndex((e) => e.type === EventType.STATE_DELTA && e.delta.some((op) => op.path === "/phase" && "value" in op && op.value === "needs-model"));
+      const errorAt = seen.findIndex((e) => e.type === EventType.RUN_ERROR);
+      expect(phaseAt).toBeGreaterThan(-1);
+      expect(phaseAt).toBeLessThan(errorAt);
+      expect(r.said().filter((x) => x.startsWith("info"))).toEqual([]);
+
+      yield* r.session.input("never mind", undefined, "c2"); // steers, but no call runs
+      yield* r.session.input("and this", undefined, "c3");
+      expect(r.session.state().pending.map((m) => [m.clientId, m.queued])).toEqual([
+        ["c2", true],
+        ["c3", true],
+      ]);
+      yield* r.session.takeBack("c2");
+      yield* r.session.configure({ lead: "second:x" });
+      yield* until("idle", r.idle);
+      expect(took).toEqual(["and this"]);
+      expect(r.log().map(([, t]) => t)).toEqual(["go", "on it", "and this", "done"]);
+      expect(r.said()).toEqual([
+        "ack c1: 0",
+        "end: usage limit: spent",
+        "taken back c2: never mind",
+        "info: x (first) stopped (usage limit: spent); x (second) carries on from the 1 logged entries",
+        "ack c3: 2",
+        "end: ok",
+      ]);
+      const runs = seen.flatMap((e) => (e.type === EventType.RUN_STARTED ? [e.runId] : []));
+      expect(runs).toEqual(["0", "0+1"]);
     }).pipe(Effect.scoped),
   );
 });

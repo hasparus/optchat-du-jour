@@ -75,8 +75,8 @@ const placeMarkers = (markers: readonly StatusMarker[], rows: readonly Row[]) =>
 
 // One message in the queue: its text, its attachments' thumbnails (our own /api/assets, as the
 // chat shows a logged message's), where it stands, and a take-back while it is still held.
-function Waiting({ q, onTakeBack }: { readonly q: Queued; readonly onTakeBack: () => boolean }) {
-  const [asked, setAsked] = useState(false);
+// `asking`: its take-back is asked for and not answered yet (a reconnect forgets that)
+function Waiting({ q, asking, onTakeBack }: { readonly q: Queued; readonly asking: boolean; readonly onTakeBack: () => void }) {
   const queuedHere = q.where === "queued";
   return (
     <QueueItem data-state={q.where} data-testid="queue-item">
@@ -115,9 +115,9 @@ function Waiting({ q, onTakeBack }: { readonly q: Queued; readonly onTakeBack: (
       {q.back !== null && (
         <QueueItemAction
           aria-label={`Take back: ${q.text.trim() === "" ? `${q.media.length} attachments` : q.text}`}
-          disabled={asked && q.back === "server"}
+          disabled={asking && q.back === "server"}
           onClick={() => {
-            setAsked(onTakeBack());
+            onTakeBack();
           }}
           title="Back into the composer, to edit or send later"
         >
@@ -131,7 +131,7 @@ function Waiting({ q, onTakeBack }: { readonly q: Queued; readonly onTakeBack: (
 // A turn stopped on a usage limit or an offline device: which engine and why, and a button per
 // engine to go on with (the stopped one again is a retry; another that hit a limit is disabled,
 // with why). Stop, in the composer, ends the turn instead.
-function NeedsModel({ link, state }: { readonly link: Link; readonly state: SessionState }) {
+function NeedsModel({ session, state }: { readonly session: Pick<SessionStore, "pick">; readonly state: SessionState }) {
   const { stopped } = state;
   if (stopped === null) return null;
   return (
@@ -148,7 +148,7 @@ function NeedsModel({ link, state }: { readonly link: Link; readonly state: Sess
               disabled={out}
               key={e.ref}
               onClick={() => {
-                link.configure({ lead: e.ref });
+                session.pick(e.ref);
               }}
               size="sm"
               title={e.down !== null && !again ? `unavailable: ${e.down}` : undefined}
@@ -281,7 +281,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
             {line}
           </div>
         )}
-        {state.state?.phase === "needs-model" && <NeedsModel link={link} state={state.state} />}
+        {state.state?.phase === "needs-model" && <NeedsModel session={session} state={state.state} />}
         {waiting.length > 0 && (
           <Queue data-testid="queue">
             <QueueSection>
@@ -291,7 +291,9 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
               <QueueSectionContent>
                 <QueueList>
                   {waiting.map((q) => (
-                    <Waiting key={q.key} onTakeBack={() => session.takeBack(q)} q={q} />
+                    <Waiting asking={q.clientId !== null && state.asking.includes(q.clientId)} key={q.key} onTakeBack={() => {
+                        session.takeBack(q);
+                      }} q={q} />
                   ))}
                 </QueueList>
               </QueueSectionContent>

@@ -45,6 +45,9 @@ export type Session = {
   readonly thinking: boolean;
   readonly pending: readonly Pending[];
   readonly restored: Restored | null;
+  // the client ids this page asked the server to take back and has no answer for yet; a reconnect
+  // forgets them (an answer told to the old socket is lost), so the take-back can be asked again
+  readonly asking: readonly string[];
 };
 
 const MAX_MARKERS = 100;
@@ -54,7 +57,7 @@ export const UNSENT = "it may not have reached the server: send it again";
 const PAGE = 100; // older entries per page
 const MAX_FILL = 500; // a wider hole under the window is dropped, not fetched
 
-const initial: Session = { log: emptyLog, markers: [], pending: [], restored: null, state: null, status: "connecting", thinking: false };
+const initial: Session = { asking: [], log: emptyLog, markers: [], pending: [], restored: null, state: null, status: "connecting", thinking: false };
 
 // One message that waits for the model, and where it stands: "queued", the server holds it for a
 // later turn; "sent", a turn has it (offered to the running call, or being logged); "sending", the
@@ -129,7 +132,7 @@ export type SessionOptions = {
   readonly messages?: (before: number, limit: number) => Promise<{ readonly entries: readonly { readonly i: number; readonly kind: Kind; readonly text: string }[] }>;
 };
 
-export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "status" | "takeBack">, options: SessionOptions = {}) {
+export function makeSession(link: Pick<Link, "listen" | "onStatus" | "pick" | "send" | "status" | "takeBack">, options: SessionOptions = {}) {
   const messages = options.messages ?? api.messages;
   // what was sent before a reload and never acked: the snapshots tell below whether it got there
   const kept = loadSent().map((m): Pending => ({ ...m, conn: 0, error: null }));
@@ -143,7 +146,6 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
   // never one of ours matched by its text
   const ackedAt = new Set<number>();
   const subscribers = new Set<() => void>();
-  const asked = new Set<string>(); // the client ids this page asked the server to take back
   let restores = 0;
 
   const set = (next: Partial<Session>) => {
@@ -177,13 +179,15 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
   // A held message left the server's inbox for a client's composer, or could not: ours is no longer
   // pending either way it went to a composer, and the page that asked gets it back.
   const takenBack = (id: string, error: string | null, text: string | null, media: readonly Asset[]) => {
-    const mine = asked.delete(id);
+    const mine = s.asking.includes(id);
+    const asking = mine ? s.asking.filter((x) => x !== id) : s.asking;
     if (error !== null || text === null) {
+      set({ asking });
       if (mine) mark(`couldn't take it back: ${error ?? "no such message"}`, "info");
       return;
     }
     const pending = s.pending.filter((p) => p.id !== id);
-    set(mine ? { pending, restored: { key: ++restores, media, text } } : { pending });
+    set(mine ? { asking, pending, restored: { key: ++restores, media, text } } : { pending });
   };
   // A user entry was logged without an ack for us: one a failed ack told of earlier, or one sent on
   // a connection that has dropped since (its ack, told to nobody, is lost). Only these are matched
@@ -198,10 +202,13 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
   // the server doesn't hold either (its id is not among the state's pending), may have been lost
   // with the socket. It is marked so, and stays in the queue; the log taking it later clears it as
   // above.
+  // One sent before the window this page holds (the log grew past it meanwhile) can't be told
+  // from the entries it doesn't see: it is dropped, neither marked nor offered to send again.
   const unsent = () => {
     const there = new Set((s.state?.pending ?? []).map((m) => m.clientId));
-    const marked = s.pending.map((p) => (p.conn >= conns || p.error !== null || there.has(p.id) ? p : { ...p, error: UNSENT }));
-    if (marked.some((p, k) => p !== s.pending[k])) set({ pending: marked });
+    const known = s.pending.filter((p) => p.conn >= conns || p.error !== null || there.has(p.id) || p.from >= lowest(s.log));
+    const marked = known.map((p) => (p.conn >= conns || p.error !== null || there.has(p.id) ? p : { ...p, error: UNSENT }));
+    if (marked.length !== s.pending.length || marked.some((p, k) => p !== s.pending[k])) set({ pending: marked });
   };
   const setLog = (log: Log) => {
     if (log !== s.log) set({ log });
@@ -291,7 +298,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
   const unlisten = link.listen(event);
   const unstatus = link.onStatus((status) => {
     if (status === "open") conns++;
-    set(status === "open" ? { status } : { status, thinking: false });
+    set(status === "open" ? { asking: [], status } : { status, thinking: false });
   });
 
   return {
@@ -320,8 +327,15 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
         return true;
       }
       if (q.back !== "server" || q.clientId === null || !link.takeBack(q.clientId)) return false;
-      asked.add(q.clientId);
+      set({ asking: [...s.asking, q.clientId] });
       return true;
+    },
+    // A model pick: only while connected (a pick kept for later would settle whatever turn waits
+    // after the reconnect, which the user never chose); said when it wasn't sent.
+    pick: (lead: string) => {
+      if (link.pick(lead)) return true;
+      mark("not connected: the model was not changed", "error");
+      return false;
     },
     // the reader reached the chat's newest end, or left it: only there are the oldest entries dropped
     scrolled: (end: boolean) => {
