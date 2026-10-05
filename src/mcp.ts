@@ -2,7 +2,7 @@
 // POST, answered from the server's memory. It only reads; the lock stays with the chat.
 import { Option, Schema } from "effect";
 import { address } from "./kernel.ts";
-import { getNode, label, localTime, type Mem } from "./tree.ts";
+import { children, getNode, label, localTime, type Mem } from "./tree.ts";
 import { flat } from "./view.ts";
 
 // The descriptions are the gist's, word for word; the input schemas carry no descriptions (ref §9).
@@ -37,18 +37,11 @@ export function zoom(mem: Mem, id: number, n: number): string {
     const m = mem.root[id];
     return m ? `${id}+0|${m.kind}: ${m.text}` : noLine(id, n);
   }
-  if (!getNode(mem, c.l, c.i)) return noLine(id, n);
-  const halves = [
-    { i: 2 * c.i, l: c.l - 1 },
-    { i: 2 * c.i + 1, l: c.l - 1 },
-  ];
-  const lines: string[] = [];
-  for (const h of halves) {
-    const built = getNode(mem, h.l, h.i);
-    if (!built) return noLine(id, n); // a parent is only built after its children; this is a broken tree
-    lines.push(`${label(h)}|${flat(built.text)}`);
-  }
-  return lines.join("\n");
+  if (!getNode(mem, c)) return noLine(id, n);
+  const [left, right] = children(c).map((h) => ({ at: h, node: getNode(mem, h) }));
+  // a parent is only built after its children: a missing half is a broken tree
+  if (!left?.node || !right?.node) return noLine(id, n);
+  return `${label(left.at)}|${flat(left.node.text)}\n${label(right.at)}|${flat(right.node.text)}`;
 }
 
 // the local date and time of message id, "YYYY-MM-DD HH:MM"
@@ -57,7 +50,6 @@ export function date(mem: Mem, id: number): string {
   return m ? localTime(m.date) : `No message ${id}.`;
 }
 
-// ---------------------------------------------------------------------------------------------
 // JSON-RPC 2.0, the subset Claude Code uses: initialize, ping, tools/list, tools/call.
 
 const Id = Schema.Union([Schema.String, Schema.Number, Schema.Null]);

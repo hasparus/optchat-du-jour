@@ -70,4 +70,34 @@ describe("repl screen", () => {
     expect(t.out()).not.toContain("> \n");
     expect(t.s.busy).toBe(true);
   });
+
+  test("piped: a message is answered when the run that logged it ends, not when the server says idle", () => {
+    const t = screen(false);
+    t.s.submit("slow one");
+    t.feed({ snapshot: IDLE, type: "STATE_SNAPSHOT" }); // the server has not read it yet
+    expect(t.s.unanswered).toBe(1);
+    t.feed(...said("3", "user", "slow one"), { type: "RUN_STARTED" });
+    expect(t.s.unanswered).toBe(1);
+    t.feed(...said("4", "assistant", "done"), { type: "RUN_FINISHED" });
+    expect(t.s.unanswered).toBe(0);
+
+    // cancelled from another client: logged unanswered, no run end, then the session goes idle
+    t.s.submit("never answered");
+    t.feed({ delta: [{ op: "replace", path: "/phase", value: "priming" }], type: "STATE_DELTA" });
+    t.feed(...said("5", "user", "never answered"));
+    expect(t.s.unanswered).toBe(1);
+    t.feed({ delta: [{ op: "replace", path: "/phase", value: "idle" }], type: "STATE_DELTA" });
+    expect(t.s.unanswered).toBe(0);
+  });
+
+  test("a lost connection is told once, and so is its return", () => {
+    const t = screen();
+    t.s.disconnected(true);
+    t.s.disconnected(true);
+    t.s.disconnected(true);
+    t.s.connected();
+    t.s.connected();
+    expect(t.out().match(/no connection to the server/g)).toHaveLength(1);
+    expect(t.out().match(/connected to the server again/g)).toHaveLength(1);
+  });
 });

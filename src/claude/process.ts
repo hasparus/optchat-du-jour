@@ -15,7 +15,7 @@ export type Claude = {
   readonly next: Effect.Effect<Option.Option<Event>>;
   // the next `result`; fails if the process ends first
   readonly result: Effect.Effect<Result, ClaudeError>;
-  // the model the stream reports (init or message_start), for the usage log
+  // which model answered, for usage.jsonl: the init event names it, message_start too
   readonly model: () => string | undefined;
 };
 
@@ -31,7 +31,7 @@ export class Runner extends Context.Service<
 >()("optchat/Runner") {}
 
 const userMessage = (blocks: readonly Block[]) =>
-  `${JSON.stringify({ type: "user", message: { role: "user", content: blocks } })}\n`;
+  `${JSON.stringify({ message: { content: blocks, role: "user" }, type: "user" })}\n`;
 
 // wraps a process's stdin queue and stdout lines into a Claude; `exit` explains why output ended
 export const makeClaude = Effect.fnUntraced(function* (o: {
@@ -76,6 +76,9 @@ export const makeClaude = Effect.fnUntraced(function* (o: {
   } satisfies Claude;
 });
 
+// how much of a dead process's stderr its error message keeps (the end, where the reason is)
+const STDERR_TAIL = 300;
+
 // `claude` on this machine; OPTCHAT_CLAUDE names another binary (the tests' fake), read at spawn time
 export const LocalRunner = Layer.effect(
   Runner,
@@ -103,7 +106,7 @@ export const LocalRunner = Layer.effect(
       );
       const exit = Effect.gen(function* () {
         const code = yield* handle.exitCode.pipe(Effect.orElseSucceed(() => -1));
-        const err = (yield* Ref.get(stderr)).trim().slice(-300);
+        const err = (yield* Ref.get(stderr)).trim().slice(-STDERR_TAIL);
         return `claude exited (code ${code}): ${err || "no error output"}`;
       });
       const lines = handle.stdout.pipe(

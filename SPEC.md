@@ -165,6 +165,7 @@ export default {
   },
   defaultDevice: "mini",
   allowedLogins: ["<my tailscale login>"],
+  server: { host: "127.0.0.1", port: 7700, publicUrl: "https://<mini>.<tailnet>.ts.net" },
 };
 ```
 
@@ -225,7 +226,13 @@ The `claude-code` turn is ref §4–§6 unchanged, except for the cache TTL (E6)
 4. Log each queued text as `user`, then spawn the master on the chosen device: the base flags of ref §4 plus `--mcp-config` and `--replay-user-messages`.
 5. Send one user message: the view cut into up to 4 blocks at 50k / 80k / 100k characters, **no cache marks**, then the texts joined by a blank line.
 6. Map stream events to the log as in ref §5.3: text → `talk`, tool_use → `tool`, tool_result → `echo` (capped at `CAP`), later replays → `user`. Never log thinking.
-7. Kill the process at the first `result`; requeue mid-run messages that were never replayed. Commit the data dir.
+7. Kill the process at the first `result`; requeue mid-run messages that were never replayed. Commit the data dir. The session reports `idle` only once the commit is done, and a message that arrives while the loop winds down starts it again.
+
+As built, where we differ from ref §5.2:
+
+- A refusal or an `is_error` result ends the turn like a crash: mid-run messages the call never took are logged as unanswered `user` messages, where the reference requeues them after any `result`. A refused or failed call says nothing about the next one, and the user sees the messages and the error together; the chain (E4) decides whether another engine takes over.
+- A cancel during the turn's own priming ends the wait at once and logs the queued texts unanswered; the priming call itself runs to `message_start` in the background (ref §6), so the next turn can still use it.
+- A blank message is ignored: it starts no turn and logs no empty `user` entry.
 
 The system prompt is MASTER + VIEW_DOC + `instructions.md`, written once at startup, byte-identical across calls and devices: no dates, cwd or git status (gist §7.2). MASTER keeps the reference's D5 and D10 edits until subagents land (M7).
 
@@ -346,6 +353,7 @@ Nothing listens on a public interface; the tailnet is the only way in (E9).
 
 - **Publishing:** `tailscale serve --bg --https=443 http://127.0.0.1:7700` on the Mini gives `https://<mini>.<tailnet>.ts.net` with a valid certificate. Device runners listen on their tailnet address only.
 - **User auth:** `tailscale serve` adds identity headers (`Tailscale-User-Login`) to each request. The server accepts a request only if that login is in `allowedLogins` and the request came through serve on loopback; anything else gets 403.
+- **Browsers:** `/ws` drives a master with `bypassPermissions`, so a web page must not reach it from someone's browser (cross-site WebSocket hijacking, DNS rebinding, or a page on the phone riding the user's own serve identity). Every route checks `Host` (`127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>` or the host of `server.publicUrl`) and, when an `Origin` is sent, that it is the server's own origin; CLI clients send none. The threat model is written out in `server/auth.ts`.
 - **Machine auth:** device runners and `/mcp` check the caller with Tailscale's local WhoIs API against the configured device names. No tokens to rotate.
 - **Processes:** two launchd agents on the Mini (`optchat-server`, `optchat-device`), one on the MacBook (`optchat-device`), each with `KeepAlive`, logs in `~/Library/Logs/optchat/`. The Mini's energy settings keep it awake.
 - **Permissions:** the master runs with `bypassPermissions` (ref D9), so it can run any command in the configured folders of the device it lands on. The device runner's folder allowlist is the boundary.
@@ -363,7 +371,7 @@ Every model call appends one line to `usage.jsonl`, as in the reference, with mo
  "cold":false,"attempt":1,"failoverFrom":null,"ms":0}
 ```
 
-- `cold` is true when the call read less than half the view from the cache.
+- `cold` is true when the call read less than half the view from the cache. For a turn it is judged on the first request's usage (`message_start`), the one that reads the view; the token counts are the whole call's. Compactor records carry the device they ran on (the server's own machine).
 - `level` is set for compactor calls, so the per-level split can be costed.
 - API-key calls also get a dollar figure from a price table in config; the server stops using the key when its monthly budget is spent and says so in the UI.
 
@@ -416,6 +424,13 @@ Each milestone ends with `bun test` green, the parity test passing, and a short 
 8. **M7, subagents.** Gist §9 `spawn` and `tell`; restore MASTER's subagent paragraph, which drops D5. D10 stays: background shell tasks still die with the turn.
 
 Later, unscheduled: layout B for the compactor (ref §7), media in a content-addressed sidecar (as hermes-optchat), and the importers (E12).
+
+Follow-ups after M5 (held back so the M1–M5 branches merge cleanly):
+
+- The session's single inbox: one queue of incoming messages instead of `queue`, `steer` and `sent`, so every message has one owner at any moment.
+- Remove the mutable `sent` array shared between the session and the engine; the engine reports what it took as events.
+- An engine-ref registry: one place that turns `engine:model` into a turn or compactor engine, instead of the parsing in `server/app.ts` and `src/summarize/`.
+- Split `server/app.ts` into route modules (`/ws`, `/mcp`, `/api/*`, static files).
 
 ## Open questions and things to measure
 
