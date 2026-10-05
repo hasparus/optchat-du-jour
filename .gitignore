@@ -4,3 +4,5 @@ dist
 *.tsbuildinfo
 # wire-proxy logs and stream taps hold the userEmail reminder or a chat
 *.wire.jsonl
+vendor/oxlint-config/oxlint.config.js
+vendor/oxlint-config/anti-slop/**/*.js

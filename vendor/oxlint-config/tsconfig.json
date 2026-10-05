@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "lib": ["ESNext"],
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "moduleDetection": "force",
+    "allowJs": true,
+    "noEmit": true,
+
+    // The vendored anti-slop sources import each other by `.ts` path, and the
+    // test pulls the whole tree into this program. tsconfig.build.json emits
+    // them with `rewriteRelativeImportExtensions`, so the paths land as `.js`.
+    "allowImportingTsExtensions": true,
+
+    "strict": true,
+    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": true,
+
+    "types": ["bun"]
+  },
+  "include": ["*.ts"]
+}

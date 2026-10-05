@@ -1,0 +1,12 @@
+{
+  // What ships: the config, and the vendored plugin the config registers.
+  // Everything they import comes along; the tests do not, which is why this
+  // narrows `include` rather than flipping `noEmit` on the base.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    // The vendored sources import each other by `.ts` path. Emit them as `.js`.
+    "rewriteRelativeImportExtensions": true
+  },
+  "include": ["oxlint.config.ts", "anti-slop/index.ts"]
+}
