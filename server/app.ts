@@ -78,7 +78,7 @@ export const routes = (o: ServerOptions) =>
 
       let report = logReport;
       const usage = (record: UsageRecord) => logUsage(usagePath, record).pipe(Effect.flatMap((e) => (e ? report(e) : Effect.void)));
-      const summarize = o.summarize ?? (yield* makeSummarize({ log: usage, report: (m) => report(m), settings }));
+      const summarize = o.summarize ?? (yield* makeSummarize({ log: usage, report: (m) => report(m), settings })).summarize;
       const chat = yield* openChat(stream, { report: (m) => report(m), summarize });
 
       const systemFile = yield* promptFile(systemPrompt(o.home));

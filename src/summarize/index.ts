@@ -46,5 +46,6 @@ export const makeSummarize = (o: {
         watch.moved,
         watch.answered,
       ).pipe(Effect.mapError((e) => new CompactError({ message: e.message })));
-    return summarize;
+    // the engines down right now, with why: for the UI, so compaction never runs elsewhere unseen
+    return { down: watch.down, summarize };
   });

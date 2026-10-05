@@ -1,12 +1,14 @@
 // The openai-plan engine against fake OAuth and Responses servers (test/fake-openai.ts): no network
 // beyond 127.0.0.1, no model calls.
 import { afterAll, expect, test } from "bun:test";
-import { Effect, Layer, Option, Queue, Schema, Stream } from "effect";
+import { Deferred, Effect, Fiber, Layer, Option, Queue, Schema, Stream } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { readFileSync } from "node:fs";
 import { type Settings, NODE, TRIES } from "../src/config.ts";
 import { type Spawn, Runner, makeClaude } from "../src/claude/process.ts";
 import type { Job } from "../src/compactor.ts";
+import { failover, watchChain } from "../src/engines/chain.ts";
+import { UsageLimit } from "../src/engines/errors.ts";
 import { Credentials, type Endpoints, DEFAULT_ENDPOINTS, SECRET, encodeCredentials, login } from "../src/openai/auth.ts";
 import { OpenAiPlan, openAiPlanLayer, readStream } from "../src/openai/responses.ts";
 import { COMPACT_FILE } from "../src/prompts.ts";
@@ -177,7 +179,7 @@ const settings = (byLevel: Settings["compactor"]["byLevel"]): Settings => ({
 
 const compactors = async (secrets: Layer.Layer<Secrets>, e: Endpoints) => {
   const records: UsageRecord[] = [], reports: string[] = [], spawned: Spawn[] = [];
-  const summarize = await Effect.runPromise(
+  const { down, summarize } = await Effect.runPromise(
     makeSummarize({
       log: (r) => Effect.sync(() => void records.push(r)),
       report: (m) => Effect.sync(() => void reports.push(m)),
@@ -187,18 +189,21 @@ const compactors = async (secrets: Layer.Layer<Secrets>, e: Endpoints) => {
       ]),
     }).pipe(Effect.provide([plan(e, secrets), fakeRunner(spawned)])),
   );
-  return { records, reports, spawned, summarize };
+  return { down, records, reports, spawned, summarize };
 };
 
 test("429 subscription_sharing_usage_limit_exceeded moves the node to the next engine, which logs failoverFrom; levels pick their chain", async () => {
   const secrets = memorySecrets();
-  const { records, reports, spawned, summarize } = await compactors(secrets, await signedIn(secrets));
+  const { down, records, reports, spawned, summarize } = await compactors(secrets, await signedIn(secrets));
+  expect(down()).toEqual([]);
 
   fake.state.seen.length = 0;
   fake.state.script = [{ code: "subscription_sharing_usage_limit_exceeded", status: 429 }];
   expect(await Effect.runPromise(summarize(leaf("hi")))).toBe("user: written by sonnet");
   expect(reports).toHaveLength(1);
   expect(reports[0]).toMatch(/^openai-plan:gpt-6-luna unavailable: .*429.*; compacting on claude-code:sonnet$/);
+  expect(down().map((d) => d.ref)).toEqual(["openai-plan:gpt-6-luna"]);
+  expect(down()[0]?.reason).toContain("429");
   expect(records).toHaveLength(1);
   expect(records[0]).toMatchObject({ engine: "claude-code", failoverFrom: "openai-plan:gpt-6-luna", level: 0 });
   expect(spawned).toHaveLength(1);
@@ -225,6 +230,7 @@ test("429 subscription_sharing_usage_limit_exceeded moves the node to the next e
   fake.state.script = [{ text: "user: luna again" }];
   expect(await Effect.runPromise(summarize(leaf("hi")))).toBe("user: luna again");
   expect(reports[2]).toBe("openai-plan:gpt-6-luna back: compacting on it again");
+  expect(down().map((d) => d.ref)).toEqual(["openai-plan:gpt-6.1-sol"]);
   expect(reports).toHaveLength(3);
   // and a later failover is told again
   fake.state.script = [{ code: "subscription_sharing_usage_limit_exceeded", status: 429 }];
@@ -242,6 +248,66 @@ test("429 subscription_sharing_usage_limit_exceeded moves the node to the next e
   expect(spawned).toHaveLength(4);
   expect(records).toHaveLength(1);
   expect(records[0]).toMatchObject({ attempt: 1, engine: "openai-plan", model: "fake-luna", usage: { cacheRead: 0, cacheWrite: 0, input: 1000, output: 7 } });
+});
+
+test("with calls in flight, an engine is back only when a call started after it went down answers on it", async () => {
+  const reports: string[] = [];
+  const watch = watchChain((m) => Effect.sync(() => void reports.push(m)), "compacting");
+  const started: Deferred.Deferred<string, UsageLimit>[] = [];
+  // each call's plan answer waits for the test to settle it
+  const call = () =>
+    failover(
+      [
+        {
+          ref: "plan",
+          run: () =>
+            Effect.gen(function* () {
+              const answer = yield* Deferred.make<string, UsageLimit>();
+              started.push(answer);
+              return yield* Deferred.await(answer);
+            }),
+        },
+        { ref: "claude", run: () => Effect.succeed("claude") },
+      ],
+      watch.moved,
+      watch.answered,
+    );
+  const capped = new UsageLimit({ message: "429 cap" });
+  // the nth call, once it is waiting on the plan
+  const begin = (n: number) =>
+    Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(call());
+      while (started.length < n) yield* Effect.yieldNow;
+      return fiber;
+    });
+  const settle = (n: number, answer: Effect.Effect<string, UsageLimit>) => Deferred.complete(started[n]!, answer);
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      // two calls in flight on the plan; the first hits the cap
+      const a = yield* begin(1), b = yield* begin(2);
+      yield* settle(0, Effect.fail(capped));
+      expect(yield* Fiber.join(a)).toBe("claude");
+      expect(watch.down()).toEqual([{ reason: "429 cap", ref: "plan" }]);
+      // the other was already under way: its answer is no sign the plan is back
+      yield* settle(1, Effect.succeed("plan"));
+      expect(yield* Fiber.join(b)).toBe("plan");
+      expect(watch.down()).toEqual([{ reason: "429 cap", ref: "plan" }]);
+      // a call started while it was down, and one started after it, both in flight
+      const c = yield* begin(3), d = yield* begin(4);
+      yield* settle(3, Effect.succeed("plan"));
+      expect(yield* Fiber.join(d)).toBe("plan");
+      expect(watch.down()).toEqual([]);
+      // c began before the plan came back: its cap is not news either
+      yield* settle(2, Effect.fail(capped));
+      expect(yield* Fiber.join(c)).toBe("claude");
+      expect(watch.down()).toEqual([]);
+      // a call started now that fails takes it down again
+      const e = yield* begin(5);
+      yield* settle(4, Effect.fail(capped));
+      expect(yield* Fiber.join(e)).toBe("claude");
+    }),
+  );
+  expect(reports).toEqual(["plan unavailable: 429 cap; compacting on claude", "plan back: compacting on it again", "plan unavailable: 429 cap; compacting on claude"]);
 });
 
 test("not signed in, the compactor runs on the next engine and says so; a token endpoint down is an error, not a failover", async () => {

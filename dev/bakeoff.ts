@@ -349,7 +349,9 @@ const main = Effect.gen(function* () {
       contender,
       deadline: Duration.minutes(deadline),
       messages,
-      summarizeFor: (c, log, report) => makeSummarize({ log, report, settings: { ...settings, compactor: { ...settings.compactor, byLevel: c.byLevel } } }),
+      summarizeFor: (c, log, report) => makeSummarize({ log, report, settings: { ...settings, compactor: { ...settings.compactor, byLevel: c.byLevel } } }).pipe(
+          Effect.map((m) => m.summarize),
+        ),
     }).pipe(Effect.provide(engines));
     for (const r of replayed.reports) yield* Console.error(`${contender.name}: ${r}`);
     rows.push(yield* measure(replayed, messages, { answerer: lexicalAnswerer, kinds, questions: questionCount }));
