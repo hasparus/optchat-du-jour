@@ -17,5 +17,5 @@
 
     "types": ["bun"]
   },
-  "include": ["*.ts", "src", "cli", "server", "device", "test"]
+  "include": ["*.ts", "src", "cli", "server", "device", "test", "dev"]
 }

@@ -3,7 +3,7 @@
 // the web UI) and / (the built web UI).
 import { BunHttpServer, BunServices } from "@effect/platform-bun";
 import { Effect, Layer, Option, Predicate, PubSub, Schema } from "effect";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+import { FetchHttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 import { existsSync } from "node:fs";
 import { openChat } from "../src/chat.ts";
@@ -11,6 +11,7 @@ import { type Settings, MASTER_TOOLS } from "../src/config.ts";
 import { LocalRunner, Runner, claudeBinary, claudeVersion } from "../src/claude/process.ts";
 import { remoteRunner } from "../src/claude/remote.ts";
 import type { Summarize } from "../src/compactor.ts";
+import type { Down } from "../src/engines/chain.ts";
 import { DeviceOffline } from "../src/engines/errors.ts";
 import { handleMcp, mcpConfig, openNode } from "../src/mcp.ts";
 import { forbidden, mount } from "../src/http.ts";
@@ -18,6 +19,8 @@ import { expandHome } from "../src/paths.ts";
 import { makePersist } from "../src/persist.ts";
 import { promptFile, systemPrompt } from "../src/prompts.ts";
 import { makeSession, type SessionEvent } from "../src/session.ts";
+import { openAiPlanLayer } from "../src/openai/responses.ts";
+import { SecretsLive } from "../src/secrets.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
 import { getNode, localTime, span } from "../src/tree.ts";
 import { type Placement, claudeCodeTurn } from "../src/turn/claude-code.ts";
@@ -100,8 +103,14 @@ export const routes = (o: ServerOptions) =>
       const events = yield* PubSub.unbounded<SessionEvent>();
       const report = (message: string) => Effect.logInfo(message).pipe(Effect.andThen(PubSub.publish(events, { message, type: "info" })), Effect.asVoid);
       const usage = (record: UsageRecord) => logUsage(usagePath, record).pipe(Effect.flatMap((e) => (e ? report(e) : Effect.void)));
-      const summarize = o.summarize ?? (yield* makeSummarize({ device: o.device, log: usage, report, settings }));
-      const chat = yield* openChat(stream, { report, summarize });
+      // built here so that a refresh token it can't save is told to the clients, not only logged
+      const plan = yield* Layer.build(openAiPlanLayer(settings.openai, { report }).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer])));
+      // a failover notice also changes the state's `down`, for clients that connect later
+      let tellState: Effect.Effect<void> = Effect.void;
+      const compactor = o.summarize
+        ? { down: (): readonly Down[] => [], summarize: o.summarize }
+        : yield* makeSummarize({ device: o.device, log: usage, report: (m) => report(m).pipe(Effect.andThen(tellState)), settings }).pipe(Effect.provide(plan));
+      const chat = yield* openChat(stream, { report, summarize: compactor.summarize });
 
       const systemFile = yield* promptFile(systemPrompt(o.home));
       // Where each device's claude runs (E7): this machine's own Runner, or that device's runner
@@ -145,12 +154,14 @@ export const routes = (o: ServerOptions) =>
       const session = yield* makeSession({
         chat,
         commit: Effect.suspend(() => persist(o.home, `chore(chat): ${chat.mem.root.length} messages`)),
+        compactorDown: compactor.down,
         defaultDevice: settings.defaultDevice,
         devices: Object.keys(settings.devices),
         engines,
         events,
         logUsage: usage,
       });
+      tellState = session.tell;
       for (const p of chat.problems) yield* report(p);
       if (unreachable.length > 0) {
         const notice = `server.publicUrl is not set: turns on ${unreachable.join(", ")} are refused, since claude there could not reach zoom and date`;

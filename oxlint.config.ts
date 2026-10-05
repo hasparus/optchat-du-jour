@@ -17,7 +17,7 @@ export default defineConfig({
   ignorePatterns: [...ignorePatterns, "vendor", "kernel/kernel.mjs"],
   overrides: [
     ...overrides,
-    // scripts whose output is their report
+    // a script whose output is its report
     { files: ["test/parity/**"], rules: { "no-console": "off" } },
   ],
   rules: {

@@ -12,6 +12,7 @@ import { deviceLayer } from "../device/runner.ts";
 import { serverLayer } from "../server/app.ts";
 import { CompactError } from "../src/compactor.ts";
 import type { Settings } from "../src/config.ts";
+import { DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 import { freePort } from "./ports.ts";
 
 const FAKE = new URL("fake-claude.ts", import.meta.url).pathname;
@@ -60,6 +61,7 @@ test("a turn on another device runs there, and a turn on an offline device fails
   const port = freePort(), devicePort = freePort();
   const strangerPort = freePort();
   const settings: Settings = {
+    openai: DEFAULT_ENDPOINTS,
     allowedLogins: [ME],
     cache: { apiKeyTtls: [], claudeCodeTtl: "1h", primeTtl: "1h" },
     compactor: { byLevel: [{ chain: ["claude-code:sonnet"], from: 0 }], effort: "medium" },
@@ -155,6 +157,7 @@ test("without server.publicUrl a turn on another device is refused at once, and 
   Bun.env.FAKE_CLAUDE_LOG = log;
   const port = freePort(), devicePort = freePort();
   const settings: Settings = {
+    openai: DEFAULT_ENDPOINTS,
     allowedLogins: [],
     cache: { apiKeyTtls: [], claudeCodeTtl: "1h", primeTtl: "1h" },
     compactor: { byLevel: [{ chain: ["claude-code:sonnet"], from: 0 }], effort: "medium" },

@@ -3,7 +3,7 @@
 import { Cause, type Duration, Effect, Exit, Fiber, Option, PubSub, Queue, type Scope } from "effect";
 import { PRIME_IDLE } from "./config.ts";
 import type { Chat } from "./chat.ts";
-import { failover } from "./engines/chain.ts";
+import { type Down, failover } from "./engines/chain.ts";
 import type { EngineError } from "./engines/errors.ts";
 import type { StoreError } from "./store.ts";
 import type { Entry } from "./tree.ts";
@@ -22,6 +22,7 @@ export type SessionState = {
   readonly budget: number;
   readonly messages: number;
   readonly queued: readonly string[]; // sent mid-run, not taken by the call yet
+  readonly down: readonly Down[]; // compactor engines down right now, with why (SPEC "Policy": never unseen)
 };
 
 export type SessionEvent =
@@ -51,6 +52,8 @@ export type Session = {
   readonly primeSoon: Effect.Effect<void>;
   // the run going on, and the reply it is streaming (not logged yet), for a client joining now
   readonly live: () => LiveRun | null;
+  // publish the state again: something it shows changed outside the session (a compactor engine)
+  readonly tell: Effect.Effect<void>;
 };
 
 export type LiveRun = { readonly runId: string; readonly reply: { readonly at: number; readonly text: string } | null };
@@ -69,6 +72,7 @@ export const makeSession = (o: {
   readonly commit: Effect.Effect<string | null>; // commit the data dir (its push is not waited for); an error message or null
   readonly logUsage: (record: UsageRecord) => Effect.Effect<void>;
   readonly idle?: Duration.Input; // PRIME_IDLE
+  readonly compactorDown?: () => readonly Down[]; // makeSummarize's `down`
   readonly events?: PubSub.PubSub<SessionEvent>; // the server's, made first so it can report into it; else the session's own
 }): Effect.Effect<Session, never, Scope.Scope> =>
   Effect.gen(function* () {
@@ -95,6 +99,7 @@ export const makeSession = (o: {
     const state = (): SessionState => ({
       budget: chat.mem.budget,
       device,
+      down: o.compactorDown?.() ?? [],
       engine,
       messages: chat.mem.root.length,
       phase,
@@ -342,7 +347,7 @@ export const makeSession = (o: {
       !primer || running || !allBuilt(chat.mem) ? Effect.void : primer(render(chat.mem), o.defaultDevice).pipe(Effect.forkIn(scope), Effect.asVoid),
     );
 
-    return { cancel, events, input, live, primeSoon, state };
+    return { cancel, events, input, live, primeSoon, state, tell };
   });
 
 // a defect in one line: what was thrown

@@ -1,7 +1,9 @@
 // The gist's constants (gist §1) and the reference's timings (ref §2, §7). Sizes are UTF-8
 // bytes, cache marks are characters. Everything that may differ per machine is in
 // optchat.config.ts instead.
-import { Data, Effect, Schema } from "effect";
+import { Data, Effect, Result, Schema } from "effect";
+import { Endpoints } from "./openai/endpoints.ts";
+import { Engine } from "./usage.ts";
 
 // a summary line's target size, and the most a free node may hold
 export const NODE = 512;
@@ -28,8 +30,8 @@ export const PRIME_IDLE = "1 second";
 
 const Ttl = Schema.Literals(["1h", "5m"]);
 const Effort = Schema.Literals(["low", "medium", "high", "xhigh", "max"]);
-// "engine:model", e.g. "claude-code:opus"
-const EngineRef = Schema.String.check(Schema.isPattern(/^(claude-code|openai-plan|api-key):.+$/));
+// "engine:model", e.g. "claude-code:opus"; parseRef says whether this build runs it as a role
+const EngineRef = Schema.String.check(Schema.isPattern(new RegExp(`^(${Engine.literals.join("|")}):.+$`)));
 const Chain = Schema.NonEmptyArray(EngineRef);
 
 export const Settings = Schema.Struct({
@@ -49,6 +51,8 @@ export const Settings = Schema.Struct({
   allowedLogins: Schema.Array(Schema.String),
   // publicUrl: the server as the tailnet reaches it (`tailscale serve`), for claude on other devices
   server: Schema.optional(Schema.Struct({ host: Schema.String, port: Schema.Int, publicUrl: Schema.optional(Schema.String) })),
+  // Sign in with ChatGPT endpoints (src/openai/endpoints.ts): each key left out, or the whole field, decodes to its default
+  openai: Endpoints.pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
 });
 export type Settings = typeof Settings.Type;
 
@@ -59,8 +63,19 @@ export const MASTER_TOOLS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "W
 
 export class ConfigError extends Data.TaggedError("ConfigError")<{ readonly message: string }> {}
 
-// the engines this build can run; a chain naming another is a configuration error, not a failover
-export const IMPLEMENTED: readonly string[] = ["claude-code"];
+// the engines this build can run, per role; a chain naming another is a configuration error, not a failover
+export const IMPLEMENTED = { compactor: ["claude-code", "openai-plan"], master: ["claude-code"] } as const satisfies Record<string, readonly (typeof Engine.Type)[]>;
+export type Role = keyof typeof IMPLEMENTED;
+export type Ref<R extends Role> = { readonly engine: (typeof IMPLEMENTED)[R][number]; readonly model: string };
+
+// "engine:model" for a role: an engine this build runs as that role, and a model
+export const parseRef = <R extends Role>(role: R, ref: string): Result.Result<Ref<R>, string> => {
+  const [name = "", model = ""] = ref.split(/:(.*)/s);
+  const engine = IMPLEMENTED[role].find((e) => e === name);
+  if (model === "") return Result.fail(`engine ${ref}: expected engine:model`);
+  if (engine === undefined) return Result.fail(`engine ${ref} is not implemented yet as a ${role}`);
+  return Result.succeed({ engine, model });
+};
 
 const decodeSettings = Schema.decodeUnknownEffect(Settings);
 // what `import` of optchat.config.ts gives: its default export is checked against Settings next
@@ -75,10 +90,15 @@ export const loadSettings = (path: string) =>
     const settings = yield* decodeSettings(module).pipe(
       Effect.mapError((e) => new ConfigError({ message: `${path}: ${e.message}` })),
     );
-    const engines = [...settings.master.chain, ...settings.compactor.byLevel.flatMap((b) => b.chain)];
-    for (const ref of engines)
-      if (!IMPLEMENTED.includes(ref.split(":")[0] ?? ""))
-        return yield* new ConfigError({ message: `${path}: engine ${ref} is not implemented yet` });
+    const roles: readonly { readonly refs: readonly string[]; readonly role: Role }[] = [
+      { refs: settings.master.chain, role: "master" },
+      { refs: settings.compactor.byLevel.flatMap((b) => b.chain), role: "compactor" },
+    ];
+    for (const { refs, role } of roles)
+      for (const ref of refs) {
+        const parsed = parseRef(role, ref);
+        if (Result.isFailure(parsed)) return yield* new ConfigError({ message: `${path}: ${parsed.failure}` });
+      }
     for (const [name, d] of Object.entries(settings.devices))
       // http only: the runner listens on the tailnet address itself, and RemoteRunner dials its IPv4
       if (!URL.canParse(d.url) || new URL(d.url).protocol !== "http:")
