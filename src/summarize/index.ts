@@ -1,37 +1,34 @@
 // The compactor's engine for a node: the chain configured for its level (E5), engine by engine.
 // A move to the next engine, and the way back, are reported (SPEC "Failover"; and "Policy":
 // compaction must not move onto the Claude plan unseen).
-import { Effect, Schema } from "effect";
-import { type Settings, chainFor } from "../config.ts";
+import { Effect, Result } from "effect";
+import type { Runner } from "../claude/process.ts";
+import { type Ref, type Settings, chainFor, parseRef } from "../config.ts";
 import { type Job, CompactError, type Summarize } from "../compactor.ts";
 import { failover, watchChain } from "../engines/chain.ts";
 import type { EngineError } from "../engines/errors.ts";
-import { Engine, type UsageRecord } from "../usage.ts";
+import type { OpenAiPlan } from "../openai/responses.ts";
+import type { UsageRecord } from "../usage.ts";
 import { claudeCodeCompactor } from "./claude-code.ts";
 import { openAiPlanCompactor } from "./openai-plan.ts";
 
 type Compact = (job: Job, failoverFrom: string | null) => Effect.Effect<string, EngineError>;
-const decodeEngine = Schema.decodeUnknownSync(Engine);
+type Options = { readonly settings: Settings; readonly log: (record: UsageRecord) => Effect.Effect<void> };
 
-export const makeSummarize = (o: {
-  readonly settings: Settings;
-  readonly log: (record: UsageRecord) => Effect.Effect<void>;
-  readonly report: (message: string) => Effect.Effect<void>;
-}) =>
+// how each compactor engine is built for a model, one per engine in IMPLEMENTED.compactor
+const builders = {
+  "claude-code": (model: string, o: Options) =>
+    claudeCodeCompactor({ effort: o.settings.compactor.effort, log: o.log, model, ttl: o.settings.cache.claudeCodeTtl }),
+  "openai-plan": (model: string, o: Options) => openAiPlanCompactor({ effort: o.settings.compactor.effort, log: o.log, model }),
+} satisfies Record<Ref<"compactor">["engine"], (model: string, o: Options) => Effect.Effect<Compact, never, Runner | OpenAiPlan>>;
+
+export const makeSummarize = (o: Options & { readonly report: (message: string) => Effect.Effect<void> }) =>
   Effect.gen(function* () {
-    const { effort } = o.settings.compactor;
     const build = (ref: string) => {
-      const [engine = "", model = ""] = ref.split(/:(.*)/s);
-      const kind = decodeEngine(engine);
-      switch (kind) {
-        case "claude-code":
-          return claudeCodeCompactor({ effort, log: o.log, model, ttl: o.settings.cache.claudeCodeTtl });
-        case "openai-plan":
-          return openAiPlanCompactor({ effort, log: o.log, model });
-        case "api-key":
-          // loadSettings refuses a chain naming an engine not built yet
-          return Effect.die(new Error(`${ref}: no ${kind} compactor yet`));
-      }
+      const parsed = parseRef("compactor", ref);
+      // loadSettings refuses such a chain first
+      if (Result.isFailure(parsed)) return Effect.die(new Error(parsed.failure));
+      return builders[parsed.success.engine](parsed.success.model, o);
     };
     const engines = new Map<string, Compact>();
     for (const ref of new Set(o.settings.compactor.byLevel.flatMap((b) => b.chain))) engines.set(ref, yield* build(ref));

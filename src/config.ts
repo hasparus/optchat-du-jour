@@ -1,5 +1,6 @@
-import { Data, Effect, Schema } from "effect";
+import { Data, Effect, Result, Schema } from "effect";
 import { Endpoints } from "./openai/endpoints.ts";
+import { Engine } from "./usage.ts";
 // The gist's constants (gist §1) and the reference's timings (ref §2, §7). Sizes are UTF-8
 // bytes, cache marks are characters. Everything that may differ per machine is in
 // optchat.config.ts instead.
@@ -23,8 +24,8 @@ export const PRIME_IDLE = "1 second";
 
 const Ttl = Schema.Literals(["1h", "5m"]);
 const Effort = Schema.Literals(["low", "medium", "high", "xhigh", "max"]);
-// "engine:model", e.g. "claude-code:opus"
-const EngineRef = Schema.String.check(Schema.isPattern(/^(claude-code|openai-plan|api-key):.+$/));
+// "engine:model", e.g. "claude-code:opus"; parseRef says whether this build runs it as a role
+const EngineRef = Schema.String.check(Schema.isPattern(new RegExp(`^(${Engine.literals.join("|")}):.+$`)));
 const Chain = Schema.NonEmptyArray(EngineRef);
 
 export const Settings = Schema.Struct({
@@ -56,7 +57,18 @@ export const MASTER_TOOLS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "W
 export class ConfigError extends Data.TaggedError("ConfigError")<{ readonly message: string }> {}
 
 // the engines this build can run, per role; a chain naming another is a configuration error, not a failover
-export const IMPLEMENTED = { compactor: ["claude-code", "openai-plan"], master: ["claude-code"] } as const satisfies Record<string, readonly string[]>;
+export const IMPLEMENTED = { compactor: ["claude-code", "openai-plan"], master: ["claude-code"] } as const satisfies Record<string, readonly (typeof Engine.Type)[]>;
+export type Role = keyof typeof IMPLEMENTED;
+export type Ref<R extends Role> = { readonly engine: (typeof IMPLEMENTED)[R][number]; readonly model: string };
+
+// "engine:model" for a role: an engine this build runs as that role, and a model
+export const parseRef = <R extends Role>(role: R, ref: string): Result.Result<Ref<R>, string> => {
+  const [name = "", model = ""] = ref.split(/:(.*)/s);
+  const engine = IMPLEMENTED[role].find((e) => e === name);
+  if (model === "") return Result.fail(`engine ${ref}: expected engine:model`);
+  if (engine === undefined) return Result.fail(`engine ${ref} is not implemented yet as a ${role}`);
+  return Result.succeed({ engine, model });
+};
 
 const decodeSettings = Schema.decodeUnknownEffect(Settings);
 // what `import` of optchat.config.ts gives: its default export is checked against Settings next
@@ -71,14 +83,15 @@ export const loadSettings = (path: string) =>
     const settings = yield* decodeSettings(module).pipe(
       Effect.mapError((e) => new ConfigError({ message: `${path}: ${e.message}` })),
     );
-    const roles = [
-      { built: IMPLEMENTED.master, refs: settings.master.chain, role: "master" },
-      { built: IMPLEMENTED.compactor, refs: settings.compactor.byLevel.flatMap((b) => b.chain), role: "compactor" },
+    const roles: readonly { readonly refs: readonly string[]; readonly role: Role }[] = [
+      { refs: settings.master.chain, role: "master" },
+      { refs: settings.compactor.byLevel.flatMap((b) => b.chain), role: "compactor" },
     ];
-    for (const { built, refs, role } of roles)
-      for (const ref of refs)
-        if (!built.some((engine) => ref.startsWith(`${engine}:`)))
-          return yield* new ConfigError({ message: `${path}: engine ${ref} is not implemented yet as a ${role}` });
+    for (const { refs, role } of roles)
+      for (const ref of refs) {
+        const parsed = parseRef(role, ref);
+        if (Result.isFailure(parsed)) return yield* new ConfigError({ message: `${path}: ${parsed.failure}` });
+      }
     if (!(settings.defaultDevice in settings.devices))
       return yield* new ConfigError({ message: `${path}: defaultDevice ${settings.defaultDevice} is not among the devices` });
     return settings;

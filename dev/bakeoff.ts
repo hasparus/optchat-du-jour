@@ -8,7 +8,7 @@
 //     --chain "luna=openai-plan:gpt-6-luna" --chain "split=0:openai-plan:gpt-6-luna;3:openai-plan:gpt-6.1-sol" \
 //     --chain "sonnet=claude-code:sonnet" --out bakeoff.json
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Console, Context, Duration, Effect, Layer, Option, Schema } from "effect";
+import { Console, Context, Duration, Effect, Layer, Option, Result, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,7 +16,7 @@ import { parseArgs } from "node:util";
 import { openChat } from "../src/chat.ts";
 import { LocalRunner } from "../src/claude/process.ts";
 import type { Summarize } from "../src/compactor.ts";
-import { NODE, type Settings, loadSettings } from "../src/config.ts";
+import { NODE, type Settings, loadSettings, parseRef } from "../src/config.ts";
 import { parseOptmem } from "../src/import.ts";
 import { zoom } from "../src/mcp.ts";
 import { openAiPlanLayer } from "../src/openai/responses.ts";
@@ -31,10 +31,8 @@ import { render, settle } from "../src/view.ts";
 export type Message = { readonly kind: Kind; readonly text: string };
 export type Contender = { readonly name: string; readonly byLevel: Settings["compactor"]["byLevel"] };
 
-const EngineRef = Schema.String.check(Schema.isPattern(/^(claude-code|openai-plan|api-key):.+$/));
-const decodeRef = Schema.decodeUnknownSync(EngineRef);
-
-// "name=ref,ref" for one chain at every level, or "name=0:ref,ref;3:ref,ref" per level
+// "name=ref,ref" for one chain at every level, or "name=0:ref,ref;3:ref,ref" per level; each ref
+// one this build runs as a compactor
 export function parseContender(spec: string): Contender {
   const eq = spec.indexOf("=");
   if (eq <= 0) throw new Error(`--chain ${spec}: expected name=chain`);
@@ -43,7 +41,11 @@ export function parseContender(spec: string): Contender {
     .split(";")
     .map((part) => {
       const m = /^(\d+):(?=[a-z])/.exec(part);
-      const refs = (m ? part.slice(m[0].length) : part).split(",").map((r) => decodeRef(r.trim()));
+      const refs = (m ? part.slice(m[0].length) : part).split(",").map((r) => {
+        const parsed = parseRef("compactor", r.trim());
+        if (Result.isFailure(parsed)) throw new Error(`--chain ${spec}: ${parsed.failure}`);
+        return r.trim();
+      });
       const [first, ...rest] = refs;
       if (first === undefined) throw new Error(`--chain ${spec}: an empty chain`);
       return { chain: [first, ...rest] as const, from: m ? Number(m[1]) : 0 };
@@ -316,6 +318,8 @@ export const table = (rows: readonly Measured[]) =>
 
 // a whole number of at least `min`, or null
 const count = (raw: string, min: number) => (/^\d+$/.test(raw) && Number(raw) >= min ? Number(raw) : null);
+const USAGE =
+  "usage: bun dev/bakeoff.ts --from <data dir | LOG.txt> --chain name=chain [--chain …] [--n 500] [--skip 0] [--kinds user] [--questions 50] [--deadline 120 (minutes)] [--out file.json]";
 
 const main = Effect.gen(function* () {
   const { values } = parseArgs({
@@ -332,9 +336,10 @@ const main = Effect.gen(function* () {
   });
   const n = count(values.n, 1), skip = count(values.skip, 0), questionCount = count(values.questions, 0), deadline = count(values.deadline, 1);
   if (values.from === undefined || !existsSync(values.from) || !values.chain?.length || n === null || skip === null || questionCount === null || deadline === null)
-    return yield* Console.error(
-      "usage: bun dev/bakeoff.ts --from <data dir | LOG.txt> --chain name=chain [--chain …] [--n 500] [--skip 0] [--kinds user] [--questions 50] [--deadline 120 (minutes)] [--out file.json]",
-    );
+    return yield* Console.error(USAGE);
+  const { chain } = values;
+  const contenders = Result.try({ catch: (e) => (e instanceof Error ? e.message : String(e)), try: () => chain.map(parseContender) });
+  if (Result.isFailure(contenders)) return yield* Console.error(`${contenders.failure}\n${USAGE}`);
   const root = new URL("..", import.meta.url).pathname;
   const settings = yield* loadSettings(Bun.env.OPTCHAT_CONFIG ?? `${root}optchat.config.ts`);
   const messages = yield* readSource(values.from, n, skip);
@@ -343,7 +348,7 @@ const main = Effect.gen(function* () {
     Layer.provide(BunServices.layer),
   );
   const rows: Measured[] = [];
-  for (const contender of values.chain.map(parseContender)) {
+  for (const contender of contenders.success) {
     yield* Console.error(`${contender.name}: replaying ${messages.length} messages`);
     const replayed = yield* replay({
       contender,
