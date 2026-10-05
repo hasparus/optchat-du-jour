@@ -1,13 +1,15 @@
 #!/usr/bin/env bun
-// optchat: one-shot commands that read the data dir without the lock, plus import.
+// optchat: the REPL, a client of optchat-server ($OPTCHAT_URL, default http://127.0.0.1:7700), and
+// one-shot commands that read the data dir without the lock, plus import.
 import { BunRuntime } from "@effect/platform-bun";
 import { Console, Effect } from "effect";
 import { importOptmem } from "../src/import.ts";
+import { runRepl } from "./repl.ts";
 import { streamDir } from "../src/paths.ts";
 import { loadChat } from "../src/store.ts";
 import { render, stats } from "../src/view.ts";
 
-const USAGE = "usage: optchat [view | import-optmem [LOG.txt]]   (data dir: $OPTCHAT_DIR or ~/.optchat/streams/mini)";
+const USAGE = "usage: optchat [view | import-optmem [LOG.txt]]   (server: $OPTCHAT_URL; data dir: $OPTCHAT_DIR or ~/.optchat/streams/mini)";
 const [cmd, arg] = process.argv.slice(2);
 const dir = streamDir("mini");
 
@@ -29,7 +31,9 @@ const usage = Effect.gen(function* () {
   process.exitCode = cmd === "--help" || cmd === "-h" ? 0 : 2;
 });
 
-const command = cmd === "view" ? view : cmd === "import-optmem" ? importNotes : usage;
+const repl = runRepl({ url: Bun.env.OPTCHAT_URL ?? "http://127.0.0.1:7700" });
+
+const command = cmd === undefined ? repl : cmd === "view" ? view : cmd === "import-optmem" ? importNotes : usage;
 
 BunRuntime.runMain(
   command.pipe(
