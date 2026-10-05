@@ -13,7 +13,9 @@ import { UsageLimit } from "../src/engines/errors.ts";
 import type { Choices } from "../src/choices.ts";
 import { type FollowUp, makeSession, noMedia, type SessionEvent } from "../src/session.ts";
 import { StoreError } from "../src/store.ts";
+import type { Provider } from "../src/providers/provider.ts";
 import { type Mid, openingText, type TurnEngine, type TurnInput } from "../src/turn/engine.ts";
+import { toolLoop } from "../src/turn/loop.ts";
 
 const dirs: string[] = [];
 afterAll(() => {
@@ -1169,6 +1171,41 @@ test("a stop for a pick: the state comes before the run's end; messages sent whi
       ]);
       const runs = seen.flatMap((e) => (e.type === EventType.RUN_STARTED ? [e.runId] : []));
       expect(runs).toEqual(["0", "0+1"]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+// SPEC "Turn and priming": our tool loop answers a call a cancel cut short with `not run:
+// cancelled` as the call unwinds, so that echo is the run's last entry, logged before the run's
+// end; what the session logs after a cancel comes after it
+test("a cancel during a tool call: the not-run echo is logged under the run, before its end; a held message is logged after it", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const calling: Provider = {
+        auth: "api-key",
+        call: (c) =>
+          Effect.gen(function* () {
+            yield* c.onItem?.({ id: "1", input: "{}", name: "Glob", type: "call" }) ?? Effect.void;
+            return { items: [{ id: "1", input: "{}", name: "Glob", type: "call" as const }], model: "m", usage: { cacheRead: 0, cacheWrite: 0, input: 1, output: 1 } };
+          }),
+        engine: "api-key",
+      };
+      const running = { now: false };
+      const engine = toolLoop({
+        instructions: "MASTER",
+        provider: calling,
+        ref: "api-key:x",
+        toolsFor: () => ({ defs: [], run: () => Effect.sync(() => (running.now = true)).pipe(Effect.andThen(Effect.never)) }),
+        vision: false,
+      });
+      const r = yield* rig(engine, { followUp: "queue" });
+      yield* r.session.input("go", undefined, "c1");
+      yield* until("the tool call", () => running.now);
+      yield* r.session.input("later", undefined, "c2");
+      yield* r.session.cancel;
+      yield* until("idle", r.idle);
+      const order = r.events.flatMap((e) => (e.type === "logged" ? [`${e.entry.kind}: ${e.entry.text} (${e.runId ?? "no run"})`] : e.type === "run-finished" ? [`end: ${e.error}`] : []));
+      expect(order).toEqual(["user: go (no run)", "tool: Glob {} (0)", "echo: not run: cancelled (0)", "end: cancelled", "user: later (no run)"]);
     }).pipe(Effect.scoped),
   );
 });

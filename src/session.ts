@@ -256,8 +256,11 @@ export const makeSession = (o: {
         return publish({ runId, type: "run-started" });
       }).pipe(Effect.uninterruptible);
 
-    // the one end of a run: published before anything else is logged, so a reply left open
-    // (a cancel, a crash) is closed before its log index goes to another entry
+    // The one end of a run: published before the session logs anything outside it (what a failed
+    // or cancelled turn leaves unanswered), so a reply left open (a cancel, a crash) is closed
+    // before its log index goes to another entry. The run's own last entries come before it, also
+    // on a cancel: our tool loop answers a call cut short with `not run: cancelled` as that call
+    // unwinds (src/turn/loop.ts), under the run's id, before the loop gets here.
     const endRun = (error: string | null) =>
       Effect.suspend(() => {
         if (!current) return Effect.void;

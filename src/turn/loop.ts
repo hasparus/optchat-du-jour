@@ -75,7 +75,9 @@ export const toolLoop = (o: {
     };
     const answer = (text: string) => out.log("echo", text).pipe(Effect.tap(() => Effect.sync(() => void track.open--)));
     // A turn that ends early (the provider failed, a cancel) leaves no tool entry without its echo,
-    // as the last round does not either.
+    // as the last round does not either: each open call is answered `not run: <why>` as this call
+    // unwinds, so on a cancel those echoes are the run's last entries, logged before the session
+    // ends the run (run-finished) and logs what it held.
     const unanswered = (exit: Exit.Exit<void, StoreError | EngineError>) =>
       Exit.isFailure(exit) && track.refused === null && track.open > 0
         ? Effect.forEach(Array.from({ length: track.open }), () => answer(`not run: ${Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : whyOf(exit.cause)}`), { discard: true }).pipe(Effect.ignoreCause)
