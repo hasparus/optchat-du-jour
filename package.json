@@ -8,7 +8,10 @@
     "postinstall": "bun --filter '@hasparus/oxlint-config' build",
     "build": "tsc -p .",
     "lint": "oxlint --deny-warnings --disable-nested-config",
-    "test": "bun test --pass-with-no-tests && bun --filter '@hasparus/oxlint-config' test"
+    "test": "bun test --pass-with-no-tests && bun --filter '@hasparus/oxlint-config' test",
+    "kernel": "cd kernel && bend kernel.bend -o kernel.mjs",
+    "proofs": "cd kernel && bend PROOF.bend",
+    "parity": "bun test/parity/run.ts"
   },
   "devDependencies": {
     "@hasparus/oxlint-config": "workspace:*",
@@ -23,5 +26,12 @@
   },
   "workspaces": [
     "vendor/*"
-  ]
+  ],
+  "dependencies": {
+    "@effect/platform-bun": "4.0.0",
+    "effect": "4.0.1"
+  },
+  "bin": {
+    "optchat": "cli/optchat.ts"
+  }
 }

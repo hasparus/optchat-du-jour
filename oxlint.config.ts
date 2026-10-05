@@ -14,7 +14,11 @@ const unsorted = Object.fromEntries(
 
 export default defineConfig({
   extends: [base],
-  ignorePatterns: [...ignorePatterns, "vendor"],
-  overrides: [...overrides],
+  ignorePatterns: [...ignorePatterns, "vendor", "kernel/kernel.mjs"],
+  overrides: [
+    ...overrides,
+    // scripts whose output is their report
+    { files: ["test/parity/**"], rules: { "no-console": "off" } },
+  ],
   rules: unsorted,
 });

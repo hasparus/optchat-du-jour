@@ -4,6 +4,10 @@ on:
   push:
   workflow_dispatch:
 
+env:
+  # gebeer/shitty-optchat, the reference implementation the parity test runs against
+  REFERENCE_SHA: 955394fa61a983c02f5d3ebde4ad857f98630ea6
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -29,3 +33,68 @@ jobs:
 
       - name: Test
         run: bun run test
+
+  kernel:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Bend
+        run: |
+          sh kernel/install-bend.sh
+          echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
+
+      - name: The committed kernel.mjs is what kernel.bend compiles to
+        run: |
+          cd kernel && bend kernel.bend -o kernel.mjs
+          git diff --exit-code kernel.mjs
+
+      # --verdict re-checks with BendTT, a kernel proven in Lean: it needs Lean's toolchain, and Bend
+      # builds that kernel once into ~/.bend/bendtt
+      - name: Cache Lean and the BendTT build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan
+            ~/.bend/bendtt
+          key: lean-v4.34.0-${{ hashFiles('kernel/install-bend.sh') }}
+
+      - name: Install Lean v4.34.0
+        run: |
+          if [ ! -x "$HOME/.elan/bin/lean" ]; then
+            curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+              | sh -s -- -y --no-modify-path --default-toolchain leanprover/lean4:v4.34.0
+          fi
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Every law in LAWS.bend is proven, also by the Lean-proven kernel
+        run: cd kernel && bend PROOF.bend --verdict | tee /dev/stderr | grep -qx "ALL PROOFS CHECK"
+
+  parity:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout the reference
+        uses: actions/checkout@v4
+        with:
+          repository: gebeer/shitty-optchat
+          ref: ${{ env.REFERENCE_SHA }}
+          path: reference
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Parity with the reference
+        run: REF="$GITHUB_WORKSPACE/reference" bun run parity
