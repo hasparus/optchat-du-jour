@@ -34,7 +34,7 @@ phone and other machines (the server listens on 127.0.0.1 only;
 `tailscale serve --bg --https=443 http://127.0.0.1:7700` publishes it). Edit `optchat.config.ts`
 first: `devices`, `defaultDevice`, `allowedLogins` (your Tailscale login; an empty list refuses
 everything that comes through `tailscale serve`) and `server.publicUrl` if turns run on another
-machine. The ChatGPT plan and API keys are optional: `optchat login openai`, `optchat key anthropic|openai`.
+machine. The ChatGPT plan and API keys are optional: `bun cli/optchat.ts login openai`, `bun cli/optchat.ts key anthropic|openai`.
 
 ```sh
 bun install
@@ -51,7 +51,7 @@ bun run build   # typecheck, and the web UI into web/dist
 bun run lint    # oxlint, @hasparus/oxlint-config
 bun run test    # also the web UI's tests (web/, happy-dom); no real model is ever called
 bun run parity  # REF=<shitty-optchat checkout>: byte-for-byte against the reference
-bun run proofs  # the kernel's laws (needs bend: sh kernel/install-bend.sh)
+bun run proofs  # the kernel's laws (needs bend: sh kernel/install-bend.sh, then ~/.bend/bin on PATH)
 cd web && bun run e2e   # Playwright: the real server, a fake claude, Chromium at 360 px
 cd web && bun run dev   # Vite, proxying /ws and /api to a server on 127.0.0.1:7700
 bun dev/latency.ts --fake   # turn latency over /ws (or --url ws://127.0.0.1:7700/ws)
