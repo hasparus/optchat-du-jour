@@ -1,7 +1,7 @@
-// The data dir as its own git repo (gist §10, ref §10, E10): committed after a turn, pushed when a
-// remote is configured, and a failed push is a message, never a failure.
+// The data dir as its own git repo (gist §10, ref §10, E10): committed after a turn, pushed in the
+// background when a remote is configured, and a failed push is a message, never a failure.
 import { afterAll, expect, test } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Exit, Scope } from "effect";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -17,12 +17,21 @@ afterAll(() => {
   for (const d of dirs) rmSync(d, { force: true, recursive: true });
 });
 
+// the push runs in the background: poll for what it leaves
+const eventually = async (what: string, ok: () => boolean) => {
+  const end = Date.now() + 5000;
+  while (!ok()) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await Bun.sleep(20);
+  }
+};
+
 const git = (cwd: string, ...args: string[]) => {
   const r = Bun.spawnSync(["git", ...args], { cwd, stderr: "pipe", stdout: "pipe" });
   return { code: r.exitCode, out: r.stdout.toString().trim() };
 };
 
-test("the data dir is committed as its own repo, without its lock, and pushed to a remote when there is one", async () => {
+test("the data dir is committed as its own repo, without its lock, and pushed in the background when there is a remote", async () => {
   const outer = tmp();
   git(outer, "init", "-q"); // another repo around it: the data dir still gets its own
   const data = `${outer}/data`;
@@ -35,7 +44,9 @@ test("the data dir is committed as its own repo, without its lock, and pushed to
     });
   });
 
-  const persist = await Effect.runPromise(makePersist);
+  const reports: string[] = [];
+  const scope = await Effect.runPromise(Scope.make());
+  const persist = await Effect.runPromise(Scope.provide(makePersist((m) => Effect.sync(() => reports.push(m))), scope));
   const save = async (message: string) => Effect.runPromise(persist(data, message));
   try {
     expect(await save("chore(chat): 1 messages")).toBeNull();
@@ -52,14 +63,33 @@ test("the data dir is committed as its own repo, without its lock, and pushed to
     git(data, "remote", "add", "origin", remote);
     appendFileSync(`${data}/chat/main/2026-10-05.jsonl`, '{"i":1}\n');
     expect(await save("chore(chat): 2 messages")).toBeNull();
-    expect(git(remote, "log", "--all", "--format=%s").out).toBe("chore(chat): 2 messages\nchore(chat): 1 messages");
+    const pushed = () => git(remote, "log", "--all", "--format=%s").out;
+    await eventually("the push", () => pushed() === "chore(chat): 2 messages\nchore(chat): 1 messages");
 
+    // a remote that fails: reported once, however many pushes fail; the commits are kept
     git(data, "remote", "set-url", "origin", `${outer}/nowhere.git`);
-    appendFileSync(`${data}/chat/main/2026-10-05.jsonl`, '{"i":2}\n');
-    const failed = await save("chore(chat): 3 messages");
-    expect(failed).toStartWith("git push: "); // reported, and the commit is kept
-    expect(git(data, "log", "-1", "--format=%s").out).toBe("chore(chat): 3 messages");
+    for (const n of [3, 4]) {
+      appendFileSync(`${data}/chat/main/2026-10-05.jsonl`, `{"i":${n - 1}}\n`);
+      expect(await save(`chore(chat): ${n} messages`)).toBeNull();
+      await eventually("the failed push", () => reports.length === 1);
+    }
+    expect(reports[0]).toStartWith("git: git push: ");
+    expect(git(data, "log", "-1", "--format=%s").out).toBe("chore(chat): 4 messages");
+
+    // a remote that never answers holds up no commit
+    const knocked = `${tmp()}/knocked`;
+    git(data, "config", "core.sshCommand", `sh -c 'touch ${knocked}; sleep 5' --`);
+    git(data, "remote", "set-url", "origin", "ssh://unreachable.example/backup.git");
+    appendFileSync(`${data}/chat/main/2026-10-05.jsonl`, '{"i":4}\n');
+    const asked = Date.now();
+    expect(await save("chore(chat): 5 messages")).toBeNull();
+    appendFileSync(`${data}/chat/main/2026-10-05.jsonl`, '{"i":5}\n');
+    expect(await save("chore(chat): 6 messages")).toBeNull();
+    expect(Date.now() - asked).toBeLessThan(3000);
+    await eventually("the push to start", () => existsSync(knocked)); // and it is still going
+    expect(git(data, "log", "-1", "--format=%s").out).toBe("chore(chat): 6 messages");
   } finally {
+    await Effect.runPromise(Scope.close(scope, Exit.void)); // the hanging push is killed
     lock.close();
   }
 });

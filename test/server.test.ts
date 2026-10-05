@@ -88,6 +88,8 @@ function client() {
 }
 const texts = (es: readonly Inbound[]) => es.flatMap((e) => (e.type === "TEXT_MESSAGE_CONTENT" ? [e.delta] : []));
 const finished = (es: readonly Inbound[]) => es.filter((e) => e.type === "RUN_FINISHED").length;
+// a RunAgentInput frame
+const run = (messages: readonly object[]) => JSON.stringify({ messages, runId: crypto.randomUUID(), threadId: "t" });
 
 test("a turn over /ws streams to every client; the REPL is one of them; the master reaches /mcp", async () => {
   const web = client();
@@ -182,9 +184,51 @@ test("only our own Host names and Origins get in; a client without an Origin doe
   expect(await opens({ origin: "https://evil.example" })).toBe(false);
 });
 
-test("the server leaves no claude behind when it stops", async () => {
+test("a client that resends the whole history has only its new messages answered, each acked with its log index", async () => {
+  const web = client();
+  await web.opened;
+  await web.until((es) => es.some((e) => e.type === "STATE_SNAPSHOT"));
+  // ids "0"–"3" are log indexes, the entries the server sent; only h1, then only h2, are new
+  const history = [
+    { content: "hello", id: "0", role: "user" },
+    { content: REPLY, id: "1", role: "assistant" },
+    { content: "second", id: "2", role: "user" },
+    { content: REPLY, id: "3", role: "assistant" },
+    { content: "third", id: "h1", role: "user" },
+  ];
+  web.ws.send(run(history));
+  await web.until((es) => finished(es) === 1);
+  web.ws.send(run([...history, { content: REPLY, id: "5", role: "assistant" }, { content: "fourth", id: "h2", role: "user" }]));
+  await web.until((es) => finished(es) === 2);
+  web.ws.close();
+  expect(texts(web.events)).toEqual(["third", REPLY, "fourth", REPLY]);
+  const acks = web.events.flatMap((e) => (e.type === "CUSTOM" && e.name === "ack" ? [[e.value.clientId, e.value.messageId]] : []));
+  expect(acks).toEqual([
+    ["h1", "4"],
+    ["h2", "6"],
+  ]);
+}, 20_000);
+
+test("/api/node takes a level and an index that are non-negative integers, and knows which nodes exist", async () => {
+  const status = async (query: string) => {
+    const response = await fetch(`${base}/api/node?${query}`);
+    return response.status;
+  };
+  for (const bad of ["l=-1&i=0", "l=0&i=1.5", "l=NaN&i=0", "l=0&i=-1", "l=1000&i=0", "l=0", "l=x&i=0"]) expect([bad, await status(bad)]).toEqual([bad, 400]);
+  expect(await status("l=0&i=0")).toBe(200);
+  expect(await status("l=0&i=999")).toBe(404);
+  expect(await status("l=52&i=1")).toBe(404);
+  const node = await fetch(`${base}/api/node?l=1&i=0`).then(async (r) => r.json());
+  expect(node).toMatchObject({ children: [{ i: 0, l: 0 }, { i: 1, l: 0 }], i: 0, id: 0, l: 1, n: 2 });
+});
+
+test("the server stops at once with a client still connected, and leaves no claude behind", async () => {
+  const web = client(); // a web page left open: its socket must not hold the shutdown
+  await web.opened;
+  const asked = Date.now();
   server.kill("SIGTERM");
   expect(await server.exited).toBeDefined();
+  expect(Date.now() - asked).toBeLessThan(5000);
   await Bun.sleep(200);
   const alive = fakeStarts().filter((s) => {
     try {

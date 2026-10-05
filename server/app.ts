@@ -12,12 +12,12 @@ import { type Settings, MASTER_TOOLS } from "../src/config.ts";
 import { LocalRunner, Runner } from "../src/claude/process.ts";
 import type { Summarize } from "../src/compactor.ts";
 import { DeviceOffline } from "../src/engines/errors.ts";
-import { handleMcp, mcpConfig } from "../src/mcp.ts";
+import { handleMcp, mcpConfig, openNode } from "../src/mcp.ts";
 import { makePersist } from "../src/persist.ts";
 import { promptFile, systemPrompt } from "../src/prompts.ts";
-import { makeSession } from "../src/session.ts";
+import { makeSession, type SessionEvent } from "../src/session.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
-import { children, getNode, localTime, span } from "../src/tree.ts";
+import { getNode, localTime, span } from "../src/tree.ts";
 import { claudeCodeTurn } from "../src/turn/claude-code.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
 import { type UsageRecord, logUsage, readUsage } from "../src/usage.ts";
@@ -38,9 +38,13 @@ export type ServerOptions = {
 
 const expand = (path: string) => path.replace(/^~(?=\/|$)/, homedir());
 
-// What a client sends: AG-UI's RunAgentInput (the newest user message is the one to answer), or an abort
+// What a client sends: AG-UI's RunAgentInput (its user messages not seen before are the ones to answer), or an abort
 const TextPart = Schema.Struct({ text: Schema.optional(Schema.String), type: Schema.String });
-const InboundMessage = Schema.Struct({ content: Schema.optional(Schema.Union([Schema.String, Schema.Array(TextPart)])), role: Schema.String });
+const InboundMessage = Schema.Struct({
+  content: Schema.optional(Schema.Union([Schema.String, Schema.Array(TextPart)])),
+  id: Schema.String,
+  role: Schema.String,
+});
 const Inbound = Schema.Union([
   Schema.Struct({ type: Schema.Literal("abort") }),
   Schema.Struct({
@@ -50,15 +54,34 @@ const Inbound = Schema.Union([
 ]);
 const decodeInbound = Schema.decodeUnknownOption(Schema.fromJsonString(Inbound));
 
-const lastUserText = (messages: readonly (typeof InboundMessage.Type)[]) => {
-  const content = messages.findLast((x) => x.role === "user")?.content ?? "";
-  return Predicate.isString(content) ? content : content.map((p) => p.text ?? "").join("");
+const textOf = ({ content = "" }: typeof InboundMessage.Type) => (Predicate.isString(content) ? content : content.map((p) => p.text ?? "").join(""));
+
+// how many message ids a connection remembers
+const SEEN = 1000;
+
+// The user messages of each RunAgentInput on one connection that it has not sent before: a client
+// that sends the whole history every time must not have old texts answered again. An id that is a
+// log index names an entry the server sent (message ids are log indexes, server/agui.ts).
+const unseen = (logged: () => number) => {
+  const seen = new Set<string>();
+  return (messages: readonly (typeof InboundMessage.Type)[]) =>
+    messages.filter(({ id, role }) => {
+      if (role !== "user" || seen.has(id) || (/^\d+$/.test(id) && Number(id) < logged())) return false;
+      seen.add(id);
+      for (const old of seen) {
+        if (seen.size <= SEEN) break;
+        seen.delete(old); // the oldest first
+      }
+      return true;
+    });
 };
 
 const Before = Schema.Struct({ before: Schema.optional(Schema.NumberFromString), limit: Schema.optional(Schema.NumberFromString) });
-const NodeAt = Schema.Struct({ i: Schema.NumberFromString, l: Schema.NumberFromString });
-
-const logReport = (message: string) => Effect.logInfo(message);
+// a node's level and index: integers, and a level whose span 2^l is still a safe integer
+const NodeAt = Schema.Struct({
+  i: Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  l: Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ maximum: 52, minimum: 0 })),
+});
 const forbidden = HttpServerResponse.text("forbidden", { status: 403 });
 const json = (body: Schema.Json) => HttpServerResponse.jsonUnsafe(body);
 // HttpRouter.use, renamed: the React hooks rule takes any `use(` call for a hook
@@ -74,10 +97,12 @@ export const routes = (o: ServerOptions) =>
       const secret = crypto.randomUUID();
       const local = yield* Runner;
 
-      let report = logReport;
+      // every client is told what goes wrong, and so is the server's own log (no client may be connected)
+      const events = yield* PubSub.unbounded<SessionEvent>();
+      const report = (message: string) => Effect.logInfo(message).pipe(Effect.andThen(PubSub.publish(events, { message, type: "info" })), Effect.asVoid);
       const usage = (record: UsageRecord) => logUsage(usagePath, record).pipe(Effect.flatMap((e) => (e ? report(e) : Effect.void)));
-      const summarize = o.summarize ?? (yield* makeSummarize({ device: o.device, log: usage, report: (m) => report(m), settings }));
-      const chat = yield* openChat(stream, { report: (m) => report(m), summarize });
+      const summarize = o.summarize ?? (yield* makeSummarize({ device: o.device, log: usage, report, settings }));
+      const chat = yield* openChat(stream, { report, summarize });
 
       const systemFile = yield* promptFile(systemPrompt(o.home));
       const mcp = mcpConfig(`http://127.0.0.1:${o.port}/mcp?key=${secret}`);
@@ -97,7 +122,7 @@ export const routes = (o: ServerOptions) =>
             model,
             permissionMode: settings.master.permissionMode,
             primeTtl: settings.cache.primeTtl,
-            report: (m) => report(m),
+            report,
             runnerFor,
             systemFile,
             tools: settings.master.tools ?? MASTER_TOOLS,
@@ -105,16 +130,16 @@ export const routes = (o: ServerOptions) =>
           }),
         );
       }
-      const persist = yield* makePersist;
+      const persist = yield* makePersist(report);
       const session = yield* makeSession({
         chat,
         commit: Effect.suspend(() => persist(o.home, `chore(chat): ${chat.mem.root.length} messages`)),
         defaultDevice: settings.defaultDevice,
         devices: Object.keys(settings.devices),
         engines,
+        events,
         logUsage: usage,
       });
-      report = (message) => PubSub.publish(session.events, { message, type: "info" }).pipe(Effect.asVoid);
       for (const p of chat.problems) yield* report(p);
 
       // every request, on every route, passes the same check first (server/auth.ts has the threat model)
@@ -139,13 +164,17 @@ export const routes = (o: ServerOptions) =>
             Effect.forever,
             Effect.forkScoped,
           );
+          const fresh = unseen(() => chat.mem.root.length);
           const pull = yield* Socket.readerString(socket);
           yield* pull.pipe(
             Effect.flatMap((frames) =>
               Effect.forEach(frames, (frame) =>
                 Option.match(decodeInbound(frame), {
                   onNone: () => Effect.void,
-                  onSome: (m) => ("messages" in m ? session.input(lastUserText(m.messages), m.forwardedProps?.device) : session.cancel),
+                  onSome: (m) =>
+                    "messages" in m
+                      ? Effect.forEach(fresh(m.messages), (x) => session.input(textOf(x), m.forwardedProps?.device, x.id), { discard: true })
+                      : session.cancel,
                 }),
               ),
             ),
@@ -209,25 +238,24 @@ export const routes = (o: ServerOptions) =>
         ),
       );
 
-      // one node and its two children, down to the message (the memory browser's zoom)
+      // one node and its two children, down to the message (the memory browser's zoom, as mcp.ts opens it)
       yield* router.add("GET", "/api/node", () =>
         Effect.gen(function* () {
           const { i, l } = yield* HttpServerRequest.schemaSearchParams(NodeAt);
           const { id, n } = span({ i, l });
-          if (l === 0) {
-            const m = chat.mem.root[i];
-            return m ? json({ id, kind: m.kind, l, i, n, text: m.text, date: localTime(m.date) }) : HttpServerResponse.empty({ status: 404 });
+          const found = openNode(chat.mem, id, n);
+          if (!found) return HttpServerResponse.empty({ status: 404 });
+          if ("message" in found) {
+            const m = found.message;
+            return json({ id, kind: m.kind, l, i, n, text: m.text, date: localTime(m.date) });
           }
           return json({
-            children: children({ i, l }).map((c) => {
-              const half = getNode(chat.mem, c);
-              return { built: half !== undefined, i: c.i, l: c.l, text: half?.text ?? null };
-            }),
+            children: found.halves.map((h) => ({ built: h.node !== undefined, i: h.at.i, l: h.at.l, text: h.node?.text ?? null })),
             id,
             l,
             i,
             n,
-            text: getNode(chat.mem, { i, l })?.text ?? null,
+            text: found.node?.text ?? null,
           });
         }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
       );
@@ -257,7 +285,8 @@ export const routes = (o: ServerOptions) =>
 
 export const serverLayer = (o: ServerOptions) =>
   HttpRouter.serve(routes(o)).pipe(
-    Layer.provide(BunHttpServer.layer({ hostname: o.host, port: o.port })),
+    // on SIGTERM, open sockets (a web page's /ws) are closed at once instead of waited for
+    Layer.provide(BunHttpServer.layer({ disablePreemptiveShutdown: true, hostname: o.host, port: o.port })),
     Layer.provide(LocalRunner),
     Layer.provide(BunServices.layer),
   );
