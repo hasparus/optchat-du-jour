@@ -298,7 +298,7 @@ test("a truncated clip, garbage behind an MP4 header and bytes of another contai
   }
   // the demuxer is the sniffed type's, not the one ffmpeg would guess: a WebM read as MP4 fails
   if (matroska !== null) {
-    const tools = { ffmpeg: "ffmpeg", ffprobe: "ffprobe", limit: 30, whisper: null };
+    const tools = { ffmpeg: "ffmpeg", ffprobe: "ffprobe", limit: 30, whisper: null, whisperLimit: 30 };
     const wrong = await Effect.runPromise(extract(tools, matroska, "video/mp4", 180).pipe(Effect.flip));
     expect(wrong.status).toBe(422);
     const right = await Effect.runPromise(extract(tools, matroska, "video/webm", 180));
@@ -328,6 +328,20 @@ test("a call that runs past its time is killed and the upload is refused; at mos
   expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(10);
   expect(most).toBe(2);
 });
+
+test("whisper has its own time limit: a slow one is killed after media.whisperSeconds and the clip goes on without a transcript", async () => {
+  const dir = fresh();
+  const clip = makeVideo(dir, 1);
+  const slow = script(dir, "slow-whisper.sh", "exec sleep 30");
+  const started = Date.now();
+  // toolSeconds stays at its 60 s: were whisper held to it, this would take over a minute
+  const asset = await withMedia((m) => m.ingest(clip, "standard"), { toolSeconds: 60, whisper: [slow], whisperSeconds: 0.4 });
+  if (asset.kind !== "video") throw new Error("not a video");
+  expect(Date.now() - started).toBeLessThan(10_000);
+  expect(asset.transcript).toBeNull();
+  expect(asset.notice).toContain("audio not transcribed: whisper failed: it took longer than");
+  expect(asset.frames.length).toBeGreaterThan(0);
+}, 30_000);
 
 test("every ffmpeg and ffprobe call reads the file protocol only, with the sniffed demuxer, and at most maxVideoSeconds; a video past ~8K is refused", async () => {
   const dir = fresh();
