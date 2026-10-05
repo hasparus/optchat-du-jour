@@ -5,10 +5,10 @@
   "type": "module",
   "packageManager": "bun@1.4.2",
   "scripts": {
-    "postinstall": "cd vendor/oxlint-config && tsc -p tsconfig.build.json",
+    "postinstall": "bun --filter '@hasparus/oxlint-config' build",
     "build": "tsc -p .",
     "lint": "oxlint --deny-warnings --disable-nested-config",
-    "test": "bun test --pass-with-no-tests"
+    "test": "bun test --pass-with-no-tests && bun --filter '@hasparus/oxlint-config' test"
   },
   "devDependencies": {
     "@hasparus/oxlint-config": "workspace:*",
