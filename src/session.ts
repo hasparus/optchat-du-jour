@@ -138,8 +138,6 @@ export const makeSession = (o: {
     // the loop stopped on an error (the log refused, or a defect), why, and the last message in by
     // then: those wait for a newer message instead of starting the loop again at once
     let halted: { readonly why: string; readonly upTo: number } | null = null;
-    // the store's refusal the turn's result said already, so the stop it may lead to does not say it twice
-    let told: string | null = null;
 
 
     const state = (): SessionState => ({
@@ -417,7 +415,6 @@ export const makeSession = (o: {
     const turn = Effect.gen(function* () {
       yield* FiberSet.clear(primes).pipe(Effect.forkIn(scope)); // not waited for: the killed claude may take a moment
       while (held(inbox).length > 0) {
-        told = null;
         if (unbuilt(chat.mem)) {
           device = nextTurn(inbox, o.defaultDevice).on; // shown while it waits; read again after, with what came in meanwhile
           yield* enter("waiting");
@@ -484,19 +481,31 @@ export const makeSession = (o: {
           result = yield* attempt(resumed.next, ref);
           ref = resumed.next;
         }
-        yield* Effect.uninterruptible(
+        const refused = yield* Effect.uninterruptible(
           Effect.gen(function* () {
             engine = null;
             // after a result what the call left gets a fresh call with a new view; after a failure
             // it is logged, unanswered
             const left = yield* giveBack(on);
-            if (result._tag === "Success") return yield* endRun(null);
-            told = result.failure._tag === "StoreError" ? result.failure.message : null;
-            yield* info(failureText(result.failure));
-            yield* endRun(result.failure.message);
-            yield* logEach(left);
+            if (result._tag === "Success") return yield* endRun(null).pipe(Effect.as(false));
+            const { failure } = result;
+            yield* info(failureText(failure));
+            yield* endRun(failure.message);
+            // The log refuses what the call left: it stays in the inbox, and the loop stops as on
+            // any refusal (`stopped`), saying why unless the turn's own failure just said it.
+            return yield* logEach(left).pipe(
+              Effect.as(false),
+              Effect.catch((error: StoreError) =>
+                Effect.gen(function* () {
+                  halted = { upTo: seq, why: error.message };
+                  if (failure._tag !== "StoreError" || failure.message !== error.message) yield* info(`error: ${error.message}`);
+                  return true;
+                }),
+              ),
+            );
           }),
         );
+        if (refused) return;
       }
     });
 
@@ -535,11 +544,9 @@ export const makeSession = (o: {
         yield* giveBack(device);
         const inRun = current !== null;
         yield* endRun(why); // the run's end says it
-        const already = told === why;
-        told = null;
         if (!cancelled) {
           halted = { upTo: seq, why };
-          if (!already) yield* info(`error: ${why}`);
+          yield* info(`error: ${why}`);
         }
         if (Option.isSome(refused)) return; // the log refuses: they stay in the inbox
         yield* logEach([...inbox]);
