@@ -94,7 +94,8 @@ export const mcpStatus = (e: typeof Init.Type) => e.mcp_servers?.find(({ name })
 // opening message, oldest first. `mcp` hears optchat's status from init. A message Claude Code
 // wrote itself (an API error, model "<synthetic>") is never logged as the model's: its text is
 // kept in `errors`, for the failure the error result after it becomes.
-export function makeMapper(out: TurnEvents, passed: Mid[], mcp: (status: string) => Effect.Effect<void>, errors: string[] = []) {
+export function makeMapper(out: TurnEvents, passed: Mid[], mcp: (status: string) => Effect.Effect<void>) {
+  const errors: string[] = [];
   let openingSeen = false;
   let thoughtChars = 0;
 
@@ -154,7 +155,7 @@ export function makeMapper(out: TurnEvents, passed: Mid[], mcp: (status: string)
     );
   };
 
-  return (e: Event): Effect.Effect<void, StoreError> => {
+  const map = (e: Event): Effect.Effect<void, StoreError> => {
     switch (e.type) {
       case "system":
         return onInit(e);
@@ -169,6 +170,8 @@ export function makeMapper(out: TurnEvents, passed: Mid[], mcp: (status: string)
     }
     return Effect.void;
   };
+  const kept: readonly string[] = errors; // the caller reads them; only onAssistant adds
+  return { errors: kept, map };
 }
 
 // The output of one call, read to the first event `stop` picks; None when the process ended.
@@ -288,8 +291,7 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
         );
 
         const mcp = mcpWatch(input.device, placement);
-        const errors: string[] = [];
-        const map = makeMapper(out, passed, mcp.init, errors);
+        const { errors, map } = makeMapper(out, passed, mcp.init);
         let opening: Usage | undefined;
         const each = (e: Event) => {
           if (opening === undefined && e.type === "stream_event" && e.event.type === "message_start") opening = e.event.message.usage;

@@ -19,9 +19,11 @@ export const WIDE_EDGE = 2000;
 // most MAX_ZOOM), so it stays at FEW_IMAGES: counted, not enforced, as the MCP server does not
 // know which turn asked. Zoom answers at most WIDE_EDGE px itself.
 export const ZOOM_RESERVE = 2 * MAX_ZOOM;
-// the pictures one call's attachments may take in all: the other 40 of MAX_IMAGES are the turn's
-// tools', ten zoom answers or as many Read image files, more than a turn uses
-export const MAX_ATTACHED = 60;
+// the pictures left to a turn's tools, which nothing counts: ten zoom answers (or as many Read
+// image files), more than a turn uses
+export const TOOL_ROOM = 10 * MAX_ZOOM;
+// the pictures one call's attachments may take in all (60)
+export const MAX_ATTACHED = MAX_IMAGES - TOOL_ROOM;
 // a video thinned to fewer frames than this is shown as its sheet instead
 export const MIN_FRAMES = 4;
 

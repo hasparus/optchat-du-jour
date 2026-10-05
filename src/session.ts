@@ -326,16 +326,22 @@ export const makeSession = (o: {
       Effect.gen(function* () {
         const q = yield* Queue.unbounded<Incoming>();
         const budget = pictureBudget();
+        // The pictures of these messages' attachments, as the budget plans them; an engine not sent
+        // images gets none, and `blind`: the note saying so is due.
+        const picturesOf = (ms: readonly Incoming[]) => {
+          const attached = ms.flatMap((m) => m.media);
+          if (attached.length === 0 || !e.vision) return { blind: attached.length > 0, media: [] };
+          const { capped, looks } = budget.take(attached);
+          return { blind: false, media: attached.flatMap((a, k) => o.media.parts(a, looks[k] ?? { how: "none" }, capped)) };
+        };
         // Messages as this engine is sent them: their texts as logged (with the captions the log
-        // got) and their pictures, or for an engine not sent images a note instead.
-        const forEngine = (ms: readonly Incoming[]) =>
+        // got), and their pictures or the note. `carried`: messages whose text it has already (in
+        // `earlier`), sent only their pictures.
+        const forEngine = (ms: readonly Incoming[], carried: readonly Incoming[] = []) =>
           Effect.gen(function* () {
             const texts = yield* Effect.forEach(ms, (m) => Effect.map(captionsOf(m), (said) => logText(m, said)));
-            const attached = ms.flatMap((m) => m.media);
-            if (attached.length === 0) return { media: [], texts };
-            if (!e.vision) return { media: [], texts: [...texts, BLIND] };
-            const { capped, looks } = budget.take(attached);
-            return { media: attached.flatMap((a, k) => o.media.parts(a, looks[k] ?? { how: "none" }, capped)), texts };
+            const { blind, media } = picturesOf([...ms, ...carried]);
+            return { media, texts: blind ? [...texts, BLIND] : texts };
           });
         const midOf = (m: Incoming): Effect.Effect<Mid> => forEngine([m]).pipe(Effect.map(({ media, texts }) => ({ media, seq: m.seq, text: texts.join("\n") })));
         const { before, earlier } = yield* Effect.sync(() => {
@@ -345,12 +351,8 @@ export const makeSession = (o: {
           return { before: [...taken], earlier: chat.mem.root.slice(since).map(({ kind, text }) => ({ kind, text })) };
         });
         yield* tell;
-        // the opening's pictures, then those of the mid-run messages a link before took, against
-        // the same budget; their texts are in `earlier` already, so only a blind engine's note is added
-        const asked = yield* forEngine(batch);
-        const carried = yield* forEngine(before);
-        const blind = carried.texts.includes(BLIND) && !asked.texts.includes(BLIND);
-        const opening = { media: [...asked.media, ...carried.media], texts: blind ? [...asked.texts, BLIND] : asked.texts };
+        // the opening's pictures, then those of the mid-run messages a link before took
+        const opening = yield* forEngine(batch, before);
         const mid = {
           next: Queue.take(q).pipe(Effect.flatMap(midOf)),
           ready: Queue.clear(q).pipe(Effect.flatMap((ms) => captioned(ms).pipe(Effect.andThen(Effect.forEach(ms, midOf))))),

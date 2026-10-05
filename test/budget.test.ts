@@ -1,7 +1,8 @@
 // The pictures of one request (SPEC "Media", src/media/budget.ts): at most 100, and over 20 of
-// them each at most 2000 px; a call's attachments take at most 60, the rest is left to its tools. A video is thinned to fewer frames first, then shown as its sheet,
-// then left to its marker; a high-detail image goes at its standard-tier size once the request
-// could pass 20. Planned for the opening message and each mid-run message of one call, in one place.
+// them each at most 2000 px; a call's attachments take at most 60, the rest is left to its tools.
+// A video is thinned to fewer frames first, then shown as its sheet, then left to its marker; a
+// high-detail image goes at its standard-tier size once the request could pass 20. Planned for
+// the opening message and each mid-run message of one call, in one place.
 import { afterAll, expect, test } from "bun:test";
 import { Effect, PubSub } from "effect";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -65,7 +66,7 @@ test("a few pictures go whole; a high-detail one is capped once the request coul
 
 test("four videos and a high-detail image: the frames are thinned to the attachments' 60, the rest left to the tools", () => {
   // the tools' share holds ten zoom answers, so a turn that zooms or reads pictures stays under 100
-  expect(MAX_IMAGES - MAX_ATTACHED).toBeGreaterThanOrEqual(10 * MAX_ZOOM);
+  expect([MAX_ATTACHED, MAX_IMAGES - MAX_ATTACHED]).toEqual([60, 10 * MAX_ZOOM]);
   const assets = [still(1, 2576), clip(1), clip(2), clip(3), clip(4)];
   const plan = kept(assets);
   expect(plan.capped).toBe(true);
