@@ -8,8 +8,8 @@ import type { Job } from "../compactor.ts";
 import { CALL_TIMEOUT } from "../config.ts";
 import { type EngineError, ModelError } from "../engines/errors.ts";
 import { COMPACT_FILE } from "../prompts.ts";
-import { type ApiKeyOptions, apiKeyProvider } from "../turn/api-key.ts";
-import type { Item } from "../turn/loop.ts";
+import { type ApiKeyOptions, apiKeyProvider } from "../providers/api-key.ts";
+import type { Item } from "../providers/provider.ts";
 import type { UsageRecord } from "../usage.ts";
 import { type Try, contextBlocks, sizeRetries, step } from "./step.ts";
 

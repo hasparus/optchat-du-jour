@@ -8,41 +8,14 @@
 // openai-plan"). The turn ends at the first reply that calls no tool; the last allowed request
 // may not call any.
 import { Clock, Effect, Schema } from "effect";
+import { cap } from "../cap.ts";
 import { TOOL_ROUNDS } from "../config.ts";
-import type { EngineError } from "../engines/errors.ts";
+import type { Item, Provider } from "../providers/provider.ts";
 import type { StoreError } from "../store.ts";
-import type { ToolDef } from "../tools/files.ts";
-import { isCold, type Tokens, type UsageRecord } from "../usage.ts";
+import type { ToolBox } from "../tools/box.ts";
+import { isCold } from "../usage.ts";
 import { cutBlocks } from "../view.ts";
-import { cap } from "./claude-code.ts";
 import { openingText, type TurnEngine, type TurnEvents, type TurnInput } from "./engine.ts";
-
-// The conversation, provider-neutral. `stable` counts a user message's leading parts that stay
-// byte-identical from call to call (the view blocks): where a provider puts its cache marks.
-export type Item =
-  | { readonly type: "user"; readonly parts: readonly string[]; readonly stable?: number }
-  | { readonly type: "text"; readonly text: string }
-  | { readonly type: "call"; readonly id: string; readonly name: string; readonly input: string }
-  | { readonly type: "result"; readonly id: string; readonly output: string }
-  // a provider's own block, sent back exactly as it came (Anthropic's thinking, with its signature)
-  | { readonly type: "kept"; readonly block: Schema.Json };
-
-export type Step = { readonly items: readonly Item[]; readonly usage: Tokens; readonly model: string; readonly dollars?: number };
-
-export type Provider = {
-  readonly engine: UsageRecord["engine"];
-  readonly auth: UsageRecord["auth"];
-  readonly call: (o: {
-    readonly instructions: string;
-    readonly history: readonly Item[];
-    readonly tools: readonly ToolDef[];
-    readonly final: boolean; // no tool calls in this one
-    readonly onText: (delta: string) => Effect.Effect<void>;
-  }) => Effect.Effect<Step, EngineError>;
-};
-
-// a device's tools for one turn; `run` answers every call with text, errors included
-export type ToolBox = { readonly defs: readonly ToolDef[]; readonly run: (name: string, input: string) => Effect.Effect<string> };
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
 // a call's input as the log shows Claude Code's: compact JSON; whatever the model wrote when it isn't JSON

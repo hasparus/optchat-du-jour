@@ -9,7 +9,7 @@ import { HttpClient, HttpClientRequest } from "effect/http";
 import { type EngineError, ModelError, Refusal, UsageLimit } from "../engines/errors.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
 import type { ToolDef } from "../tools/files.ts";
-import type { Item } from "../turn/loop.ts";
+import type { Item } from "../providers/provider.ts";
 import type { Tokens } from "../usage.ts";
 import type { Writes } from "./budget.ts";
 

@@ -14,7 +14,7 @@ import { DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 import { memorySecrets } from "../src/secrets.ts";
 import { newMsg } from "../src/store.ts";
 import { apiKeyCompactor } from "../src/summarize/api-key.ts";
-import { apiKeyProvider } from "../src/turn/api-key.ts";
+import { apiKeyProvider } from "../src/providers/api-key.ts";
 import { type UsageRecord, logUsage } from "../src/usage.ts";
 import { fakeAnthropic } from "./fake-anthropic.ts";
 

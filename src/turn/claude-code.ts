@@ -9,7 +9,8 @@ import { Clock, Effect, Option, Semaphore } from "effect";
 import { baseArgs } from "../claude/args.ts";
 import type { Assistant, Block, Event, Init, StreamEvent, Usage, User } from "../claude/events.ts";
 import type { Claude, Runner, Spawn } from "../claude/process.ts";
-import { CAP, PRIME_TIMEOUT } from "../config.ts";
+import { cap } from "../cap.ts";
+import { PRIME_TIMEOUT } from "../config.ts";
 import { type DeviceOffline, fromResult, ModelError } from "../engines/errors.ts";
 import type { McpSeen } from "../mcp.ts";
 import type { StoreError } from "../store.ts";
@@ -54,16 +55,6 @@ export const masterArgs = (o: Pick<ClaudeCodeTurnOptions, "effort" | "model" | "
   o.permissionMode,
   "--replay-user-messages",
 ];
-
-// A tool result as the log keeps it: at most CAP characters, the head and the tail, with what
-// was cut in between (gist §7, ref §5.3).
-export function cap(full: string): string {
-  const over = full.length - CAP;
-  if (over <= 0) return full;
-  const keep = CAP / 2;
-  const head = full.slice(0, keep), tail = full.slice(full.length - keep);
-  return `${head}\n[… ${over} chars cut …]\n${tail}`;
-}
 
 const text = (t: string): Block => ({ text: t, type: "text" });
 

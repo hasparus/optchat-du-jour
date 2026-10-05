@@ -23,7 +23,8 @@ import { newMsg } from "../src/store.ts";
 import { blocks, claudeCodeCompactor } from "../src/summarize/claude-code.ts";
 import { retryText } from "../src/summarize/step.ts";
 import { built, bytes, dayOf, getNode } from "../src/tree.ts";
-import { cap, claudeCodeTurn, masterArgs } from "../src/turn/claude-code.ts";
+import { cap } from "../src/cap.ts";
+import { claudeCodeTurn, masterArgs } from "../src/turn/claude-code.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
 import type { UsageRecord } from "../src/usage.ts";
 
