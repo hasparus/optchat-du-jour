@@ -7,7 +7,7 @@
 // optchat goes to the device's transport, which may fall back from ws to http (E8).
 import { Clock, Effect, Option, Semaphore } from "effect";
 import { baseArgs } from "../claude/args.ts";
-import type { Assistant, Block, Event, Init, StreamEvent, Usage, User } from "../claude/events.ts";
+import { type Assistant, type Block, type Event, type Init, type Result, type StreamEvent, SYNTHETIC, type Usage, type User } from "../claude/events.ts";
 import type { Claude, Runner, Spawn } from "../claude/process.ts";
 import { cap } from "../cap.ts";
 import { isPicture, type Part } from "../media/part.ts";
@@ -91,8 +91,10 @@ export const mcpStatus = (e: typeof Init.Type) => e.mcp_servers?.find(({ name })
 
 // Stream events to log entries, in stream order (ref §5.3). Live text goes out as it streams;
 // a thought only by its size. Replays: see onReplay; `passed` is what went to stdin after the
-// opening message, oldest first. `mcp` hears optchat's status from init.
-export function makeMapper(out: TurnEvents, passed: Mid[], mcp: (status: string) => Effect.Effect<void>) {
+// opening message, oldest first. `mcp` hears optchat's status from init. A message Claude Code
+// wrote itself (an API error, model "<synthetic>") is never logged as the model's: its text is
+// kept in `errors`, for the failure the error result after it becomes.
+export function makeMapper(out: TurnEvents, passed: Mid[], mcp: (status: string) => Effect.Effect<void>, errors: string[] = []) {
   let openingSeen = false;
   let thoughtChars = 0;
 
@@ -112,8 +114,12 @@ export function makeMapper(out: TurnEvents, passed: Mid[], mcp: (status: string)
     return tokens > 0 ? out.thinking(tokens) : Effect.void;
   };
 
-  const onAssistant = (e: Assistant) =>
-    Effect.forEach(
+  const onAssistant = (e: Assistant) => {
+    if (e.message.model === SYNTHETIC) {
+      for (const block of e.message.content) if (isText(block) && block.text.trim()) errors.push(block.text);
+      return Effect.void;
+    }
+    return Effect.forEach(
       e.message.content,
       (block) => {
         if (isText(block)) return block.text.trim() ? out.log("talk", block.text) : Effect.void;
@@ -123,6 +129,7 @@ export function makeMapper(out: TurnEvents, passed: Mid[], mcp: (status: string)
       },
       { discard: true },
     );
+  };
 
   // Claude Code echoes each user message as it takes it. The opening message comes back first and
   // the session logged it before the call. Mid-run messages come back in the order they went to
@@ -214,6 +221,13 @@ const usageRecord = (o: {
   };
 };
 
+// Why a call failed: its result's text, and what Claude Code's own error messages said when the
+// result does not say it already (a usage limit may show only there)
+const failedWith = (r: Result, errors: readonly string[]) => {
+  const said = [...new Set([r.result ?? "", ...errors].filter((t) => t.trim() !== ""))];
+  return said.length > 0 ? said.join(": ") : `the turn ended with ${r.subtype ?? "an error"}`;
+};
+
 // a priming of this view older than this is redone: the TTL minus a margin (ref §2, E6)
 export const primeMaxAge = (ttl: Ttl) => (ttl === "1h" ? 3_300_000 : 270_000);
 
@@ -274,7 +288,8 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
         );
 
         const mcp = mcpWatch(input.device, placement);
-        const map = makeMapper(out, passed, mcp.init);
+        const errors: string[] = [];
+        const map = makeMapper(out, passed, mcp.init, errors);
         let opening: Usage | undefined;
         const each = (e: Event) => {
           if (opening === undefined && e.type === "stream_event" && e.event.type === "message_start") opening = e.event.message.usage;
@@ -285,7 +300,7 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
         const now = yield* Clock.currentTimeMillis;
         yield* out.usage(usageRecord({ device: input.device, failoverFrom, model: claude.model(), now, opening, role: "turn", started, usage: r.usage }));
         yield* r.is_error || r.stop_reason === "refusal"
-          ? Effect.fail(fromResult(r.result ?? `the turn ended with ${r.subtype ?? "an error"}`, r.stop_reason))
+          ? Effect.fail(fromResult(failedWith(r, errors), r.stop_reason))
           : Effect.void;
       }).pipe(Effect.scoped); // the first result ends the call: closing the scope kills the process (D3)
 

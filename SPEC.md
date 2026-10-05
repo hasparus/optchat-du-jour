@@ -231,7 +231,7 @@ The `claude-code` turn is ref §4–§6 unchanged, except for the cache TTL (E6)
 3. Stop any priming still in flight, without waiting for it; never prime first (E17).
 4. Log each queued text as `user`, then spawn the master on the chosen device: the base flags of ref §4 plus `--mcp-config` and `--replay-user-messages`. On the Mini this is usually the warm process started for exactly this spawn (E18).
 5. Send one user message: the view cut into up to 4 blocks at 50k / 80k / 100k characters, **no cache marks**, then the texts joined by a blank line.
-6. Map stream events to the log as in ref §5.3: text → `talk`, tool_use → `tool`, tool_result → `echo` (capped at `CAP`), later replays → `user`. Never log thinking.
+6. Map stream events to the log as in ref §5.3: text → `talk`, tool_use → `tool`, tool_result → `echo` (capped at `CAP`), later replays → `user`. Never log thinking. Nor an assistant message of model `<synthetic>`: that is Claude Code's own, how it reports an API error (`Claude AI usage limit reached|…`, `API Error: 529 …`) just before its error result, not the model's reply. Its text joins the result's in the failure, so a limit it names fails over (E4) even when the result line doesn't say so, and it never reaches the next engine's opening message.
 7. Kill the process at the first `result`; requeue mid-run messages that were never replayed. Commit the data dir. The session reports `idle` only once the commit is done, and a message that arrives while the loop winds down starts it again.
 
 As built, where we differ from ref §5.2:
