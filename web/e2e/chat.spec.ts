@@ -1,6 +1,6 @@
 // The web UI against the real server and a fake `claude` (e2e/fixture.ts, e2e/server.ts), on a
 // 360 px phone screen. Every test gets its own server and an empty log (or one it seeds).
-import { expect, expectShowsLog, open, REPLY, send, test } from "./fixture";
+import { answered, expect, expectShowsLog, open, REPLY, send, test } from "./fixture";
 
 test("a message gets a reply that streams in, after its tool call", async ({ page, server }) => {
   await open(page);
@@ -104,7 +104,7 @@ test.describe("a long log", () => {
 test("the memory screen zooms into a line and shows it in the chat", async ({ page }) => {
   await open(page);
   await send(page, "remember this");
-  await expect(page.getByTestId("status")).toBeHidden({ timeout: 15_000 });
+  await answered(page, "remember this");
   await page.getByRole("tab", { name: "Memory" }).click();
   const line = page.getByTestId("view-line").filter({ hasText: "remember this" });
   await expect(line).toBeVisible();
@@ -119,7 +119,7 @@ test("the memory screen zooms into a line and shows it in the chat", async ({ pa
 test("the stats and devices screens render", async ({ page }) => {
   await open(page);
   await send(page, "count this");
-  await expect(page.getByTestId("status")).toBeHidden({ timeout: 15_000 });
+  await answered(page, "count this");
   await page.getByRole("tab", { name: "Stats" }).click();
   await expect(page.getByTestId("stats")).toContainText("cache hit rate");
   await expect(page.getByText("Calls per day, by role")).toBeVisible();
@@ -131,7 +131,7 @@ test("the stats and devices screens render", async ({ page }) => {
 test("a reload shows the log again from the snapshot", async ({ page, server }) => {
   await open(page);
   await send(page, "still here?");
-  await expect(page.getByTestId("status")).toBeHidden({ timeout: 15_000 });
+  await answered(page, "still here?");
   await page.reload();
   await expect(page.getByRole("img", { name: "connection open" })).toBeVisible();
   await expect(page.getByTestId("user-message").filter({ hasText: "still here?" })).toBeVisible();

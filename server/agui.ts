@@ -3,17 +3,11 @@
 // started it. Message ids are log indexes.
 import type { AGUIEvent, Message } from "@ag-ui/core";
 import { EventType } from "@ag-ui/core";
-import type { LiveRun, SessionEvent, SessionState } from "../src/session.ts";
+import type { LiveRun, SessionEvent } from "../src/session.ts";
 import type { Entry } from "../src/tree.ts";
+import { type SessionState, splitTool, toolCallId } from "../src/wire.ts";
 
 export type AgUiEvent = AGUIEvent;
-
-// a tool entry is "<name> <json input>" (ref §5.3)
-export const splitTool = (text: string) => {
-  const space = text.indexOf(" ");
-  return space === -1 ? { args: "", name: text } : { args: text.slice(space + 1), name: text.slice(0, space) };
-};
-const toolCallId = (i: number) => `t${i}`;
 
 // the log as AG-UI messages: user and note entries are user messages (a note named "note"), talk an
 // assistant message, a tool entry an assistant message with one tool call, an echo the tool message
@@ -154,6 +148,10 @@ export function openStream(o: {
         return reply(e.at, e.offset, e.delta);
       case "thinking":
         return [{ name: "thinking", type: EventType.CUSTOM, value: { tokens: e.tokens } }];
+      // the next text under that index starts the reply again (TEXT_MESSAGE_START clears a draft)
+      case "reply-dropped":
+        text = null;
+        return [];
       case "run-started":
         if (run === e.runId) return []; // told at connect
         run = e.runId;

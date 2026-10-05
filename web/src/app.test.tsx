@@ -17,8 +17,8 @@ const LOG: Entry[] = [
 ];
 
 const DEVICES = [
-  { folders: ["~/repos"], local: true, name: "mini", url: "http://optchat-mini:7710" },
-  { folders: ["~/repos"], local: false, name: "macbook", url: "http://optchat-macbook:7710" },
+  { claudeVersion: "2.1.289", folders: ["~/repos"], local: true, name: "mini", status: "online", url: "http://optchat-mini:7710" },
+  { claudeVersion: null, folders: ["~/repos"], local: false, name: "macbook", status: "offline", url: "http://optchat-macbook:7710" },
 ];
 
 const realFetch = globalThis.fetch;

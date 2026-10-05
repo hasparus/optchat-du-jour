@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // optchat-server for the end-to-end tests: the real server on its own data dir, serving the built
-// web/dist, with test/fake-claude.ts as `claude` (no model, no network). Every turn runs a tool,
+// web/dist, with test/fake-claude.ts as `claude` and an empty secrets store (no model, no key, no network). Every turn runs a tool,
 // then streams its reply slowly enough for a second page to watch it and for a cancel to land.
 // e2e/fixture.ts starts one per test:
 //   E2E_PORT  the port
@@ -12,8 +12,9 @@ import type { Summarize } from "../../src/compactor.ts";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { serverLayer } from "../../server/app.ts";
-import type { Settings } from "../../src/config.ts";
+import { parseSettings } from "../../src/config.ts";
 import { DEFAULT_ENDPOINTS } from "../../src/openai/endpoints.ts";
+import { memorySecrets } from "../../src/secrets.ts";
 
 const root = new URL("../..", import.meta.url).pathname;
 const home = Bun.env.E2E_HOME ?? mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
@@ -36,7 +37,7 @@ Object.assign(process.env, {
   OPTCHAT_CLAUDE: `${root}test/fake-claude.ts`,
 });
 
-const settings: Settings = {
+const settings = parseSettings({
   openai: DEFAULT_ENDPOINTS,
   allowedLogins: [],
   cache: { apiKeyTtls: ["1h"], claudeCodeTtl: "1h", primeTtl: "1h" },
@@ -44,12 +45,12 @@ const settings: Settings = {
   defaultDevice: "mini",
   devices: { macbook: { folders: ["~/repos"], url: "http://optchat-macbook:7710" }, mini: { folders: [home], url: "http://optchat-mini:7710" } },
   master: { chain: ["claude-code:opus"], effort: "high", permissionMode: "bypassPermissions" },
-};
+});
 
 BunRuntime.runMain(
   Effect.gen(function* () {
     yield* Effect.logInfo(`e2e optchat-server on http://127.0.0.1:${port}, home ${home}`);
     const summarize: Summarize | undefined = Bun.env.E2E_QUICK_SUMMARIES ? (job) => Effect.succeed(`summary of ${job.l}:${job.i}`) : undefined;
-    return yield* Layer.launch(serverLayer({ device: "mini", home, host: "127.0.0.1", port, settings, summarize, web: `${root}web/dist` }));
+    return yield* Layer.launch(serverLayer({ device: "mini", home, host: "127.0.0.1", port, secrets: memorySecrets(), settings, summarize, web: `${root}web/dist` }));
   }),
 );

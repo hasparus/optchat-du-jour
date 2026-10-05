@@ -30,7 +30,8 @@ export const searchFiles = (job: GrepJob): string[] => {
       continue; // gone, unreadable: no match
     }
     if (text === "" || binary(text)) continue;
-    const hits = text.split("\n").flatMap((line, k) => (regex.test(line) ? [`${file}:${k + 1}:${line.length > job.lineChars ? `${line.slice(0, job.lineChars)}[…]` : line}`] : []));
+    // a file that ends with a newline has no line after it, even for a pattern that matches ""
+    const hits = text.replace(/\n$/, "").split("\n").flatMap((line, k) => (regex.test(line) ? [`${file}:${k + 1}:${line.length > job.lineChars ? `${line.slice(0, job.lineChars)}[…]` : line}`] : []));
     if (hits.length === 0) continue;
     const lines = job.mode === "content" ? hits : [job.mode === "count" ? `${file}:${hits.length}` : file];
     out.push(...lines);

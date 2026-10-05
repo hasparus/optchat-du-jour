@@ -110,8 +110,11 @@ export const keychainSecrets = Layer.succeed(Secrets)({
     }),
 });
 
-// this machine's store: the Keychain on macOS; $OPTCHAT_SECRETS or ~/.config/optchat/secrets.json elsewhere
-export const SecretsLive =
-  process.platform === "darwin"
-    ? keychainSecrets
-    : fileSecrets(Bun.env.OPTCHAT_SECRETS ?? `${Bun.env.XDG_CONFIG_HOME ?? `${homedir()}/.config`}/optchat/secrets.json`);
+// this machine's store: the file $OPTCHAT_SECRETS names, on any machine (the tests point it at an
+// empty one); else the Keychain on macOS and ~/.config/optchat/secrets.json elsewhere. Read when
+// the layer is built, not when this module loads.
+export const SecretsLive = Layer.suspend(() => {
+  const path = Bun.env.OPTCHAT_SECRETS;
+  if (path !== undefined) return fileSecrets(path);
+  return process.platform === "darwin" ? keychainSecrets : fileSecrets(`${Bun.env.XDG_CONFIG_HOME ?? `${homedir()}/.config`}/optchat/secrets.json`);
+});

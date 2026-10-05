@@ -73,17 +73,22 @@ test("the bake-off tells a compactor that keeps the user's words from one that p
 });
 
 test("a chain spec names its levels, and the first starts at 0", () => {
-  expect(parseContender("split=0:openai-plan:gpt-6-luna,claude-code:sonnet;3:openai-plan:gpt-6.1-sol")).toEqual({
-    byLevel: [
-      { chain: ["openai-plan:gpt-6-luna", "claude-code:sonnet"], from: 0 },
-      { chain: ["openai-plan:gpt-6.1-sol"], from: 3 },
+  const split = parseContender("split=0:openai-plan:gpt-6-luna,claude-code:sonnet;3:openai-plan:gpt-6.1-sol");
+  expect(split.name).toBe("split");
+  expect(split.byLevel.map((b) => [b.from, b.chain.map((r) => [r.engine, r.model])])).toEqual([
+    [
+      0,
+      [
+        ["openai-plan", "gpt-6-luna"],
+        ["claude-code", "sonnet"],
+      ],
     ],
-    name: "split",
-  });
+    [3, [["openai-plan", "gpt-6.1-sol"]]],
+  ]);
   expect(() => parseContender("x=2:claude-code:sonnet")).toThrow();
   expect(() => parseContender("x=gpt-6")).toThrow();
   expect(() => parseContender("x=api-key:claude-sonnet")).toThrow("must be api-key:anthropic/<model> or api-key:openai/<model>"); // api-key names its provider
-  expect(parseContender("k=api-key:anthropic/claude-sonnet").byLevel[0].chain).toEqual(["api-key:anthropic/claude-sonnet"]);
+  expect(parseContender("k=api-key:anthropic/claude-sonnet").byLevel[0].chain).toEqual([{ engine: "api-key", model: "claude-sonnet", provider: "anthropic", ref: "api-key:anthropic/claude-sonnet" }]);
 });
 
 test("tries are counted per node across failed calls and failovers; a replay that can't finish stops at its deadline and says what is left", async () => {

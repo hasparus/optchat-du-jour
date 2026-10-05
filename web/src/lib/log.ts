@@ -55,18 +55,27 @@ function fromMessage(m: Message): Item | null {
   }
 }
 
+// Only the newest MAX_HELD entries are kept; older ones are read again when scrolled to.
+export function trimHeld(log: Log): Log {
+  if (log.items.size <= MAX_HELD) return log;
+  const items = new Map(log.items);
+  for (const i of [...items.keys()].toSorted((a, b) => a - b).slice(0, items.size - MAX_HELD)) items.delete(i);
+  return { ...log, items };
+}
+
 // A snapshot is the log's last window: it replaces everything from its first index up, and the
 // draft (a reconnect or the end of a run; what was streaming is in the log now, or never will be).
-// Older pages below it stay, except entries only live events told of: those are read again. Of
-// those, only the newest MAX_HELD are kept.
-function applySnapshot(log: Log, messages: readonly Message[]): Log {
+// Older pages below it stay, except entries only live events told of: those are read again. With
+// `trim` (the reader is at the newest end, so the oldest are out of sight), only the newest
+// MAX_HELD are kept; a reader scrolled up keeps what they are reading until they come back down.
+function applySnapshot(log: Log, messages: readonly Message[], trim: boolean): Log {
   const fresh = messages.flatMap((m) => fromMessage(m) ?? []);
   const base = fresh[0]?.i ?? 0;
   const items = new Map<number, Item>();
   if (fresh.length > 0) for (const [i, item] of log.items) if (i < base && !item.live) items.set(i, item);
   for (const item of fresh) items.set(item.i, item);
-  if (items.size > MAX_HELD) for (const i of [...items.keys()].toSorted((a, b) => a - b).slice(0, items.size - MAX_HELD)) items.delete(i);
-  return { base, draft: null, items, newest: fresh.at(-1)?.i ?? -1 };
+  const next = { base, draft: null, items, newest: fresh.at(-1)?.i ?? -1 };
+  return trim ? trimHeld(next) : next;
 }
 
 // A page of /api/messages is a stretch of the log as it is: it replaces what this client held for
@@ -94,10 +103,10 @@ export const draftItem = (d: Draft): Item =>
 // A live event. The server closes a reply's text before anything else is logged and before the run
 // ends, and follows the end with a snapshot: a reply cut off by a cancel is closed here, as a live
 // entry the log lacks, and that snapshot takes it out again.
-export function applyEvent(log: Log, e: Inbound): Log {
+export function applyEvent(log: Log, e: Inbound, o: { readonly trim?: boolean } = {}): Log {
   switch (e.type) {
     case EventType.MESSAGES_SNAPSHOT:
-      return applySnapshot(log, e.messages);
+      return applySnapshot(log, e.messages, o.trim ?? true);
     case EventType.TEXT_MESSAGE_START: {
       const i = logIndex(e.messageId);
       if (i === null) return log;

@@ -3,6 +3,7 @@
 // current and the pump adds nodes
 import { NODE, VIEW } from "./config.ts";
 import type { Msg, Node } from "./records.ts";
+import { span } from "./wire.ts";
 
 // node (l, i) stands for the 2^l messages that start at i·2^l
 export type Coord = { readonly l: number; readonly i: number };
@@ -45,10 +46,8 @@ export function setNode(mem: Mem, record: Node) {
 }
 
 // gist §3 "Addressing": a node is named by its first message and how many messages it spans
-export function span({ l, i }: Coord) {
-  const n = 2 ** l;
-  return { id: i * n, n };
-}
+// (src/wire.ts, which the web UI shares)
+export { span } from "./wire.ts";
 // its name in the view, "id+n"
 export function label(c: Coord): string {
   const where = span(c);

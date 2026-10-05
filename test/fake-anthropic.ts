@@ -1,8 +1,15 @@
 // A stand-in for Anthropic's Messages API (POST /v1/messages, streamed), on a free port: it checks
-// the key, keeps every request body, and answers from a script with text, tool calls and an
-// optional thinking block, or an HTTP error. No model.
+// the key, keeps every request body, and answers from a script with an optional thinking block,
+// text, tool calls and text after them, in that order, with the stop reason it is given (else
+// tool_use or end_turn), or an HTTP error. No model.
 export type AnthropicAnswer =
-  | { readonly text?: string; readonly thinking?: string; readonly calls?: readonly { readonly name: string; readonly input: unknown }[] }
+  | {
+      readonly text?: string;
+      readonly thinking?: string;
+      readonly calls?: readonly { readonly name: string; readonly input: unknown }[];
+      readonly after?: string;
+      readonly stop?: string;
+    }
   | { readonly status: number; readonly errorType: string };
 
 type Json = string | number | boolean | null | readonly Json[] | { readonly [key: string]: Json };
@@ -38,6 +45,7 @@ export function fakeAnthropic(key: string) {
           deltas: [{ partial_json: JSON.stringify(c.input), type: "input_json_delta" }],
           start: { id: `toolu_${state.seen.length}_${k}`, input: {}, name: c.name, type: "tool_use" },
         })),
+        ...(answer.after === undefined ? [] : [{ deltas: [{ text: answer.after, type: "text_delta" }], start: { text: "", type: "text" } }]),
       ];
       const events = [
         sse({ message: { content: [], model: "fake-opus", role: "assistant", usage: USAGE }, type: "message_start" }),
@@ -46,7 +54,7 @@ export function fakeAnthropic(key: string) {
           ...b.deltas.map((delta) => sse({ delta, index, type: "content_block_delta" })),
           sse({ index, type: "content_block_stop" }),
         ]),
-        sse({ delta: { stop_reason: answer.calls?.length ? "tool_use" : "end_turn" }, type: "message_delta", usage: { output_tokens: 50 } }),
+        sse({ delta: { stop_reason: answer.stop ?? (answer.calls?.length ? "tool_use" : "end_turn") }, type: "message_delta", usage: { output_tokens: 50 } }),
         sse({ type: "message_stop" }),
       ];
       return new Response(events.join(""), { headers: { "content-type": "text/event-stream" } });

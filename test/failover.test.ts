@@ -2,7 +2,8 @@
 // so the turn falls over to openai-plan, which answers with our own tool loop and reads a file on
 // another device through its runner's POST /tool. The message is answered exactly once, the
 // failover is in usage.jsonl and on every client. Then a message sent while openai-plan works is
-// taken after the tool results, before the next request. Fake claude, fake Responses API.
+// taken after the tool results, before the next request. And a compactor's failover reaches every
+// client as the state's down list. Fake claude, fake Responses API.
 import { afterAll, expect, test } from "bun:test";
 import { Effect, Layer, Option, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -11,7 +12,7 @@ import { tmpdir } from "node:os";
 import { deviceLayer } from "../device/runner.ts";
 import { serverLayer } from "../server/app.ts";
 import { CompactError } from "../src/compactor.ts";
-import type { Settings } from "../src/config.ts";
+import { parseSettings } from "../src/config.ts";
 import { login } from "../src/openai/auth.ts";
 import { memorySecrets } from "../src/secrets.ts";
 import { readUsage } from "../src/usage.ts";
@@ -36,6 +37,7 @@ const Event = Schema.Struct({
   name: Schema.optional(Schema.String),
   value: Schema.optional(Schema.Json),
   delta: Schema.optional(Schema.Json),
+  snapshot: Schema.optional(Schema.Json),
 });
 type Event = typeof Event.Type;
 const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(Event));
@@ -49,7 +51,15 @@ const Item = Schema.Struct({
 });
 const Body = Schema.Struct({ instructions: Schema.String, input: Schema.Array(Item), tools: Schema.Array(Schema.Struct({ name: Schema.String })), tool_choice: Schema.String });
 const decodeBody = Schema.decodeUnknownSync(Schema.fromJsonString(Body));
-const Queued = Schema.Struct({ queued: Schema.Array(Schema.String) });
+const Pending = Schema.Struct({ pending: Schema.Array(Schema.Struct({ text: Schema.String })) });
+const Down = Schema.Array(Schema.Struct({ ref: Schema.String, reason: Schema.String }));
+const DownOp = Schema.Struct({ path: Schema.Literal("/down"), value: Down });
+const Snapshot = Schema.Struct({ down: Down });
+// the refs of each `down` a STATE_DELTA sets
+const downOf = (e: Event) => {
+  const ops: readonly unknown[] = e.type === "STATE_DELTA" && Array.isArray(e.delta) ? e.delta : [];
+  return ops.flatMap((op) => (Schema.is(DownOp)(op) ? [op.value.map((d) => d.ref)] : []));
+};
 const Start = Schema.Struct({ type: Schema.Literal("start"), role: Schema.String, argv: Schema.Array(Schema.String) });
 const decodeStart = Schema.decodeUnknownOption(Schema.fromJsonString(Start));
 
@@ -94,7 +104,7 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
   const endpoints = { agentName: "optchat-test", api: `${fake.base}/v1`, issuer: fake.base, port: freePort(), registerClientId: "dynamic_agent_client" };
   await Effect.runPromise(login({ endpoints, open: (url) => Effect.promise(async () => void (await fetch(url))) }).pipe(Effect.provide([secrets, FetchHttpClient.layer])));
   const port = freePort(), devicePort = freePort();
-  const settings: Settings = {
+  const settings = parseSettings({
     allowedLogins: [],
     cache: { apiKeyTtls: ["1h"], claudeCodeTtl: "1h", primeTtl: "1h" },
     compactor: { byLevel: [{ chain: ["claude-code:sonnet"], from: 0 }], effort: "medium" },
@@ -106,7 +116,7 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
     master: { chain: ["claude-code:opus", "openai-plan:gpt-sol"], effort: "high", permissionMode: "bypassPermissions" },
     openai: endpoints,
     server: { host: "127.0.0.1", port, publicUrl: `http://localhost:${port}` },
-  };
+  });
   const trust = { _tag: "loopback" } as const;
   const both = Layer.mergeAll(
     deviceLayer({ claude: FAKE, folders: [macbook], host: "127.0.0.1", name: "macbook", port: devicePort, trust }),
@@ -124,7 +134,7 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
     const response = await fetch(`http://127.0.0.1:${port}${path}`);
     return response.text();
   };
-  const queued = async () => Schema.decodeUnknownSync(Schema.fromJsonString(Queued))(await get("/api/state")).queued;
+  const queued = async () => Schema.decodeUnknownSync(Schema.fromJsonString(Pending))(await get("/api/state")).pending.map((m) => m.text);
   const log = async () => Schema.decodeUnknownSync(Schema.fromJsonString(Entries))(await get("/api/messages")).entries.map((e) => [e.kind, e.text]);
 
   await Effect.runPromise(
@@ -206,6 +216,53 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
         expect(said).toStartWith("tidy up\n\n[optchat: another engine began this turn");
         expect(said).toEndWith("\ntalk: Starting on it.");
         c.ws.close();
+      }),
+    ),
+  );
+}, 30_000);
+
+// SPEC "Policy" (M3): compaction never moves onto another engine unseen. Through the real server:
+// a 429 from the ChatGPT plan moves a node to claude-code, every connected client gets the state's
+// `down` list in a STATE_DELTA, and a client that connects later finds it in its STATE_SNAPSHOT.
+test("a compactor failover reaches every socket as the state's down list, and a late joiner's snapshot", async () => {
+  const data = `${home}/down`;
+  mkdirSync(data);
+  Bun.env.OPTCHAT_CLAUDE = FAKE;
+  Bun.env.FAKE_CLAUDE_LOG = `${data}/fake.jsonl`;
+  Bun.env.FAKE_CLAUDE_SCRIPT = `${data}/script.json`;
+  writeFileSync(Bun.env.FAKE_CLAUDE_SCRIPT, JSON.stringify({ turn: [[{ text: "noted" }]] })); // compactor calls answer a short line
+  const secrets = memorySecrets({});
+  const endpoints = { agentName: "optchat-test", api: `${fake.base}/v1`, issuer: fake.base, port: freePort(), registerClientId: "dynamic_agent_client" };
+  await Effect.runPromise(login({ endpoints, open: (url) => Effect.promise(async () => void (await fetch(url))) }).pipe(Effect.provide([secrets, FetchHttpClient.layer])));
+  const port = freePort();
+  const settings = parseSettings({
+    allowedLogins: [],
+    cache: { apiKeyTtls: ["1h"], claudeCodeTtl: "1h", primeTtl: "1h" },
+    compactor: { byLevel: [{ chain: ["openai-plan:gpt-6-luna", "claude-code:sonnet"], from: 0 }], effort: "medium" },
+    defaultDevice: "mini",
+    devices: { mini: { folders: [data], url: "http://127.0.0.1:9" } },
+    master: { chain: ["claude-code:opus"], effort: "high", permissionMode: "bypassPermissions" },
+    openai: endpoints,
+    server: { host: "127.0.0.1", port },
+  });
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* Layer.build(serverLayer({ device: "mini", home: data, host: "127.0.0.1", port, secrets, settings }));
+        const early = yield* Effect.promise(async () => client(`ws://127.0.0.1:${port}/ws`));
+        fake.state.script = [{ code: "subscription_sharing_usage_limit_exceeded", status: 429 }];
+        early.send(`a message long enough to need a summary: ${"x".repeat(600)}`, "mini");
+        yield* Effect.promise(async () => until("the turn", () => early.ended().length === 1));
+        expect(early.infos().filter((m) => m.startsWith("openai-plan:gpt-6-luna unavailable: "))).toHaveLength(1);
+        expect(early.events.flatMap(downOf)).toEqual([["openai-plan:gpt-6-luna"]]);
+
+        const late = yield* Effect.promise(async () => client(`ws://127.0.0.1:${port}/ws`));
+        yield* Effect.promise(async () => until("the late joiner's snapshot", () => late.events.some((e) => e.type === "STATE_SNAPSHOT")));
+        const snapshot = Schema.decodeUnknownSync(Snapshot)(late.events.find((e) => e.type === "STATE_SNAPSHOT")?.snapshot);
+        expect(snapshot.down.map((d) => d.ref)).toEqual(["openai-plan:gpt-6-luna"]);
+        expect(snapshot.down[0]?.reason).toContain("429");
+        early.ws.close();
+        late.ws.close();
       }),
     ),
   );

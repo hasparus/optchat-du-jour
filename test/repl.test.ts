@@ -99,6 +99,15 @@ describe("repl screen", () => {
     expect(t.s.failed).toBe(0);
   });
 
+  test("piped: a message whose run ends in an error counts as answered, with an error", () => {
+    const t = screen(false);
+    const asked = idOf(t.s.submit("refused one"));
+    t.feed({ snapshot: IDLE, type: "STATE_SNAPSHOT" }, ack(asked, "3"), ...said("3", "user", "refused one"), { type: "RUN_STARTED" });
+    t.feed({ message: "declined", type: "RUN_ERROR" });
+    expect(t.s.unanswered).toBe(0);
+    expect(t.s.failed).toBe(1);
+  });
+
   test("piped: a message the server could not log counts as answered, with an error", () => {
     const t = screen(false);
     const lost = idOf(t.s.submit("lost"));
@@ -107,6 +116,9 @@ describe("repl screen", () => {
     expect(t.s.unanswered).toBe(0);
     expect(t.s.failed).toBe(1);
     expect(t.out()).toContain("not logged: disk full\n");
+    // a later turn logs it after all, acked again: still not shown as another client's
+    t.feed(ack(lost, "7"), ...said("7", "user", "lost"));
+    expect(t.out().match(/> lost/g)).toHaveLength(1); // its echo as it was sent
   });
 
   test("a lost connection is told once, and so is its return", () => {

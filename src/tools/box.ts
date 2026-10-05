@@ -4,8 +4,10 @@
 import { Effect, Option, Schema } from "effect";
 import { memoryTool, TOOLS } from "../mcp.ts";
 import type { Mem } from "../tree.ts";
-import type { ToolBox } from "../turn/loop.ts";
-import { type FileTools, fileToolDefs } from "./files.ts";
+import { type FileTools, type ToolDef, fileToolDefs } from "./files.ts";
+
+// a device's tools for one turn; `run` answers every call with text, errors included
+export type ToolBox = { readonly defs: readonly ToolDef[]; readonly run: (name: string, input: string) => Effect.Effect<string> };
 
 const decodeInput = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
 

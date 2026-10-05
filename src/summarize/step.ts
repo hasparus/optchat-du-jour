@@ -90,7 +90,7 @@ export const sizeRetries = (o: {
           yield* o.log(dollars === undefined ? line : { ...line, dollars });
         });
       const answer: Answer = yield* o.ask({ attempt, retry }).pipe(
-        Effect.tapError((e) => (e._tag !== "DeviceOffline" && e.spent !== undefined ? record(e.spent.usage, e.spent.model) : Effect.void)),
+        Effect.tapError((e) => (e._tag !== "DeviceOffline" && e.spent !== undefined ? record(e.spent.usage, e.spent.model, e.spent.dollars) : Effect.void)),
       );
       yield* record(answer.usage, answer.model, answer.dollars);
       const line = answer.text.trim();

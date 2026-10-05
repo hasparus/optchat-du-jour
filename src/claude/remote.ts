@@ -4,6 +4,7 @@
 // move on at once (SPEC "Device offline": fail fast, never queue). Closing the scope closes the
 // socket, and the device runner kills the process.
 import { type Cause, Clock, Deferred, Duration, Effect, Option, Queue, Schema, Stream } from "effect";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { Socket } from "effect/socket";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
@@ -140,13 +141,18 @@ export type DeviceHealth =
   | { readonly _tag: "refused" }
   | { readonly _tag: "offline" };
 
+// one request to a device runner through Effect's HTTP client, interrupted with its caller
+const ask = (request: HttpClientRequest.HttpClientRequest) =>
+  Effect.gen(function* () {
+    const http = yield* HttpClient.HttpClient;
+    const response = yield* http.execute(request);
+    return { status: response.status, text: yield* response.text };
+  }).pipe(Effect.provide(FetchHttpClient.layer));
+
 export const deviceHealth = (url: string, timeout: Duration.Input): Effect.Effect<DeviceHealth> =>
   Effect.gen(function* () {
     const base = yield* ipv4(url);
-    const response = yield* Effect.tryPromise(async (signal) => {
-      const r = await fetch(new URL("/health", base), { signal });
-      return { status: r.status, text: await r.text() };
-    });
+    const response = yield* ask(HttpClientRequest.get(new URL("/health", base)));
     if (response.status === 403) return { _tag: "refused" } as const;
     return { _tag: "online", health: yield* decodeHealth(response.text) } as const;
   }).pipe(
@@ -164,14 +170,11 @@ export const remoteTool =
     const call: ToolCall = { input, name };
     return Effect.gen(function* () {
       const base = yield* ipv4(url);
-      const text = yield* Effect.tryPromise(async (signal) => {
-        const response = await fetch(new URL("/tool", base), { body: JSON.stringify(call), headers: { "content-type": "application/json" }, method: "POST", signal });
-        if (!response.ok) throw new Error(`the device runner answered ${response.status}`);
-        return response.text();
-      });
-      return (yield* decodeReply(text)).output;
+      const response = yield* ask(HttpClientRequest.post(new URL("/tool", base)).pipe(HttpClientRequest.bodyText(JSON.stringify(call), "application/json")));
+      if (response.status !== 200) return `Error: ${device} did not run ${name}: the device runner answered ${response.status}`;
+      return (yield* decodeReply(response.text)).output;
     }).pipe(
       Effect.timeout(Duration.sum(Duration.fromInputUnsafe(TOOL_TIMEOUT), Duration.seconds(5))),
-      Effect.catch((error) => Effect.succeed(`Error: ${device} did not run ${name}: ${error instanceof Error ? error.message : String(error)}`)),
+      Effect.catch((error) => Effect.succeed(`Error: ${device} did not run ${name}: ${error.message}`)),
     );
   };

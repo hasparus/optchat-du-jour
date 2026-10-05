@@ -7,8 +7,8 @@
 // carries an OpenAI API key (api-key engine), and function tools for our own tool loop (M5):
 // function_call items out, function_call_output items back in the next request.
 import { Context, Data, Effect, Layer, Schema, Stream } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/http";
-import { type EngineError, ModelError, Refusal, type Spent, UsageLimit } from "../engines/errors.ts";
+import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
+import { type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
 import type { Tokens as Usage } from "../usage.ts";
 import { type TokenError, makeTokenManager } from "./auth.ts";
@@ -22,7 +22,9 @@ export type Turn =
   | { readonly role: "call"; readonly id: string; readonly name: string; readonly arguments: string }
   | { readonly role: "output"; readonly id: string; readonly output: string };
 export type FunctionTool = { readonly name: string; readonly description: string; readonly parameters: Schema.Json };
-export type Ask = {
+// what the reply holds, in order: its text and the calls it asks for
+export type Out = { readonly type: "text"; readonly text: string } | { readonly type: "call"; readonly id: string; readonly name: string; readonly arguments: string };
+export type Ask<E extends Tagged = never> = {
   readonly model: string;
   readonly instructions: string;
   readonly input: readonly Turn[];
@@ -30,11 +32,11 @@ export type Ask = {
   readonly tools?: readonly FunctionTool[];
   readonly toolChoice?: "auto" | "none";
   readonly onText?: (delta: string) => Effect.Effect<void>; // live text as it streams
+  readonly onThinking?: (tokens: number) => Effect.Effect<void>; // the size of the reasoning streamed so far
+  readonly onOut?: (out: Out) => Effect.Effect<void, E>; // each item of `output` as it completes
 };
-// what the reply holds, in order: its text and the calls it asks for
-export type Out = { readonly type: "text"; readonly text: string } | { readonly type: "call"; readonly id: string; readonly name: string; readonly arguments: string };
 export type Reply = { readonly text: string; readonly usage: Usage; readonly model: string; readonly output: readonly Out[] };
-export type Respond = (ask: Ask) => Effect.Effect<Reply, EngineError>;
+export type Respond = <E extends Tagged = never>(ask: Ask<E>) => Effect.Effect<Reply, EngineError | E>;
 
 export class OpenAiPlan extends Context.Service<OpenAiPlan, { readonly respond: Respond }>()("optchat/OpenAiPlan") {}
 
@@ -74,7 +76,7 @@ const item = (t: Turn): (typeof Body.Type)["input"][number] => {
   }
 };
 
-export const body = (ask: Ask) =>
+export const body = (ask: Ask<Tagged>) =>
   encodeBody({
     input: ask.input.map(item),
     instructions: ask.instructions,
@@ -137,59 +139,73 @@ const spentOf = (r: { readonly model?: string | undefined; readonly usage?: type
   r.usage ? { model: r.model ?? model, usage: usageOf(r.usage) } : undefined;
 
 class Unauthorized extends Data.TaggedError("Unauthorized")<{ readonly message: string }> {}
+const isUnauthorized = (e: Tagged): e is Unauthorized => e._tag === "Unauthorized";
 
-type Read = { readonly text: string; readonly refusal: string; readonly output: readonly Out[]; readonly done: Reply | null };
+type Read = { readonly text: string; readonly reasoning: number; readonly refusal: string; readonly output: readonly Out[]; readonly done: Reply | null };
 
-const onEvent = (o: { readonly model: string; readonly label: string; readonly onText?: Ask["onText"] }) => (r: Read, data: string): Effect.Effect<Read, EngineError | Schema.SchemaError> =>
-  Effect.gen(function* () {
-    const { type } = yield* typeOf(data);
-    switch (type) {
-      case "response.output_text.delta": {
-        const d = (yield* delta(data)).delta;
-        if (o.onText) yield* o.onText(d);
-        return { ...r, text: r.text + d };
+type Hooks<E extends Tagged> = Pick<Ask<E>, "onOut" | "onText" | "onThinking">;
+
+const onEvent =
+  <E extends Tagged>(o: { readonly model: string; readonly label: string } & Hooks<E>) =>
+  (r: Read, data: string): Effect.Effect<Read, E | EngineError | Schema.SchemaError> => {
+    // an item of `output` is whole: it goes out now, so what follows it streams after it
+    const out = (item: Out) => Effect.as(o.onOut ? o.onOut(item) : Effect.void, { ...r, output: [...r.output, item] });
+    return Effect.gen(function* () {
+      const { type } = yield* typeOf(data);
+      switch (type) {
+        case "response.output_text.delta": {
+          const d = (yield* delta(data)).delta;
+          if (o.onText) yield* o.onText(d);
+          return { ...r, text: r.text + d };
+        }
+        // reasoning is streamed only when the API is asked for it; its size is all that goes out
+        case "response.reasoning_text.delta":
+        case "response.reasoning_summary_text.delta": {
+          const reasoning = r.reasoning + (yield* delta(data)).delta.length;
+          if (o.onThinking) yield* o.onThinking(Math.ceil(reasoning / 4));
+          return { ...r, reasoning };
+        }
+        case "response.refusal.delta":
+          return { ...r, refusal: r.refusal + (yield* delta(data)).delta };
+        case "response.output_item.done": {
+          const { item } = yield* doneItem(data);
+          if (item.type === "function_call") return yield* out({ arguments: item.arguments ?? "{}", id: item.call_id ?? "", name: item.name ?? "", type: "call" });
+          if (item.type !== "message") return r; // reasoning and the rest: not sent back (store: false)
+          const text = (item.content ?? []).flatMap((c) => (c.type === "output_text" && c.text !== undefined ? [c.text] : [])).join("");
+          return text ? yield* out({ text, type: "text" }) : r;
+        }
+        case "response.completed": {
+          const { response } = yield* completed(data);
+          // a stream that never said which items it held: its text is the one item
+          const whole = r.output.length === 0 && r.text ? yield* out({ text: r.text, type: "text" }) : r;
+          return { ...whole, done: { model: response.model ?? o.model, output: whole.output, text: r.text, usage: usageOf(response.usage) } };
+        }
+        case "response.failed": {
+          const { response } = yield* failed(data);
+          return yield* classify(null, response.error?.code, response.error?.message ?? "response.failed", o.label, spentOf(response, o.model));
+        }
+        case "response.incomplete": {
+          const { response } = yield* incomplete(data);
+          const reason = response.incomplete_details?.reason ?? "no reason given";
+          return yield* new ModelError({ message: `${o.label}: incomplete response (${reason})`, spent: spentOf(response, o.model) });
+        }
+        case "error": {
+          const e = yield* errorEvent(data);
+          return yield* classify(null, e.code ?? e.error?.code, e.message ?? e.error?.message, o.label);
+        }
+        default:
+          return r;
       }
-      case "response.refusal.delta":
-        return { ...r, refusal: r.refusal + (yield* delta(data)).delta };
-      case "response.output_item.done": {
-        const { item } = yield* doneItem(data);
-        if (item.type === "function_call")
-          return { ...r, output: [...r.output, { arguments: item.arguments ?? "{}", id: item.call_id ?? "", name: item.name ?? "", type: "call" }] };
-        if (item.type !== "message") return r; // reasoning and the rest: not sent back (store: false)
-        const text = (item.content ?? []).flatMap((c) => (c.type === "output_text" && c.text !== undefined ? [c.text] : [])).join("");
-        return text ? { ...r, output: [...r.output, { text, type: "text" }] } : r;
-      }
-      case "response.completed": {
-        const { response } = yield* completed(data);
-        // a stream that never said which items it held: its text is the one item
-        const output = r.output.length === 0 && r.text ? [{ text: r.text, type: "text" as const }] : r.output;
-        return { ...r, done: { model: response.model ?? o.model, output, text: r.text, usage: usageOf(response.usage) } };
-      }
-      case "response.failed": {
-        const { response } = yield* failed(data);
-        return yield* classify(null, response.error?.code, response.error?.message ?? "response.failed", o.label, spentOf(response, o.model));
-      }
-      case "response.incomplete": {
-        const { response } = yield* incomplete(data);
-        const reason = response.incomplete_details?.reason ?? "no reason given";
-        return yield* new ModelError({ message: `${o.label}: incomplete response (${reason})`, spent: spentOf(response, o.model) });
-      }
-      case "error": {
-        const e = yield* errorEvent(data);
-        return yield* classify(null, e.code ?? e.error?.code, e.message ?? e.error?.message, o.label);
-      }
-      default:
-        return r;
-    }
-  });
+    });
+  };
 
 // A stream counts only when it ends in response.completed, and ends there: whatever follows (a
 // `data: [DONE]` line, say) is never read. One that starts well can still fail.
-export const readStream = (stream: Stream.Stream<Uint8Array, EngineError>, model: string, o: { readonly label?: string; readonly onText?: Ask["onText"] } = {}) =>
+export const readStream = <E extends Tagged = never>(stream: Stream.Stream<Uint8Array, EngineError>, model: string, o: { readonly label?: string } & Hooks<E> = {}) =>
   Effect.gen(function* () {
     const label = o.label ?? "openai-plan";
-    const init: Read = { done: null, output: [], refusal: "", text: "" };
-    const r = yield* sseFold(label, stream, init, onEvent({ label, model, onText: o.onText }), (state) => state.done !== null);
+    const init: Read = { done: null, output: [], reasoning: 0, refusal: "", text: "" };
+    const r = yield* sseFold(label, stream, init, onEvent({ ...o, label, model }), (state) => state.done !== null);
     if (r.refusal) return yield* new Refusal({ message: `${label} refused: ${r.refusal.slice(0, 300)}`, spent: r.done ? { model: r.done.model, usage: r.done.usage } : undefined });
     if (r.done === null) return yield* new ModelError({ message: `${label}: the stream ended without response.completed` });
     return r.done;
@@ -206,7 +222,7 @@ export type Bearer = {
 export const makeResponses = (o: { readonly api: string; readonly label: string; readonly bearer: Bearer }) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
-    const once = (ask: Ask, token: string) =>
+    const once = <E extends Tagged>(ask: Ask<E>, token: string) =>
       Effect.gen(function* () {
         const req = HttpClientRequest.post(`${o.api}/responses`).pipe(
           HttpClientRequest.bearerToken(token),
@@ -223,18 +239,18 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
             : classify(res.status, null, raw.slice(0, 300), o.label);
         }
         const stream = res.stream.pipe(Stream.mapError((err) => new ModelError({ message: `${o.label}: ${err.message}` })));
-        return yield* readStream(stream, ask.model, { label: o.label, onText: ask.onText });
-      }).pipe(Effect.catchTag("HttpClientError", (err) => Effect.fail(new ModelError({ message: `${o.label}: ${err.message}` }))));
+        return yield* readStream(stream, ask.model, { label: o.label, onOut: ask.onOut, onText: ask.onText, onThinking: ask.onThinking });
+      }).pipe(Effect.catchIf(HttpClientError.isHttpClientError, (err) => Effect.fail(new ModelError({ message: `${o.label}: ${err.message}` }))));
 
     // a 401 renews the token once, then counts as signed out
     const respond: Respond = (ask) =>
       Effect.gen(function* () {
         const token = yield* o.bearer.current;
         return yield* once(ask, token).pipe(
-          Effect.catchTag("Unauthorized", () =>
+          Effect.catchIf(isUnauthorized, () =>
             o.bearer.renew(token).pipe(
               Effect.flatMap((fresh) => once(ask, fresh)),
-              Effect.catchTag("Unauthorized", (u) => Effect.fail(new UsageLimit({ message: `${o.label}: still unauthorized after a refresh: ${u.message}` }))),
+              Effect.catchIf(isUnauthorized, (u) => Effect.fail(new UsageLimit({ message: `${o.label}: still unauthorized after a refresh: ${u.message}` }))),
             ),
           ),
         );

@@ -6,7 +6,8 @@ import { FetchHttpClient } from "effect/http";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
-import { type Settings, NODE, TRIES } from "../src/config.ts";
+import { type Settings, NODE, TRIES, parseSettings } from "../src/config.ts";
+import { makeBudget } from "../src/apikey/budget.ts";
 import { type Spawn, Runner, makeClaude } from "../src/claude/process.ts";
 import type { Job } from "../src/compactor.ts";
 import { failover, watchChain } from "../src/engines/chain.ts";
@@ -130,7 +131,9 @@ test("a compactor call streams its line; a long one is retried in the same conve
   const e = await signedIn(secrets);
   const records: UsageRecord[] = [];
   const compact = await Effect.runPromise(
-    openAiPlanCompactor({ effort: "medium", log: (r) => Effect.sync(() => void records.push(r)), model: "gpt-6-luna" }).pipe(Effect.provide(plan(e, secrets))),
+    Effect.gen(function* () {
+      return openAiPlanCompactor({ effort: "medium", log: (r) => Effect.sync(() => void records.push(r)), model: "gpt-6-luna", plan: yield* OpenAiPlan });
+    }).pipe(Effect.provide(plan(e, secrets))),
   );
 
   fake.state.seen.length = 0;
@@ -172,28 +175,35 @@ const fakeRunner = (spawned: Spawn[]) =>
     warm: () => Effect.void,
   });
 
-const settings = (byLevel: Settings["compactor"]["byLevel"]): Settings => ({
-  allowedLogins: [],
-  cache: { apiKeyTtls: [], claudeCodeTtl: "1h", primeTtl: "1h" },
-  compactor: { byLevel, effort: "medium" },
-  defaultDevice: "mini",
-  devices: { mini: { folders: [], url: "http://x" } },
-  master: { chain: ["claude-code:opus"], effort: "high", permissionMode: "bypassPermissions" },
-  openai: DEFAULT_ENDPOINTS,
-});
+const settings = (byLevel: (typeof Settings.Encoded)["compactor"]["byLevel"]) =>
+  parseSettings({
+    allowedLogins: [],
+    cache: { apiKeyTtls: [], claudeCodeTtl: "1h", primeTtl: "1h" },
+    compactor: { byLevel, effort: "medium" },
+    defaultDevice: "mini",
+    devices: { mini: { folders: [], url: "http://x" } },
+    master: { chain: ["claude-code:opus"], effort: "high", permissionMode: "bypassPermissions" },
+    openai: DEFAULT_ENDPOINTS,
+  });
 
-// `then` runs after each notice, as server/app.ts publishes the session's state again
-const compactors = async (secrets: Layer.Layer<Secrets>, e: Endpoints, then: () => Effect.Effect<void> = () => Effect.void) => {
+const compactors = async (secrets: Layer.Layer<Secrets>, e: Endpoints) => {
   const records: UsageRecord[] = [], reports: string[] = [], spawned: Spawn[] = [];
   const { down, summarize } = await Effect.runPromise(
-    makeSummarize({
-      device: "mini",
-      log: (r) => Effect.sync(() => void records.push(r)),
-      report: (m) => Effect.sync(() => void reports.push(m)).pipe(Effect.andThen(Effect.suspend(then))),
-      settings: settings([
-        { chain: ["openai-plan:gpt-6-luna", "claude-code:sonnet"], from: 0 },
-        { chain: ["openai-plan:gpt-6.1-sol", "claude-code:sonnet"], from: 3 },
-      ]),
+    Effect.gen(function* () {
+      const client = yield* OpenAiPlan;
+      return yield* makeSummarize({
+        apiKeys: Effect.die(new Error("no api-key engine in these chains")),
+        budget: makeBudget({ monthly: 0, report: () => Effect.void, usagePath: "/nonexistent/usage.jsonl" }),
+        device: "mini",
+        log: (r) => Effect.sync(() => void records.push(r)),
+        plan: Effect.succeed(client),
+        report: (m) => Effect.sync(() => void reports.push(m)),
+        runner: yield* Runner,
+        settings: settings([
+          { chain: ["openai-plan:gpt-6-luna", "claude-code:sonnet"], from: 0 },
+          { chain: ["openai-plan:gpt-6.1-sol", "claude-code:sonnet"], from: 3 },
+        ]),
+      });
     }).pipe(Effect.provide([plan(e, secrets), fakeRunner(spawned)])),
   );
   return { down, records, reports, spawned, summarize };
@@ -202,15 +212,15 @@ const compactors = async (secrets: Layer.Layer<Secrets>, e: Endpoints, then: () 
 test("429 subscription_sharing_usage_limit_exceeded moves the node to the next engine, which logs failoverFrom; levels pick their chain", async () => {
   const secrets = memorySecrets();
   const { down, records, reports, spawned, summarize } = await compactors(secrets, await signedIn(secrets));
-  expect(down()).toEqual([]);
+  expect(down.now()).toEqual([]);
 
   fake.state.seen.length = 0;
   fake.state.script = [{ code: "subscription_sharing_usage_limit_exceeded", status: 429 }];
   expect(await Effect.runPromise(summarize(leaf("hi")))).toBe("user: written by sonnet");
   expect(reports).toHaveLength(1);
   expect(reports[0]).toMatch(/^openai-plan:gpt-6-luna unavailable: .*429.*; compacting on claude-code:sonnet$/);
-  expect(down().map((d) => d.ref)).toEqual(["openai-plan:gpt-6-luna"]);
-  expect(down()[0]?.reason).toContain("429");
+  expect(down.now().map((d) => d.ref)).toEqual(["openai-plan:gpt-6-luna"]);
+  expect(down.now()[0]?.reason).toContain("429");
   expect(records).toHaveLength(1);
   expect(records[0]).toMatchObject({ device: "mini", engine: "claude-code", failoverFrom: "openai-plan:gpt-6-luna", level: 0 });
   expect(spawned).toHaveLength(1);
@@ -237,7 +247,7 @@ test("429 subscription_sharing_usage_limit_exceeded moves the node to the next e
   fake.state.script = [{ text: "user: luna again" }];
   expect(await Effect.runPromise(summarize(leaf("hi")))).toBe("user: luna again");
   expect(reports[2]).toBe("openai-plan:gpt-6-luna back: compacting on it again");
-  expect(down().map((d) => d.ref)).toEqual(["openai-plan:gpt-6.1-sol"]);
+  expect(down.now().map((d) => d.ref)).toEqual(["openai-plan:gpt-6.1-sol"]);
   expect(reports).toHaveLength(3);
   // and a later failover is told again
   fake.state.script = [{ code: "subscription_sharing_usage_limit_exceeded", status: 429 }];
@@ -259,15 +269,13 @@ test("429 subscription_sharing_usage_limit_exceeded moves the node to the next e
 
 test("a client connecting after a 429 failover sees the engine down in the session's state, and those connected get a state update", async () => {
   const secrets = memorySecrets();
-  let tell: Effect.Effect<void> = Effect.void;
-  const { down, records, summarize } = await compactors(secrets, await signedIn(secrets), () => tell);
+  const { down, records, summarize } = await compactors(secrets, await signedIn(secrets));
   const dir = mkdtempSync(`${tmpdir()}/oc-down-`);
   try {
     await Effect.runPromise(
       Effect.gen(function* () {
         const chat = yield* openChat(dir, { summarize: () => Effect.succeed("unused") });
         const session = yield* makeSession({ chat, commit: Effect.succeed(null), compactorDown: down, defaultDevice: "mini", devices: ["mini"], engines: [], logUsage: () => Effect.void });
-        tell = session.tell;
         const sub = yield* PubSub.subscribe(session.events);
         expect(session.state().down).toEqual([]);
 
@@ -275,14 +283,16 @@ test("a client connecting after a 429 failover sees the engine down in the sessi
         expect(yield* summarize(leaf("hi"))).toBe("user: written by sonnet");
         expect(session.state().down.map((d) => d.ref)).toEqual(["openai-plan:gpt-6-luna"]);
         expect(session.state().down[0]?.reason).toContain("429");
-        const told = (yield* PubSub.takeAll(sub)).flatMap((e) => (e.type === "state" ? [e.state.down.map((d) => d.ref)] : []));
-        expect(told).toEqual([["openai-plan:gpt-6-luna"]]);
+        // the session hears the change and publishes its state again
+        const told = yield* PubSub.take(sub).pipe(Effect.repeat({ until: (e) => e.type === "state" }));
+        expect(told.state.down.map((d) => d.ref)).toEqual(["openai-plan:gpt-6-luna"]);
         expect(records.map((r) => [r.engine, r.device])).toEqual([["claude-code", "mini"]]);
 
         fake.state.script = [{ text: "user: luna again" }];
         yield* summarize(leaf("hi"));
         expect(session.state().down).toEqual([]);
-        expect((yield* PubSub.takeAll(sub)).filter((e) => e.type === "state")).toHaveLength(1);
+        const back = yield* PubSub.take(sub).pipe(Effect.repeat({ until: (e) => e.type === "state" }));
+        expect(back.state.down).toEqual([]);
       }).pipe(Effect.scoped),
     );
   } finally {
@@ -309,8 +319,7 @@ test("with calls in flight, an engine is back only when a call started after it 
         },
         { ref: "claude", run: () => Effect.succeed("claude") },
       ],
-      watch.moved,
-      watch.answered,
+      watch,
     );
   const capped = new UsageLimit({ message: "429 cap" });
   // the nth call, once it is waiting on the plan
@@ -370,7 +379,11 @@ test("not signed in, the compactor runs on the next engine and says so; a token 
 test("both compactor engines send the same input: openai-plan's parts are claude-code's blocks, cut at 50k / 80k / 100k", async () => {
   const secrets = memorySecrets();
   const e = await signedIn(secrets);
-  const compact = await Effect.runPromise(openAiPlanCompactor({ effort: "low", log: () => Effect.void, model: "gpt-6-luna" }).pipe(Effect.provide(plan(e, secrets))));
+  const compact = await Effect.runPromise(
+    Effect.gen(function* () {
+      return openAiPlanCompactor({ effort: "low", log: () => Effect.void, model: "gpt-6-luna", plan: yield* OpenAiPlan });
+    }).pipe(Effect.provide(plan(e, secrets))),
+  );
   const job: Job = { ctx: Array.from({ length: 3000 }, (_, k) => `user: line ${k} ${"y".repeat(40)}`), i: 3000, l: 0, msg: newMsg(3000, "user", "hi\nthere") };
   fake.state.seen.length = 0;
   await Effect.runPromise(compact(job, null));

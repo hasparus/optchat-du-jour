@@ -13,6 +13,10 @@ export { Kind, Msg } from "./records.ts";
 export const Phase = Schema.Literals(["idle", "running", "waiting"]);
 export type Phase = typeof Phase.Type;
 
+// an engine of the compactor's chains that is down right now, and why
+export const Down = Schema.Struct({ ref: Schema.String, reason: Schema.String });
+export type Down = typeof Down.Type;
+
 export const SessionState = Schema.Struct({
   phase: Phase,
   device: Schema.String, // where the next or current turn runs
@@ -21,7 +25,10 @@ export const SessionState = Schema.Struct({
   viewBytes: Schema.Number,
   budget: Schema.Number,
   messages: Schema.Number,
-  queued: Schema.Array(Schema.String), // sent mid-run, not taken by the call yet
+  // Every message the server holds and has not logged: waiting for a turn or for summaries, or
+  // offered to the running call and not taken yet. `clientId`: the id its client sent it with.
+  pending: Schema.Array(Schema.Struct({ clientId: Schema.NullOr(Schema.String), text: Schema.String })),
+  down: Schema.Array(Down), // compactor engines down right now, with why (SPEC "Policy": never unseen)
 });
 export type SessionState = typeof SessionState.Type;
 
@@ -71,7 +78,8 @@ export const ViewLine = Schema.Struct({
 });
 export type ViewLine = typeof ViewLine.Type;
 
-export const View = Schema.Struct({ budget: Schema.Number, lines: Schema.Array(ViewLine), size: Schema.Number });
+// `text`: the view rendered as the model gets it
+export const View = Schema.Struct({ budget: Schema.Number, lines: Schema.Array(ViewLine), size: Schema.Number, text: Schema.String });
 export type View = typeof View.Type;
 
 // /api/node: a message (level 0), or a node and its two children
@@ -88,8 +96,16 @@ export const NodeView = Schema.Union([
 ]);
 export type NodeView = typeof NodeView.Type;
 
-// /api/devices
-export const Device = Schema.Struct({ name: Schema.String, url: Schema.String, folders: Schema.Array(Schema.String), local: Schema.Boolean });
+// /api/devices: each configured device; `local`, the server's own machine; `refused`, a runner that
+// is up but answered 403 (its callers or the server's node name are misconfigured)
+export const Device = Schema.Struct({
+  name: Schema.String,
+  url: Schema.String,
+  folders: Schema.Array(Schema.String),
+  local: Schema.Boolean,
+  status: Schema.Literals(["online", "offline", "refused"]),
+  claudeVersion: Schema.NullOr(Schema.String),
+});
 export type Device = typeof Device.Type;
 export const Devices = Schema.Array(Device);
 

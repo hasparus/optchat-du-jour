@@ -16,12 +16,12 @@ import { parseArgs } from "node:util";
 import { makeBudget } from "../src/apikey/budget.ts";
 import { ApiKeys, apiKeysLayer } from "../src/apikey/clients.ts";
 import { openChat } from "../src/chat.ts";
-import { LocalRunner } from "../src/claude/process.ts";
+import { LocalRunner, Runner } from "../src/claude/process.ts";
 import type { Summarize } from "../src/compactor.ts";
 import { NODE, type Settings, loadSettings, parseRef } from "../src/config.ts";
 import { parseOptmem } from "../src/import.ts";
 import { zoom } from "../src/mcp.ts";
-import { openAiPlanLayer } from "../src/openai/responses.ts";
+import { OpenAiPlan, openAiPlanLayer } from "../src/openai/responses.ts";
 import { HOME } from "../src/paths.ts";
 import type { Kind } from "../src/records.ts";
 import { SecretsLive } from "../src/secrets.ts";
@@ -35,7 +35,7 @@ export type Message = { readonly kind: Kind; readonly text: string };
 export type Contender = { readonly name: string; readonly byLevel: Settings["compactor"]["byLevel"] };
 
 // "name=ref,ref" for one chain at every level, or "name=0:ref,ref;3:ref,ref" per level; each ref
-// one this build runs as a compactor
+// decoded as the config decodes it
 export function parseContender(spec: string): Contender {
   const eq = spec.indexOf("=");
   if (eq <= 0) throw new Error(`--chain ${spec}: expected name=chain`);
@@ -45,9 +45,9 @@ export function parseContender(spec: string): Contender {
     .map((part) => {
       const m = /^(\d+):(?=[a-z])/.exec(part);
       const refs = (m ? part.slice(m[0].length) : part).split(",").map((r) => {
-        const parsed = parseRef("compactor", r.trim());
+        const parsed = parseRef(r.trim());
         if (Result.isFailure(parsed)) throw new Error(`--chain ${spec}: ${parsed.failure}`);
-        return r.trim();
+        return parsed.success;
       });
       const [first, ...rest] = refs;
       if (first === undefined) throw new Error(`--chain ${spec}: an empty chain`);
@@ -347,12 +347,16 @@ const main = Effect.gen(function* () {
   const settings = yield* loadSettings(Bun.env.OPTCHAT_CONFIG ?? `${root}optchat.config.ts`);
   const messages = yield* readSource(values.from, n, skip);
   const kinds = values.kinds.split(",").map((k) => Schema.decodeUnknownSync(Schema.Literals(["user", "talk", "tool", "echo", "note"]))(k));
-  const engines = Layer.mergeAll(LocalRunner, openAiPlanLayer(settings.openai, { report: (m) => Console.error(m) }).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer]))).pipe(
-    Layer.provide(BunServices.layer),
-  );
-  // api-key contenders: the real keys, and every call counted against the month's budget like the server's
-  const clients = Context.get(yield* Layer.build(apiKeysLayer(settings.apiKey).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer]))), ApiKeys);
-  const budget = makeBudget({ monthly: settings.apiKey?.monthlyBudget ?? 0, report: (m) => Console.error(m), usagePath: `${HOME}/usage.jsonl` });
+  const outside = Layer.mergeAll(SecretsLive, FetchHttpClient.layer);
+  const scope = yield* Effect.scope;
+  const plan = yield* Effect.cached(Layer.buildWithScope(openAiPlanLayer(settings.openai, { report: (m) => Console.error(m) }).pipe(Layer.provide(outside)), scope).pipe(Effect.map((c) => Context.get(c, OpenAiPlan))));
+  const apiKeys = yield* Effect.cached(Layer.buildWithScope(apiKeysLayer(settings.apiKey).pipe(Layer.provide(outside)), scope).pipe(Effect.map((c) => Context.get(c, ApiKeys))));
+  const runner = Context.get(yield* Layer.build(LocalRunner.pipe(Layer.provide(BunServices.layer))), Runner);
+  // api-key contenders: the real keys, and every call counted against the month's budget like the
+  // server's, and appended to its usage.jsonl too, so a server started later counts what this spent
+  const usagePath = `${HOME}/usage.jsonl`;
+  const budget = makeBudget({ monthly: settings.apiKey?.monthlyBudget ?? 0, report: (m) => Console.error(m), usagePath });
+  const spend = (r: UsageRecord) => (r.auth === "api-key" ? logUsage(usagePath, r).pipe(Effect.flatMap((e) => (e ? Console.error(e) : Effect.void))) : Effect.void);
   const rows: Measured[] = [];
   for (const contender of contenders.success) {
     yield* Console.error(`${contender.name}: replaying ${messages.length} messages`);
@@ -360,10 +364,17 @@ const main = Effect.gen(function* () {
       contender,
       deadline: Duration.minutes(deadline),
       messages,
-      summarizeFor: (c, log, report) => makeSummarize({ apiKey: { budget, clients }, log: (r) => budget.note(r).pipe(Effect.andThen(log(r))), report, settings: { ...settings, compactor: { ...settings.compactor, byLevel: c.byLevel } } }).pipe(
-          Effect.map((m) => m.summarize),
-        ),
-    }).pipe(Effect.provide(engines));
+      summarizeFor: (c, log, report) =>
+        makeSummarize({
+          apiKeys,
+          budget,
+          log: (r) => budget.note(r).pipe(Effect.andThen(log(r)), Effect.andThen(spend(r))),
+          plan,
+          report,
+          runner,
+          settings: { ...settings, compactor: { ...settings.compactor, byLevel: c.byLevel } },
+        }).pipe(Effect.map((m) => m.summarize)),
+    });
     for (const r of replayed.reports) yield* Console.error(`${contender.name}: ${r}`);
     rows.push(yield* measure(replayed, messages, { answerer: lexicalAnswerer, kinds, questions: questionCount }));
   }

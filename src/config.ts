@@ -1,7 +1,7 @@
 // The gist's constants (gist §1) and the reference's timings (ref §2, §7). Sizes are UTF-8
 // bytes, cache marks are characters. Everything that may differ per machine is in
 // optchat.config.ts instead.
-import { Data, Effect, Result, Schema } from "effect";
+import { Data, Effect, Result, Schema, SchemaIssue, SchemaTransformation } from "effect";
 import { Endpoints } from "./openai/endpoints.ts";
 import { Engine } from "./usage.ts";
 
@@ -42,8 +42,42 @@ const Ttl = Schema.Literals(["1h", "5m"]);
 export const McpTransport = Schema.Literals(["ws", "http"]);
 export type McpTransport = typeof McpTransport.Type;
 const Effort = Schema.Literals(["low", "medium", "high", "xhigh", "max"]);
-// "engine:model", e.g. "claude-code:opus"; parseRef says whether this build runs it as a role
-const EngineRef = Schema.String.check(Schema.isPattern(new RegExp(`^(${Engine.literals.join("|")}):.+$`)));
+
+// An engine of a chain (E4, E5), written "engine:model" ("claude-code:opus"), decoded once with the
+// settings: the engine, the model it is given, and `ref`, the text as written, which names the
+// engine in notices and usage.jsonl. An api-key ref names its provider too
+// ("api-key:anthropic/claude-opus-5-5"), and `model` is that provider's model id.
+const Model = { model: Schema.String, ref: Schema.String };
+const RefValue = Schema.Union([
+  Schema.Struct({ engine: Schema.Literals(["claude-code", "openai-plan"]), ...Model }),
+  Schema.Struct({ engine: Schema.Literal("api-key"), provider: Schema.Literals(["anthropic", "openai"]), ...Model }),
+]);
+export type Ref = typeof RefValue.Type;
+export type ApiKeyRef = Extract<Ref, { readonly engine: "api-key" }>;
+
+export const parseRef = (ref: string): Result.Result<Ref, string> => {
+  const [engine = "", model = ""] = ref.split(/:(.*)/s);
+  if (model === "") return Result.fail(`engine ${ref}: expected engine:model`);
+  if (engine === "claude-code" || engine === "openai-plan") return Result.succeed({ engine, model, ref });
+  if (engine !== "api-key") return Result.fail(`engine ${ref}: no such engine (${Engine.literals.join(", ")})`);
+  const [, provider, id] = /^(anthropic|openai)\/(.+)$/.exec(model) ?? [];
+  if ((provider !== "anthropic" && provider !== "openai") || id === undefined) return Result.fail(`${ref} must be api-key:anthropic/<model> or api-key:openai/<model>`);
+  return Result.succeed({ engine, model: id, provider, ref });
+};
+
+const EngineRef = Schema.String.pipe(
+  Schema.decodeTo(
+    RefValue,
+    SchemaTransformation.transformEffect({
+      decode: (text, options) =>
+        Result.match(parseRef(text), {
+          onFailure: (message) => Effect.fail(new SchemaIssue.InvalidValue({ message }, text, options)),
+          onSuccess: Effect.succeed,
+        }),
+      encode: (r) => Effect.succeed(r.ref),
+    }),
+  ),
+);
 const Chain = Schema.NonEmptyArray(EngineRef);
 // dollars per million tokens (SPEC "Usage and cost tracking"); cache writes per TTL, Anthropic only
 const Price = Schema.Struct({
@@ -93,35 +127,12 @@ export type Settings = typeof Settings.Type;
 
 // typed authoring of optchat.config.ts
 export const defineConfig = (settings: typeof Settings.Encoded) => settings;
+// settings from their written form, for settings built in code (tests, dev scripts); throws
+export const parseSettings = Schema.decodeSync(Settings);
 
 export const MASTER_TOOLS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "WebFetch", "WebSearch"];
 
 export class ConfigError extends Data.TaggedError("ConfigError")<{ readonly message: string }> {}
-
-// the engines this build can run, per role; a chain naming another is a configuration error, not a failover
-export const IMPLEMENTED = {
-  compactor: ["claude-code", "openai-plan", "api-key"],
-  master: ["claude-code", "openai-plan", "api-key"],
-} as const satisfies Record<string, readonly (typeof Engine.Type)[]>;
-export type Role = keyof typeof IMPLEMENTED;
-export type Ref<R extends Role> = { readonly engine: (typeof IMPLEMENTED)[R][number]; readonly model: string };
-
-// "api-key:anthropic/claude-opus-5-5" → the provider and its model id
-export const API_KEY_REF = /^api-key:(anthropic|openai)\/(.+)$/;
-export const apiKeyRef = (ref: string) => {
-  const m = API_KEY_REF.exec(ref);
-  return m?.[1] === "anthropic" || m?.[1] === "openai" ? { model: m[2] ?? "", provider: m[1] } : null;
-};
-
-// "engine:model" for a role: an engine this build runs as that role, and a model
-export const parseRef = <R extends Role>(role: R, ref: string): Result.Result<Ref<R>, string> => {
-  const [name = "", model = ""] = ref.split(/:(.*)/s);
-  const engine = IMPLEMENTED[role].find((e) => e === name);
-  if (model === "") return Result.fail(`engine ${ref}: expected engine:model`);
-  if (engine === undefined) return Result.fail(`engine ${ref} is not implemented yet as a ${role}`);
-  if (engine === "api-key" && !apiKeyRef(ref)) return Result.fail(`${ref} must be api-key:anthropic/<model> or api-key:openai/<model>`);
-  return Result.succeed({ engine, model });
-};
 
 const decodeSettings = Schema.decodeUnknownEffect(Settings);
 // what `import` of optchat.config.ts gives: its default export is checked against Settings next
@@ -133,18 +144,10 @@ export const loadSettings = (path: string) =>
       catch: (cause) => new ConfigError({ message: `cannot load ${path}: ${cause instanceof Error ? cause.message : String(cause)}` }),
       try: async () => decodeModule(await import(path)).default,
     });
+    // every engine ref is decoded here, so nothing after this parses one again
     const settings = yield* decodeSettings(module).pipe(
       Effect.mapError((e) => new ConfigError({ message: `${path}: ${e.message}` })),
     );
-    const roles: readonly { readonly refs: readonly string[]; readonly role: Role }[] = [
-      { refs: settings.master.chain, role: "master" },
-      { refs: settings.compactor.byLevel.flatMap((b) => b.chain), role: "compactor" },
-    ];
-    for (const { refs, role } of roles)
-      for (const ref of refs) {
-        const parsed = parseRef(role, ref);
-        if (Result.isFailure(parsed)) return yield* new ConfigError({ message: `${path}: ${parsed.failure}` });
-      }
     // Anthropic takes at most 4 marks, and 1-hour entries must come before 5-minute ones
     const ttls = settings.cache.apiKeyTtls;
     if (ttls.length > 4 || ttls.some((t, k) => t === "1h" && ttls.slice(0, k).includes("5m")))

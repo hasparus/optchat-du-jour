@@ -5,17 +5,18 @@
 // has taken the request. A turn never waits for it (E17). `warm` tells a device's Runner which
 // two spawns come next, so it can start them ahead (E18). What each claude shows of the MCP server
 // optchat goes to the device's transport, which may fall back from ws to http (E8).
-import { Clock, Effect, Option, Queue, Semaphore } from "effect";
+import { Clock, Effect, Option, Semaphore } from "effect";
 import { baseArgs } from "../claude/args.ts";
 import type { Assistant, Block, Event, Init, StreamEvent, Usage, User } from "../claude/events.ts";
 import type { Claude, Runner, Spawn } from "../claude/process.ts";
-import { CAP, PRIME_TIMEOUT } from "../config.ts";
+import { cap } from "../cap.ts";
+import { PRIME_TIMEOUT } from "../config.ts";
 import { type DeviceOffline, fromResult, ModelError } from "../engines/errors.ts";
 import type { McpSeen } from "../mcp.ts";
 import type { StoreError } from "../store.ts";
 import { isCold, tokensOf, type UsageRecord } from "../usage.ts";
 import { cutBlocks } from "../view.ts";
-import { openingText, type Sent, type TurnEngine, type TurnEvents } from "./engine.ts";
+import { type Mid, openingText, type TurnEngine, type TurnEvents } from "./engine.ts";
 
 type Ttl = "1h" | "5m";
 
@@ -42,6 +43,9 @@ export type ClaudeCodeTurnOptions = {
   readonly runnerFor: (device: string) => Effect.Effect<Placement, DeviceOffline>;
   readonly report: (message: string) => Effect.Effect<void>;
   readonly logUsage: TurnEvents["usage"];
+  // the first engine of the master's chain: the session has only its spawns started ahead (E18),
+  // so only it starts them again when a device moves to another MCP transport
+  readonly lead: boolean;
 };
 
 // One argv for the turn and its priming call: any difference between the two would cost the
@@ -54,16 +58,6 @@ export const masterArgs = (o: Pick<ClaudeCodeTurnOptions, "effort" | "model" | "
   o.permissionMode,
   "--replay-user-messages",
 ];
-
-// A tool result as the log keeps it: at most CAP characters, the head and the tail, with what
-// was cut in between (gist §7, ref §5.3).
-export function cap(full: string): string {
-  const over = full.length - CAP;
-  if (over <= 0) return full;
-  const keep = CAP / 2;
-  const head = full.slice(0, keep), tail = full.slice(full.length - keep);
-  return `${head}\n[… ${over} chars cut …]\n${tail}`;
-}
 
 const text = (t: string): Block => ({ text: t, type: "text" });
 
@@ -93,8 +87,9 @@ const resultText = (content: ResultContent) => {
 export const mcpStatus = (e: typeof Init.Type) => e.mcp_servers?.find(({ name }) => name === "optchat")?.status ?? "not listed";
 
 // Stream events to log entries, in stream order (ref §5.3). Live text goes out as it streams;
-// a thought only by its size. Replays: see onReplay. `mcp` hears optchat's status from init.
-export function makeMapper(out: TurnEvents, sent: Sent[], mcp: (status: string) => Effect.Effect<void>) {
+// a thought only by its size. Replays: see onReplay; `passed` is what went to stdin after the
+// opening message, oldest first. `mcp` hears optchat's status from init.
+export function makeMapper(out: TurnEvents, passed: Mid[], mcp: (status: string) => Effect.Effect<void>) {
   let openingSeen = false;
   let thoughtChars = 0;
 
@@ -128,18 +123,14 @@ export function makeMapper(out: TurnEvents, sent: Sent[], mcp: (status: string) 
 
   // Claude Code echoes each user message as it takes it. The opening message comes back first and
   // the session logged it before the call. Mid-run messages come back in the order they went to
-  // stdin, so each later echo is the oldest one in `sent` still waiting.
+  // stdin, so each later echo is the oldest one passed and not echoed yet: taken now.
   const onReplay = () => {
     if (!openingSeen) {
       openingSeen = true;
       return Effect.void;
     }
-    for (const waiting of sent) {
-      if (waiting.taken) continue;
-      waiting.taken = true;
-      return out.log("user", waiting.text);
-    }
-    return Effect.void; // an echo of something we never sent: nothing to log
+    const taken = passed.shift();
+    return taken ? out.took(taken) : Effect.void; // an echo of something we never sent: nothing to log
   };
 
   const onUser = (e: User) => {
@@ -240,11 +231,13 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
       );
 
     // What one claude shows of optchat goes to its device's transport (E8): init's status, or why
-    // it ended before any init. A device moved to another transport is warmed again, so its next
-    // spawns, with the new --mcp-config, find processes started ahead and the stale ones close.
+    // it ended before any init. A device moved to another transport is warmed again by the lead
+    // engine, so its next spawns, with the new --mcp-config, find processes started ahead and the
+    // stale ones close. Another engine's move leaves them to the session's next warm, when it goes
+    // idle: started now, its own spawns would take the lead's place.
     const mcpWatch = (device: string, p: Placement) => {
       let init = false;
-      const tell = (seen: McpSeen) => p.mcpSeen(seen).pipe(Effect.flatMap((moved) => (moved ? warm(device) : Effect.void)));
+      const tell = (seen: McpSeen) => p.mcpSeen(seen).pipe(Effect.flatMap((moved) => (moved && o.lead ? warm(device) : Effect.void)));
       return {
         ended: (e: ModelError) => Effect.suspend(() => (init ? Effect.void : tell({ ended: e.message }))),
         init: (status: string) =>
@@ -265,25 +258,19 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
         // the view exactly as priming cut it, with no marks: Claude Code's own marks are on (D2)
         // the new messages, a blank line apart (ref §5.1), and after a failover what came before
         yield* claude.send([...cutBlocks(input.view).map(text), text(openingText(input))]);
-        // after a failover, the mid-run messages the engine before never took: replayed in order
-        for (const s of input.sent) if (!s.taken) yield* claude.send([text(s.text)]);
 
-        // Mid-run messages go to stdin as they come, each recorded in `sent` as it goes. Once
-        // taken from the queue it is in `sent` before anything can interrupt, so the session
-        // finds every message either in the queue or in `sent`.
-        yield* Effect.uninterruptibleMask((restore) =>
-          restore(Queue.take(input.steer)).pipe(
-            Effect.tap((t) =>
-              Effect.sync(() => {
-                input.sent.push({ taken: false, text: t });
-              }),
-            ),
-            Effect.flatMap((t) => claude.send([text(t)])),
-          ),
-        ).pipe(Effect.forever, Effect.forkScoped);
+        // Mid-run messages go to stdin as they are offered (after a failover, first the ones the
+        // engine before never took), each noted as passed before it is written, so its echo can
+        // name it. One never echoed stays the session's: it gets it back when the call ends.
+        const passed: Mid[] = [];
+        yield* input.mid.next.pipe(
+          Effect.flatMap((m) => Effect.suspend(() => (passed.push(m), claude.send([text(m.text)])))),
+          Effect.forever,
+          Effect.forkScoped,
+        );
 
         const mcp = mcpWatch(input.device, placement);
-        const map = makeMapper(out, input.sent, mcp.init);
+        const map = makeMapper(out, passed, mcp.init);
         let opening: Usage | undefined;
         const each = (e: Event) => {
           if (opening === undefined && e.type === "stream_event" && e.event.type === "message_start") opening = e.event.message.usage;

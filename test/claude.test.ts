@@ -23,7 +23,8 @@ import { newMsg } from "../src/store.ts";
 import { blocks, claudeCodeCompactor } from "../src/summarize/claude-code.ts";
 import { retryText } from "../src/summarize/step.ts";
 import { built, bytes, dayOf, getNode } from "../src/tree.ts";
-import { cap, claudeCodeTurn, masterArgs } from "../src/turn/claude-code.ts";
+import { cap } from "../src/cap.ts";
+import { claudeCodeTurn, masterArgs } from "../src/turn/claude-code.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
 import type { UsageRecord } from "../src/usage.ts";
 
@@ -255,6 +256,7 @@ type RigOptions = {
   readonly seed?: number;
   readonly commit?: Effect.Effect<string | null>;
   readonly warm?: WarmOptions; // the fake behind a pool of warm processes
+  readonly lead?: boolean; // the engine is the first of the master's chain (default)
 };
 
 const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
@@ -272,6 +274,7 @@ const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
     const transports = mcpTransports("ws", report);
     const options = {
       effort: "high",
+      lead: o.lead ?? true,
       logUsage: (r: UsageRecord) => Effect.sync(() => usage.push(r)),
       model: "opus",
       permissionMode: "bypassPermissions",
@@ -382,7 +385,7 @@ test("a message sent while a tool runs is taken at the tool boundary and logged 
         ["user", "second"],
         ["talk", "Both done."],
       ]);
-      expect(r.session.state().queued).toEqual([]);
+      expect(r.session.state().pending).toEqual([]);
     }),
   );
   const [call] = f.of("turn");
@@ -430,7 +433,7 @@ test("a cancel kills the call and logs what it never took as unanswered user mes
         ["talk", "working on it"],
         ["user", "never mind"],
       ]);
-      expect(r.session.state().queued).toEqual([]);
+      expect(r.session.state().pending).toEqual([]);
     }),
   );
 });
@@ -920,6 +923,24 @@ test("a claude that rejects the ws config and ends before init moves its device 
         ["talk", "ok"],
       ]);
       expect(r.reports).toHaveLength(2);
+    }),
+  );
+});
+
+test("an engine that is not the chain's lead leaves the warm processes to the session's next warm after a transport move", async () => {
+  const f = scripted({}, { FAKE_CLAUDE_NO_WS: "1" });
+  await run(
+    f,
+    Effect.gen(function* () {
+      const r = yield* rig(f, { lead: false, prime: true, seed: 3, warm: { retry: "1 hour" } });
+      yield* r.session.primeSoon;
+      yield* until("the fallback", () => r.reports.length === 2);
+      yield* Effect.sleep("300 millis");
+      expect(f.of("turn").some(overHttp)).toBe(false); // its own spawns would have taken the lead's place
+      // the session warms its lead when it goes idle after the next turn
+      yield* r.session.input("hello");
+      yield* r.finished(1);
+      yield* until("a warm http process besides the turn's own", () => f.of("turn").some((t) => overHttp(t) && alive(t.pid)) && f.of("turn").filter(overHttp).length >= 2);
     }),
   );
 });

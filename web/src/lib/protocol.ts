@@ -75,7 +75,7 @@ const decodeFrame = Schema.decodeUnknownOption(Schema.fromJsonString(Inbound));
 export const parseFrame = (frame: string): Option.Option<Inbound> => decodeFrame(frame);
 
 // What a client sends: AG-UI's RunAgentInput, whose user message (with its id, which the server
-// acks) is the one to answer, and an abort (server/app.ts Inbound)
+// acks) is the one to answer, and an abort (server/routes/ws.ts Inbound)
 export const runInput = (text: string, device: string | null, id: string) =>
   JSON.stringify({
     context: [],
