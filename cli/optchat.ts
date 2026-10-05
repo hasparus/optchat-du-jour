@@ -3,7 +3,8 @@
 // default http://127.0.0.1:7700). The rest run once and exit: `view` reads the data dir without
 // taking the lock, `import-optmem` fills an empty chat from OptMem's notes, `login openai` signs
 // in with ChatGPT for the openai-plan engine and `key anthropic|openai` saves an API key for the
-// api-key engine, both into Secrets.
+// api-key engine, both into Secrets. `server` and `device NAME` start the long-running processes
+// (server/main.ts, device/main.ts), so one command on PATH (`bun link`) covers everything.
 import { BunRuntime } from "@effect/platform-bun";
 import { Cause, Console, Data, Effect, Predicate } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -17,7 +18,7 @@ import { streamDir } from "../src/paths.ts";
 import { loadChat } from "../src/store.ts";
 import { stats, render } from "../src/view.ts";
 
-const USAGE = "usage: optchat [view | import-optmem [LOG.txt] | login openai | key anthropic|openai]   (server: $OPTCHAT_URL; data dir: $OPTCHAT_DIR or ~/.optchat/streams/mini)";
+const USAGE = "usage: optchat [server | device NAME | view | import-optmem [LOG.txt] | login openai | key anthropic|openai]   (server: $OPTCHAT_URL; data dir: $OPTCHAT_DIR or ~/.optchat/streams/mini)";
 const [cmd, arg] = [process.argv[2], process.argv[3]];
 const dir = streamDir("mini");
 
@@ -95,17 +96,24 @@ const reason = (cause: Cause.Cause<{ readonly message: string }>) => {
   return Predicate.hasProperty(thrown, "message") && Predicate.isString(thrown.message) ? thrown.message : String(thrown);
 };
 
-BunRuntime.runMain(
-  command.pipe(
-    Effect.catchCause((cause) =>
-      Console.error(`optchat: ${reason(cause)}`).pipe(
-        Effect.andThen(
-          Effect.sync(() => {
-            process.exitCode = 1;
-          }),
+// the long-running processes run their own main; NAME is the device as in optchat.config.ts
+if (cmd === "server") await import("../server/main.ts");
+else if (cmd === "device") {
+  if (arg !== undefined) Bun.env.OPTCHAT_DEVICE = arg;
+  await import("../device/main.ts");
+} else {
+  BunRuntime.runMain(
+    command.pipe(
+      Effect.catchCause((cause) =>
+        Console.error(`optchat: ${reason(cause)}`).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              process.exitCode = 1;
+            }),
+          ),
         ),
       ),
     ),
-  ),
-  { disableErrorReporting: true },
-);
+    { disableErrorReporting: true },
+  );
+}

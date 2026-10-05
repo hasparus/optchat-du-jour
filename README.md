@@ -27,16 +27,19 @@ You need Bun, ffmpeg (for video), the `claude` CLI logged in on each machine tha
 and Tailscale. The server listens on 127.0.0.1; `tailscale serve --bg --https=443 http://127.0.0.1:7700`
 publishes it. First edit `optchat.config.ts`: `devices`, `defaultDevice`, `allowedLogins` (your
 Tailscale login; an empty list refuses everyone) and, if turns run on another machine,
-`server.publicUrl`. Optional: `bun cli/optchat.ts login openai` for the ChatGPT plan,
-`bun cli/optchat.ts key anthropic|openai` for API keys.
+`server.publicUrl`.
 
 ```sh
 bun install
-bun run build                               # once: the web app into web/dist, which the server serves
-bun server/main.ts                          # data in ~/.optchat; the web app at http://127.0.0.1:7700
-bun cli/optchat.ts                          # the REPL (OPTCHAT_URL to point elsewhere)
-OPTCHAT_DEVICE=macbook bun device/main.ts   # a device runner, named as in optchat.config.ts
+bun link                  # puts `optchat` on PATH (~/.bun/bin), pointing at this checkout
+bun run build             # once: the web app into web/dist, which the server serves
+optchat server            # data in ~/.optchat; the web app at http://127.0.0.1:7700
+optchat                   # the REPL (OPTCHAT_URL to point elsewhere)
+optchat device macbook    # a device runner, named as in optchat.config.ts
 ```
+
+The other engines are optional: `optchat login openai` for the ChatGPT plan,
+`optchat key anthropic|openai` for API keys.
 
 ## Develop
 

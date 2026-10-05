@@ -40,7 +40,7 @@ beforeAll(async () => {
     server: { host: "127.0.0.1", port, publicUrl: PUBLIC },
   };
   writeFileSync(env.OPTCHAT_CONFIG, `export default ${JSON.stringify(settings)};\n`);
-  server = Bun.spawn(["bun", `${ROOT}server/main.ts`], { env, stderr: "pipe", stdout: "pipe" });
+  server = Bun.spawn(["bun", `${ROOT}cli/optchat.ts`, "server"], { env, stderr: "pipe", stdout: "pipe" }); // as `optchat server`
   for (let k = 0; k < 100; k++) {
     const up = await fetch(`${base}/api/state`).then(
       (r) => r.ok,
