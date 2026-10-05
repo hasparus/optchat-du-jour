@@ -24,7 +24,7 @@ const saved = { claude: Bun.env.OPTCHAT_CLAUDE, log: Bun.env.FAKE_CLAUDE_LOG, sc
 afterAll(async () => {
   // the device's claude inherits this process's env; leave it as the other suites expect it
   for (const [k, v] of [["OPTCHAT_CLAUDE", saved.claude], ["FAKE_CLAUDE_LOG", saved.log], ["FAKE_CLAUDE_SCRIPT", saved.script]] as const)
-    if (v === undefined) delete Bun.env[k];
+    if (v === undefined) Reflect.deleteProperty(Bun.env, k);
     else Bun.env[k] = v;
   await fake.server.stop(true);
   rmSync(home, { force: true, recursive: true });
@@ -52,21 +52,30 @@ const Queued = Schema.Struct({ queued: Schema.Array(Schema.String) });
 const Start = Schema.Struct({ type: Schema.Literal("start"), role: Schema.String, argv: Schema.Array(Schema.String) });
 const decodeStart = Schema.decodeUnknownOption(Schema.fromJsonString(Start));
 
+const until = async (what: string, done: () => boolean) => {
+  const end = Date.now() + 10_000;
+  while (!done()) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await Bun.sleep(20);
+  }
+};
+
 // one /ws client for the whole test
 const client = async (url: string) => {
   const ws = new WebSocket(url);
   const events: Event[] = [];
-  ws.addEventListener("message", (m) => events.push(decodeEvent(String(m.data))));
+  ws.addEventListener("message", (m) => {
+    events.push(decodeEvent(String(m.data)));
+  });
   await new Promise((resolve) => {
     ws.addEventListener("open", resolve, { once: true });
   });
-  const send = (text: string, device = "macbook") => ws.send(JSON.stringify({ forwardedProps: { device }, messages: [{ content: text, role: "user" }] }));
-  const until = async (what: string, done: () => boolean) => {
-    for (const end = Date.now() + 10_000; !done(); await Bun.sleep(20)) if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+  const send = (text: string, device = "macbook") => {
+    ws.send(JSON.stringify({ forwardedProps: { device }, messages: [{ content: text, role: "user" }] }));
   };
   const ended = () => events.filter((e) => e.type === "RUN_FINISHED" || e.type === "RUN_ERROR");
   const infos = () => events.flatMap((e) => (e.name === "info" && Schema.is(Schema.String)(e.value) ? [e.value] : []));
-  return { ended, events, infos, send, until, ws };
+  return { ended, events, infos, send, ws };
 };
 
 test("a spent Claude plan moves the turn to openai-plan, which reads a file on the device and answers once; a mid-run message joins before its next request", async () => {
@@ -116,7 +125,12 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
       summarize: () => Effect.fail(new CompactError({ message: "no compactor in this test" })),
     }),
   );
-  const log = async () => Schema.decodeUnknownSync(Entries)(await (await fetch(`http://127.0.0.1:${port}/api/messages`)).json()).entries.map((e) => [e.kind, e.text]);
+  const get = async (path: string) => {
+    const response = await fetch(`http://127.0.0.1:${port}${path}`);
+    return response.text();
+  };
+  const queued = async () => Schema.decodeUnknownSync(Schema.fromJsonString(Queued))(await get("/api/state")).queued;
+  const log = async () => Schema.decodeUnknownSync(Schema.fromJsonString(Entries))(await get("/api/messages")).entries.map((e) => [e.kind, e.text]);
 
   await Effect.runPromise(
     Effect.scoped(
@@ -126,7 +140,7 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
         const read = JSON.stringify({ file_path: "notes.txt" });
         fake.state.script = [{ calls: [{ arguments: read, name: "Read" }], text: "Let me look." }, { text: "The note says: buy milk." }];
         c.send("what does my note say?");
-        yield* Effect.promise(async () => c.until("the first turn", () => c.ended().length === 1));
+        yield* Effect.promise(async () => until("the first turn", () => c.ended().length === 1));
         expect(c.ended()[0]?.type).toBe("RUN_FINISHED");
 
         const echo = "     1\tbuy milk\n     2\tfix the boiler";
@@ -138,7 +152,7 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
           ["talk", "The note says: buy milk."],
         ]);
         expect(c.infos().filter((m) => m.startsWith("claude-code:opus → openai-plan:gpt-sol: Claude AI usage limit reached"))).toHaveLength(1);
-        expect(c.events.flatMap((e) => (e.type === "TEXT_MESSAGE_CONTENT" ? [e.delta] : [])).join("")).toContain("The note says: buy milk.");
+        expect(c.events.flatMap((e) => (e.type === "TEXT_MESSAGE_CONTENT" && Schema.is(Schema.String)(e.delta) ? [e.delta] : [])).join("")).toContain("The note says: buy milk.");
 
         const usage = readUsage(`${home}/usage.jsonl`).filter((r) => r.role === "turn");
         expect(usage.map((r) => [r.engine, r.auth, r.failoverFrom, r.device])).toEqual([
@@ -153,22 +167,21 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
         const argv = turn?.argv ?? [];
         expect(first?.instructions).toBe(argv[argv.indexOf("--system-prompt") + 1] ?? "");
         expect(first?.tools.map((t) => t.name)).toEqual(["Read", "Glob", "Grep", "zoom", "date"]);
-        const opening = first?.input[0]?.content;
-        expect(Array.isArray(opening) ? opening.map((p) => p.text) : []).toEqual(["<chat>\n</chat>", "what does my note say?"]);
+        const opening = first?.input[0]?.content ?? "";
+        expect(Schema.is(Schema.String)(opening) ? [opening] : opening.map((p) => p.text)).toEqual(["<chat>\n</chat>", "what does my note say?"]);
         expect(second?.input.map((i) => i.type ?? i.role)).toEqual(["user", "assistant", "function_call", "function_call_output"]);
         expect(second?.input.at(-1)?.output).toBe(echo);
 
         // a message sent while openai-plan's request is in flight: after the tool results, before the next request
         fake.state.seen.length = 0;
-        const gate = Promise.withResolvers<undefined>();
+        const gate = Promise.withResolvers<null>();
         fake.state.script = [{ calls: [{ arguments: JSON.stringify({ pattern: "*.txt" }), name: "Glob" }], gate: gate.promise }, { text: "Both answered." }];
         c.send("list my notes");
-        yield* Effect.promise(async () => c.until("openai-plan's first request", () => fake.state.seen.length === 1));
+        yield* Effect.promise(async () => until("openai-plan's first request", () => fake.state.seen.length === 1));
         c.send("and say hi");
-        const queued = async () => Schema.decodeUnknownSync(Queued)(await (await fetch(`http://127.0.0.1:${port}/api/state`)).json()).queued;
         for (let k = 0; k < 100 && !(yield* Effect.promise(queued)).includes("and say hi"); k++) yield* Effect.sleep("20 millis");
-        gate.resolve(undefined);
-        yield* Effect.promise(async () => c.until("the second turn", () => c.ended().length === 2));
+        gate.resolve(null);
+        yield* Effect.promise(async () => until("the second turn", () => c.ended().length === 2));
         expect(c.ended()[1]?.type).toBe("RUN_FINISHED");
         expect((yield* Effect.promise(log)).slice(5)).toEqual([
           ["user", "list my notes"],
