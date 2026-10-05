@@ -43,9 +43,11 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-function start(log: readonly Entry[] = LOG, from = 0, uploader?: Uploader) {
+// `stateless`: the server's greeting holds the log only, as before its first STATE_SNAPSHOT arrives
+function start(log: readonly Entry[] = LOG, from = 0, uploader?: Uploader, stateless = false) {
   let entries = [...log];
-  const greeting = (): Inbound[] => [snapshot(entries, from), { snapshot: { ...IDLE, messages: from + entries.length }, type: EventType.STATE_SNAPSHOT }];
+  const greeting = (): Inbound[] =>
+    stateless ? [snapshot(entries, from)] : [snapshot(entries, from), { snapshot: { ...IDLE, messages: from + entries.length }, type: EventType.STATE_SNAPSHOT }];
   const server = fakeServer(greeting);
   const link = openLink("ws://127.0.0.1:7700/ws", { retryMs: 1, socket: server.socket });
   const session = makeSession(link);
@@ -602,6 +604,20 @@ test("the model picker is this page's own: switching it sends nothing; each mess
   );
   const [down] = [...screen.getByLabelText<HTMLSelectElement>("Model").options];
   expect([down?.disabled, down?.textContent]).toEqual([true, "Claude Opus (Claude Code): unavailable, Claude AI usage limit reached"]);
+});
+
+test("before the first state, a message names the model this page kept; once the state shows the chain lacks it, the chain's first", async () => {
+  localStorage.setItem("optchat:model", "openai-plan:gpt-6.1-sol");
+  const { play, server } = start(LOG, 0, undefined, true);
+  await screen.findByText("what is in the repo?");
+  type("right after a reload");
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  expect(frames(server.sent).at(-1)).toMatchObject({ forwardedProps: { engine: "openai-plan:gpt-6.1-sol" } });
+  play({ snapshot: { ...IDLE, engines: [{ down: null, label: "Claude Opus (Claude Code)", ref: "claude-code:opus" }] }, type: EventType.STATE_SNAPSHOT });
+  expect(within(screen.getByTestId("model-picker")).getByText("Opus")).toBeTruthy();
+  type("after the state");
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  expect(frames(server.sent).at(-1)).toMatchObject({ forwardedProps: { engine: "claude-code:opus" } });
 });
 
 test("a turn stopped on a usage limit: every client shows why and the engines to go on with; a button resumes, and the picker follows it", async () => {

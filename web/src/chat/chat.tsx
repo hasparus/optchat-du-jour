@@ -187,11 +187,12 @@ export type ChatProps = {
 export function Chat({ link, session, state, devices, target, onTargetShown, uploader }: ChatProps) {
   const [loading, setLoading] = useState(false);
   const [device, setDevice] = useState<string | null>(null);
-  // the model picker: this page's own, kept in localStorage; one the chain no longer has (or none)
-  // shows as the chain's first
+  // the model picker: this page's own, kept in localStorage. Before the first state it is sent as
+  // kept (a message sent then, or offline, still names it); once the state shows the chain, one
+  // the chain lacks (or none) is the chain's first.
   const [chosen, setChosen] = useState(loadModel);
-  const engines = state.state?.engines ?? [];
-  const model = engines.some((e) => e.ref === chosen) ? chosen : (engines[0]?.ref ?? null);
+  const engines = state.state?.engines;
+  const model = engines === undefined ? chosen : engines.some((e) => e.ref === chosen) ? chosen : (engines[0]?.ref ?? null);
   const onModel = useCallback((ref: string) => {
     setChosen(ref);
     saveModel(ref);
