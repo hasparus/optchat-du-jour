@@ -18,7 +18,7 @@ export default defineConfig({
   overrides: [
     ...overrides,
     // scripts whose output is their report
-    { files: ["test/parity/**"], rules: { "no-console": "off" } },
+    { files: ["test/parity/**", "dev/**"], rules: { "no-console": "off" } },
   ],
   rules: {
     ...unsorted,
