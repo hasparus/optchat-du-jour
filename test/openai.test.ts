@@ -3,7 +3,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { Deferred, Effect, Fiber, Layer, Option, PubSub, Queue, Schema, Stream } from "effect";
 import { FetchHttpClient } from "effect/http";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
 import { type Settings, NODE, TRIES, parseSettings } from "../src/config.ts";
@@ -16,7 +16,7 @@ import { Credentials, SECRET, encodeCredentials, login } from "../src/openai/aut
 import { type Endpoints, DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 import { OpenAiPlan, openAiPlanLayer, readStream } from "../src/openai/responses.ts";
 import { responsesProvider } from "../src/providers/responses.ts";
-import { COMPACT_FILE } from "../src/prompts.ts";
+import { COMPACT } from "../src/prompts.ts";
 import { SECURITY_LINE_MAX, Secrets, SecretsError, keychainLine, memorySecrets } from "../src/secrets.ts";
 import { makeSession, noMedia } from "../src/session.ts";
 import { newMsg } from "../src/store.ts";
@@ -143,7 +143,7 @@ test("a compactor call streams its line; a long one is retried in the same conve
   fake.state.script = [{ cached: 900, text: "user: move the blog to Bun; talk: starting" }];
   expect(await Effect.runPromise(compact(leaf("move the blog to Bun"), null))).toBe("user: move the blog to Bun; talk: starting");
   const [one] = bodies();
-  expect(one).toMatchObject({ instructions: readFileSync(COMPACT_FILE, "utf8"), model: "gpt-6-luna", store: false, stream: true });
+  expect(one).toMatchObject({ instructions: COMPACT, model: "gpt-6-luna", store: false, stream: true });
   expect(one!.input.map((m) => m.role)).toEqual(["user"]); // the route rejects system messages
   expect(records[0]).toMatchObject({ attempt: 1, auth: "chatgpt-pro", cold: false, engine: "openai-plan", level: 0, role: "compact", usage: { cacheRead: 900, input: 100 } });
 

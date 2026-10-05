@@ -5,13 +5,12 @@
 // texts. The context blocks come first, with a cache breakpoint at each cut, the same in every try
 // and every node's call; the request end is cached implicitly.
 import { Duration, Effect } from "effect";
-import { readFileSync } from "node:fs";
 import type { Job } from "../compactor.ts";
 import { CALL_TIMEOUT } from "../config.ts";
 import { type EngineError, ModelError } from "../engines/errors.ts";
 import type { OpenAiPlan, Turn } from "../openai/responses.ts";
 import { turnsOf } from "../providers/responses.ts";
-import { COMPACT_FILE } from "../prompts.ts";
+import { COMPACT } from "../prompts.ts";
 import type { UsageRecord } from "../usage.ts";
 import { type Try, contextBlocks, sizeRetries, step } from "./step.ts";
 
@@ -29,7 +28,7 @@ export const firstInput = (job: Job): Turn => {
 };
 
 export const openAiPlanCompactor = (o: OpenAiPlanCompactorOptions & { readonly plan: OpenAiPlan["Service"] }) => {
-  const instructions = readFileSync(COMPACT_FILE, "utf8");
+  const instructions = COMPACT;
   const timeout = o.timeout ?? CALL_TIMEOUT;
 
   // the transport: one request per try, the whole conversation so far in each

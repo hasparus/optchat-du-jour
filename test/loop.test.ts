@@ -28,6 +28,7 @@ const run = (provider: Provider, o: { readonly refuseAfter?: number } = {}) => {
   const log: [string, string][] = [];
   const usage: UsageRecord[] = [];
   const deltas: string[] = [];
+  const thoughts: number[] = [];
   let writes = 0;
   const out: TurnEvents = {
     info: () => Effect.void,
@@ -39,12 +40,12 @@ const run = (provider: Provider, o: { readonly refuseAfter?: number } = {}) => {
         return Effect.void;
       }),
     text: (delta) => Effect.sync(() => void deltas.push(delta)),
-    thinking: () => Effect.void,
+    thinking: (tokens) => Effect.sync(() => void thoughts.push(tokens)),
     took: () => Effect.void,
     usage: (record) => Effect.sync(() => void usage.push(record)),
   };
   const engine: TurnEngine = toolLoop({ instructions: "MASTER", provider, ref: "api-key:x", toolsFor: () => ({ defs: [], run: () => Effect.succeed("ran") }), vision: false });
-  return { deltas, exit: Effect.runPromise(Effect.result(engine.run(input, out, null))), log, usage };
+  return { deltas, exit: Effect.runPromise(Effect.result(engine.run(input, out, null))), log, thoughts, usage };
 };
 
 test("a request that fails after calls streamed answers each with a not-run echo, and its spend is recorded", async () => {
@@ -89,10 +90,12 @@ test("live text stops once the log has refused a write, while the stream is stil
     auth: "api-key",
     call: (c) =>
       Effect.gen(function* () {
+        yield* c.onThinking?.(5) ?? Effect.void;
         yield* c.onText("one ");
         yield* c.onItem?.({ text: "one ", type: "text" }) ?? Effect.void; // the log refuses this write
         yield* c.onText("two ");
         yield* c.onText("three");
+        yield* c.onThinking?.(9) ?? Effect.void;
         return { items: [{ text: "one two three", type: "text" as const }], model: "m", usage: SPENT.usage };
       }),
     engine: "api-key",
@@ -101,5 +104,6 @@ test("live text stops once the log has refused a write, while the stream is stil
   const result = await r.exit;
   expect(result._tag === "Failure" && result.failure.message).toBe("disk full");
   expect(r.deltas).toEqual(["one "]);
+  expect(r.thoughts).toEqual([5]); // the size of a thought after the refusal is not sent either
   expect(r.usage.map((u) => u.usage)).toEqual([SPENT.usage]);
 });
