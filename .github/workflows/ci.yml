@@ -22,6 +22,10 @@ jobs:
         with:
           bun-version-file: package.json
 
+      # video uploads are cut into frames with ffmpeg (SPEC "Media"), and their tests run it
+      - name: Install ffmpeg
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
@@ -47,6 +51,10 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: package.json
+
+      # video uploads are cut into frames with ffmpeg (SPEC "Media"), and their tests run it
+      - name: Install ffmpeg
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
