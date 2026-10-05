@@ -5,7 +5,7 @@
 import { Cause, type Duration, Effect, Exit, Fiber, FiberSet, Option, PubSub, Queue, type Scope } from "effect";
 import { PRIME_IDLE } from "./config.ts";
 import type { Chat } from "./chat.ts";
-import { type Down, failover } from "./engines/chain.ts";
+import { type Down, type DownList, failover } from "./engines/chain.ts";
 import type { EngineError } from "./engines/errors.ts";
 import type { StoreError } from "./store.ts";
 import type { Entry } from "./tree.ts";
@@ -55,8 +55,6 @@ export type Session = {
   readonly primeSoon: Effect.Effect<void>;
   // the run going on, and the reply it is streaming (not logged yet), for a client joining now
   readonly live: () => LiveRun | null;
-  // publish the state again: something it shows changed outside the session (a compactor engine)
-  readonly tell: Effect.Effect<void>;
 };
 
 export type LiveRun = { readonly runId: string; readonly reply: { readonly at: number; readonly text: string } | null };
@@ -86,7 +84,7 @@ export const makeSession = (o: {
   readonly commit: Effect.Effect<string | null>; // commit the data dir (its push is not waited for); an error message or null
   readonly logUsage: (record: UsageRecord) => Effect.Effect<void>;
   readonly idle?: Duration.Input; // PRIME_IDLE
-  readonly compactorDown?: () => readonly Down[]; // makeSummarize's `down`
+  readonly compactorDown?: DownList; // makeSummarize's `down`: shown in the state, published again as it changes
   readonly events?: PubSub.PubSub<SessionEvent>; // the server's, made first so it can report into it; else the session's own
 }): Effect.Effect<Session, never, Scope.Scope> =>
   Effect.gen(function* () {
@@ -114,7 +112,7 @@ export const makeSession = (o: {
     const state = (): SessionState => ({
       budget: chat.mem.budget,
       device,
-      down: o.compactorDown?.() ?? [],
+      down: o.compactorDown?.now() ?? [],
       engine,
       messages: chat.mem.root.length,
       phase,
@@ -124,6 +122,12 @@ export const makeSession = (o: {
     });
     const tell = Effect.suspend(() => publish({ state: state(), type: "state" }));
     const enter = (p: Phase) => Effect.suspend(() => ((phase = p), tell));
+    // a compactor engine went down or came back: clients see it in the state (subscribed here, so
+    // no change is missed between now and the fiber's start)
+    if (o.compactorDown) {
+      const downs = yield* PubSub.subscribe(o.compactorDown.changes);
+      yield* PubSub.take(downs).pipe(Effect.andThen(tell), Effect.forever, Effect.forkScoped);
+    }
 
     // the run whose RUN_STARTED went out, and the text it is streaming at log index `at`
     let current: { runId: string; reply: { at: number; text: string } | null } | null = null;
@@ -383,7 +387,7 @@ export const makeSession = (o: {
     const cancel = Effect.suspend(() => (loop ? Fiber.interrupt(loop) : Effect.void));
     const primeSoon = Effect.asVoid(primeNow);
 
-    return { cancel, events, input, live, primeSoon, state, tell };
+    return { cancel, events, input, live, primeSoon, state };
   });
 
 // a defect in one line: what was thrown

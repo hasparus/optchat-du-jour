@@ -1,6 +1,6 @@
 // A failover chain (E4): the first engine that answers wins. Only a spent plan or an offline
 // device moves the call on to the next engine; a refusal or a model error is the answer.
-import { Effect } from "effect";
+import { Effect, type PubSub } from "effect";
 
 type Failure = { readonly _tag: string; readonly message: string };
 export type Link<A, E extends Failure> = { readonly ref: string; readonly run: (failoverFrom: string | null) => Effect.Effect<A, E> };
@@ -34,13 +34,18 @@ export const failover = <A, E extends Failure>(
 
 export type Down = { readonly ref: string; readonly reason: string };
 
+// The engines of a chain down right now, with why, and a signal each time that list changes, for
+// a session that shows it to clients connecting later (SPEC "Policy": never unseen).
+export type DownList = { readonly now: () => readonly Down[]; readonly changes: PubSub.PubSub<readonly Down[]> };
+
 // Which engines are down, for a chain that runs many calls at once (the compactor's nodes): one
 // notice when an engine goes down and one when it answers again, not one per call, so a
 // signed-out plan doesn't flood the UI and its return doesn't go unseen. Only a call started
 // after the engine last went down or came back can change that: with JOBS calls in flight when
 // a plan hits its cap, one that was already under way may still succeed, and is no sign the plan
-// is back. `down` is the list right now, for a client that connects later.
-export const watchChain = (report: (message: string) => Effect.Effect<void>, doing: string) => {
+// is back. `down` is the list right now, for a client that connects later; `changed` runs after
+// each notice.
+export const watchChain = (report: (message: string) => Effect.Effect<void>, doing: string, changed: Effect.Effect<void> = Effect.void) => {
   const down = new Map<string, string>(); // ref → why
   const flipped = new Map<string, number>(); // ref → the last call number when it went down or came back
   const stale = (ref: string, started: number) => started <= (flipped.get(ref) ?? 0);
@@ -49,14 +54,14 @@ export const watchChain = (report: (message: string) => Effect.Effect<void>, doi
       if (!down.has(ref) || stale(ref, started)) return Effect.void;
       down.delete(ref);
       flipped.set(ref, begun);
-      return report(`${ref} back: ${doing} on it again`);
+      return report(`${ref} back: ${doing} on it again`).pipe(Effect.andThen(changed));
     },
     down: (): readonly Down[] => [...down].map(([ref, reason]) => ({ reason, ref })),
     moved: (from: string, to: string, why: string, started: number) => {
       if (down.has(from) || stale(from, started)) return Effect.void;
       down.set(from, why);
       flipped.set(from, begun);
-      return report(`${from} unavailable: ${why}; ${doing} on ${to}`);
+      return report(`${from} unavailable: ${why}; ${doing} on ${to}`).pipe(Effect.andThen(changed));
     },
   };
 };

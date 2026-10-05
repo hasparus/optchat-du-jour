@@ -14,7 +14,7 @@ import { WarmLocalRunner } from "../src/claude/warm.ts";
 import { makeBudget } from "../src/apikey/budget.ts";
 import { ApiKeys, apiKeysLayer } from "../src/apikey/clients.ts";
 import type { Summarize } from "../src/compactor.ts";
-import type { Down } from "../src/engines/chain.ts";
+import type { DownList } from "../src/engines/chain.ts";
 import { DeviceOffline } from "../src/engines/errors.ts";
 import { handleMcp, mcpConfig, mcpTransports, openNode } from "../src/mcp.ts";
 import { forbidden, mount } from "../src/http.ts";
@@ -121,11 +121,10 @@ export const routes = (o: ServerOptions) =>
       const outside = Layer.mergeAll(o.secrets ?? SecretsLive, FetchHttpClient.layer);
       const plan = yield* Layer.build(openAiPlanLayer(settings.openai, { report }).pipe(Layer.provide(outside)));
       const clients = Context.get(yield* Layer.build(apiKeysLayer(settings.apiKey).pipe(Layer.provide(outside))), ApiKeys);
-      // a failover notice also changes the state's `down`, for clients that connect later
-      let tellState: Effect.Effect<void> = Effect.void;
-      const compactor = o.summarize
-        ? { down: (): readonly Down[] => [], summarize: o.summarize }
-        : yield* makeSummarize({ apiKey: { budget, clients }, device: o.device, log: usage, report: (m) => report(m).pipe(Effect.andThen(tellState)), settings }).pipe(Effect.provide(plan));
+      // the session shows the compactor's engines that are down, for clients that connect later
+      const compactor: { readonly down?: DownList; readonly summarize: Summarize } = o.summarize
+        ? { summarize: o.summarize }
+        : yield* makeSummarize({ apiKey: { budget, clients }, device: o.device, log: usage, report, settings }).pipe(Effect.provide(plan));
       const chat = yield* openChat(stream, { report, summarize: compactor.summarize });
 
       const instructions = systemPrompt(o.home); // one text for every engine and device (gist §7.2)
@@ -212,7 +211,6 @@ export const routes = (o: ServerOptions) =>
         events,
         logUsage: usage,
       });
-      tellState = session.tell;
       for (const p of chat.problems) yield* report(p);
       if (unreachable.length > 0) {
         const notice = `server.publicUrl is not set: turns on ${unreachable.join(", ")} are refused, since claude there could not reach zoom and date`;
