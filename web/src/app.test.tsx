@@ -566,8 +566,11 @@ test("a turn stopped on a usage limit: every client shows why and the engines to
       stopped: { label: "Claude Opus (Claude Code)", ref: "claude-code:opus", why: "usage limit: Claude AI usage limit reached" },
     }),
   );
+  // the run's end that follows is not said again in the chat: the prompt says it, once
+  play({ message: "usage limit: Claude AI usage limit reached", type: EventType.RUN_ERROR });
   const alert = await screen.findByTestId("needs-model");
   expect(alert.textContent).toContain("Claude Opus (Claude Code): usage limit: Claude AI usage limit reached. Pick a model to go on.");
+  expect(screen.queryByTestId("marker-error")).toBeNull();
   expect(screen.getByTestId("model-picker").className).toContain("ring-destructive");
   expect(screen.queryByTestId("status")).toBeNull();
   fireEvent.click(within(alert).getByRole("button", { name: "GPT-6.1 Sol (ChatGPT plan)" }));

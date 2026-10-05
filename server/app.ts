@@ -86,7 +86,12 @@ export const routes = (o: ServerOptions) =>
       const instructions = systemPrompt(o.home); // one text for every engine and device (gist §7.2)
       const systemFile = yield* promptFile(instructions);
       const { runnerFor, toolsFor, unreachable } = yield* makePlacements({ device: o.device, local, mem: chat.mem, port: o.port, report, secret, settings });
-      const engines = yield* Effect.forEach(settings.master.chain, (ref, k) => turnEngine(ref, { ...needs, instructions, lead: k === 0, runnerFor, systemFile, toolsFor }));
+      // the engine turns run on is the user's pick, which the session knows: asked when needed, as
+      // the engines are built before it
+      let leading = () => settings.master.chain[0].ref;
+      const engines = yield* Effect.forEach(settings.master.chain, (ref) =>
+        turnEngine(ref, { ...needs, instructions, lead: () => leading() === ref.ref, runnerFor, systemFile, toolsFor }),
+      );
       // attachments: the shared asset store under the home, captions by their own chain (SPEC "Media")
       const mediaConfig = mediaSettings(settings);
       const captioner = makeCaptioner(mediaConfig.caption, { ...needs, device: o.device, planImages: mediaConfig.planImages, runner: local });
@@ -108,6 +113,7 @@ export const routes = (o: ServerOptions) =>
         saveChoices: saveChoices(choicesPath, report),
         logUsage: usage,
       });
+      leading = () => session.state().lead;
       for (const p of chat.problems) yield* report(p);
       if (unreachable.length > 0) {
         const notice = `server.publicUrl is not set: turns on ${unreachable.join(", ")} are refused, since claude there could not reach zoom and date`;

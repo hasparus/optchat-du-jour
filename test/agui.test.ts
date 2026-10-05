@@ -1,5 +1,5 @@
 // What one WebSocket connection is told (server/agui.ts): a reply cut off by a cancel never shares
-// its id with the entry logged next, and a client that joins mid-reply gets all of it.
+// its id with the entry logged next, and a client that joins mid-reply or mid-tool gets all of it.
 import { expect, test } from "bun:test";
 import { type AGUIEvent, EventType } from "@ag-ui/core";
 import { openStream } from "../server/agui.ts";
@@ -74,4 +74,18 @@ test("a take-back is a CUSTOM event every client gets: the message with its atta
     { name: "taken-back", type: EventType.CUSTOM, value: { clientId: "c1", error: null, media: [photo], text: "never mind" } },
     { name: "taken-back", type: EventType.CUSTOM, value: { clientId: "c2", error: "too late: the model has it", media: [], text: null } },
   ]);
+});
+
+test("a client that joins while a tool runs gets its result under the call's id", () => {
+  const entries = [newMsg(0, "user", "list it"), newMsg(1, "tool", 'Glob {"pattern":"*"}')];
+  const c = connect(entries, { reply: null, runId: "0" });
+  const snap = c.out.find((e) => e.type === EventType.MESSAGES_SNAPSHOT);
+  const call = snap?.type === EventType.MESSAGES_SNAPSHOT ? snap.messages.at(-1) : undefined;
+  const id = call?.role === "assistant" ? call.toolCalls?.[0]?.id : undefined;
+  expect(id).toBeDefined();
+  const echo = newMsg(2, "echo", "a.txt");
+  entries.push(echo);
+  c.feed({ entry: echo, runId: "0", type: "logged" });
+  const result = c.out.find((e) => e.type === EventType.TOOL_CALL_RESULT);
+  expect(result?.type === EventType.TOOL_CALL_RESULT ? result.toolCallId : undefined).toBe(id);
 });

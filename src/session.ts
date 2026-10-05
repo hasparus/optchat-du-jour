@@ -128,7 +128,8 @@ export const makeSession = (o: {
     const publish = (e: SessionEvent) => PubSub.publish(events, e).pipe(Effect.asVoid);
     const info = (message: string) => publish({ message, type: "info" });
 
-    // every message not logged yet, in the order they came in
+    // every message not logged yet, in the order they came in: the offered ones, then the held
+    // ones; nothing is offered once anything is held, so the log keeps the order they were sent in
     const inbox: Incoming[] = [];
     let seq = 0;
     let phase: Phase = "idle", device = o.defaultDevice, engine: string | null = null;
@@ -157,6 +158,18 @@ export const makeSession = (o: {
     let told: string | null = null;
 
     const held = () => inbox.filter((m) => m.state === "held");
+    // a message sent for no device, or for the one the turn runs on, may join it; one sent for
+    // another waits, and the turn after it runs there (SPEC "Turn and priming")
+    const forThis = (sentFor: string | null, on = device) => sentFor === null || sentFor === on;
+    // The next turn's device and messages: the device of the first held message that has one (sent
+    // for it, or left by a call that ran there), else the default; and the held messages up to the
+    // first one for another device, which waits for the turn after, with all sent after it.
+    const nextTurn = () => {
+      const waiting = held();
+      const on = waiting.find((m) => m.device)?.device ?? o.defaultDevice;
+      const other = waiting.findIndex((m) => !forThis(m.device, on));
+      return { batch: other === -1 ? waiting : waiting.slice(0, other), on };
+    };
     const offered = () => inbox.filter((m) => m.state === "offered");
 
     const state = (): SessionState => ({
@@ -334,15 +347,15 @@ export const makeSession = (o: {
       }).pipe(Effect.uninterruptible);
 
     // The call is over: nothing more is offered to it, and what it was offered and never took is
-    // held again, as is what a turn that stopped had picked. Every message still here, follow-ups
-    // queued meanwhile too, goes on the call's device unless it was sent for one. Returns the
-    // offered ones.
+    // held again, on the call's device unless it was sent for one, as is what a turn that stopped
+    // had picked. Held ones (queued, or for another device) stay as they are. Returns the offered ones.
     const giveBack = (on: string) =>
       Effect.sync(() => {
         accepting = false;
         offerTo = null;
         const left = offered();
         for (const m of inbox) {
+          if (m.state === "held") continue;
           m.state = "held";
           m.device ??= on;
         }
@@ -368,7 +381,9 @@ export const makeSession = (o: {
 
     // A turn stopped by a usage limit or an offline device waits for a pick. What it logged stays,
     // the text it streamed and never logged is dropped (the next engine's reply is not glued to
-    // it), and its run ends with the reason, so every client sees it. The messages its call was
+    // it), and its run ends with the reason. Clients learn why from the state (`stopped`, phase
+    // "needs-model"), set before the run's end so they show it once, as the prompt to pick; the
+    // pick's notice is the record of it. The messages its call was
     // offered and never took stay offered, for the next call; messages sent meanwhile are held or
     // offered as usual. The data dir is committed, since a pick may take hours. A cancel while it
     // waits ends the loop like any cancel (`stopped`).
@@ -383,9 +398,8 @@ export const makeSession = (o: {
         const pick = Deferred.makeUnsafe<true>();
         stoppedOn = { ref, why };
         picking = pick;
-        yield* info(`${engineLabel(ref)} stopped: ${why}. Pick a model to go on, or stop${done > 0 ? ` (it logged ${done} entries; the next one carries on from them)` : ""}`);
-        yield* endRun(why);
         yield* enter("needs-model");
+        yield* endRun(why);
         const failed = yield* o.commit;
         if (failed) yield* info(`git: ${failed}`);
         yield* Deferred.await(pick);
@@ -395,18 +409,21 @@ export const makeSession = (o: {
           phase = "running";
         });
         yield* beginRun(runId);
-        yield* info(`${engineLabel(master()?.ref ?? "")} carries on${done > 0 ? ` from the ${done} logged entries` : ""}`);
+        const next = master()?.ref ?? "";
+        const goesOn = next === ref ? "picked again" : `${engineLabel(next)} carries on`;
+        yield* info(`${engineLabel(ref)} stopped (${why}); ${goesOn}${done > 0 ? ` from the ${done} logged entries` : ""}`);
       });
 
-    // Held messages that join the call running on `on`: every one up to the last that was sent to
-    // steer, oldest first, so a message sent now never overtakes one queued before it and the log
-    // keeps the order they were sent in. One sent for another device does not interrupt the call:
-    // it waits for the next turn, which runs there (SPEC "Turn and priming").
+    // Held messages that join the call running on `on`, keeping the inbox's order (offered ones,
+    // then held ones): of the held ones up to the first sent for another device (it waits for the
+    // next turn, which runs there, with all sent after it), every one up to the last that was sent
+    // to steer, oldest first. So a message that steers takes the ones queued before it along, and
+    // none overtakes one sent before it (SPEC "Turn and priming").
     const steerIn = (on: string) => {
-      const joins = (m: Incoming) => m.device === null || m.device === on;
       const waiting = held();
-      const last = waiting.findLastIndex((m) => m.steer && joins(m));
-      for (const m of waiting.slice(0, last + 1).filter(joins)) {
+      const other = waiting.findIndex((m) => !forThis(m.device, on));
+      const may = other === -1 ? waiting : waiting.slice(0, other);
+      for (const m of may.slice(0, may.findLastIndex((x) => x.steer) + 1)) {
         m.state = "offered";
         if (offerTo) Queue.offerUnsafe(offerTo, m);
       }
@@ -417,59 +434,69 @@ export const makeSession = (o: {
     // An engine that is not sent images gets the marker lines only, and a note saying so. What
     // pictures a call is sent, the opening message's and each mid-run message's, is decided in
     // one place: `forEngine`, against the call's picture budget.
-    const call = (e: TurnEngine, batch: readonly Incoming[], base: { readonly device: string; readonly view: string }, from: string | null, out: TurnEvents, since: number) =>
+    // `taken`: the mid-run messages this turn's calls took so far; after a stop, the engine picked
+    // next gets their pictures too, as they are in `earlier` only by their marker lines
+    const call = (e: TurnEngine, batch: readonly Incoming[], base: { readonly device: string; readonly view: string }, from: string | null, out: TurnEvents, since: number, taken: readonly Incoming[]) =>
       Effect.gen(function* () {
         const q = yield* Queue.unbounded<Incoming>();
         const budget = pictureBudget();
+        // The pictures of these messages' attachments, as the budget plans them; an engine not sent
+        // images gets none, and `blind`: the note saying so is due.
+        const picturesOf = (ms: readonly Incoming[]) => {
+          const attached = ms.flatMap((m) => m.media);
+          if (attached.length === 0 || !e.vision) return { blind: attached.length > 0, media: [] };
+          const { capped, looks } = budget.take(attached);
+          return { blind: false, media: attached.flatMap((a, k) => o.media.parts(a, looks[k] ?? { how: "none" }, capped)) };
+        };
         // Messages as this engine is sent them: their texts as logged (with the captions the log
-        // got) and their pictures, or for an engine not sent images a note instead.
-        const forEngine = (ms: readonly Incoming[]) =>
+        // got), and their pictures or the note. `carried`: messages whose text it has already (in
+        // `earlier`), sent only their pictures.
+        const forEngine = (ms: readonly Incoming[], carried: readonly Incoming[] = []) =>
           Effect.gen(function* () {
             const texts = yield* Effect.forEach(ms, (m) => Effect.map(captionsOf(m), (said) => logText(m, said)));
-            const attached = ms.flatMap((m) => m.media);
-            if (attached.length === 0) return { media: [], texts };
-            if (!e.vision) return { media: [], texts: [...texts, BLIND] };
-            const { capped, looks } = budget.take(attached);
-            return { media: attached.flatMap((a, k) => o.media.parts(a, looks[k] ?? { how: "none" }, capped)), texts };
+            const { blind, media } = picturesOf([...ms, ...carried]);
+            return { media, texts: blind ? [...texts, BLIND] : texts };
           });
         const midOf = (m: Incoming): Effect.Effect<Mid> => forEngine([m]).pipe(Effect.map(({ media, texts }) => ({ media, seq: m.seq, text: texts.join("\n") })));
-        const earlier = yield* Effect.sync(() => {
+        const { before, earlier } = yield* Effect.sync(() => {
           offerTo = q;
           for (const m of offered()) Queue.offerUnsafe(q, m);
           engine = e.ref;
-          return chat.mem.root.slice(since).map(({ kind, text }) => ({ kind, text }));
+          return { before: [...taken], earlier: chat.mem.root.slice(since).map(({ kind, text }) => ({ kind, text })) };
         });
         yield* tell;
-        const opening = yield* forEngine(batch);
+        // the opening's pictures, then those of the mid-run messages a call before took
+        const opening = yield* forEngine(batch, before);
         const mid = {
           next: Queue.take(q).pipe(Effect.flatMap(midOf)),
           ready: Queue.clear(q).pipe(Effect.flatMap((ms) => captioned(ms).pipe(Effect.andThen(Effect.forEach(ms, midOf))))),
         };
-        return yield* e.run({ ...base, ...opening, earlier, mid }, out, from);
+        return yield* e.run({ ...base, ...opening, again: from === e.ref, earlier, mid }, out, from);
       });
 
     const turn = Effect.gen(function* () {
       yield* FiberSet.clear(primes).pipe(Effect.forkIn(scope)); // not waited for: the killed claude may take a moment
       while (held().length > 0) {
         told = null;
-        device = held().findLast((m) => m.device)?.device ?? o.defaultDevice;
-        const on = device;
         if (unbuilt(chat.mem)) {
+          device = nextTurn().on; // shown while it waits; read again after, with what came in meanwhile
           yield* enter("waiting");
           yield* settle(chat.mem);
         }
-        // This turn's messages are the ones held now, picked so none can be taken back any more;
-        // their captions are waited for together, briefly, before any is logged. One that comes in
-        // meanwhile is offered to the call below (unless it was queued), ahead of any sent later,
-        // so the log keeps the order they were sent in. All taken back while waiting: no turn.
-        const batch = held();
+        // This turn's device and messages are read once the summaries are in, and picked at once, so
+        // none can be taken back any more; their captions are waited for together, briefly, before
+        // any is logged. One that comes in meanwhile waits for the call below, where it is offered
+        // if it steers (`steerIn`). All taken back while waiting: no turn.
+        const { batch, on } = nextTurn();
         if (batch.length === 0) continue;
+        device = on;
         for (const m of batch) m.state = "picked";
         yield* captioned(batch);
         const view = render(chat.mem); // BEFORE the new messages are logged (gist §7)
         yield* enter("running");
         const runId = yield* logQueued(batch, on);
         const since = chat.mem.root.length; // what this turn's engines log starts here
+        const taken: Incoming[] = []; // the mid-run messages its calls took, in the order they were logged
         accepting = true;
         steerIn(on); // came in while the captions or the log were awaited
         const out: TurnEvents = {
@@ -478,10 +505,18 @@ export const makeSession = (o: {
           text: (delta) => stream(delta, runId),
           thinking: (tokens) => publish({ runId, tokens, type: "thinking" }),
           // the call passed this one to the model: logged now; a second report finds it gone (taken once)
-          took: (taken) =>
+          took: (mid) =>
             Effect.suspend(() => {
-              const m = inbox.find((x) => x.seq === taken.seq && x.state === "offered");
-              return m ? logMessage(m, runId, on).pipe(Effect.andThen(tell)) : Effect.void;
+              const m = inbox.find((x) => x.seq === mid.seq && x.state === "offered");
+              if (!m) return Effect.void;
+              return logMessage(m, runId, on).pipe(
+                Effect.tap((entry) =>
+                  Effect.sync(() => {
+                    if (entry !== null) taken.push(m);
+                  }),
+                ),
+                Effect.andThen(tell),
+              );
             }),
           usage: (record) => o.logUsage(record).pipe(Effect.andThen(publish({ record, type: "usage" }))),
         };
@@ -496,7 +531,7 @@ export const makeSession = (o: {
           Effect.suspend(() => {
             const e = master();
             if (!e) return Effect.die(new Error("an empty engine chain"));
-            return call(e, batch, base, from, out, since).pipe(
+            return call(e, batch, base, from, out, since, taken).pipe(
               Effect.tapError((error) => (error._tag === "UsageLimit" ? wentDown(e.ref, error.message) : Effect.void)),
               Effect.tap(() => cameBack(e.ref)),
               Effect.result,

@@ -156,9 +156,10 @@ export function makeScreen(o: ScreenOptions) {
     engines = st.engines ?? [];
     if (st.lead && lead !== "" && st.lead !== lead) note(`model: ${engines.find((e) => e.ref === st.lead)?.label ?? st.lead}`);
     lead = st.lead ?? "";
-    // a turn stopped on a usage limit or an offline device waits for /model (the server said why)
+    // a turn stopped on a usage limit or an offline device waits for /model: why, said once
     const nowStuck = st.phase === "needs-model";
-    if (nowStuck && !stuck) listModels(o.tty ? "/model <n> picks one to go on (the same one again retries), Ctrl-C stops:" : "a turn waits for a model to be picked; nothing here can pick one");
+    const why = st.stopped ? `${st.stopped.label} stopped: ${clean(st.stopped.why)}. ` : "";
+    if (nowStuck && !stuck) listModels(`${why}${o.tty ? "/model <n> picks one to go on (the same one again retries), Ctrl-C stops:" : "A turn waits for a model to be picked; nothing here can pick one."}`);
     stuck = nowStuck;
     // ours that the server holds for the next turn while one runs: said once each
     for (const m of st.pending ?? [])
@@ -293,6 +294,8 @@ export function makeScreen(o: ScreenOptions) {
           logging = 0;
           return;
         case "RUN_ERROR":
+          // a turn stopped for a pick is not over: its messages wait, and why was said with the models
+          if (stuck) return;
           failed += logging; // ours that this run logged ended unanswered with it
           logging = 0;
           note(`error: ${clean(e.message)}`);
@@ -374,8 +377,7 @@ export function makeScreen(o: ScreenOptions) {
         case "interrupt":
           if (busy) {
             armed = true;
-            note("cancel sent; a second Ctrl-C exits");
-            return { type: "abort" };
+            return { type: "abort" }; // `cancel` says whether it went out
           }
           if (wasArmed) return { type: "exit" };
           armed = true;
@@ -389,6 +391,11 @@ export function makeScreen(o: ScreenOptions) {
           hidePrompt();
           return { type: "suspend" };
       }
+    },
+
+    // the abort a Ctrl-C asked for went to the server, or was dropped: the socket was not open
+    cancel(sent: boolean) {
+      note(sent ? "cancel sent; a second Ctrl-C exits" : "not connected: the cancel was not sent");
     },
 
     // back from Ctrl-Z
@@ -439,6 +446,34 @@ export type ReplOptions = {
   readonly stdin?: NodeJS.ReadStream;
   readonly stdout?: NodeJS.WriteStream;
 };
+
+// What goes to the server's socket. A message sent while it is closed waits, and goes out in order
+// when it opens again. An abort never waits: sent only while it is open (false otherwise), so a
+// stale one never cancels the next turn (SPEC "Server, WebSocket API and CLI").
+export type Wire = { readonly send: (frame: string) => void };
+export const ABORT = JSON.stringify({ type: "abort" });
+export function makeLink() {
+  let socket: Wire | null = null;
+  const outbox: string[] = [];
+  return {
+    opened(ws: Wire) {
+      socket = ws;
+      for (const f of outbox.splice(0)) ws.send(f);
+    },
+    closed() {
+      socket = null;
+    },
+    send(frame: string) {
+      if (socket) socket.send(frame);
+      else outbox.push(frame);
+    },
+    abort() {
+      if (!socket) return false;
+      socket.send(ABORT);
+      return true;
+    },
+  };
+}
 
 const runInput = (text: string, id: string) =>
   JSON.stringify({
@@ -500,18 +535,12 @@ export const runRepl = (o: ReplOptions) =>
       const wsUrl = new URL("/ws", o.url);
       wsUrl.protocol = wsUrl.protocol === "https:" ? "wss:" : "ws:";
       let ws: WebSocket | null = null;
-      let open = false;
+      const link = makeLink();
       let everOpen = false;
       let closing = false;
       let ended = false; // stdin ended (piped): exit once every message sent from here is answered
       let retries = 0;
       let retryTimer: ReturnType<typeof setTimeout> | undefined;
-      const outbox: string[] = [];
-
-      const send = (frame: string) => {
-        if (open && ws) ws.send(frame);
-        else outbox.push(frame);
-      };
       const done = (failure?: string) => {
         if (closing) return;
         closing = true;
@@ -532,16 +561,16 @@ export const runRepl = (o: ReplOptions) =>
         if (!a) return;
         switch (a.type) {
           case "send":
-            send(runInput(a.text, a.id));
+            link.send(runInput(a.text, a.id));
             return;
           case "abort":
-            send(JSON.stringify({ type: "abort" }));
+            screen.cancel(link.abort());
             return;
           case "follow-up":
-            send(JSON.stringify({ followUp: a.followUp, type: "settings" }));
+            link.send(JSON.stringify({ followUp: a.followUp, type: "settings" })); // a setting may wait for the connection, unlike an abort
             return;
           case "pick":
-            send(JSON.stringify({ lead: a.lead, type: "settings" }));
+            link.send(JSON.stringify({ lead: a.lead, type: "settings" }));
             return;
           case "exit":
             done();
@@ -602,11 +631,10 @@ export const runRepl = (o: ReplOptions) =>
         const socket = new WebSocket(wsUrl);
         ws = socket;
         socket.addEventListener("open", () => {
-          open = true;
           everOpen = true;
           retries = 0;
           screen.connected();
-          for (const f of outbox.splice(0)) socket.send(f);
+          link.opened(socket);
         });
         socket.addEventListener("message", (m) => {
           Option.map(parseInbound(String(m.data)), (e) => {
@@ -615,7 +643,7 @@ export const runRepl = (o: ReplOptions) =>
           });
         });
         socket.addEventListener("close", () => {
-          open = false;
+          link.closed();
           if (!closing) lost();
         });
       };

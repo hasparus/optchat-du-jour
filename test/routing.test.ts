@@ -140,10 +140,10 @@ test("a turn on another device runs there, and a turn on an offline device stops
         const failed = yield* Effect.promise(async () => turn(ws, "and now offline", "offline"));
         expect(Date.now() - t0).toBeLessThan(3000);
         expect(failed.at(-1)?.type).toBe("RUN_ERROR");
-        // priming found it offline first; the turn stops on that verdict (E4: no failover), and says so once
-        const notices = infos(failed).filter((n) => n.includes("offline: no device runner"));
-        expect(notices).toHaveLength(1);
-        expect(notices[0]).toStartWith("Claude Opus (Claude Code) stopped: device offline: offline: no device runner");
+        // priming found it offline first; the turn stops on that verdict (E4: no failover), and says
+        // so once: in its run's end, and in the state's `stopped` the clients show
+        expect(failed.at(-1)?.message).toStartWith("device offline: offline: no device runner");
+        expect(infos(failed).filter((n) => n.includes("offline: no device runner"))).toEqual([]);
         expect(infos(failed).filter((n) => n.startsWith("priming failed"))).toEqual([]);
 
         const devices = yield* Effect.promise(async () => {
@@ -186,7 +186,7 @@ test("without server.publicUrl a turn on another device is stopped at once, and 
         yield* Layer.build(both);
         const failed = yield* Effect.promise(async () => turn(`ws://127.0.0.1:${port}/ws`, "edit the macbook repo", "macbook"));
         expect(failed.at(-1)?.type).toBe("RUN_ERROR");
-        expect(infos(failed)).toContain("Claude Opus (Claude Code) stopped: device offline: macbook: server.publicUrl is not set, so claude there could not reach zoom and date. Pick a model to go on, or stop");
+        expect(failed.at(-1)?.message).toBe("device offline: macbook: server.publicUrl is not set, so claude there could not reach zoom and date");
         expect(servedTurns(log)).toEqual([]);
       }),
     ),

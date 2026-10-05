@@ -1,14 +1,15 @@
 // The pictures of one request (SPEC "Media", src/media/budget.ts): at most 100, and over 20 of
-// them each at most 2000 px. A video is thinned to fewer frames first, then shown as its sheet,
-// then left to its marker; a high-detail image goes at its standard-tier size once the request
-// could pass 20. Planned for the opening message and each mid-run message of one call, in one place.
+// them each at most 2000 px; a call's attachments take at most 60, the rest is left to its tools.
+// A video is thinned to fewer frames first, then shown as its sheet, then left to its marker; a
+// high-detail image goes at its standard-tier size once the request could pass 20. Planned for
+// the opening message and each mid-run message of one call, in one place.
 import { afterAll, expect, test } from "bun:test";
 import { Effect, PubSub } from "effect";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { openChat } from "../src/chat.ts";
-import { FEW_IMAGES, MAX_IMAGES, MIN_FRAMES, pictureBudget, thin, WIDE_EDGE, ZOOM_RESERVE } from "../src/media/budget.ts";
+import { FEW_IMAGES, MAX_ATTACHED, MAX_IMAGES, MAX_ZOOM, MIN_FRAMES, pictureBudget, thin, WIDE_EDGE, ZOOM_RESERVE } from "../src/media/budget.ts";
 import { mediaSettings, parseSettings } from "../src/config.ts";
 import { makeMedia } from "../src/media/media.ts";
 import { isPicture, type Part, textOnly } from "../src/media/part.ts";
@@ -45,7 +46,7 @@ const kept = (a: readonly Asset[], budget = pictureBudget()) => {
   const { capped, looks } = budget.take(a);
   return { capped, looks: looks.map((l) => (l.how === "frames" ? l.keep : l.how)) };
 };
-const ROOM = MAX_IMAGES - ZOOM_RESERVE;
+const ROOM = MAX_ATTACHED;
 
 test("a few pictures go whole; a high-detail one is capped once the request could pass 20", () => {
   // one 2576 px image, and the 8 zoom may add, are under 20: it goes as it is
@@ -63,18 +64,20 @@ test("a few pictures go whole; a high-detail one is capped once the request coul
   expect(later.looks.filter((l) => l === "none")).toHaveLength(14 - (FEW_IMAGES - ZOOM_RESERVE - 1));
 });
 
-test("four videos and a high-detail image: the frames are thinned to fit 100 images with zoom's share left", () => {
+test("four videos and a high-detail image: the frames are thinned to the attachments' 60, the rest left to the tools", () => {
+  // the tools' share holds ten zoom answers, so a turn that zooms or reads pictures stays under 100
+  expect([MAX_ATTACHED, MAX_IMAGES - MAX_ATTACHED]).toEqual([60, 10 * MAX_ZOOM]);
   const assets = [still(1, 2576), clip(1), clip(2), clip(3), clip(4)];
   const plan = kept(assets);
   expect(plan.capped).toBe(true);
-  // 92 left for 1 + 4 × 24: the videos share the other 91, 22 or 23 frames each
-  expect(plan.looks).toEqual(["all", 22, 23, 23, 23]);
+  // 60 for 1 + 4 × 24: the videos share the other 59, 14 or 15 frames each
+  expect(plan.looks).toEqual(["all", 14, 15, 15, 15]);
   // a short clip keeps all its frames and leaves its share to the others
-  expect(kept([clip(1, 6), clip(2), clip(3), clip(4), clip(5), clip(6)]).looks).toEqual(["all", 17, 17, 17, 17, 18]);
+  expect(kept([clip(1, 6), clip(2), clip(3), clip(4), clip(5), clip(6)]).looks).toEqual(["all", 10, 11, 11, 11, 11]);
 });
 
 test("too many videos to thin: each is its sheet, then the rest are markers only", () => {
-  // 25 videos share 92: 3 frames each is under MIN_FRAMES, so sheets
+  // 25 videos share 60: 2 frames each is under MIN_FRAMES, so sheets
   expect(MIN_FRAMES).toBe(4);
   expect(kept(Array.from({ length: 25 }, (_, k) => clip(k + 1))).looks).toEqual(Array.from({ length: 25 }, () => "sheet"));
   const crowd = kept(Array.from({ length: ROOM + 3 }, (_, k) => clip(k + 1)));
@@ -84,9 +87,9 @@ test("too many videos to thin: each is its sheet, then the rest are markers only
 
 test("mid-run messages are planned against what the request holds already", () => {
   const budget = pictureBudget();
-  expect(kept([still(1), clip(1), clip(2), clip(3)], budget).looks).toEqual(["all", "all", "all", "all"]); // 73 pictures
-  // 19 left of 92: a video is thinned to them
-  expect(kept([clip(4)], budget).looks).toEqual([19]);
+  expect(kept([still(1), clip(1), clip(2)], budget).looks).toEqual(["all", "all", "all"]); // 49 pictures
+  // 11 left of 60: a video is thinned to them
+  expect(kept([clip(3)], budget).looks).toEqual([11]);
   // none left: markers only
   expect(kept([still(2), clip(5)], budget).looks).toEqual(["none", "none"]);
 });
@@ -128,7 +131,7 @@ const until = (what: string, ok: () => boolean, ms = 20_000) =>
     }
   });
 
-test("a turn's pictures: three videos and a high-detail image in the opening, a fourth video mid-run; none over 2000 px, 100 at most, each labelled", async () => {
+test("a turn's pictures: two videos and a high-detail image in the opening, a third video mid-run; none over 2000 px, 60 at most, each labelled", async () => {
   const dir = fresh();
   const settings = mediaSettings(
     parseSettings({
@@ -148,8 +151,8 @@ test("a turn's pictures: three videos and a high-detail image in the opening, a 
       if (high.kind !== "image" || high.small === undefined) throw new Error("no standard-tier copy");
       expect([high.width, high.height]).toEqual([2576, 1717]);
       const videos: Asset[] = [];
-      for (const n of [1, 2, 3, 4]) videos.push(yield* media.ingest(makeVideo(dir, n, 48), "standard"));
-      expect(videos.map((v) => (v.kind === "video" ? v.frames.length : 0))).toEqual([24, 24, 24, 24]);
+      for (const n of [1, 2, 3]) videos.push(yield* media.ingest(makeVideo(dir, n, 48), "standard"));
+      expect(videos.map((v) => (v.kind === "video" ? v.frames.length : 0))).toEqual([24, 24, 24]);
 
       const got: Seen = { opening: null };
       const mids: Mid[] = [];
@@ -174,31 +177,31 @@ test("a turn's pictures: three videos and a high-detail image in the opening, a 
         Effect.forever,
         Effect.forkScoped,
       );
-      const [v1, v2, v3, v4] = videos;
-      if (!v1 || !v2 || !v3 || !v4) throw new Error("videos");
-      yield* session.input("look", undefined, "c1", [high, v1, v2, v3]);
+      const [v1, v2, v3] = videos;
+      if (!v1 || !v2 || !v3) throw new Error("videos");
+      yield* session.input("look", undefined, "c1", [high, v1, v2]);
       yield* until("the opening message", () => got.opening !== null);
-      yield* session.input("and one more", undefined, "c2", [v4]);
+      yield* session.input("and one more", undefined, "c2", [v3]);
       yield* until("the run's end", () => events.some((e) => e.type === "run-finished"));
 
       const first = got.opening?.media ?? [];
       const second = mids[0]?.media ?? [];
       const wide1 = yield* Effect.promise(async () => widths(first));
       const wide2 = yield* Effect.promise(async () => widths(second));
-      // 1 image and 3 × 24 frames, then 19 of the 4th's 24: 92 pictures, and 8 left for zoom
-      expect([wide1.length, wide2.length]).toEqual([73, 19]);
-      expect(73 + 19 + ZOOM_RESERVE).toBeLessThanOrEqual(MAX_IMAGES);
+      // 1 image and 2 × 24 frames, then 11 of the 3rd's 24: 60 pictures, and 40 left for the tools
+      expect([wide1.length, wide2.length]).toEqual([49, 11]);
+      expect(49 + 11).toBe(MAX_ATTACHED);
       // none past 2000 px: the high-detail image went at the standard tier, its own copy
       expect(Math.max(...wide1, ...wide2)).toBeLessThanOrEqual(WIDE_EDGE);
       expect(wide1[0]).toBe(1568);
       // each picture follows the text that names it
       expect(first[0]).toBe(`image ${high.sha.slice(0, 12)}:`);
       expect(first[2]).toBe(`video ${v1.sha.slice(0, 12)} at 0:00:`);
-      expect(second[0]).toBe(`video ${v4.sha.slice(0, 12)} at 0:00:`);
-      // thinned evenly: 19 of its 24 frames, the last one in, then a line for the transcript
-      expect(textOnly(second).filter((p) => p.startsWith("video") && p.includes(" at "))).toHaveLength(19);
-      expect(second.at(-3)).toBe(`video ${v4.sha.slice(0, 12)} at 0:46:`);
-      expect(second.at(-1)).toBe(`video ${v4.sha.slice(0, 12)}: no transcript`);
+      expect(second[0]).toBe(`video ${v3.sha.slice(0, 12)} at 0:00:`);
+      // thinned evenly: 11 of its 24 frames, the last one in, then a line for the transcript
+      expect(textOnly(second).filter((p) => p.startsWith("video") && p.includes(" at "))).toHaveLength(11);
+      expect(second.at(-3)).toBe(`video ${v3.sha.slice(0, 12)} at 0:46:`);
+      expect(second.at(-1)).toBe(`video ${v3.sha.slice(0, 12)}: no transcript`);
       // zoom answers at 2000 px or less too: the high-detail one comes back at the standard tier
       const [zoomed] = media.zoomContent(`[image ${high.sha.slice(0, 12)} 2576x1717 1KB: a blue field]`);
       const zoomedWidths = yield* Effect.promise(async () => widths(zoomed?.type === "image" ? [{ data: zoomed.data, mime: zoomed.mimeType, type: "image" }] : []));

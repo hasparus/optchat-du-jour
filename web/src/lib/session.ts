@@ -270,7 +270,8 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "send" | "s
         return;
       case EventType.RUN_ERROR:
         set({ thinking: false });
-        mark(e.message, "error");
+        // a turn that stopped for a pick says why in its own prompt, not here as well
+        if (s.state?.phase !== "needs-model") mark(e.message, "error");
         return;
       case EventType.CUSTOM:
         if (e.name === "info") mark(e.value, "info");

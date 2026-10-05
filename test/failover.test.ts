@@ -1,9 +1,10 @@
 // M5's done-criterion through the real server (SPEC "Engines", Failover): the Claude plan is spent,
 // so the turn stops until the user picks openai-plan (the master never fails over by itself, E4),
 // which answers with our own tool loop and reads a file on another device through its runner's
-// POST /tool. The message is answered exactly once, the move is in usage.jsonl and on every client. Then a message sent while openai-plan works is
-// taken after the tool results, before the next request. And a compactor's failover reaches every
-// client as the state's down list. Fake claude, fake Responses API.
+// POST /tool. The message is answered exactly once, the move is in usage.jsonl and on every
+// client. Then a message sent while openai-plan works is taken after the tool results, before the
+// next request; Claude Code's own error message is never logged. And a compactor's failover
+// reaches every client as the state's down list. Fake claude, fake Responses API.
 import { afterAll, expect, test } from "bun:test";
 import { Effect, Layer, Option, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -165,8 +166,8 @@ test("a spent Claude plan stops the turn until the user picks openai-plan, which
           ["echo", echo],
           ["talk", "The note says: buy milk."],
         ]);
-        expect(c.infos().filter((m) => m.startsWith("Claude Opus (Claude Code) stopped: usage limit: Claude AI usage limit reached"))).toHaveLength(1);
-        expect(c.infos()).toContain("GPT Sol (ChatGPT plan) carries on");
+        // said once while it waited (the run's end, and `stopped` in the state), and once as the record
+        expect(c.infos().filter((m) => m.includes("Claude AI usage limit reached"))).toEqual(["Claude Opus (Claude Code) stopped (usage limit: Claude AI usage limit reached|1760000000); GPT Sol (ChatGPT plan) carries on"]);
         expect(c.events.flatMap((e) => (e.type === "TEXT_MESSAGE_CONTENT" && Schema.is(Schema.String)(e.delta) ? [e.delta] : [])).join("")).toContain("The note says: buy milk.");
 
         const usage = readUsage(`${home}/usage.jsonl`).filter((r) => r.role === "turn");
@@ -226,11 +227,34 @@ test("a spent Claude plan stops the turn until the user picks openai-plan, which
           ["talk", "Starting on it."],
           ["talk", "Done."],
         ]);
-        expect(c.infos().at(-1)).toBe("GPT Sol (ChatGPT plan) carries on from the 1 logged entries");
+        expect(c.infos().at(-1)).toBe("Claude Opus (Claude Code) stopped (usage limit: Claude AI usage limit reached); GPT Sol (ChatGPT plan) carries on from the 1 logged entries");
         const resumed = decodeBody(fake.state.seen[0]?.body ?? "").input[0]?.content ?? "";
         const said = Schema.is(Schema.String)(resumed) ? resumed : (resumed.at(-1)?.text ?? "");
-        expect(said).toStartWith("tidy up\n\n[optchat: another engine began this turn");
+        expect(said).toStartWith("tidy up\n\n[optchat: Another engine began this turn");
         expect(said).toEndWith("\ntalk: Starting on it.");
+
+        // Claude Code reports the spent plan as its own assistant message (model "<synthetic>")
+        // before an error result that here says nothing: that message is never logged as the
+        // model's reply nor handed on, yet it is why the turn stops for a pick
+        writeFileSync(`${home}/script.json`, JSON.stringify({ turn: [[{ text: "Looking." }, { synthetic: "Claude AI usage limit reached|1760000000" }, { result: { is_error: true, text: "" } }]] }));
+        fake.state.seen.length = 0;
+        fake.state.script = [{ text: "Here." }];
+        c.pick("claude-code:opus");
+        c.send("one more");
+        yield* Effect.promise(async () => until("the third stop", () => c.ended().length === 6));
+        c.pick("openai-plan:gpt-sol");
+        yield* Effect.promise(async () => until("the fourth turn", () => c.ended().length === 7));
+        expect(c.ended()[6]?.type).toBe("RUN_FINISHED");
+        expect((yield* Effect.promise(log)).slice(13)).toEqual([
+          ["user", "one more"],
+          ["talk", "Looking."],
+          ["talk", "Here."],
+        ]);
+        expect(c.infos().at(-1)).toBe("Claude Opus (Claude Code) stopped (usage limit: Claude AI usage limit reached|1760000000); GPT Sol (ChatGPT plan) carries on from the 1 logged entries");
+        const handed = decodeBody(fake.state.seen[0]?.body ?? "").input[0]?.content ?? "";
+        const carried = Schema.is(Schema.String)(handed) ? handed : (handed.at(-1)?.text ?? "");
+        expect(carried).toEndWith("\ntalk: Looking.");
+        expect(carried).not.toContain("1760000000");
         c.ws.close();
       }),
     ),

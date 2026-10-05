@@ -274,7 +274,7 @@ const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
     const transports = mcpTransports("ws", report);
     const options = {
       effort: "high",
-      lead: o.lead ?? true,
+      lead: () => o.lead ?? true,
       logUsage: (r: UsageRecord) => Effect.sync(() => usage.push(r)),
       model: "opus",
       permissionMode: "bypassPermissions",
