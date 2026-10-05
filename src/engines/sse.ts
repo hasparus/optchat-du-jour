@@ -3,17 +3,17 @@
 // The engine folds them into its reply and the stream ends where it says it is done: whatever
 // follows (a `data: [DONE]` line, say) is never read. A stream that breaks is a ModelError named
 // after it.
-import { Effect, Option, Schema, Stream } from "effect";
+import { Effect, Option, Predicate, Schema, Stream } from "effect";
 import { Sse } from "effect/encoding";
 import { type EngineError, ModelError } from "./errors.ts";
 
-export const sseFold = <S>(
+export const sseFold = <S, E>(
   label: string,
   stream: Stream.Stream<Uint8Array, EngineError>,
   init: S,
-  step: (state: S, data: string) => Effect.Effect<S, EngineError | Schema.SchemaError>,
+  step: (state: S, data: string) => Effect.Effect<S, E | EngineError | Schema.SchemaError>,
   done: (state: S) => boolean,
-) =>
+): Effect.Effect<S, E | EngineError> =>
   stream.pipe(
     Stream.decodeText(),
     Stream.pipeThroughChannel(Sse.decode()),
@@ -24,10 +24,11 @@ export const sseFold = <S>(
     Stream.takeUntil(done),
     Stream.runLast,
     Effect.map(Option.getOrElse(() => init)),
-    Effect.catchTags({
-      Retry: () => Effect.fail(new ModelError({ message: `${label}: the stream asked to reconnect` })),
-      SchemaError: (e) => Effect.fail(new ModelError({ message: `${label}: unexpected stream event: ${e.message}` })),
-      SseError: (e) => Effect.fail(new ModelError({ message: `${label}: ${e.message}` })),
+    Effect.mapError((e) => {
+      if (Predicate.isTagged(e, "Retry")) return new ModelError({ message: `${label}: the stream asked to reconnect` });
+      if (e instanceof Schema.SchemaError) return new ModelError({ message: `${label}: unexpected stream event: ${e.message}` });
+      if (e instanceof Sse.SseError) return new ModelError({ message: `${label}: ${e.message}` });
+      return e;
     }),
   );
 

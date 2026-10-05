@@ -2,7 +2,7 @@
 // API: our marks with 1-hour entries before 5-minute ones, every call priced from the table, the
 // thinking sent back on a retry, and a spent monthly budget that stops the key and says so once.
 import { afterAll, expect, test } from "bun:test";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer, Option, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +15,9 @@ import { memorySecrets } from "../src/secrets.ts";
 import { newMsg } from "../src/store.ts";
 import { apiKeyCompactor } from "../src/summarize/api-key.ts";
 import { apiKeyProvider } from "../src/providers/api-key.ts";
+import type { ToolBox } from "../src/tools/box.ts";
+import type { TurnEvents, TurnInput } from "../src/turn/engine.ts";
+import { toolLoop } from "../src/turn/loop.ts";
 import { type UsageRecord, logUsage } from "../src/usage.ts";
 import { fakeAnthropic } from "./fake-anthropic.ts";
 
@@ -163,4 +166,74 @@ test("the config refuses a 5-minute mark before a 1-hour one, and an engine ref 
   expect(await refused({ ...written, cache: { apiKeyTtls: ["5m", "1h"], claudeCodeTtl: "1h", primeTtl: "1h" } })).toContain('every "1h" before any "5m"');
   expect(await refused({ ...written, master: { ...written.master, chain: ["gpt:x"] } })).toContain("engine gpt:x: no such engine");
   expect(await refused({ ...written, master: { ...written.master, chain: ["api-key:claude-sonnet"] } })).toContain("must be api-key:anthropic/<model>");
+});
+
+// the master's tool loop on the api-key engine, run as the session runs it: entries logged, live
+// text with the log index its entry will get, thoughts, notices and usage records kept
+const turnRig = (rounds?: number) => {
+  const usagePath = `${dir}/turn-${crypto.randomUUID()}.jsonl`;
+  const reports: string[] = [], records: UsageRecord[] = [], log: [string, string][] = [], texts: [number, string][] = [], infos: string[] = [], thoughts: number[] = [];
+  const budget = makeBudget({ monthly: 5, report: (m) => Effect.sync(() => void reports.push(m)), usagePath });
+  const box: ToolBox = { defs: [{ description: "Read a file", name: "Read", parameters: { type: "object" } }], run: (name) => Effect.succeed(`${name} ran`) };
+  const engine = toolLoop({ instructions: "MASTER", provider: apiKeyProvider({ budget, clients, effort: "high", ref: API_KEY, settings: settings(5) }), ref: REF, rounds, toolsFor: () => box });
+  const out: TurnEvents = {
+    info: (m) => Effect.sync(() => void infos.push(m)),
+    log: (kind, text) => Effect.sync(() => void log.push([kind, text])),
+    text: (delta) => Effect.sync(() => void texts.push([log.length, delta])),
+    thinking: (tokens) => Effect.sync(() => void thoughts.push(tokens)),
+    took: () => Effect.void,
+    usage: (r) => budget.note(r).pipe(Effect.andThen(Effect.sync(() => void records.push(r)))),
+  };
+  const input: TurnInput = { device: "mini", earlier: [], mid: { next: Effect.never, ready: Effect.succeed([]) }, texts: ["go"], view: "<chat>\n</chat>" };
+  const run = Effect.runPromise(Effect.flip(engine.run(input, out, null)).pipe(Effect.option));
+  return { budget, infos, log, records, run, texts, thoughts };
+};
+
+test("on the tool loop each block is logged as it completes, so text after a call streams as its own entry; thoughts go out by size, a cut reply is said", async () => {
+  fake.state.script = [
+    { after: "Then I answer.", calls: [{ input: { file_path: "a.txt" }, name: "Read" }], text: "Let me look.", thinking: "x".repeat(40) },
+    { stop: "max_tokens", text: "Done." },
+  ];
+  const t = turnRig();
+  expect(Option.isNone(await t.run)).toBe(true);
+  expect(t.log).toEqual([
+    ["talk", "Let me look."],
+    ["tool", 'Read {"file_path":"a.txt"}'],
+    ["talk", "Then I answer."],
+    ["echo", "Read ran"],
+    ["talk", "Done."],
+  ]);
+  // each piece of live text names the index its own entry then got
+  expect(t.texts).toEqual([
+    [0, "Let me look."],
+    [2, "Then I answer."],
+    [4, "Done."],
+  ]);
+  expect(t.thoughts).toEqual([10]);
+  expect(t.infos).toEqual([`${REF}: the reply reached its 64000-token limit, so it may stop mid-sentence or mid-call`]);
+});
+
+test("a call on the last request is answered in the log as not run; a refused request still records what it cost, against the budget", async () => {
+  fake.state.script = [{ calls: [{ input: { file_path: "a.txt" }, name: "Read" }] }];
+  const last = turnRig(1);
+  expect(Option.isNone(await last.run)).toBe(true);
+  expect(last.log).toEqual([
+    ["tool", 'Read {"file_path":"a.txt"}'],
+    ["echo", "not run: this turn used its 1 requests"],
+  ]);
+  expect(last.infos).toEqual([`${REF} stopped after 1 requests with tool calls left`]);
+
+  fake.state.script = [{ stop: "refusal", text: "" }];
+  const refused = turnRig();
+  const error = await refused.run;
+  expect(Option.getOrUndefined(error)?._tag).toBe("Refusal");
+  expect(refused.records.map((r) => [r.role, r.model, r.dollars])).toEqual([["turn", "fake-opus", (100 * 4 + 500 * 0.2 + 3000 * 8 + 50 * 20) / 1_000_000]]);
+  expect(refused.budget.spent()).toBeGreaterThan(0);
+
+  // a compactor try that is refused is priced too
+  const compactor = rig(5, `${dir}/refused.jsonl`);
+  fake.state.script = [{ stop: "refusal", text: "" }];
+  const declined = await Effect.runPromise(Effect.flip(compactor.compact(job)));
+  expect(declined._tag).toBe("Refusal");
+  expect(compactor.records.map((r) => [r.role, r.dollars])).toEqual([["compact", (100 * 4 + 500 * 0.2 + 3000 * 8 + 50 * 20) / 1_000_000]]);
 });

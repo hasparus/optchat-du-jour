@@ -7,7 +7,8 @@ import { Effect } from "effect";
 import type { ApiKeys } from "../apikey/clients.ts";
 import { type Budget, dollarsOf } from "../apikey/budget.ts";
 import type { ApiKeyRef, Settings } from "../config.ts";
-import { UsageLimit } from "../engines/errors.ts";
+import { MAX_TOKENS } from "../apikey/anthropic.ts";
+import { isEngineError, priced, UsageLimit } from "../engines/errors.ts";
 import type { Provider } from "./provider.ts";
 import { responsesProvider } from "./responses.ts";
 
@@ -41,14 +42,17 @@ export const apiKeyProvider = (o: ApiKeyOptions): Provider => {
           history: c.history,
           maxTokens: apiKey.maxTokens,
           model: o.ref.model,
+          onItem: c.onItem,
           onText: c.onText,
+          onThinking: c.onThinking,
           system: c.instructions,
           toolChoice: c.final ? "none" : "auto",
           tools: c.tools,
           ttls: o.settings.cache.apiKeyTtls,
         });
-        return { dollars: dollarsOf(price, reply.usage, reply.writes), items: reply.items, model: reply.model, usage: reply.usage };
-      }),
+        const cut = reply.stop === "max_tokens" ? `the reply reached its ${apiKey.maxTokens ?? MAX_TOKENS}-token limit` : undefined;
+        return { cut, dollars: dollarsOf(price, reply.usage, reply.writes), items: reply.items, model: reply.model, usage: reply.usage };
+      }).pipe(Effect.mapError((e) => (isEngineError(e) ? priced(e, (u) => dollarsOf(price, u)) : e))),
     engine: "api-key",
   };
 };

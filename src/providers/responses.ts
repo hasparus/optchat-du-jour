@@ -2,10 +2,12 @@
 // OpenAI API key's for api-key. `stream: true` and `store: false`, so every request re-sends the
 // whole conversation; nothing of OpenAI's own (reasoning items) is kept between requests.
 import { Effect } from "effect";
-import type { EngineError } from "../engines/errors.ts";
-import type { Respond, Turn } from "../openai/responses.ts";
+import { type EngineError, isEngineError, priced } from "../engines/errors.ts";
+import type { Out, Respond, Turn } from "../openai/responses.ts";
 import type { Tokens } from "../usage.ts";
 import type { Item, Provider } from "./provider.ts";
+
+const itemOf = (out: Out): Item => (out.type === "text" ? out : { id: out.id, input: out.arguments, name: out.name, type: "call" });
 
 const turnOf = (item: Item): Turn[] => {
   switch (item.type) {
@@ -29,23 +31,25 @@ export const responsesProvider = (o: {
   readonly engine: Provider["engine"];
   readonly auth: Provider["auth"];
   readonly before?: Effect.Effect<void, EngineError>; // e.g. the api-key budget, checked first
-  readonly dollars?: (usage: Tokens) => number;
+  readonly dollars?: (usage: Tokens) => number; // an API key's price; a failed call that cost something is priced too
 }): Provider => ({
   auth: o.auth,
   call: (c) =>
     Effect.gen(function* () {
       if (o.before) yield* o.before;
+      const { onItem } = c;
       const reply = yield* o.respond({
         effort: o.effort,
         input: c.history.flatMap(turnOf),
         instructions: c.instructions,
         model: o.model,
+        onOut: onItem && ((out) => onItem(itemOf(out))),
         onText: c.onText,
+        onThinking: c.onThinking,
         toolChoice: c.final ? "none" : "auto",
         tools: c.tools.length === 0 ? undefined : c.tools, // a compactor's call has none
       });
-      const items = reply.output.map((out): Item => (out.type === "text" ? out : { id: out.id, input: out.arguments, name: out.name, type: "call" }));
-      return { dollars: o.dollars?.(reply.usage), items, model: reply.model, usage: reply.usage };
-    }),
+      return { dollars: o.dollars?.(reply.usage), items: reply.output.map(itemOf), model: reply.model, usage: reply.usage };
+    }).pipe(Effect.mapError((e) => (o.dollars && isEngineError(e) ? priced(e, o.dollars) : e))),
   engine: o.engine,
 });

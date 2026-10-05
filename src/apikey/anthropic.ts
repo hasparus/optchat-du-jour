@@ -5,8 +5,8 @@
 // 5-minute one, which Anthropic requires. Thinking blocks come back in the next request exactly as
 // they arrived, signature and all, as tool use with thinking requires.
 import { Effect, Option, Schema, Stream } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/http";
-import { type EngineError, ModelError, Refusal, UsageLimit } from "../engines/errors.ts";
+import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
+import { type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
 import type { ToolDef } from "../tools/files.ts";
 import type { Item } from "../providers/provider.ts";
@@ -20,7 +20,7 @@ export const MAX_TOKENS = 64_000; // streamed, so a long answer doesn't time out
 type Ttl = "1h" | "5m";
 type Json = Schema.Json;
 
-export type MessagesAsk = {
+export type MessagesAsk<E extends Tagged = never> = {
   readonly model: string;
   readonly system: string;
   readonly history: readonly Item[];
@@ -30,10 +30,18 @@ export type MessagesAsk = {
   readonly maxTokens?: number;
   readonly effort?: string;
   readonly onText?: (delta: string) => Effect.Effect<void>;
+  readonly onThinking?: (tokens: number) => Effect.Effect<void>; // the size of the thought so far
+  readonly onItem?: (item: Item) => Effect.Effect<void, E>; // each block as it completes, in order
 };
-// `writes` splits the cache writes by TTL when the API says how
-export type MessagesReply = { readonly items: readonly Item[]; readonly usage: Tokens; readonly writes: Writes | undefined; readonly model: string };
-export type Messages = (ask: MessagesAsk) => Effect.Effect<MessagesReply, EngineError>;
+// `writes` splits the cache writes by TTL when the API says how; `stop` is the API's stop_reason
+export type MessagesReply = {
+  readonly items: readonly Item[];
+  readonly usage: Tokens;
+  readonly writes: Writes | undefined;
+  readonly model: string;
+  readonly stop: string | null;
+};
+export type Messages = <E extends Tagged = never>(ask: MessagesAsk<E>) => Effect.Effect<MessagesReply, EngineError | E>;
 
 const decodeObject = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)));
 // a tool call's input as the API wants it back: an object, {} for one cut short
@@ -94,7 +102,7 @@ const Body = Schema.Struct({
 });
 const encodeBody = Schema.encodeSync(Schema.fromJsonString(Body));
 
-export const requestBody = (ask: MessagesAsk) => {
+export const requestBody = (ask: MessagesAsk<Tagged>) => {
   const tools = ask.tools === undefined || ask.tools.length === 0 ? undefined : ask.tools;
   return encodeBody({
     max_tokens: ask.maxTokens ?? MAX_TOKENS,
@@ -151,15 +159,16 @@ const messageDelta = json(
     usage: Schema.optional(Schema.NullOr(ApiUsage)),
   }),
 );
+const blockStop = json(Schema.Struct({ index: Schema.Number }));
 const errorEvent = json(Schema.Struct({ error: ApiError }));
 const decodeErrorBody = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ error: ApiError })));
 
 // a spent key, a rate limit, an overloaded API or a key it won't take: the chain moves on (E4)
 const LIMITS = new Set(["rate_limit_error", "overloaded_error", "authentication_error", "permission_error", "billing_error"]);
-export const classifyAnthropic = (status: number | null, type: string | undefined, message: string | undefined): EngineError => {
+export const classifyAnthropic = (status: number | null, type: string | undefined, message: string | undefined, spent?: Spent): EngineError => {
   const text = `api-key: anthropic ${[status, type, message].filter((x) => x !== null && x !== undefined && x !== "").join(" ")}`;
   const limited = status === 429 || status === 529 || status === 401 || status === 403 || (type !== undefined && LIMITS.has(type)) || /credit balance/i.test(message ?? "");
-  return limited ? new UsageLimit({ message: text }) : new ModelError({ message: text });
+  return limited ? new UsageLimit({ message: text, spent }) : new ModelError({ message: text, spent });
 };
 
 type Block =
@@ -186,52 +195,64 @@ const blockOf = (b: typeof ContentBlock.Type): Block => {
   }
 };
 
-const onEvent = (onText: MessagesAsk["onText"]) => (r: Read, data: string): Effect.Effect<Read, EngineError | Schema.SchemaError> =>
-  Effect.gen(function* () {
-    const { type } = yield* typeOf(data);
-    switch (type) {
-      case "message_start": {
-        const { message } = yield* messageStart(data);
-        r.model = message.model ?? r.model;
-        r.start = message.usage ?? null;
-        return r;
-      }
-      case "content_block_start": {
-        const e = yield* blockStart(data);
-        r.blocks[e.index] = blockOf(e.content_block);
-        return r;
-      }
-      case "content_block_delta": {
-        const { delta, index } = yield* blockDelta(data);
-        const b = r.blocks[index];
-        if (b?.type === "text" && delta.text !== undefined) {
-          b.text += delta.text;
-          if (onText) yield* onText(delta.text);
+type Hooks<E extends Tagged> = Pick<MessagesAsk<E>, "onItem" | "onText" | "onThinking">;
+
+const onEvent =
+  <E extends Tagged>(o: Hooks<E>) =>
+  (r: Read, data: string): Effect.Effect<Read, E | EngineError | Schema.SchemaError> =>
+    Effect.gen(function* () {
+      const { type } = yield* typeOf(data);
+      switch (type) {
+        case "message_start": {
+          const { message } = yield* messageStart(data);
+          r.model = message.model ?? r.model;
+          r.start = message.usage ?? null;
+          return r;
         }
-        if (b?.type === "tool_use" && delta.partial_json !== undefined) b.json += delta.partial_json;
-        if (b?.type === "thinking") {
-          b.thinking += delta.thinking ?? "";
-          b.signature += delta.signature ?? "";
+        case "content_block_start": {
+          const e = yield* blockStart(data);
+          r.blocks[e.index] = blockOf(e.content_block);
+          return r;
         }
-        return r;
+        case "content_block_delta": {
+          const { delta, index } = yield* blockDelta(data);
+          const b = r.blocks[index];
+          if (b?.type === "text" && delta.text !== undefined) {
+            b.text += delta.text;
+            if (o.onText) yield* o.onText(delta.text);
+          }
+          if (b?.type === "tool_use" && delta.partial_json !== undefined) b.json += delta.partial_json;
+          if (b?.type === "thinking") {
+            b.thinking += delta.thinking ?? "";
+            b.signature += delta.signature ?? "";
+            if (o.onThinking && delta.thinking) yield* o.onThinking(Math.ceil(b.thinking.length / 4));
+          }
+          return r;
+        }
+        // a block is whole: it goes out now, so what follows it streams after it
+        case "content_block_stop": {
+          const { index } = yield* blockStop(data);
+          const b = r.blocks[index];
+          if (b && o.onItem) for (const item of itemOf(b)) yield* o.onItem(item);
+          return r;
+        }
+        case "message_delta": {
+          const e = yield* messageDelta(data);
+          r.stop = e.delta.stop_reason ?? r.stop;
+          r.end = e.usage ?? r.end;
+          return r;
+        }
+        case "message_stop":
+          r.done = true;
+          return r;
+        case "error": {
+          const { error } = yield* errorEvent(data);
+          return yield* classifyAnthropic(null, error.type, error.message, spentOf(r));
+        }
+        default:
+          return r; // ping
       }
-      case "message_delta": {
-        const e = yield* messageDelta(data);
-        r.stop = e.delta.stop_reason ?? r.stop;
-        r.end = e.usage ?? r.end;
-        return r;
-      }
-      case "message_stop":
-        r.done = true;
-        return r;
-      case "error": {
-        const { error } = yield* errorEvent(data);
-        return yield* classifyAnthropic(null, error.type, error.message);
-      }
-      default:
-        return r; // ping, content_block_stop
-    }
-  });
+    });
 
 const itemOf = (b: Block): Item[] => {
   switch (b.type) {
@@ -260,13 +281,16 @@ const usageOf = (start: ApiUsage | null, end: ApiUsage | null) => {
   };
 };
 
-export const readMessages = (stream: Stream.Stream<Uint8Array, EngineError>, ask: MessagesAsk) =>
+// what a reply that went wrong cost so far, once the API has said anything about it
+const spentOf = (r: Read): Spent | undefined => (r.start === null && r.end === null ? undefined : { model: r.model, usage: usageOf(r.start, r.end).usage });
+
+export const readMessages = <E extends Tagged = never>(stream: Stream.Stream<Uint8Array, EngineError>, ask: MessagesAsk<E>) =>
   Effect.gen(function* () {
     const init: Read = { blocks: [], done: false, end: null, model: ask.model, start: null, stop: null };
-    const r = yield* sseFold("api-key: anthropic", stream, init, onEvent(ask.onText), (state) => state.done);
-    if (r.stop === "refusal") return yield* new Refusal({ message: "api-key: anthropic refused this request (stop_reason: refusal)" });
-    if (!r.done) return yield* new ModelError({ message: "api-key: anthropic: the stream ended without message_stop" });
-    return { items: r.blocks.flatMap(itemOf), model: r.model, ...usageOf(r.start, r.end) } satisfies MessagesReply;
+    const r = yield* sseFold<Read, E>("api-key: anthropic", stream, init, onEvent<E>(ask), (state) => state.done);
+    if (r.stop === "refusal") return yield* new Refusal({ message: "api-key: anthropic refused this request (stop_reason: refusal)", spent: spentOf(r) });
+    if (!r.done) return yield* new ModelError({ message: "api-key: anthropic: the stream ended without message_stop", spent: spentOf(r) });
+    return { items: r.blocks.flatMap(itemOf), model: r.model, stop: r.stop, ...usageOf(r.start, r.end) } satisfies MessagesReply;
   });
 
 // The client: `key` is the API key now, UsageLimit when there is none (the chain moves on).
@@ -288,6 +312,6 @@ export const makeMessages = (o: { readonly base: string; readonly key: Effect.Ef
           return yield* parsed._tag === "Some" ? classifyAnthropic(res.status, parsed.value.error.type, parsed.value.error.message) : classifyAnthropic(res.status, undefined, raw.slice(0, 300));
         }
         return yield* readMessages(res.stream.pipe(Stream.mapError((err) => new ModelError({ message: `api-key: anthropic: ${err.message}` }))), ask);
-      }).pipe(Effect.catchTag("HttpClientError", (err) => Effect.fail(new ModelError({ message: `api-key: anthropic: ${err.message}` }))));
+      }).pipe(Effect.catchIf(HttpClientError.isHttpClientError, (err) => Effect.fail(new ModelError({ message: `api-key: anthropic: ${err.message}` }))));
     return messages;
   });
