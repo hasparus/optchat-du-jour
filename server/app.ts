@@ -9,22 +9,24 @@ import { existsSync } from "node:fs";
 import { openChat } from "../src/chat.ts";
 import { type Settings, MASTER_TOOLS } from "../src/config.ts";
 import { LocalRunner, Runner, claudeBinary, claudeVersion } from "../src/claude/process.ts";
-import { deviceHealth, remoteRunner } from "../src/claude/remote.ts";
+import { remoteRunner } from "../src/claude/remote.ts";
 import type { Summarize } from "../src/compactor.ts";
 import { DeviceOffline } from "../src/engines/errors.ts";
 import { handleMcp, mcpConfig } from "../src/mcp.ts";
+import { forbidden, mount } from "../src/http.ts";
 import { expandHome } from "../src/paths.ts";
 import { makePersist } from "../src/persist.ts";
 import { promptFile, systemPrompt } from "../src/prompts.ts";
 import { makeSession } from "../src/session.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
 import { getNode, localTime, span } from "../src/tree.ts";
-import { type ClaudeCodeTurnOptions, claudeCodeTurn } from "../src/turn/claude-code.ts";
+import { type Placement, claudeCodeTurn } from "../src/turn/claude-code.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
 import { type UsageRecord, logUsage, readUsage } from "../src/usage.ts";
 import { PLACEHOLDER, render, viewSize } from "../src/view.ts";
 import { type AgUiEvent, makeTranslator, snapshot } from "./agui.ts";
 import { allowed } from "./auth.ts";
+import { deviceStatuses, versionWarning } from "./devices.ts";
 
 export type ServerOptions = {
   readonly home: string; // ~/.optchat: streams/, usage.jsonl, instructions.md, its own git repo
@@ -58,12 +60,8 @@ const lastUserText = (messages: readonly (typeof InboundMessage.Type)[]) => {
 const Before = Schema.Struct({ before: Schema.optional(Schema.NumberFromString), limit: Schema.optional(Schema.NumberFromString) });
 const NodeAt = Schema.Struct({ i: Schema.NumberFromString, l: Schema.NumberFromString });
 
-const HEALTH_TIMEOUT = "2 seconds";
 const logReport = (message: string) => Effect.logInfo(message);
-const forbidden = HttpServerResponse.text("forbidden", { status: 403 });
 const json = (body: Schema.Json) => HttpServerResponse.jsonUnsafe(body);
-// HttpRouter.use, renamed: the React hooks rule takes any `use(` call for a hook
-const mount = HttpRouter.use;
 
 export const routes = (o: ServerOptions) =>
   mount((router) =>
@@ -81,25 +79,24 @@ export const routes = (o: ServerOptions) =>
       const chat = yield* openChat(stream, { report: (m) => report(m), summarize });
 
       const systemFile = yield* promptFile(systemPrompt(o.home));
-      // where each device's claude runs (E7): this machine's own Runner, or that device's runner over
-      // the tailnet. A claude elsewhere reaches /mcp through the server's tailnet URL (E8).
+      // Where each device's claude runs (E7): this machine's own Runner, or that device's runner
+      // over the tailnet. A claude elsewhere reaches /mcp through `tailscale serve` at
+      // server.publicUrl (E8); without it, turns there are refused rather than handed the
+      // loopback URL and its key, which no other machine can use.
       const mcpAt = (base: string) => mcpConfig(`${base.replace(/\/$/, "")}/mcp?key=${secret}`);
-      const mcp = mcpAt(`http://127.0.0.1:${o.port}`);
-      const remoteMcp = settings.server?.publicUrl === undefined ? undefined : mcpAt(settings.server.publicUrl);
-      const remotes = new Map(
-        Object.entries(settings.devices)
-          .filter(([name]) => name !== o.device)
-          .map(([name, d]) => [name, remoteRunner(name, d.url)] as const),
-      );
-      if (remotes.size > 0 && remoteMcp === undefined)
-        yield* Effect.logWarning("server.publicUrl is not set: claude on another device can't reach zoom and date");
-      const runnerFor = (device: string): ReturnType<ClaudeCodeTurnOptions["runnerFor"]> => {
-        const folder = settings.devices[device]?.folders[0];
-        if (device === o.device) return Effect.succeed({ cwd: folder === undefined ? undefined : expandHome(folder), runner: local });
-        const runner = remotes.get(device);
-        if (!runner) return Effect.fail(new DeviceOffline({ message: `${device} is not a configured device` }));
-        return Effect.succeed({ cwd: folder, mcpConfig: remoteMcp, runner }); // `~` is the device's home, so it expands it
-      };
+      const { publicUrl } = settings.server ?? {};
+      const placements = new Map<string, Effect.Effect<Placement, DeviceOffline>>();
+      const unreachable: string[] = [];
+      for (const [name, d] of Object.entries(settings.devices)) {
+        const folder = d.folders[0];
+        if (name === o.device)
+          placements.set(name, Effect.succeed({ cwd: folder === undefined ? undefined : expandHome(folder), mcpConfig: mcpAt(`http://127.0.0.1:${o.port}`), runner: local }));
+        else if (publicUrl === undefined) {
+          unreachable.push(name);
+          placements.set(name, Effect.fail(new DeviceOffline({ message: `${name}: server.publicUrl is not set, so claude there could not reach zoom and date` })));
+        } else placements.set(name, Effect.succeed({ cwd: folder, mcpConfig: mcpAt(publicUrl), runner: remoteRunner(name, d.url) })); // `~` is the device's home: it expands it
+      }
+      const runnerFor = (device: string) => placements.get(device) ?? Effect.fail(new DeviceOffline({ message: `${device} is not a configured device` }));
       const engines: TurnEngine[] = [];
       for (const ref of settings.master.chain) {
         const [engine, model = ""] = ref.split(/:(.*)/s);
@@ -108,7 +105,6 @@ export const routes = (o: ServerOptions) =>
           yield* claudeCodeTurn({
             effort: settings.master.effort,
             logUsage: usage,
-            mcpConfig: mcp,
             model,
             permissionMode: settings.master.permissionMode,
             primeTtl: settings.cache.primeTtl,
@@ -131,6 +127,11 @@ export const routes = (o: ServerOptions) =>
       });
       report = (message) => PubSub.publish(session.events, { message, type: "info" }).pipe(Effect.asVoid);
       for (const p of chat.problems) yield* report(p);
+      if (unreachable.length > 0) {
+        const notice = `server.publicUrl is not set: turns on ${unreachable.join(", ")} are refused, since claude there could not reach zoom and date`;
+        yield* Effect.logWarning(notice);
+        yield* report(notice);
+      }
 
       const guard = (request: HttpServerRequest.HttpServerRequest) =>
         allowed({ header: (name) => request.headers[name], remoteAddress: request.remoteAddress }, settings.allowedLogins);
@@ -243,37 +244,17 @@ export const routes = (o: ServerOptions) =>
       );
 
       yield* router.add("GET", "/api/usage", (request) => Effect.succeed(guard(request) ? json(readUsage(usagePath)) : forbidden));
-      // which devices answer and which claude they run (SPEC "Web UI", Devices). Devices on different
-      // claude versions don't share the prompt cache: a turn that moves misses it once (ref §16.8).
+      // which devices answer and which claude they run (./devices.ts)
       const localVersion = yield* Effect.cachedWithTTL(claudeVersion(claudeBinary()), "10 minutes");
       let warned = "";
-      const devices = Effect.forEach(
-        Object.entries(settings.devices),
-        ([name, d]) =>
-          (name === o.device
-            ? Effect.map(localVersion, (v) => Option.some(v))
-            : Effect.map(deviceHealth(d.url, HEALTH_TIMEOUT), Option.map((h) => h.claudeVersion))
-          ).pipe(
-            Effect.map((version) => ({
-              claudeVersion: Option.getOrNull(version),
-              folders: d.folders,
-              local: name === o.device,
-              name,
-              online: Option.isSome(version),
-              url: d.url,
-            })),
-          ),
-        { concurrency: "unbounded" },
-      );
       yield* router.add("GET", "/api/devices", (request) =>
         Effect.gen(function* () {
           if (!guard(request)) return forbidden;
-          const list = yield* devices;
-          const versions = new Set(list.flatMap((d) => (d.claudeVersion === null ? [] : [d.claudeVersion])));
-          const seen = list.map((d) => `${d.name} ${d.claudeVersion ?? "?"}`).join(", ");
-          if (versions.size > 1 && seen !== warned) {
-            warned = seen;
-            yield* report(`devices run different claude versions (${seen}): a turn that moves between them misses the cache once`);
+          const list = yield* deviceStatuses({ devices: settings.devices, localVersion, self: o.device });
+          const warning = versionWarning(list);
+          if (warning && warning.key !== warned) {
+            warned = warning.key;
+            yield* report(warning.message);
           }
           return json(list);
         }),

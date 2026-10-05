@@ -73,6 +73,9 @@ export const loadSettings = (path: string) =>
     for (const ref of engines)
       if (!IMPLEMENTED.includes(ref.split(":")[0] ?? ""))
         return yield* new ConfigError({ message: `${path}: engine ${ref} is not implemented yet` });
+    for (const [name, d] of Object.entries(settings.devices))
+      if (!URL.canParse(d.url) || !["http:", "https:"].includes(new URL(d.url).protocol))
+        return yield* new ConfigError({ message: `${path}: device ${name}'s url ${d.url} is not an http:// URL` });
     if (!(settings.defaultDevice in settings.devices))
       return yield* new ConfigError({ message: `${path}: defaultDevice ${settings.defaultDevice} is not among the devices` });
     return settings;

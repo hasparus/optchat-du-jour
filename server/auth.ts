@@ -3,8 +3,7 @@
 // loopback; one that carries a login must carry an allowed one; one that carries none is a local
 // process only if nothing forwarded it.
 import { Option } from "effect";
-
-const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+import { LOOPBACK } from "../src/http.ts";
 
 export type Caller = {
   readonly remoteAddress: Option.Option<string>;
