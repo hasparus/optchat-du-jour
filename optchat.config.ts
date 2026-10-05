@@ -3,11 +3,13 @@
 // spent, each node falls over to claude-code:sonnet at medium effort, as the reference runs it
 // (ref §7). Model ids as OpenAI's docs name them in Oct 2026 (gpt-6-luna, gpt-6.1-sol), not yet
 // checked against the models this plan token lists. The level cutoff (3) waits for the bake-off.
+// The master falls over to Sol on the plan, then to an Anthropic API key (M5); an engine that is
+// signed out or has no key fails with a usage limit, so the chain just moves on to the next.
 import { defineConfig } from "./src/config.ts";
 
 export default defineConfig({
   master: {
-    chain: ["claude-code:opus"],
+    chain: ["claude-code:opus", "openai-plan:gpt-6.1-sol", "api-key:anthropic/claude-opus-5-5"],
     effort: "high",
     permissionMode: "bypassPermissions", // ref D9
   },
@@ -19,6 +21,16 @@ export default defineConfig({
     effort: "medium",
   },
   cache: { claudeCodeTtl: "1h", primeTtl: "1h", apiKeyTtls: ["1h", "5m", "5m", "5m"] },
+  // The api-key engine's price table, $ per million tokens, and its monthly budget (SPEC "Usage and
+  // cost tracking"). PLACEHOLDERS: copied from Anthropic's published Opus 5.5 rates as of
+  // Sep 2026 (writes at 1.25× input for 5 min, 2× for 1 h). Verify against the console before
+  // relying on the budget. A model without a price here is never called.
+  apiKey: {
+    monthlyBudget: 20, // the Cursor money
+    prices: {
+      "anthropic/claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.2, cacheWrite5m: 5, cacheWrite1h: 8 },
+    },
+  },
   devices: {
     mini: { url: "http://optchat-mini:7710", folders: ["~/repos", "~/notes"] },
     macbook: { url: "http://optchat-macbook:7710", folders: ["~/repos"] },

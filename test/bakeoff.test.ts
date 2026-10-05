@@ -82,7 +82,8 @@ test("a chain spec names its levels, and the first starts at 0", () => {
   });
   expect(() => parseContender("x=2:claude-code:sonnet")).toThrow();
   expect(() => parseContender("x=gpt-6")).toThrow();
-  expect(() => parseContender("x=api-key:claude-sonnet")).toThrow("not implemented yet as a compactor");
+  expect(() => parseContender("x=api-key:claude-sonnet")).toThrow("must be api-key:anthropic/<model> or api-key:openai/<model>"); // api-key names its provider
+  expect(parseContender("k=api-key:anthropic/claude-sonnet").byLevel[0].chain).toEqual(["api-key:anthropic/claude-sonnet"]);
 });
 
 test("tries are counted per node across failed calls and failovers; a replay that can't finish stops at its deadline and says what is left", async () => {

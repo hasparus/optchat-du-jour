@@ -9,7 +9,8 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { DeviceOffline } from "../engines/errors.ts";
 import { ClaudeError, type Runner, type Spawn, exitText, makeClaude } from "./process.ts";
-import { Health, type ToDevice, decodeFromDevice, frame, inbox } from "./wire.ts";
+import { TOOL_TIMEOUT } from "../tools/files.ts";
+import { Health, type ToDevice, type ToolCall, ToolReply, decodeFromDevice, frame, inbox } from "./wire.ts";
 
 export type RemoteTimeouts = {
   readonly connect: Duration.Input; // an asleep or unreachable peer on the tailnet hangs rather than refuses
@@ -152,3 +153,25 @@ export const deviceHealth = (url: string, timeout: Duration.Input): Effect.Effec
     Effect.timeout(timeout),
     Effect.orElseSucceed((): DeviceHealth => ({ _tag: "offline" })),
   );
+
+const decodeReply = Schema.decodeUnknownEffect(Schema.fromJsonString(ToolReply));
+
+// One read-only tool call on a device runner (POST /tool, M5). An unreachable device or a refusal
+// is the tool's answer, as text: the turn goes on and the model reads why.
+export const remoteTool =
+  (device: string, url: string) =>
+  (name: string, input: Schema.Json): Effect.Effect<string> => {
+    const call: ToolCall = { input, name };
+    return Effect.gen(function* () {
+      const base = yield* ipv4(url);
+      const text = yield* Effect.tryPromise(async (signal) => {
+        const response = await fetch(new URL("/tool", base), { body: JSON.stringify(call), headers: { "content-type": "application/json" }, method: "POST", signal });
+        if (!response.ok) throw new Error(`the device runner answered ${response.status}`);
+        return response.text();
+      });
+      return (yield* decodeReply(text)).output;
+    }).pipe(
+      Effect.timeout(Duration.sum(Duration.fromInputUnsafe(TOOL_TIMEOUT), Duration.seconds(5))),
+      Effect.catch((error) => Effect.succeed(`Error: ${device} did not run ${name}: ${error instanceof Error ? error.message : String(error)}`)),
+    );
+  };

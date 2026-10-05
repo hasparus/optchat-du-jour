@@ -2,20 +2,22 @@
 // The `optchat` command. With no argument it is the REPL, a client of optchat-server ($OPTCHAT_URL,
 // default http://127.0.0.1:7700). The rest run once and exit: `view` reads the data dir without
 // taking the lock, `import-optmem` fills an empty chat from OptMem's notes, `login openai` signs
-// in with ChatGPT for the openai-plan engine.
+// in with ChatGPT for the openai-plan engine and `key anthropic|openai` saves an API key for the
+// api-key engine, both into Secrets.
 import { BunRuntime } from "@effect/platform-bun";
-import { Cause, Console, Effect, Predicate } from "effect";
+import { Cause, Console, Data, Effect, Predicate } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { loadSettings } from "../src/config.ts";
 import { importOptmem } from "../src/import.ts";
+import { KEY_SECRETS } from "../src/apikey/clients.ts";
 import { login } from "../src/openai/auth.ts";
-import { SecretsLive } from "../src/secrets.ts";
+import { Secrets, SecretsLive } from "../src/secrets.ts";
 import { runRepl } from "./repl.ts";
 import { streamDir } from "../src/paths.ts";
 import { loadChat } from "../src/store.ts";
 import { stats, render } from "../src/view.ts";
 
-const USAGE = "usage: optchat [view | import-optmem [LOG.txt] | login openai]   (server: $OPTCHAT_URL; data dir: $OPTCHAT_DIR or ~/.optchat/streams/mini)";
+const USAGE = "usage: optchat [view | import-optmem [LOG.txt] | login openai | key anthropic|openai]   (server: $OPTCHAT_URL; data dir: $OPTCHAT_DIR or ~/.optchat/streams/mini)";
 const [cmd, arg] = [process.argv[2], process.argv[3]];
 const dir = streamDir("mini");
 
@@ -48,6 +50,22 @@ const loginOpenai = Effect.gen(function* () {
   yield* Console.log(`signed in${c.email === undefined ? "" : ` as ${c.email}`}; the compactor can use your ChatGPT plan`);
 });
 
+class NoKey extends Data.TaggedError("NoKey")<{ readonly message: string }> {}
+
+// an API key for the api-key engine, read from stdin (pasted, or piped) into the Keychain; never an argument, which ps would show
+const saveKey = (provider: keyof typeof KEY_SECRETS) =>
+  Effect.gen(function* () {
+    if (process.stdin.isTTY) yield* Console.log(`Paste the ${provider} API key and press Enter:`);
+    const key = yield* Effect.promise(async () => {
+      for await (const line of console) return line.trim();
+      return "";
+    });
+    if (!key) return yield* new NoKey({ message: "no key given" });
+    const secrets = yield* Secrets;
+    yield* secrets.set(KEY_SECRETS[provider], key);
+    yield* Console.log(`saved; the api-key engine can use ${provider} within the monthly budget in optchat.config.ts`);
+  }).pipe(Effect.provide(SecretsLive));
+
 // asking for help is a success; anything else this command doesn't know is a usage error (2)
 const help = (asked: boolean) =>
   Console.error(USAGE).pipe(
@@ -62,6 +80,7 @@ const commands = new Map<string, Effect.Effect<void, { readonly message: string 
   ["--help", help(true)],
   ["-h", help(true)],
   ["import-optmem", importNotes],
+  ["key", arg === "anthropic" || arg === "openai" ? saveKey(arg) : help(false)],
   ["login", arg === "openai" ? loginOpenai : help(false)],
   ["view", view],
 ]);

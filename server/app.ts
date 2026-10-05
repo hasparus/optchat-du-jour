@@ -2,29 +2,35 @@
 // and their HTTP face on one port: /ws (AG-UI), /mcp (zoom and date), /api/* (read-only JSON for
 // the web UI) and / (the built web UI).
 import { BunHttpServer, BunServices } from "@effect/platform-bun";
-import { Effect, Layer, Option, Predicate, PubSub, Schema } from "effect";
+import { Context, Effect, Layer, Option, Predicate, PubSub, Result, Schema } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 import { existsSync } from "node:fs";
 import { openChat } from "../src/chat.ts";
-import { type Settings, MASTER_TOOLS } from "../src/config.ts";
+import { type Settings, MASTER_TOOLS, parseRef } from "../src/config.ts";
 import { LocalRunner, Runner, claudeBinary, claudeVersion } from "../src/claude/process.ts";
-import { remoteRunner } from "../src/claude/remote.ts";
+import { remoteRunner, remoteTool } from "../src/claude/remote.ts";
+import { makeBudget } from "../src/apikey/budget.ts";
+import { ApiKeys, apiKeysLayer } from "../src/apikey/clients.ts";
 import type { Summarize } from "../src/compactor.ts";
 import type { Down } from "../src/engines/chain.ts";
 import { DeviceOffline } from "../src/engines/errors.ts";
 import { handleMcp, mcpConfig, openNode } from "../src/mcp.ts";
 import { forbidden, mount } from "../src/http.ts";
+import { openAiPlanLayer } from "../src/openai/responses.ts";
 import { expandHome } from "../src/paths.ts";
 import { makePersist } from "../src/persist.ts";
 import { promptFile, systemPrompt } from "../src/prompts.ts";
 import { makeSession, type SessionEvent } from "../src/session.ts";
-import { openAiPlanLayer } from "../src/openai/responses.ts";
-import { SecretsLive } from "../src/secrets.ts";
+import { type Secrets, SecretsLive } from "../src/secrets.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
 import { getNode, localTime, span } from "../src/tree.ts";
 import { type Placement, claudeCodeTurn } from "../src/turn/claude-code.ts";
+import { toolBox } from "../src/tools/box.ts";
+import { type FileTools, makeFileTools } from "../src/tools/files.ts";
+import { apiKeyTurn } from "../src/turn/api-key.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
+import { openAiPlanTurn } from "../src/turn/openai-plan.ts";
 import { type UsageRecord, logUsage, readUsage } from "../src/usage.ts";
 import { PLACEHOLDER, render, viewSize } from "../src/view.ts";
 import { type AgUiEvent, openStream } from "./agui.ts";
@@ -40,6 +46,7 @@ export type ServerOptions = {
   readonly web?: string; // the built web UI
   readonly summarize?: Summarize; // tests replace the compactor
   readonly window?: number; // log entries in a client's first snapshot
+  readonly secrets?: Layer.Layer<Secrets>; // the plan's tokens and the API keys; SecretsLive unless a test says
 };
 
 
@@ -102,17 +109,26 @@ export const routes = (o: ServerOptions) =>
       // every client is told what goes wrong, and so is the server's own log (no client may be connected)
       const events = yield* PubSub.unbounded<SessionEvent>();
       const report = (message: string) => Effect.logInfo(message).pipe(Effect.andThen(PubSub.publish(events, { message, type: "info" })), Effect.asVoid);
-      const usage = (record: UsageRecord) => logUsage(usagePath, record).pipe(Effect.flatMap((e) => (e ? report(e) : Effect.void)));
+      // the api-key engine's monthly budget sees every record before usage.jsonl does
+      const budget = makeBudget({ monthly: settings.apiKey?.monthlyBudget ?? 0, report, usagePath });
+      const usage = (record: UsageRecord) =>
+        budget.note(record).pipe(
+          Effect.andThen(logUsage(usagePath, record)),
+          Effect.flatMap((e) => (e ? report(e) : Effect.void)),
+        );
       // built here so that a refresh token it can't save is told to the clients, not only logged
-      const plan = yield* Layer.build(openAiPlanLayer(settings.openai, { report }).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer])));
+      const outside = Layer.mergeAll(o.secrets ?? SecretsLive, FetchHttpClient.layer);
+      const plan = yield* Layer.build(openAiPlanLayer(settings.openai, { report }).pipe(Layer.provide(outside)));
+      const clients = Context.get(yield* Layer.build(apiKeysLayer(settings.apiKey).pipe(Layer.provide(outside))), ApiKeys);
       // a failover notice also changes the state's `down`, for clients that connect later
       let tellState: Effect.Effect<void> = Effect.void;
       const compactor = o.summarize
         ? { down: (): readonly Down[] => [], summarize: o.summarize }
-        : yield* makeSummarize({ device: o.device, log: usage, report: (m) => report(m).pipe(Effect.andThen(tellState)), settings }).pipe(Effect.provide(plan));
+        : yield* makeSummarize({ apiKey: { budget, clients }, device: o.device, log: usage, report: (m) => report(m).pipe(Effect.andThen(tellState)), settings }).pipe(Effect.provide(plan));
       const chat = yield* openChat(stream, { report, summarize: compactor.summarize });
 
-      const systemFile = yield* promptFile(systemPrompt(o.home));
+      const instructions = systemPrompt(o.home); // one text for every engine and device (gist §7.2)
+      const systemFile = yield* promptFile(instructions);
       // Where each device's claude runs (E7): this machine's own Runner, or that device's runner
       // over the tailnet. A claude elsewhere reaches /mcp through `tailscale serve` at
       // server.publicUrl (E8); without it, turns there are refused rather than handed the
@@ -131,24 +147,49 @@ export const routes = (o: ServerOptions) =>
         } else placements.set(name, Effect.succeed({ cwd: folder, mcpConfig: mcpAt(publicUrl), runner: remoteRunner(name, d.url) })); // `~` is the device's home: it expands it
       }
       const runnerFor = (device: string) => placements.get(device) ?? Effect.fail(new DeviceOffline({ message: `${device} is not a configured device` }));
+      // the read-only tools of an engine with its own loop (M5): this machine's in-process, another
+      // device's over its runner's POST /tool, zoom and date from memory
+      const localFiles = yield* makeFileTools(settings.devices[o.device]?.folders ?? []);
+      const files = new Map<string, FileTools>(
+        Object.entries(settings.devices).map(([name, d]) => [name, name === o.device ? localFiles : remoteTool(name, d.url)] as const),
+      );
+      const toolsFor = (device: string) =>
+        toolBox({
+          device,
+          files: files.get(device) ?? ((name) => Effect.succeed(`Error: ${device} is not a configured device, so ${name} can't run`)),
+          folders: settings.devices[device]?.folders ?? [],
+          mem: chat.mem,
+        });
       const engines: TurnEngine[] = [];
       for (const ref of settings.master.chain) {
-        const [engine, model = ""] = ref.split(/:(.*)/s);
-        if (engine !== "claude-code") continue;
-        engines.push(
-          yield* claudeCodeTurn({
-            effort: settings.master.effort,
-            logUsage: usage,
-            model,
-            permissionMode: settings.master.permissionMode,
-            primeTtl: settings.cache.primeTtl,
-            report,
-            runnerFor,
-            systemFile,
-            tools: settings.master.tools ?? MASTER_TOOLS,
-            ttl: settings.cache.claudeCodeTtl,
-          }),
-        );
+        const parsed = parseRef("master", ref);
+        // loadSettings refuses such a chain first
+        if (Result.isFailure(parsed)) return yield* Effect.die(new Error(parsed.failure));
+        const { engine, model } = parsed.success;
+        const { effort } = settings.master;
+        switch (engine) {
+          case "openai-plan":
+            engines.push(yield* openAiPlanTurn({ effort, instructions, model, toolsFor }).pipe(Effect.provide(plan)));
+            break;
+          case "api-key":
+            engines.push(apiKeyTurn({ budget, clients, effort, instructions, ref, settings, toolsFor }));
+            break;
+          case "claude-code":
+            engines.push(
+              yield* claudeCodeTurn({
+                effort,
+                logUsage: usage,
+                model,
+                permissionMode: settings.master.permissionMode,
+                primeTtl: settings.cache.primeTtl,
+                report,
+                runnerFor,
+                systemFile,
+                tools: settings.master.tools ?? MASTER_TOOLS,
+                ttl: settings.cache.claudeCodeTtl,
+              }),
+            );
+        }
       }
       const persist = yield* makePersist(report);
       const session = yield* makeSession({
@@ -330,4 +371,3 @@ export const serverLayer = (o: ServerOptions) =>
     Layer.provide(LocalRunner),
     Layer.provide(BunServices.layer),
   );
-

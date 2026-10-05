@@ -50,7 +50,7 @@ function shortest(tries: readonly string[]): string {
 
 // One try: the first message (attempt 1), or the retry text that answers the line before it.
 export type Try = { readonly attempt: number; readonly retry: { readonly line: string; readonly text: string } | null };
-export type Answer = { readonly text: string; readonly usage: Tokens; readonly model: string | null };
+export type Answer = { readonly text: string; readonly usage: Tokens; readonly model: string | null; readonly dollars?: number };
 
 // The size retries (gist §4.3), for any engine: ask, log what the try cost, and retry in the same
 // conversation until the line fits or TRIES are spent; the shortest try wins. Every try that
@@ -70,10 +70,10 @@ export const sizeRetries = (o: {
     for (;;) {
       const attempt = tries.length + 1;
       const sent = yield* Clock.currentTimeMillis;
-      const record = (usage: Tokens, model: string | null) =>
+      const record = (usage: Tokens, model: string | null, dollars?: number) =>
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;
-          yield* o.log({
+          const line: UsageRecord = {
             attempt,
             auth: o.auth,
             cold: isCold(usage),
@@ -86,12 +86,13 @@ export const sizeRetries = (o: {
             ms: now - sent,
             role: "compact",
             usage,
-          });
+          };
+          yield* o.log(dollars === undefined ? line : { ...line, dollars });
         });
       const answer: Answer = yield* o.ask({ attempt, retry }).pipe(
         Effect.tapError((e) => (e._tag !== "DeviceOffline" && e.spent !== undefined ? record(e.spent.usage, e.spent.model) : Effect.void)),
       );
-      yield* record(answer.usage, answer.model);
+      yield* record(answer.usage, answer.model, answer.dollars);
       const line = answer.text.trim();
       if (!line) return yield* new ModelError({ message: "the compactor answered with an empty line" });
       tries.push(line);

@@ -10,6 +10,9 @@
 //                     Exit {code, signal, stderr}  claude ended (stderr's tail); the socket closes
 //
 // Closing the socket from the server's side kills the process.
+//
+// `POST /tool` runs one read-only tool (src/tools/files.ts) in the device's folders: a ToolCall in,
+// a ToolReply out. A refused path, a missing file or a timeout is the reply's text, not an error.
 import { Effect, Queue, Schema, type Scope } from "effect";
 import { Socket } from "effect/socket";
 
@@ -40,6 +43,12 @@ export const Health = Schema.Struct({
   folders: Schema.Array(Schema.String),
 });
 export type Health = typeof Health.Type;
+
+// POST /tool
+export const ToolCall = Schema.Struct({ name: Schema.String, input: Schema.Json });
+export type ToolCall = typeof ToolCall.Type;
+export const ToolReply = Schema.Struct({ output: Schema.String });
+export type ToolReply = typeof ToolReply.Type;
 
 export const decodeToDevice = Schema.decodeUnknownOption(Schema.fromJsonString(ToDevice));
 export const decodeFromDevice = Schema.decodeUnknownOption(Schema.fromJsonString(FromDevice));

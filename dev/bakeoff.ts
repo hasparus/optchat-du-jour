@@ -13,6 +13,8 @@ import { FetchHttpClient } from "effect/http";
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { parseArgs } from "node:util";
+import { makeBudget } from "../src/apikey/budget.ts";
+import { ApiKeys, apiKeysLayer } from "../src/apikey/clients.ts";
 import { openChat } from "../src/chat.ts";
 import { LocalRunner } from "../src/claude/process.ts";
 import type { Summarize } from "../src/compactor.ts";
@@ -20,6 +22,7 @@ import { NODE, type Settings, loadSettings, parseRef } from "../src/config.ts";
 import { parseOptmem } from "../src/import.ts";
 import { zoom } from "../src/mcp.ts";
 import { openAiPlanLayer } from "../src/openai/responses.ts";
+import { HOME } from "../src/paths.ts";
 import type { Kind } from "../src/records.ts";
 import { SecretsLive } from "../src/secrets.ts";
 import { loadChat } from "../src/store.ts";
@@ -347,6 +350,9 @@ const main = Effect.gen(function* () {
   const engines = Layer.mergeAll(LocalRunner, openAiPlanLayer(settings.openai, { report: (m) => Console.error(m) }).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer]))).pipe(
     Layer.provide(BunServices.layer),
   );
+  // api-key contenders: the real keys, and every call counted against the month's budget like the server's
+  const clients = Context.get(yield* Layer.build(apiKeysLayer(settings.apiKey).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer]))), ApiKeys);
+  const budget = makeBudget({ monthly: settings.apiKey?.monthlyBudget ?? 0, report: (m) => Console.error(m), usagePath: `${HOME}/usage.jsonl` });
   const rows: Measured[] = [];
   for (const contender of contenders.success) {
     yield* Console.error(`${contender.name}: replaying ${messages.length} messages`);
@@ -354,7 +360,7 @@ const main = Effect.gen(function* () {
       contender,
       deadline: Duration.minutes(deadline),
       messages,
-      summarizeFor: (c, log, report) => makeSummarize({ log, report, settings: { ...settings, compactor: { ...settings.compactor, byLevel: c.byLevel } } }).pipe(
+      summarizeFor: (c, log, report) => makeSummarize({ apiKey: { budget, clients }, log: (r) => budget.note(r).pipe(Effect.andThen(log(r))), report, settings: { ...settings, compactor: { ...settings.compactor, byLevel: c.byLevel } } }).pipe(
           Effect.map((m) => m.summarize),
         ),
     }).pipe(Effect.provide(engines));
@@ -365,4 +371,4 @@ const main = Effect.gen(function* () {
   if (values.out !== undefined) writeFileSync(values.out, `${JSON.stringify(rows, null, 2)}\n`);
 });
 
-if (import.meta.main) BunRuntime.runMain(main);
+if (import.meta.main) BunRuntime.runMain(Effect.scoped(main));

@@ -5,10 +5,13 @@ import { Effect, Result } from "effect";
 import type { Runner } from "../claude/process.ts";
 import { type Ref, type Settings, chainFor, parseRef } from "../config.ts";
 import { type Job, CompactError, type Summarize } from "../compactor.ts";
+import type { Budget } from "../apikey/budget.ts";
+import type { ApiKeys } from "../apikey/clients.ts";
 import { failover, watchChain } from "../engines/chain.ts";
-import type { EngineError } from "../engines/errors.ts";
+import { type EngineError, UsageLimit } from "../engines/errors.ts";
 import type { OpenAiPlan } from "../openai/responses.ts";
 import type { UsageRecord } from "../usage.ts";
+import { apiKeyCompactor } from "./api-key.ts";
 import { claudeCodeCompactor } from "./claude-code.ts";
 import { openAiPlanCompactor } from "./openai-plan.ts";
 
@@ -16,6 +19,7 @@ type Compact = (job: Job, failoverFrom: string | null) => Effect.Effect<string, 
 type Options = {
   readonly settings: Settings;
   readonly log: (record: UsageRecord) => Effect.Effect<void>;
+  readonly apiKey?: { readonly clients: ApiKeys["Service"]; readonly budget: Budget }; // for api-key links
   readonly device?: string; // the machine the compactor calls run on
 };
 
@@ -24,6 +28,12 @@ const builders = {
   "claude-code": (model: string, o: Options) =>
     claudeCodeCompactor({ device: o.device, effort: o.settings.compactor.effort, log: o.log, model, ttl: o.settings.cache.claudeCodeTtl }),
   "openai-plan": (model: string, o: Options) => openAiPlanCompactor({ device: o.device, effort: o.settings.compactor.effort, log: o.log, model }),
+  "api-key": (model: string, o: Options) =>
+    Effect.succeed<Compact>(
+      o.apiKey
+        ? apiKeyCompactor({ ...o.apiKey, device: o.device, effort: o.settings.compactor.effort, log: o.log, ref: `api-key:${model}`, settings: o.settings })
+        : () => Effect.fail(new UsageLimit({ message: "api-key: not set up on this server" })),
+    ),
 } satisfies Record<Ref<"compactor">["engine"], (model: string, o: Options) => Effect.Effect<Compact, never, Runner | OpenAiPlan>>;
 
 export const makeSummarize = (o: Options & { readonly report: (message: string) => Effect.Effect<void> }) =>

@@ -7,7 +7,7 @@ import { type Down, failover } from "./engines/chain.ts";
 import type { EngineError } from "./engines/errors.ts";
 import type { StoreError } from "./store.ts";
 import type { Entry } from "./tree.ts";
-import type { Sent, TurnEngine, TurnEvents } from "./turn/engine.ts";
+import type { Logged, Sent, TurnEngine, TurnEvents } from "./turn/engine.ts";
 import type { UsageRecord } from "./usage.ts";
 import { allBuilt, render, settle, unbuilt, viewSize } from "./view.ts";
 
@@ -238,10 +238,15 @@ export const makeSession = (o: {
         const { runId, texts } = yield* logQueued(on);
         steer = yield* Queue.unbounded<string>();
         sent = [];
-        const input = { device: on, sent, steer, texts, view };
+        const earlier: Logged[] = [];
+        const input = { device: on, earlier, sent, steer, texts, view };
         const out: TurnEvents = {
           info,
-          log: (kind, text) => log(kind, text, runId, on).pipe(Effect.asVoid),
+          log: (kind, text) =>
+            log(kind, text, runId, on).pipe(
+              Effect.tap(() => Effect.sync(() => earlier.push({ kind, text }))), // what a failover mid-turn carries on from
+              Effect.asVoid,
+            ),
           text: (delta) => stream(delta, runId),
           thinking: (tokens) => publish({ runId, tokens, type: "thinking" }),
           usage: (record) => o.logUsage(record).pipe(Effect.andThen(publish({ record, type: "usage" }))),
@@ -253,7 +258,8 @@ export const makeSession = (o: {
             ref: e.ref,
             run: (from: string | null) => Effect.suspend(() => ((engine = e.ref), tell)).pipe(Effect.andThen(e.run(input, out, from))),
           })),
-          (from, to, why) => info(`${from} → ${to}: ${why}`),
+          // a failover mid-turn keeps what was logged: the next engine is told and carries on from it
+          (from, to, why) => info(`${from} → ${to}: ${why}${earlier.length > 0 ? ` (after ${earlier.length} logged entries; ${to} carries on from them)` : ""}`),
         ).pipe(Effect.result);
         yield* Effect.uninterruptible(
           Effect.gen(function* () {

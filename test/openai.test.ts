@@ -492,7 +492,7 @@ const ok = [
 test("the stream reader: frames split anywhere, CRLF, [DONE] after completed; mid-stream errors, refusals and cut streams fail", async () => {
   for (const size of [1, 2, 3, 7, 100]) {
     const reply = await Effect.runPromise(readStream(chunked(ok, size), "m"));
-    expect(reply).toEqual({ model: "m", text: "zażółć gęślą", usage: { cacheRead: 4, cacheWrite: 0, input: 6, output: 2 } });
+    expect(reply).toEqual({ model: "m", output: [{ text: "zażółć gęślą", type: "text" }], text: "zażółć gęślą", usage: { cacheRead: 4, cacheWrite: 0, input: 6, output: 2 } });
   }
   expect(await read(ok.replaceAll("\n", "\r\n"))).toBe("Success");
   expect(await read(`${ok}data: [DONE]\n\n`)).toBe("Success");

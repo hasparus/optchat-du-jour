@@ -2,17 +2,18 @@
 // inside the configured folders, and streams its events back over the wire in src/claude/wire.ts.
 // A process lives exactly as long as its socket: a disconnect, the daemon's SIGTERM or the end of
 // the request close its scope, which sends SIGTERM and then SIGKILL after KILL_GRACE (ref §5.2).
-// It writes nothing of its own; claude's tools change files here, nothing else does.
+// It writes nothing of its own; claude's tools change files here, nothing else does. POST /tool
+// runs one read-only tool (Read, Glob, Grep) in the same folders for an engine with its own tool
+// loop (M5): never a shell, never a write.
 import { BunHttpServer, BunServices } from "@effect/platform-bun";
-import { Data, type Duration, Effect, FileSystem, Layer, Option, Queue, Stream } from "effect";
+import { Data, type Duration, Effect, FileSystem, Layer, Option, Queue, Schema, Stream } from "effect";
 import { HttpRouter, type HttpServerRequest, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
-import { isAbsolute } from "node:path";
 import { claudeVersion, spawnProcess } from "../src/claude/process.ts";
-import { type FromDevice, type Health, decodeToDevice, frame, inbox } from "../src/claude/wire.ts";
+import { type FromDevice, type Health, ToolCall, type ToolReply, decodeToDevice, frame, inbox } from "../src/claude/wire.ts";
 import { KILL_GRACE } from "../src/config.ts";
 import { forbidden, mount } from "../src/http.ts";
-import { expandHome } from "../src/paths.ts";
+import { confine as confineTo, makeFileTools } from "../src/tools/files.ts";
 import { type Trust, trusted } from "./auth.ts";
 
 export type DeviceOptions = {
@@ -35,17 +36,7 @@ const FIRST_FRAME = "10 seconds";
 
 // `cwd`'s real path when it is one of `folders` or inside one; symlinks and `..` are resolved first
 export const confine = (cwd: string, folders: readonly string[]) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = expandHome(cwd);
-    if (!isAbsolute(path)) return yield* new SpawnRefused({ message: `${cwd} is not an absolute path` });
-    const real = yield* fs.realPath(path).pipe(Effect.mapError(() => new SpawnRefused({ message: `${cwd} does not exist on this device` })));
-    for (const folder of folders) {
-      const root = yield* fs.realPath(expandHome(folder)).pipe(Effect.option);
-      if (Option.isSome(root) && (real === root.value || real.startsWith(`${root.value.replace(/\/$/, "")}/`))) return real;
-    }
-    return yield* new SpawnRefused({ message: `${cwd} is outside this device's folders` });
-  });
+  confineTo(cwd, folders).pipe(Effect.mapError((e) => new SpawnRefused({ message: e.message })));
 
 export const deviceRoutes = (o: DeviceOptions) =>
   mount((router) =>
@@ -123,6 +114,18 @@ export const deviceRoutes = (o: DeviceOptions) =>
           }
           yield* serve(yield* request.upgrade);
           return HttpServerResponse.empty();
+        }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
+      );
+
+      // one read-only tool call (src/tools/files.ts), let in on the same terms as /spawn
+      const tools = yield* makeFileTools(o.folders);
+      const decodeCall = Schema.decodeUnknownEffect(Schema.fromJsonString(ToolCall));
+      yield* router.add("POST", "/tool", (request) =>
+        Effect.gen(function* () {
+          if (!(yield* allowed(request))) return forbidden;
+          const call = yield* decodeCall(yield* request.text);
+          const reply: ToolReply = { output: yield* tools(call.name, call.input) };
+          return HttpServerResponse.jsonUnsafe(reply);
         }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
       );
 

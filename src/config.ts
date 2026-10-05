@@ -24,6 +24,9 @@ export const CALL_TIMEOUT = "5 minutes";
 export const KILL_GRACE = "5 seconds";
 export const PRIME_TIMEOUT = "30 seconds";
 export const PRIME_IDLE = "1 second";
+// requests one turn of our own tool loop may make (openai-plan, api-key); the last one may not
+// call tools, so the turn ends with an answer (M5)
+export const TOOL_ROUNDS = 40;
 
 // optchat.config.ts (SPEC "Constants and configuration"): engines, compactor chains per level,
 // cache TTLs, devices, who may connect.
@@ -33,6 +36,15 @@ const Effort = Schema.Literals(["low", "medium", "high", "xhigh", "max"]);
 // "engine:model", e.g. "claude-code:opus"; parseRef says whether this build runs it as a role
 const EngineRef = Schema.String.check(Schema.isPattern(new RegExp(`^(${Engine.literals.join("|")}):.+$`)));
 const Chain = Schema.NonEmptyArray(EngineRef);
+// dollars per million tokens (SPEC "Usage and cost tracking"); cache writes per TTL, Anthropic only
+const Price = Schema.Struct({
+  input: Schema.Number,
+  output: Schema.Number,
+  cacheRead: Schema.Number,
+  cacheWrite5m: Schema.optional(Schema.Number),
+  cacheWrite1h: Schema.optional(Schema.Number),
+});
+export type Price = typeof Price.Type;
 
 export const Settings = Schema.Struct({
   master: Schema.Struct({
@@ -51,6 +63,17 @@ export const Settings = Schema.Struct({
   allowedLogins: Schema.Array(Schema.String),
   // publicUrl: the server as the tailnet reaches it (`tailscale serve`), for claude on other devices
   server: Schema.optional(Schema.Struct({ host: Schema.String, port: Schema.Int, publicUrl: Schema.optional(Schema.String) })),
+  // the api-key engine (overflow): a price per "provider/model" (e.g. "anthropic/claude-opus-5-5"),
+  // the dollars it may spend per calendar month, and the API bases (tests point them at fakes)
+  apiKey: Schema.optional(
+    Schema.Struct({
+      monthlyBudget: Schema.Number,
+      prices: Schema.Record(Schema.String, Price),
+      maxTokens: Schema.optional(Schema.Int),
+      anthropicUrl: Schema.optional(Schema.String),
+      openaiUrl: Schema.optional(Schema.String),
+    }),
+  ),
   // Sign in with ChatGPT endpoints (src/openai/endpoints.ts): each key left out, or the whole field, decodes to its default
   openai: Endpoints.pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
 });
@@ -64,9 +87,19 @@ export const MASTER_TOOLS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "W
 export class ConfigError extends Data.TaggedError("ConfigError")<{ readonly message: string }> {}
 
 // the engines this build can run, per role; a chain naming another is a configuration error, not a failover
-export const IMPLEMENTED = { compactor: ["claude-code", "openai-plan"], master: ["claude-code"] } as const satisfies Record<string, readonly (typeof Engine.Type)[]>;
+export const IMPLEMENTED = {
+  compactor: ["claude-code", "openai-plan", "api-key"],
+  master: ["claude-code", "openai-plan", "api-key"],
+} as const satisfies Record<string, readonly (typeof Engine.Type)[]>;
 export type Role = keyof typeof IMPLEMENTED;
 export type Ref<R extends Role> = { readonly engine: (typeof IMPLEMENTED)[R][number]; readonly model: string };
+
+// "api-key:anthropic/claude-opus-5-5" → the provider and its model id
+export const API_KEY_REF = /^api-key:(anthropic|openai)\/(.+)$/;
+export const apiKeyRef = (ref: string) => {
+  const m = API_KEY_REF.exec(ref);
+  return m?.[1] === "anthropic" || m?.[1] === "openai" ? { model: m[2] ?? "", provider: m[1] } : null;
+};
 
 // "engine:model" for a role: an engine this build runs as that role, and a model
 export const parseRef = <R extends Role>(role: R, ref: string): Result.Result<Ref<R>, string> => {
@@ -74,6 +107,7 @@ export const parseRef = <R extends Role>(role: R, ref: string): Result.Result<Re
   const engine = IMPLEMENTED[role].find((e) => e === name);
   if (model === "") return Result.fail(`engine ${ref}: expected engine:model`);
   if (engine === undefined) return Result.fail(`engine ${ref} is not implemented yet as a ${role}`);
+  if (engine === "api-key" && !apiKeyRef(ref)) return Result.fail(`${ref} must be api-key:anthropic/<model> or api-key:openai/<model>`);
   return Result.succeed({ engine, model });
 };
 
@@ -99,6 +133,10 @@ export const loadSettings = (path: string) =>
         const parsed = parseRef(role, ref);
         if (Result.isFailure(parsed)) return yield* new ConfigError({ message: `${path}: ${parsed.failure}` });
       }
+    // Anthropic takes at most 4 marks, and 1-hour entries must come before 5-minute ones
+    const ttls = settings.cache.apiKeyTtls;
+    if (ttls.length > 4 || ttls.some((t, k) => t === "1h" && ttls.slice(0, k).includes("5m")))
+      return yield* new ConfigError({ message: `${path}: cache.apiKeyTtls takes at most 4 entries, every "1h" before any "5m"` });
     for (const [name, d] of Object.entries(settings.devices))
       // http only: the runner listens on the tailnet address itself, and RemoteRunner dials its IPv4
       if (!URL.canParse(d.url) || new URL(d.url).protocol !== "http:")
