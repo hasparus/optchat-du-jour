@@ -205,7 +205,7 @@ test("the daemon's SIGTERM kills the claude it runs", async () => {
     config,
     `export default ${JSON.stringify({
       allowedLogins: [],
-      cache: { apiKeyTtls: [], claudeCodeTtl: "1h", primeTtl: "1h" },
+      cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
       compactor: { byLevel: [{ chain: ["claude-code:sonnet"], from: 0 }], effort: "medium" },
       defaultDevice: "macbook",
       devices: { macbook: { folders: [folder], url: `http://127.0.0.1:${port}` } },

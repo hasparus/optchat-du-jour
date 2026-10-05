@@ -229,7 +229,7 @@ law coords_names:
   Names(K.coords(id, n, T), id, n, T)
 
 # 3. fit merges only an adjacent sibling pair whose parent is built, and
-#    never splits a part
+#    never splits a part; a view within budget it leaves as it is
 # ----------------------------------------------------------------------
 
 law fit_merges:
@@ -238,6 +238,13 @@ law fit_merges:
   for +ps: List<&2, K.Part>
   exs n: Nat
   Merges(n, ps, K.fit(T, budget, ps))
+
+# fit merges nothing unless it must
+law fit_within:
+  for +T: Nat
+  for +budget: Nat
+  for +ps: List<&2, K.Part>
+  {Nat.is_gt(Total(ps), budget) == False{} : Bool} -> {K.fit(T, budget, ps) == ps : List<&2, K.Part>}
 
 # 4. After fit, the view's size is at most VIEW, or no pair can be merged
 # -----------------------------------------------------------------------

@@ -74,7 +74,7 @@ export const routes = (o: ServerOptions) =>
         Layer.buildWithScope(openAiPlanLayer(settings.openai, { report }).pipe(Layer.provide(outside)), scope).pipe(Effect.map((c) => Context.get(c, OpenAiPlan))),
       );
       const apiKeys = yield* Effect.cached(
-        Layer.buildWithScope(apiKeysLayer(settings.apiKey).pipe(Layer.provide(outside)), scope).pipe(Effect.map((c) => Context.get(c, ApiKeys))),
+        Layer.buildWithScope(apiKeysLayer({ ...settings.apiKey, report }).pipe(Layer.provide(outside)), scope).pipe(Effect.map((c) => Context.get(c, ApiKeys))),
       );
       const needs = { apiKeys, budget, log: usage, plan, report, settings };
       // the session shows the compactor's engines that are down, for clients that connect later

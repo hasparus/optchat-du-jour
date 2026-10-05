@@ -57,7 +57,7 @@ const settings = parseSettings({
     openaiUrl: `${openai.base}/v1`,
     prices: { "anthropic/claude-opus-5-5": { cacheRead: 0, input: 1, output: 1 }, "openai/gpt-6": { cacheRead: 0, input: 1, output: 1 } },
   },
-  cache: { apiKeyTtls: ["1h"], claudeCodeTtl: "1h", primeTtl: "1h" },
+  cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
   compactor: { byLevel: [{ chain: ["claude-code:sonnet"], from: 0 }], effort: "medium" },
   defaultDevice: "mini",
   devices: { mini: { folders: [], url: "http://127.0.0.1:9" } },
@@ -105,6 +105,8 @@ const AnthropicBody = Schema.Struct({
   messages: Schema.Array(Schema.Struct({ role: Schema.String, content: Schema.Array(Schema.Record(Schema.String, Schema.Json)) })),
 });
 const ResponsesBody = Schema.Struct({
+  include: Schema.Array(Schema.String),
+  reasoning: Schema.Struct({ context: Schema.String }),
   input: Schema.Array(Schema.Struct({ role: Schema.optional(Schema.String), content: Schema.optional(Schema.Array(Schema.Record(Schema.String, Schema.Json))) })),
 });
 
@@ -114,7 +116,7 @@ test("api-key turns send the picture: an Anthropic image block after the cached 
   const sent = Schema.decodeUnknownSync(Schema.fromJsonString(AnthropicBody))(anthropic.state.seen.at(-1));
   const [first] = sent.messages;
   expect(first?.content.map((b) => b.type)).toEqual(["text", "text", "image", "text"]);
-  expect(first?.content[0]).toEqual({ cache_control: { ttl: "1h", type: "ephemeral" }, text: VIEW, type: "text" });
+  expect(first?.content[0]).toEqual({ text: VIEW, type: "text" }); // one piece, under the first cut: the request end caches it
   expect(first?.content[1]?.text).toBe("image 111111111111:");
   expect(first?.content[2]).toEqual({ source: { data: PIC.data, media_type: "image/jpeg", type: "base64" }, type: "image" });
   expect(first?.content[3]?.text).toContain("[image 111111111111 1568x1176 195KB: a red square]");
@@ -127,6 +129,9 @@ test("api-key turns send the picture: an Anthropic image block after the cached 
   expect(parts.map((p) => p.type)).toEqual(["input_text", "input_text", "input_image", "input_text"]);
   expect(parts[1]?.text).toBe("image 111111111111:");
   expect(parts[2]).toEqual({ detail: "auto", image_url: `data:image/jpeg;base64,${PIC.data}`, type: "input_image" });
+  // an API key's Responses requests are cached as the plan's are (gist §8); a one-piece view has no cut to mark
+  expect([asked.include, asked.reasoning.context]).toEqual([["reasoning.encrypted_content"], "all_turns"]);
+  expect(openai.state.seen.at(-1)?.body).not.toContain("prompt_cache_breakpoint");
 });
 
 // ---------------------------------------------------------------------------------------------

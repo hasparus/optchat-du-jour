@@ -55,7 +55,7 @@ await Effect.runPromise(login({ endpoints, open: (url) => Effect.promise(async (
 const settings = parseSettings({
   openai: endpoints,
   allowedLogins: [],
-  cache: { apiKeyTtls: ["1h"], claudeCodeTtl: "1h", primeTtl: "1h" },
+  cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
   compactor: { byLevel: [{ chain: ["claude-code:sonnet"], from: 0 }], effort: "medium" },
   defaultDevice: "mini",
   devices: { macbook: { folders: ["~/repos"], url: "http://optchat-macbook:7710" }, mini: { folders: [home], url: "http://optchat-mini:7710" } },

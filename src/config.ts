@@ -107,7 +107,9 @@ export const Settings = Schema.Struct({
     byLevel: Schema.NonEmptyArray(Schema.Struct({ from: Schema.Int, chain: Chain })),
     effort: Effort,
   }),
-  cache: Schema.Struct({ claudeCodeTtl: Ttl, primeTtl: Ttl, apiKeyTtls: Schema.Array(Ttl) }),
+  // claude-code's own TTLs (E6). An API key's requests have no setting: gist §8's layout, 5-minute
+  // only (src/apikey/anthropic.ts). An older config's `apiKeyTtls` is dropped like any unknown key.
+  cache: Schema.Struct({ claudeCodeTtl: Ttl, primeTtl: Ttl }),
   devices: Schema.Record(Schema.String, Schema.Struct({ url: Schema.String, folders: Schema.Array(Schema.String) })),
   defaultDevice: Schema.String,
   allowedLogins: Schema.Array(Schema.String),
@@ -174,10 +176,6 @@ export const loadSettings = (path: string) =>
     const settings = yield* decodeSettings(module).pipe(
       Effect.mapError((e) => new ConfigError({ message: `${path}: ${e.message}` })),
     );
-    // Anthropic takes at most 4 marks, and 1-hour entries must come before 5-minute ones
-    const ttls = settings.cache.apiKeyTtls;
-    if (ttls.length > 4 || ttls.some((t, k) => t === "1h" && ttls.slice(0, k).includes("5m")))
-      return yield* new ConfigError({ message: `${path}: cache.apiKeyTtls takes at most 4 entries, every "1h" before any "5m"` });
     for (const [name, d] of Object.entries(settings.devices))
       // http only: the runner listens on the tailnet address itself, and RemoteRunner dials its IPv4
       if (!URL.canParse(d.url) || new URL(d.url).protocol !== "http:")

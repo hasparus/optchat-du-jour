@@ -12,7 +12,8 @@ import { cutBlocks, flat } from "../view.ts";
 
 // The context pieces: <chat>, the bare lines, </chat>, cut at the marks. No ids anywhere: shown
 // `id+n|text`, the model starts copying the format (gist §4.2). Byte-stable from call to call.
-export const contextBlocks = (job: Job, marks: readonly number[] = MARKS) => cutBlocks(["<chat>", ...job.ctx, "</chat>"].join("\n"), marks);
+export const contextBlocks = (job: Job, marks: readonly number[] = MARKS) =>
+  cutBlocks(["<chat>", ...job.ctx, "</chat>"].join("\n"), marks);
 
 // what the gist's step block says above the message or the two lines (gist §4.2): the message
 // whole with its newlines, the two lines written out again, flattened

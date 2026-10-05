@@ -48,3 +48,92 @@ export function fakeSummary(job: Job): string {
   const tag = "msg" in job ? job.msg.kind : "work";
   return `${tag}: ${job.l}+${job.i} ${h} ${words(r, 20 + Math.floor(r() * 50))}${r() < 0.2 ? "\nsecond line" : ""}`;
 }
+
+// The lagging replay (SPEC "Parity test"): the compactor runs behind the log, as it does in a real
+// session, instead of catching up after every message. Messages go in batches without waiting;
+// between batches the driver lets a few compactor calls finish, one at a time, and a call fails
+// when `failsOn` says so for its node and attempt, then rests RETRY_MS before its retry. Each
+// driver passes `gate().call` as its compactor (one job at a time) and releases calls with
+// `release`, which waits on the pump's state, never on the clock.
+export const RETRY_MS = 2;
+export type Lag = { readonly batch: readonly FixtureMsg[]; readonly calls: number };
+
+// long enough that the view is well over budget, so fit merges while the compactor lags
+export function lagging(count = 1400, seed = 7): Lag[] {
+  const all = fixture(count, seed), r = rng(seed), out: Lag[] = [];
+  for (let at = 0; at < all.length; ) {
+    const n = 1 + Math.floor(r() * 12);
+    out.push({ batch: all.slice(at, at + n), calls: Math.floor(r() * 10) });
+    at += n;
+  }
+  return out;
+}
+
+// about one call in five fails the first time, one in twenty the second, none after that
+export function failsOn(l: number, i: number, attempt: number): boolean {
+  if (attempt > 2) return false;
+  const roll = Number.parseInt(hex(`${l}|${i}|${attempt}`).slice(0, 8), 16) / 2 ** 32;
+  return roll < (attempt === 1 ? 0.2 : 0.25);
+}
+
+// The compactor both drivers run: each call waits until the driver releases it, then answers
+// fakeSummary(job) or fails as scripted. `waiting` is the call in flight, if any; `calls` names
+// every call in order ("l:i/attempt"), which the two implementations must agree on too.
+export function gate() {
+  const tries = new Map<string, number>();
+  const calls: string[] = [];
+  let waiting: { readonly job: Job; readonly go: () => void } | null = null;
+  const call = async (job: Job) =>
+    new Promise<string>((resolve, reject) => {
+      if (waiting !== null) throw new Error("two compactor calls at once: the drivers run one job at a time");
+      const key = `${job.l}:${job.i}`;
+      const attempt = (tries.get(key) ?? 0) + 1;
+      tries.set(key, attempt);
+      calls.push(`${key}/${attempt}`);
+      waiting = {
+        go: () => {
+          waiting = null;
+          if (failsOn(job.l, job.i, attempt)) reject(new Error(`scripted failure of ${key}, attempt ${attempt}`));
+          else resolve(fakeSummary(job));
+        },
+        job,
+      };
+    });
+  return { call, calls, waiting: () => waiting };
+}
+
+// The state the driver acts in: a compactor call in flight, or nothing left to build. With one
+// job at a time both pumps start nothing else while a call runs or a failed node rests (it holds
+// the slot), so logging or releasing now gives both implementations the same state to decide
+// from, whatever the machine's load. Never a fixed sleep: a pump that hasn't started its next call
+// yet, or a retry timer that hasn't fired, is simply waited for. A pump that does neither for a
+// minute is hung, and fails the replay.
+export async function settled(g: ReturnType<typeof gate>, caughtUp: () => boolean): Promise<void> {
+  const deadline = Date.now() + 60_000;
+  while (g.waiting() === null && !caughtUp()) {
+    if (Date.now() > deadline) throw new Error("the compactor neither called nor caught up for 60 s");
+    await Bun.sleep(1);
+  }
+}
+
+// Let the call in flight finish (false when there is none: everything is built), then wait until
+// the next one is in flight or everything is built.
+export async function release(g: ReturnType<typeof gate>, caughtUp: () => boolean): Promise<boolean> {
+  await settled(g, caughtUp);
+  const w = g.waiting();
+  if (w === null) return false;
+  w.go();
+  await settled(g, caughtUp);
+  return true;
+}
+
+// the lagging replay itself, for either implementation; it prints the calls it saw, in order
+export async function replayLagging(o: { readonly log: (m: FixtureMsg) => Promise<void>; readonly caughtUp: () => boolean; readonly gate: ReturnType<typeof gate> }) {
+  for (const step of lagging()) {
+    await settled(o.gate, o.caughtUp);
+    for (const m of step.batch) await o.log(m);
+    for (let c = 0; c < step.calls; c++) if (!(await release(o.gate, o.caughtUp))) break;
+  }
+  while (await release(o.gate, o.caughtUp));
+  console.log(JSON.stringify(o.gate.calls));
+}

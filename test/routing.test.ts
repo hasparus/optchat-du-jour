@@ -71,7 +71,7 @@ test("a turn on another device runs there, and a turn on an offline device stops
   const settings = parseSettings({
     openai: DEFAULT_ENDPOINTS,
     allowedLogins: [ME],
-    cache: { apiKeyTtls: [], claudeCodeTtl: "1h", primeTtl: "1h" },
+    cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
     compactor: { byLevel: [{ chain: ["claude-code:sonnet"], from: 0 }], effort: "medium" },
     defaultDevice: "mini",
     devices: {
@@ -166,7 +166,7 @@ test("without server.publicUrl a turn on another device is stopped at once, and 
   const settings = parseSettings({
     openai: DEFAULT_ENDPOINTS,
     allowedLogins: [],
-    cache: { apiKeyTtls: [], claudeCodeTtl: "1h", primeTtl: "1h" },
+    cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
     compactor: { byLevel: [{ chain: ["claude-code:sonnet"], from: 0 }], effort: "medium" },
     defaultDevice: "mini",
     devices: {

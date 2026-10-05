@@ -13,7 +13,8 @@ export const KEY_SECRETS = { anthropic: "anthropic-api-key", openai: "openai-api
 
 export class ApiKeys extends Context.Service<ApiKeys, { readonly anthropic: Messages; readonly openai: Respond }>()("optchat/ApiKeys") {}
 
-export const apiKeysLayer = (o: { readonly anthropicUrl?: string; readonly openaiUrl?: string } = {}) =>
+// `report`: what the user should hear (an OpenAI model that refuses cache breakpoints)
+export const apiKeysLayer = (o: { readonly anthropicUrl?: string; readonly openaiUrl?: string; readonly report?: (message: string) => Effect.Effect<void> } = {}) =>
   Layer.effect(
     ApiKeys,
     Effect.gen(function* () {
@@ -33,6 +34,7 @@ export const apiKeysLayer = (o: { readonly anthropicUrl?: string; readonly opena
         api: o.openaiUrl ?? OPENAI_API,
         bearer: { current: key("openai"), renew: () => Effect.fail(new UsageLimit({ message: "api-key: openai rejected the key" })) },
         label: "api-key: openai",
+        report: o.report,
       });
       return { anthropic, openai };
     }),

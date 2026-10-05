@@ -1,6 +1,6 @@
 // Few tests, each a failure that has happened or plausibly will (ref §10). No model calls.
 import { afterAll, expect, test } from "bun:test";
-import { Deferred, Effect, Fiber, Layer, type Scope } from "effect";
+import { Deferred, Effect, Fiber, Layer, Queue, type Scope, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { tmpdir } from "node:os";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -10,6 +10,14 @@ import { importOptmem, parseOptmem } from "../src/import.ts";
 import { loadChat, lock, Locked, newMsg } from "../src/store.ts";
 import { built, getNode, type Mem, newMem, nodes } from "../src/tree.ts";
 import { addMessage, addNode, cutBlocks, render, settle } from "../src/view.ts";
+import { cap } from "../src/cap.ts";
+import { CAP } from "../src/config.ts";
+import { requestBody } from "../src/apikey/anthropic.ts";
+import { makeClaude } from "../src/claude/process.ts";
+import { handleMcp, noAttached } from "../src/mcp.ts";
+import { body as responsesBody } from "../src/openai/responses.ts";
+import { contextBlocks, step } from "../src/summarize/step.ts";
+import { headOf, tailOf } from "../src/text.ts";
 
 const made: string[] = [];
 // short: socket paths stop at ~107 characters
@@ -41,6 +49,71 @@ test("the view is cut after the last line end before each mark, and marks past i
   expect(blocks.slice(0, -1).filter((b) => !b.endsWith("\n"))).toEqual([]);
   expect(blocks[0]!.length).toBeLessThanOrEqual(100);
   expect(cutBlocks("<chat>\n</chat>")).toEqual(["<chat>\n</chat>"]);
+});
+
+// A surrogate pair split by a cut leaves a lone half in the permanent log; the provider refuses
+// the compactor's input on every try, and rule 3 keeps every later summary waiting on that node.
+test("cap() never splits a surrogate pair, and says how much it left out", () => {
+  const rocket = "\u{1F680}";
+  // the cut after the head would fall between the rocket's halves: the head stops before it
+  const full = `${"a".repeat(14_999)}${rocket}${"b".repeat(20_000)}`;
+  const capped = cap(full);
+  expect(capped.isWellFormed()).toBe(true);
+  expect(capped).toBe(`${"a".repeat(14_999)}\n[… ${full.length - 14_999 - CAP / 2} chars cut …]\n${"b".repeat(CAP / 2)}`);
+  expect(JSON.stringify(newMsg(7, "echo", capped))).not.toMatch(/\\ud83d/i);
+  // and the tail's start would fall between them: the tail starts after it
+  const late = `${"a".repeat(20_000)}${rocket}${"b".repeat(14_999)}`;
+  expect(cap(late)).toBe(`${"a".repeat(CAP / 2)}\n[… ${late.length - CAP / 2 - 14_999} chars cut …]\n${"b".repeat(14_999)}`);
+  // plain text is cut exactly as the reference cuts it (the parity fixtures are ASCII)
+  const ascii = `${"x".repeat(20_000)}${"y".repeat(20_000)}`;
+  expect(cap(ascii)).toBe(`${"x".repeat(CAP / 2)}\n[… ${40_000 - CAP} chars cut …]\n${"y".repeat(CAP / 2)}`);
+  expect(cap("short")).toBe("short");
+  // a lone half the tool itself wrote is not logged as one
+  expect(cap("a\uD83Db").isWellFormed()).toBe(true);
+  expect(headOf(`x${rocket}`, 2)).toBe("x");
+  expect(headOf(`x${rocket}`, 3)).toBe(`x${rocket}`);
+  expect(tailOf(`${rocket}x`, 2)).toBe("x");
+  expect(tailOf(`${rocket}x`, 3)).toBe(`${rocket}x`);
+});
+
+// what each encoder of a model's input sent, checked for a lone surrogate: none may hold one as
+// an escape, and the line's text must arrive with U+FFFD in its place
+const wellFormedOnWire = (wire: string) => {
+  expect(wire).not.toMatch(/\\ud83d/i);
+  expect(wire).toContain("rocket \uFFFD then text");
+};
+
+test("a line logged with a lone surrogate reaches no model as one: every wire encoder makes it well-formed; optchat view prints it as stored", async () => {
+  const bad = "rocket \uD83D then text"; // what cap() wrote before it kept pairs whole
+  const msg = newMsg(7, "echo", bad);
+  const job = { ctx: ["older", `echo: ${bad}`], i: 7, l: 0, msg };
+  const asked = step(job);
+  // Anthropic's request body, as a compactor's or a turn's, a tool result included
+  wellFormedOnWire(requestBody({ history: [{ marks: 0, parts: [...contextBlocks(job), asked], type: "user" }, { id: "t", output: bad, type: "result" }], model: "m", system: "s" }));
+  // the Responses API's
+  wellFormedOnWire(responsesBody({ input: [{ parts: [asked], role: "user" }, { id: "c", output: bad, role: "output" }], instructions: "s", model: "m" }));
+  // claude's stream-json input (a turn's or a compactor's message)
+  const sent = await run(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const stdin = yield* Queue.unbounded<string>();
+        const claude = yield* makeClaude({ exit: Effect.succeed("ended"), lines: Stream.empty, stdin });
+        yield* claude.send([{ text: asked, type: "text" }]);
+        return yield* Queue.take(stdin);
+      }),
+    ),
+  );
+  wellFormedOnWire(sent);
+  // zoom over MCP: a short message is its own free node, so the lone half is in the view too
+  const mem = newMem();
+  addMessage(mem, newMsg(0, "echo", bad));
+  addNode(mem, { i: 0, l: 0, size: msg.size, text: `echo: ${bad}` });
+  const zoomed = handleMcp(mem, JSON.stringify({ id: 1, jsonrpc: "2.0", method: "tools/call", params: { arguments: { id: 0, n: 1 }, name: "zoom" } }), noAttached);
+  wellFormedOnWire(zoomed.body ?? "");
+  // what is stored is shown as stored: optchat view (and parity) see the log's own bytes
+  expect(render(mem)).toContain(bad);
+  // well-formed text is not touched, so nothing cached changes
+  expect(requestBody({ history: [{ parts: ["ok \u{1F680}"], type: "user" }], model: "m", system: "s" })).toContain("ok \u{1F680}");
 });
 
 test("settle waits for the last unbuilt view line, and a cancelled wait leaves no listener", async () => {
