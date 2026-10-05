@@ -346,7 +346,7 @@ The reference's session object (`createSession` in ref `turn.ts`) moves into the
 
 The log stays the source of truth. A client's state is only a view of it, rebuilt from `MESSAGES_SNAPSHOT` on every reconnect and after every run, so there is no replay protocol.
 
-**CLI.** `optchat` is the reference's REPL (ref §10: bracketed paste, Ctrl-C and Ctrl-Z paths, plain scrollback) talking to the server over `/ws`. `optchat view`, `stats`, `browse` and `import-*` stay local commands that read the data dir without the lock, as in the reference.
+**CLI.** `optchat` is the reference's REPL (ref §10: bracketed paste, Ctrl-C and Ctrl-Z paths, plain scrollback) talking to the server over `/ws`. Piped, it exits once every message it sent is answered, and non-zero when one was not: the log refused it, or its run ended in an error (a refusal, a spent chain, a cancel). `optchat view`, `stats`, `browse` and `import-*` stay local commands that read the data dir without the lock, as in the reference.
 
 ## Web UI
 

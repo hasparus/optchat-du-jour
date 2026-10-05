@@ -99,6 +99,15 @@ describe("repl screen", () => {
     expect(t.s.failed).toBe(0);
   });
 
+  test("piped: a message whose run ends in an error counts as answered, with an error", () => {
+    const t = screen(false);
+    const asked = idOf(t.s.submit("refused one"));
+    t.feed({ snapshot: IDLE, type: "STATE_SNAPSHOT" }, ack(asked, "3"), ...said("3", "user", "refused one"), { type: "RUN_STARTED" });
+    t.feed({ message: "declined", type: "RUN_ERROR" });
+    expect(t.s.unanswered).toBe(0);
+    expect(t.s.failed).toBe(1);
+  });
+
   test("piped: a message the server could not log counts as answered, with an error", () => {
     const t = screen(false);
     const lost = idOf(t.s.submit("lost"));

@@ -81,7 +81,7 @@ export function makeScreen(o: ScreenOptions) {
   const mine: string[] = []; // the ids of messages sent from here, not acked yet
   const own = new Set<string>(); // the log ids of messages sent from here: not shown again
   let logging = 0; // sent from here and logged, their run not over yet
-  let failed = 0; // sent from here, and the server could not log them
+  let failed = 0; // sent from here and not answered: the server could not log them, or their run ended in an error
   let offline = false; // the connection is down and the user has been told so
   const users = new Set<string>(); // the ids of user messages being logged
   const refused = new Set<string>(); // the ids of messages sent from here that the log refused
@@ -177,7 +177,7 @@ export function makeScreen(o: ScreenOptions) {
       return mine.length + logging;
     },
 
-    // messages sent from here that the server could not log
+    // messages sent from here that were not answered: not logged, or their run ended in an error
     get failed() {
       return failed;
     },
@@ -224,6 +224,7 @@ export function makeScreen(o: ScreenOptions) {
           logging = 0;
           return;
         case "RUN_ERROR":
+          failed += logging; // ours that this run logged ended unanswered with it
           logging = 0;
           note(`error: ${clean(e.message)}`);
           return;
@@ -442,9 +443,10 @@ export const runRepl = (o: ReplOptions) =>
         process.off("SIGCONT", onCont);
         resume(failure === undefined ? Effect.succeed("ended") : Effect.fail(new ReplError({ message: failure })));
       };
-      // piped: the input is all sent and all answered; one the server could not log is an error
+      // piped: the input is all sent and all answered; one the server could not log, or whose run
+      // ended in an error (a refusal, a spent plan, a cancel), makes the exit code non-zero
       const finishedPiping = () => {
-        if (ended && screen.unanswered === 0) done(screen.failed > 0 ? `${screen.failed} message(s) could not be logged` : undefined);
+        if (ended && screen.unanswered === 0) done(screen.failed > 0 ? `${screen.failed} message(s) not answered: not logged, or their run ended in an error` : undefined);
       };
       const act = (a: Action | null) => {
         if (!a) return;
