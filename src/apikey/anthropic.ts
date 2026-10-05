@@ -93,7 +93,7 @@ export const messagesOf = (history: readonly Item[], limit: number) => {
         push("assistant", [{ id: item.id, input: inputOf(item.input), name: item.name, type: "tool_use" }]);
         break;
       case "kept":
-        push("assistant", [item.block]);
+        if (item.provider === "anthropic") push("assistant", [item.block]);
         break;
     }
   }
@@ -274,9 +274,9 @@ const itemOf = (b: Block): Item[] => {
     case "tool_use":
       return [{ id: b.id, input: b.json || "{}", name: b.name, type: "call" }];
     case "thinking":
-      return [{ block: { signature: b.signature, thinking: b.thinking, type: "thinking" }, type: "kept" }];
+      return [{ block: { signature: b.signature, thinking: b.thinking, type: "thinking" }, provider: "anthropic", type: "kept" }];
     case "redacted_thinking":
-      return [{ block: { data: b.data, type: "redacted_thinking" }, type: "kept" }];
+      return [{ block: { data: b.data, type: "redacted_thinking" }, provider: "anthropic", type: "kept" }];
     case "other":
       return [];
   }

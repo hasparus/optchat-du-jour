@@ -18,8 +18,10 @@ export type Item =
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "call"; readonly id: string; readonly name: string; readonly input: string }
   | { readonly type: "result"; readonly id: string; readonly output: string }
-  // a provider's own block, sent back exactly as it came (Anthropic's thinking, with its signature)
-  | { readonly type: "kept"; readonly block: Schema.Json };
+  // a provider's own block, sent back exactly as it came to the provider that sent it: Anthropic's
+  // thinking with its signature, a Responses reasoning item with its encrypted content (gist §8)
+  | { readonly type: "kept"; readonly provider: "anthropic"; readonly block: Schema.Json }
+  | { readonly type: "kept"; readonly provider: "openai"; readonly block: Readonly<Record<string, Schema.Json>> };
 
 // A reply: its items in order, what it cost, and `cut` when it stopped short of its end (the
 // output limit), so the caller can say so.

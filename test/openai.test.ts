@@ -15,6 +15,7 @@ import { UsageLimit } from "../src/engines/errors.ts";
 import { Credentials, SECRET, encodeCredentials, login } from "../src/openai/auth.ts";
 import { type Endpoints, DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 import { OpenAiPlan, openAiPlanLayer, readStream } from "../src/openai/responses.ts";
+import { responsesProvider } from "../src/providers/responses.ts";
 import { COMPACT_FILE } from "../src/prompts.ts";
 import { SECURITY_LINE_MAX, Secrets, SecretsError, keychainLine, memorySecrets } from "../src/secrets.ts";
 import { makeSession, noMedia } from "../src/session.ts";
@@ -22,6 +23,8 @@ import { newMsg } from "../src/store.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
 import { blocks } from "../src/summarize/claude-code.ts";
 import { openAiPlanCompactor } from "../src/summarize/openai-plan.ts";
+import type { Mid, TurnEvents, TurnInput } from "../src/turn/engine.ts";
+import { toolLoop } from "../src/turn/loop.ts";
 import { bytes } from "../src/tree.ts";
 import type { UsageRecord } from "../src/usage.ts";
 import { fakeOpenAi } from "./fake-openai.ts";
@@ -57,7 +60,7 @@ const Body = Schema.Struct({
   store: Schema.Boolean,
   stream: Schema.Boolean,
   model: Schema.String,
-  reasoning: Schema.optional(Schema.Struct({ effort: Schema.String })),
+  reasoning: Schema.optional(Schema.Struct({ context: Schema.String, effort: Schema.String })),
   input: Schema.Array(Schema.Struct({ role: Schema.String, content: Schema.Union([Schema.String, Schema.Array(Schema.Struct({ text: Schema.String }))]) })),
 });
 const decodeBody = Schema.decodeUnknownSync(Schema.fromJsonString(Body));
@@ -392,7 +395,117 @@ test("both compactor engines send the same input: openai-plan's parts are claude
   const texts = blocks(job, "1h").map((b) => b.text);
   expect(texts).toHaveLength(5); // four context pieces, then the step
   expect(Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ text: Schema.String })))(parts).map((p) => p.text)).toEqual(texts);
-  expect(sent!.reasoning).toEqual({ effort: "low" });
+  expect(sent!.reasoning).toEqual({ context: "all_turns", effort: "low" });
+});
+
+// what gist §8 asks of a Responses request, read back from the wire
+const Cached = Schema.Struct({
+  include: Schema.Array(Schema.String),
+  reasoning: Schema.Struct({ context: Schema.String, effort: Schema.optional(Schema.String) }),
+  store: Schema.Boolean,
+  input: Schema.Array(Schema.Record(Schema.String, Schema.Json)),
+});
+const decodeCached = Schema.decodeUnknownSync(Schema.fromJsonString(Cached));
+const Content = Schema.Array(Schema.Struct({ type: Schema.String, prompt_cache_breakpoint: Schema.optional(Schema.Struct({ mode: Schema.String })) }));
+// each part of a user message: its breakpoint's mode, or null
+const breakpointsOf = (item: Readonly<Record<string, Schema.Json>> | undefined) =>
+  Schema.decodeUnknownSync(Content)(item?.content).map((p) => p.prompt_cache_breakpoint?.mode ?? null);
+const Kind = Schema.Struct({ type: Schema.optional(Schema.String), role: Schema.optional(Schema.String) });
+const encryptedOf = (i: Readonly<Record<string, Schema.Json>> | undefined) => Schema.decodeUnknownSync(Schema.Struct({ encrypted_content: Schema.String }))(i).encrypted_content;
+const kindsOf = (input: readonly Readonly<Record<string, Schema.Json>>[]) => input.map((i) => Schema.decodeUnknownSync(Kind)(i)).map((k) => k.type ?? k.role);
+// a view long enough for all four pieces, cut at 50k, 80k and 100k characters
+const LONG_VIEW = `<chat>\n${Array.from({ length: 110 }, (_, k) => `${k}+1|user: line ${k} ${"v".repeat(1000)}`).join("\n")}\n</chat>`;
+
+test("a tool loop on the Responses API keeps its reasoning: sent back encrypted between rounds and after a mid-run message, the view's breakpoints the same in every request", async () => {
+  const secrets = memorySecrets();
+  const e = await signedIn(secrets);
+  const respond = await Effect.runPromise(
+    Effect.gen(function* () {
+      return (yield* OpenAiPlan).respond;
+    }).pipe(Effect.provide(plan(e, secrets))),
+  );
+  const provider = responsesProvider({ auth: "chatgpt-pro", effort: "high", engine: "openai-plan", model: "gpt-6.1-sol", respond });
+  const tools = { defs: [{ description: "Read a file", name: "Read", parameters: { properties: { file_path: { type: "string" } }, type: "object" } }], run: () => Effect.succeed("file text") };
+  const engine = toolLoop({ instructions: "MASTER", provider, ref: "openai-plan:gpt-6.1-sol", toolsFor: () => tools, vision: false });
+  // a message sent while the first request runs: offered from the second round on
+  let rounds = 0;
+  const later: Mid = { media: [], seq: 1, text: "and the tests too" };
+  const input: TurnInput = {
+    device: "mini",
+    earlier: [],
+    media: [],
+    mid: { next: Effect.never, ready: Effect.sync(() => (++rounds === 2 ? [later] : [])) },
+    texts: ["fix the build"],
+    view: LONG_VIEW,
+  };
+  const logged: string[] = [];
+  const out: TurnEvents = {
+    info: () => Effect.void,
+    log: (kind, text) => Effect.sync(() => void logged.push(`${kind}: ${text}`)),
+    text: () => Effect.void,
+    thinking: () => Effect.void,
+    took: (m) => Effect.sync(() => void logged.push(`user: ${m.text}`)),
+    usage: () => Effect.void,
+  };
+  fake.state.seen.length = 0;
+  fake.state.script = [{ calls: [{ arguments: '{"file_path":"a.ts"}', name: "Read" }], reasoning: "read a.ts first" }, { calls: [{ arguments: '{"file_path":"b.ts"}', name: "Read" }], reasoning: "now b.ts" }, { reasoning: "done", text: "fixed" }];
+  await Effect.runPromise(engine.run(input, out, null));
+  expect(logged).toEqual(['tool: Read {"file_path":"a.ts"}', "echo: file text", "user: and the tests too", 'tool: Read {"file_path":"b.ts"}', "echo: file text", "talk: fixed"]); // thought never logged
+
+  const sent = fake.state.seen.map((x) => decodeCached(x.body));
+  expect(sent).toHaveLength(3);
+  for (const b of sent) {
+    expect(b.store).toBe(false);
+    expect(b.include).toEqual(["reasoning.encrypted_content"]);
+    expect(b.reasoning).toEqual({ context: "all_turns", effort: "high" });
+    // a breakpoint at each of the view's three cuts, none on its last piece or the new text
+    expect(breakpointsOf(b.input[0])).toEqual(["explicit", "explicit", "explicit", null, null]);
+    expect(JSON.stringify(b.input[0])).toBe(JSON.stringify(sent[0]!.input[0]));
+  }
+  expect(fake.state.seen.map((x) => x.body.split('"prompt_cache_breakpoint"').length - 1)).toEqual([3, 3, 3]);
+  // each request is the one before plus what came since: the reasoning item, verbatim, ahead of its call
+  const [, second, third] = sent;
+  // the mid-run message joins after the first round's tool results; the reasoning before it stays
+  expect(kindsOf(second!.input)).toEqual(["user", "reasoning", "function_call", "function_call_output", "user"]);
+  expect(kindsOf(third!.input)).toEqual(["user", "reasoning", "function_call", "function_call_output", "user", "reasoning", "function_call", "function_call_output"]);
+  expect(JSON.stringify(third!.input.slice(0, 5))).toBe(JSON.stringify(second!.input));
+  const replayed = third!.input.filter((i) => i.type === "reasoning");
+  expect(replayed.map((i) => i.id)).toEqual(["rs_1", "rs_2"]);
+  for (const i of replayed) expect([...fake.state.issued]).toContain(encryptedOf(i));
+});
+
+test("the compactor on the plan replays its reasoning on a size retry, and a model that refuses breakpoints is asked again without them, said once", async () => {
+  const secrets = memorySecrets();
+  const e = await signedIn(secrets);
+  const reports: string[] = [];
+  const layer = openAiPlanLayer(e, { report: (m) => Effect.sync(() => void reports.push(m)) }).pipe(Layer.provide([secrets, FetchHttpClient.layer]));
+  const compact = await Effect.runPromise(
+    Effect.gen(function* () {
+      return openAiPlanCompactor({ effort: "medium", log: () => Effect.void, model: "gpt-6.1-sol", plan: yield* OpenAiPlan });
+    }).pipe(Effect.provide(layer)),
+  );
+  const job: Job = { ctx: Array.from({ length: 110 }, (_, k) => `user: line ${k} ${"z".repeat(1000)}`), i: 110, l: 0, msg: newMsg(110, "user", "squeeze me") };
+
+  // marks accepted: the context's cuts carry them, and the retry sends back the first try's reasoning
+  fake.state.refuseBreakpoints = false;
+  fake.state.seen.length = 0;
+  fake.state.script = [{ reasoning: "too much detail", text: line(600) }, { text: line(500) }];
+  expect(await Effect.runPromise(compact(job, null))).toBe(line(500));
+  const [first, retry] = fake.state.seen.map((x) => decodeCached(x.body));
+  expect(breakpointsOf(first!.input[0])).toEqual(["explicit", "explicit", "explicit", null, null]); // four pieces, then the step
+  expect(kindsOf(retry!.input)).toEqual(["user", "reasoning", "assistant", "user"]);
+  expect([...fake.state.issued]).toContain(encryptedOf(retry!.input[1]));
+
+  // a model that refuses the field: the same request again without it, then none from the start
+  fake.state.refuseBreakpoints = true;
+  fake.state.seen.length = 0;
+  fake.state.script = [{ text: line(400) }, { text: line(300) }];
+  expect(await Effect.runPromise(compact(job, null))).toBe(line(400));
+  expect(await Effect.runPromise(compact(job, null))).toBe(line(300));
+  expect(fake.state.seen.map((x) => x.body.includes("prompt_cache_breakpoint"))).toEqual([true, false, false]);
+  expect(reports).toHaveLength(1);
+  expect(reports[0]).toContain("gpt-6.1-sol refuses prompt_cache_breakpoint");
+  fake.state.refuseBreakpoints = false;
 });
 
 const respondWith = (layer: Layer.Layer<OpenAiPlan>) => (text: string) =>

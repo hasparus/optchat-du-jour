@@ -2,13 +2,17 @@
 // authorize page (it signs in at once and redirects, as a browser would after a click), the token
 // endpoint (PKCE checked, refresh tokens rotated) and /v1/responses, which answers from a script:
 // streamed text, function calls, an HTTP error or a failed stream. An answer may wait on `gate`
-// before it starts, so a test can act while a request is in flight.
+// before it starts, so a test can act while a request is in flight. Like the real API with
+// `store: false`, it keeps nothing: a reasoning item it sends carries its encrypted content, and
+// one sent back must carry content it issued, or the request is refused. With
+// `refuseBreakpoints`, it refuses `prompt_cache_breakpoint` as the reference saw a Codex model do.
+import { Schema } from "effect";
 import { createHash } from "node:crypto";
 
 // what the next /v1/responses call does
 export type Call = { readonly name: string; readonly arguments: string };
 export type Answer =
-  | { readonly text?: string; readonly calls?: readonly Call[]; readonly cached?: number; readonly gate?: Promise<unknown> }
+  | { readonly text?: string; readonly calls?: readonly Call[]; readonly cached?: number; readonly gate?: Promise<unknown>; readonly reasoning?: string }
   | { readonly status: number; readonly code: string } // an HTTP error with an OpenAI error body
   | { readonly failed: string } // the stream starts, then response.failed, with usage
   | { readonly incomplete: string }; // the stream starts, then response.incomplete, with usage
@@ -33,13 +37,45 @@ export type FakeState = {
   refreshSub: string | null; // a refresh also returns an ID token for this subject
   script: Answer[];
   readonly seen: Seen[];
+  refuseBreakpoints: boolean;
+  readonly issued: Set<string>; // the encrypted reasoning it has sent
   authorizeParams: URLSearchParams | null;
 };
 
+// what the fake reads of a request: its input items' type, id and encrypted content, and `include`
+const decodeSent = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      include: Schema.optional(Schema.Array(Schema.String)),
+      input: Schema.Array(Schema.Struct({ type: Schema.optional(Schema.String), id: Schema.optional(Schema.String), encrypted_content: Schema.optional(Schema.String) })),
+    }),
+  ),
+);
+
 export function fakeOpenAi() {
   const issued = "oaiapp_fake";
-  const state: FakeState = { access: "", authorizeParams: null, refresh: "", refreshSub: null, refreshes: 0, reject: false, script: [], seen: [], tokenStatus: null };
+  const state: FakeState = {
+    access: "",
+    authorizeParams: null,
+    issued: new Set(),
+    refresh: "",
+    refreshSub: null,
+    refreshes: 0,
+    refuseBreakpoints: false,
+    reject: false,
+    script: [],
+    seen: [],
+    tokenStatus: null,
+  };
   let counter = 0;
+  // a reasoning item, its encrypted content only when asked for; what it issues is remembered
+  const reasoningItem = (thought: string, encrypted: boolean): Json => {
+    const id = `rs_${state.seen.length}`;
+    if (!encrypted) return { id, summary: [], type: "reasoning" };
+    const content = `enc:${state.seen.length}:${Buffer.from(thought).toString("base64")}`;
+    state.issued.add(content);
+    return { encrypted_content: content, id, summary: [], type: "reasoning" };
+  };
   const pending = new Map<string, { challenge: string; nonce: string; redirect: string }>();
   const iss = (): string => `http://127.0.0.1:${server.port ?? 0}`;
   const fresh = () => {
@@ -89,6 +125,11 @@ export function fakeOpenAi() {
         if (state.reject || token !== state.access) return json({ error: { code: "invalid_token", message: "expired" } }, 401);
         const body = await req.text();
         state.seen.push({ body, token });
+        if (state.refuseBreakpoints && body.includes('"prompt_cache_breakpoint"'))
+          return json({ error: { code: "invalid_parameter", message: "prompt_cache_breakpoint is not supported on this model", param: "prompt_cache_breakpoint" } }, 400);
+        const sent = decodeSent(body);
+        const forged = sent.input.find((i) => i.type === "reasoning" && !state.issued.has(i.encrypted_content ?? ""));
+        if (forged) return json({ error: { code: null, message: `Item with id '${forged.id ?? ""}' not found. Items are not persisted when store is set to false.`, param: "input" } }, 400);
         const answer = state.script.shift() ?? { text: "user: ok" };
         if ("gate" in answer) await answer.gate;
         if ("status" in answer) return json({ error: { code: answer.code, message: "limit" } }, answer.status);
@@ -101,6 +142,7 @@ export function fakeOpenAi() {
               ? [{ type: "response.created" }, { response: { incomplete_details: { reason: answer.incomplete }, model: "fake-luna", usage }, type: "response.incomplete" }]
               : [
                 { type: "response.created" },
+                ...(answer.reasoning === undefined ? [] : [{ item: reasoningItem(answer.reasoning, (sent.include ?? []).includes("reasoning.encrypted_content")), type: "response.output_item.done" }]),
                 ...[...(answer.text ?? "").match(/.{1,40}/gsu) ?? []].map((delta) => ({ delta, type: "response.output_text.delta" })),
                 ...(answer.text ? [{ item: { content: [{ text: answer.text, type: "output_text" }], type: "message" }, type: "response.output_item.done" }] : []),
                 ...(answer.calls ?? []).map((c, k) => ({
