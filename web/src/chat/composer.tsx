@@ -1,8 +1,12 @@
 // The composer (SPEC "Web UI", Chat; "Media"): the text, a tray of attachments, the device picker,
-// send and stop. A picked, pasted or dropped photo is downscaled here and uploaded at once, so it
-// is usually stored (and being described) by the time the text is typed; the message goes out
-// over /ws naming each upload by its digest. Send waits for every upload, and is on when there is
-// text or a finished attachment.
+// the session's settings (follow-ups, the lead engine), send and stop. A picked, pasted or dropped
+// photo is downscaled here and uploaded at once, so it is usually stored (and being described) by
+// the time the text is typed; the message goes out over /ws naming each upload by its digest.
+// Send waits for every upload, says why while it does, and is on when there is text or a finished
+// attachment. The draft (the text and the finished uploads) survives a reload (lib/draft.ts).
+// While a turn runs (or waits for a model to be picked), send follows the session's follow-up
+// setting and a second button (Mod+Enter on a keyboard) sends the other way for this one
+// message; stop is beside them, and with nothing to send, send is stop.
 import {
   PromptInput,
   PromptInputAttach,
@@ -14,127 +18,132 @@ import {
   PromptInputSubmit,
   PromptInputTextarea,
   PromptInputTools,
+  useCoarsePointer,
 } from "@/components/ai-elements/prompt-input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
-import { type Attachment, downscale, kindOf, refOf, upload, type Uploader } from "@/lib/attach";
+import { InputGroupButton } from "@/components/ui/input-group";
+import type { Uploader } from "@/lib/attach";
 import type { Link } from "@/lib/connection";
-import type { SessionStore } from "@/lib/session";
-import { type Device, MAX_ATTACHMENTS } from "@wire";
-import { useEffect, useRef, useState } from "react";
+import { loadDraft, loadHistory, remember, saveDraft } from "@/lib/draft";
+import type { Restored, SessionStore } from "@/lib/session";
+import { cn } from "@/lib/utils";
+import type { Device, FollowUp, SessionState } from "@wire";
+import { ListEndIcon, ZapIcon } from "lucide-react";
+import { type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
+import { CompactSelect, FollowUps, ModelPicker } from "./pickers";
+import { useAttachments } from "./use-attachments";
 
-// the tray: what was attached, each upload's progress and outcome; `notice` says why a file was refused here
-export function useAttachments(uploader: Uploader = upload) {
-  const [items, setItems] = useState<readonly Attachment[]>([]);
-  const [notice, setNotice] = useState<string | null>(null);
-  const held = useRef<readonly Attachment[]>([]);
-  const aborts = useRef(new Map<string, () => void>());
-  const alive = useRef(true); // false once the composer is gone
-  const commit = (next: readonly Attachment[]) => {
-    held.current = next;
-    setItems(next);
-  };
-  const update = (key: string, change: Partial<Attachment>) => {
-    commit(held.current.map((a) => (a.key === key ? { ...a, ...change } : a)));
-  };
-  // previews are object URLs: let them go when the composer does
-  useEffect(
-    () => () => {
-      for (const a of held.current) URL.revokeObjectURL(a.preview);
-      for (const abort of aborts.current.values()) abort();
-    },
-    [],
-  );
-  // a downscale that ends after the composer is gone uploads nothing (it is set again if the effect re-runs)
-  useEffect(() => {
-    alive.current = true;
-    return () => {
-      alive.current = false;
-    };
-  }, []);
-
-  const start = async (a: Attachment, file: File) => {
-    const body = a.kind === "image" ? await downscale(file) : file;
-    // removed, or the composer gone, while it was downscaled: there is nothing to upload any more
-    if (!alive.current || !held.current.some((x) => x.key === a.key)) return;
-    const up = uploader(body, (progress) => {
-      update(a.key, { progress });
-    });
-    aborts.current.set(a.key, up.abort);
-    try {
-      const asset = await up.done;
-      update(a.key, { asset, progress: 1 });
-    } catch (error) {
-      update(a.key, { error: error instanceof Error ? error.message : String(error) });
-    } finally {
-      aborts.current.delete(a.key);
-    }
-  };
-
-  const add = (files: readonly File[]) => {
-    const room = MAX_ATTACHMENTS - held.current.length;
-    const usable = files.filter((f) => kindOf(f) !== null);
-    const taken = usable.slice(0, Math.max(0, room));
-    setNotice(
-      usable.length < files.length ? "only images and videos can be attached" : taken.length < usable.length ? `at most ${MAX_ATTACHMENTS} attachments per message` : null,
-    );
-    const fresh = taken.map(
-      (file): Attachment => ({ asset: null, error: null, key: crypto.randomUUID(), kind: kindOf(file) ?? "image", name: file.name || "pasted image", preview: URL.createObjectURL(file), progress: 0 }),
-    );
-    commit([...held.current, ...fresh]);
-    for (const [k, a] of fresh.entries()) {
-      const file = taken[k];
-      if (file) void start(a, file);
-    }
-  };
-
-  const remove = (key: string) => {
-    aborts.current.get(key)?.();
-    const gone = held.current.find((a) => a.key === key);
-    if (gone) URL.revokeObjectURL(gone.preview);
-    commit(held.current.filter((a) => a.key !== key));
-    setNotice(null);
-  };
-
-  // sent: the tray empties; the uploads are done, nothing to abort
-  const clear = () => {
-    for (const a of held.current) URL.revokeObjectURL(a.preview);
-    commit([]);
-    setNotice(null);
-  };
-
-  const ready = items.flatMap((a) => (a.asset ? [a.asset] : []));
-  const busy = items.some((a) => a.asset === null && a.error === null);
-  return { add, busy, clear, items, notice, ready, remove };
-}
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
 export type ComposerProps = {
   readonly link: Link;
   readonly session: SessionStore;
+  readonly state: SessionState | null; // the server's
   readonly busy: boolean; // a turn runs or waits
   readonly open: boolean; // the link is up
   readonly devices: readonly Device[];
   readonly device: string | null; // the device picked, or the state's
   readonly onDevice: (device: string) => void;
   readonly picked: string | null; // what the picker shows
+  readonly restored: Restored | null; // a message taken back, to hold again
   readonly uploader?: Uploader; // tests replace the upload
 };
 
-export function Composer({ link, session, busy, open, devices, device, onDevice, picked, uploader }: ComposerProps) {
-  const tray = useAttachments(uploader);
-  const [empty, setEmpty] = useState(true);
+export function Composer({ link, session, state, busy, open, devices, device, onDevice, picked, restored, uploader }: ComposerProps) {
+  const saved = useMemo(loadDraft, []); // read once: the composer owns the draft from here
+  const tray = useAttachments(uploader, saved?.media);
+  const [text, setText] = useState(saved?.text ?? "");
+  const box = useId(); // the textarea's id, to focus it
+  const touch = useCoarsePointer();
+  const hint = useId();
+  // this client's sent texts, oldest first, and which one Up has recalled
+  const history = useRef<string[]>([...loadHistory()]);
+  const [recalled, setRecalled] = useState<number | null>(null);
   const failed = tray.items.some((a) => a.error !== null);
-  // a message goes when its uploads are done and none failed (a failed one is removed first)
-  const sendable = (text: string) => !tray.busy && !failed && (text.trim() !== "" || tray.ready.length > 0);
+  // a message sent now meets a turn: one running, or one waiting for a pick, which it joins (if
+  // it steers) once the pick comes
+  const running = state?.phase === "running" || state?.phase === "needs-model";
+  const followUp = state?.followUp ?? "steer";
+  const other: FollowUp = followUp === "steer" ? "queue" : "steer";
+  const content = text.trim() !== "" || tray.items.length > 0;
+
+  // the draft as it stands, kept for a reload: the text and the uploads that finished
+  const readyKey = tray.ready.map((a) => a.sha).join(",");
+  useEffect(() => {
+    saveDraft({ media: tray.ready, text });
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- readyKey stands for tray.ready, a new array each render
+  }, [text, readyKey]);
+
+  // a message taken back: its text before what is typed now, its uploads into the tray
+  const restoredKey = useRef(restored?.key ?? null);
+  useEffect(() => {
+    if (!restored || restored.key === restoredKey.current) return;
+    restoredKey.current = restored.key;
+    setText((now) => (now.trim() === "" ? restored.text : `${restored.text}\n${now}`));
+    tray.restore(restored.media);
+    document.getElementById(box)?.focus();
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- once per take-back, told by its key
+  }, [restored]);
+
+  // why send is off while there is something to send
+  const blocked = tray.busy ? `waiting for ${plural(tray.uploading, "upload")}…` : failed ? "remove the failed attachment to send" : null;
+  const sendable = (typed: string) => !tray.busy && !failed && (typed.trim() !== "" || tray.ready.length > 0);
+
+  const send = (how?: FollowUp) => {
+    if (!sendable(text)) return;
+    session.send(text, device, tray.ready, running ? how : undefined);
+    if (text.trim() !== "") {
+      remember(text);
+      history.current = [...history.current.filter((t) => t !== text), text];
+    }
+    setText("");
+    setRecalled(null);
+    tray.clear();
+  };
+
+  // Up in an empty composer (on a keyboard) recalls this client's previous messages, Down goes
+  // back toward the newest; only while the text is what was recalled, so editing it keeps it.
+  // Mod+Enter sends the other way while a turn runs.
+  const keyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.nativeEvent.isComposing) return;
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      send(other);
+      return;
+    }
+    if (touch || e.altKey || e.shiftKey || e.metaKey || e.ctrlKey) return;
+    const kept = history.current;
+    const showing = recalled !== null && text === kept[recalled];
+    const el = e.currentTarget;
+    if (e.key === "ArrowUp" && (text === "" || (showing && el.selectionStart === 0 && el.selectionEnd === 0))) {
+      const k = (showing ? recalled : kept.length) - 1;
+      const past = kept[k];
+      if (past === undefined) return;
+      e.preventDefault();
+      setText(past);
+      setRecalled(k);
+    } else if (e.key === "ArrowDown" && showing && el.selectionStart === text.length) {
+      e.preventDefault();
+      const next = kept[recalled + 1];
+      setText(next ?? "");
+      setRecalled(next === undefined ? null : recalled + 1);
+    }
+  };
+
+  const placeholder = running
+    ? followUp === "queue"
+      ? "Queue a follow-up"
+      : state.phase === "needs-model"
+        ? "Add to the turn, once a model is picked"
+        : "Add to the running turn"
+    : "Message";
+  const sendLabel = running && followUp === "queue" ? "Send (queued for the next turn)" : running ? "Send (joins the running turn)" : "Send";
+  const otherLabel = other === "steer" ? "Send now" : "Queue for the next turn";
   return (
     <PromptInput
       canSubmit={sendable}
       onFiles={tray.add}
-      onReset={() => {
-        setEmpty(true);
-      }}
-      onSubmit={(text) => {
-        session.send(text, device, tray.ready.map(refOf));
-        tray.clear();
+      onSubmit={() => {
+        send();
       }}
     >
       {(tray.items.length > 0 || tray.notice !== null) && (
@@ -143,9 +152,17 @@ export function Composer({ link, session, busy, open, devices, device, onDevice,
             <PromptInputAttachment
               done={a.asset !== null}
               error={a.error}
+              high={a.detail === "high"}
               key={a.key}
               kind={a.kind}
               name={a.name}
+              onHigh={
+                a.file && a.kind === "image"
+                  ? () => {
+                      tray.toggleDetail(a.key);
+                    }
+                  : undefined
+              }
               onRemove={() => {
                 tray.remove(a.key);
               }}
@@ -162,45 +179,80 @@ export function Composer({ link, session, busy, open, devices, device, onDevice,
       )}
       <PromptInputBody>
         <PromptInputTextarea
+          aria-describedby={hint}
           aria-label="Message"
           onChange={(e) => {
-            setEmpty(e.currentTarget.value.trim() === "");
+            setText(e.currentTarget.value);
           }}
-          placeholder={busy ? "Add to the running turn" : "Message"}
+          onKeyDown={keyDown}
+          id={box}
+          placeholder={placeholder}
+          value={text}
         />
       </PromptInputBody>
-      <PromptInputFooter>
+      <PromptInputFooter className="flex-wrap">
         <PromptInputTools>
           <PromptInputAttach accept="image/*,video/*" label="Attach" onFiles={tray.add} />
           <PromptInputAttach accept="image/*" capture="environment" label="Take a photo" onFiles={tray.add} />
           {devices.length > 1 && (
-            <NativeSelect
-              aria-label="Device"
+            <CompactSelect
+              label="Device"
               onChange={(e) => {
                 onDevice(e.currentTarget.value);
               }}
-              size="sm"
+              shown={picked ?? "device"}
+              title="Where the next turn runs"
               value={picked ?? ""}
             >
               {devices.map((d) => (
-                <NativeSelectOption key={d.name} value={d.name}>
+                <option key={d.name} value={d.name}>
                   {d.name}
-                </NativeSelectOption>
+                </option>
               ))}
-            </NativeSelect>
+            </CompactSelect>
           )}
+          {state && state.engines.length > 0 && <ModelPicker session={session} state={state} />}
+          {state && <FollowUps followUp={state.followUp} link={link} />}
         </PromptInputTools>
-        <div className="flex items-center gap-1">
+        <div className="ml-auto flex items-center gap-1">
+          {running && content && (
+            <InputGroupButton
+              aria-label={otherLabel}
+              disabled={blocked !== null}
+              onClick={() => {
+                send(other);
+              }}
+              size="sm"
+              title={`${otherLabel} (Ctrl/⌘+Enter)`}
+              variant="outline"
+            >
+              {other === "steer" ? <ZapIcon /> : <ListEndIcon />}
+              <span className="hidden min-[400px]:inline">{other === "steer" ? "Now" : "Queue"}</span>
+            </InputGroupButton>
+          )}
           {busy && (
             <PromptInputStop
               disabled={!open}
               onClick={() => {
                 link.abort();
               }}
+              title="Stop the turn"
+              variant={content ? "secondary" : "default"}
             />
           )}
-          <PromptInputSubmit disabled={tray.busy || failed || (empty && tray.ready.length === 0)} />
+          {(!busy || content) && <PromptInputSubmit aria-describedby={hint} disabled={blocked !== null || !content} title={blocked ?? sendLabel} />}
         </div>
+        <p
+          aria-live="polite"
+          className={cn("w-full px-1 text-xs", blocked ? "text-muted-foreground" : "hidden text-muted-foreground/80 pointer-fine:sm:block")}
+          data-testid="composer-hint"
+          id={hint}
+        >
+          {blocked ??
+            (touch
+              ? null
+              : `Enter to send · Shift+Enter new line${running ? ` · Ctrl/⌘+Enter ${other === "steer" ? "sends now" : "queues"}` : ""}${history.current.length > 0 ? " · ↑ last message" : ""}`)}
+        </p>
       </PromptInputFooter>
     </PromptInput>
   );

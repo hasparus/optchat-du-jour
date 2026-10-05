@@ -2,9 +2,9 @@
 // log entries and live events out. Mid-run messages stay the session's until a call takes one:
 // they are offered to the running call on `mid`, the call reports each one it passed to the model
 // with `took` (the session logs it then), and whatever it was offered and never took goes back to
-// the session when the call ends. When the chain fails over in the middle of a turn, the next
-// engine gets the same view and texts, what the turn has logged so far as `earlier`, and on `mid`
-// the messages the engine before never took, then any new ones.
+// the session when the call ends. When a usage limit stopped a turn and it goes on on the engine
+// the user picked (E4), that engine gets the same view and texts, what the turn has logged so far
+// as `earlier`, and on `mid` the messages the engine before never took, then any new ones.
 import type { Effect } from "effect";
 import type { EngineError } from "../engines/errors.ts";
 import type { Part } from "../media/part.ts";
@@ -30,15 +30,20 @@ export type TurnInput = {
   readonly mid: { readonly next: Effect.Effect<Mid>; readonly ready: Effect.Effect<readonly Mid[]> };
   // what this turn's engines logged before this call, in order (read from the log)
   readonly earlier: readonly Logged[];
+  // the call before in this turn, which a usage limit or an offline device stopped, ran on this
+  // same engine: the user picked it again (a retry), so the opening's note doesn't say another one
+  readonly again?: boolean;
 };
 
-// The opening message's own text: the new texts, and after a failover mid-turn what the engine
-// before logged, so the next one carries on from there instead of starting again.
-export const openingText = (input: Pick<TurnInput, "earlier" | "texts">) => {
+// The opening message's own text: the new texts, and after a stop mid-turn what was logged
+// before it, so the engine carries on from there instead of starting again; the note says whether
+// another engine began the turn or this one did (a retry).
+export const openingText = (input: Pick<TurnInput, "again" | "earlier" | "texts">) => {
   const asked = input.texts.join("\n\n");
   if (input.earlier.length === 0) return asked;
   const done = input.earlier.map((e) => `${e.kind}: ${e.text}`).join("\n");
-  return `${asked}\n\n[optchat: another engine began this turn and stopped before it finished (usage limit or device offline). What it did is below and is already in the log; continue from there and do not repeat it.]\n${done}`;
+  const who = input.again ? "This turn began earlier and" : "Another engine began this turn and";
+  return `${asked}\n\n[optchat: ${who} stopped before it finished (usage limit or device offline). What was done is below and is already in the log; continue from there and do not repeat it.]\n${done}`;
 };
 
 export type TurnEvents = {

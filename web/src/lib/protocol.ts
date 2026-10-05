@@ -1,7 +1,8 @@
 // What /ws carries (SPEC "Protocol", E15): the AG-UI events server/agui.ts writes, decoded here at
-// the boundary, and the two frames a client sends. The state they carry and the JSON of /api/* are
+// the boundary, and the frames a client sends. The state they carry and the JSON of /api/* are
 // the server's own schemas (src/wire.ts, imported as @wire), not a copy.
 import { EventType } from "@ag-ui/core";
+import { Asset, type FollowUp } from "@wire";
 import { Option, Schema } from "effect";
 
 const ToolCall = Schema.Struct({
@@ -68,6 +69,13 @@ export const Inbound = Schema.Union([
     name: Schema.Literal("ack"),
     value: Schema.Struct({ clientId: Schema.String, messageId: Schema.NullOr(Schema.String), error: Schema.NullOr(Schema.String) }),
   }),
+  // a held message a client took back: its text and attachments again (`text` null and `error`
+  // set when it was too late)
+  Schema.Struct({
+    type: Schema.Literal(EventType.CUSTOM),
+    name: Schema.Literal("taken-back"),
+    value: Schema.Struct({ clientId: Schema.String, error: Schema.NullOr(Schema.String), text: Schema.NullOr(Schema.String), media: Schema.Array(Asset) }),
+  }),
 ]);
 export type Inbound = typeof Inbound.Type;
 
@@ -84,12 +92,13 @@ const contentOf = (text: string, attachments: readonly AttachmentRef[]) =>
     ? text
     : [{ text, type: "text" }, ...attachments.map((a) => ({ source: { mimeType: a.mime, type: "url", value: `asset:${a.sha}` }, type: a.kind }))];
 
-// What a client sends: AG-UI's RunAgentInput, whose user message (with its id, which the server
-// acks) is the one to answer, and an abort (server/routes/ws.ts Inbound)
-export const runInput = (text: string, device: string | null, id: string, attachments: readonly AttachmentRef[] = []) =>
+// What a client sends (server/routes/ws.ts Inbound): AG-UI's RunAgentInput, whose user message
+// (with its id, which the server acks) is the one to answer, with `followUp` when it asks for the
+// other behavior than the session's; an abort; a take-back; a change to the session's settings.
+export const runInput = (text: string, device: string | null, id: string, attachments: readonly AttachmentRef[] = [], followUp?: FollowUp) =>
   JSON.stringify({
     context: [],
-    forwardedProps: device ? { device } : {},
+    forwardedProps: { device: device ?? undefined, followUp }, // an unset one is left out of the JSON
     messages: [{ content: contentOf(text, attachments), id, role: "user" }],
     runId: crypto.randomUUID(),
     state: {},
@@ -97,3 +106,6 @@ export const runInput = (text: string, device: string | null, id: string, attach
     tools: [],
   });
 export const ABORT = JSON.stringify({ type: "abort" });
+export const takeBackFrame = (clientId: string) => JSON.stringify({ clientId, type: "take-back" });
+export type Settings = { readonly followUp?: FollowUp; readonly lead?: string };
+export const settingsFrame = (change: Settings) => JSON.stringify({ ...change, type: "settings" });

@@ -1,10 +1,10 @@
 // M5's done-criterion through the real server (SPEC "Engines", Failover): the Claude plan is spent,
-// so the turn falls over to openai-plan, which answers with our own tool loop and reads a file on
-// another device through its runner's POST /tool. The message is answered exactly once, the
-// failover is in usage.jsonl and on every client. Then a message sent while openai-plan works is
-// taken after the tool results, before the next request; Claude Code's own error message is never
-// logged. And a compactor's failover reaches every client as the state's down list. Fake claude,
-// fake Responses API.
+// so the turn stops until the user picks openai-plan (the master never fails over by itself, E4),
+// which answers with our own tool loop and reads a file on another device through its runner's
+// POST /tool. The message is answered exactly once, the move is in usage.jsonl and on every
+// client. Then a message sent while openai-plan works is taken after the tool results, before the
+// next request; Claude Code's own error message is never logged. And a compactor's failover
+// reaches every client as the state's down list. Fake claude, fake Responses API.
 import { afterAll, expect, test } from "bun:test";
 import { Effect, Layer, Option, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -87,10 +87,14 @@ const client = async (url: string) => {
   };
   const ended = () => events.filter((e) => e.type === "RUN_FINISHED" || e.type === "RUN_ERROR");
   const infos = () => events.flatMap((e) => (e.name === "info" && Schema.is(Schema.String)(e.value) ? [e.value] : []));
-  return { ended, events, infos, send, ws };
+  // the user picks the engine turns run on (a turn stopped on a usage limit goes on, on it)
+  const pick = (lead: string) => {
+    ws.send(JSON.stringify({ lead, type: "settings" }));
+  };
+  return { ended, events, infos, pick, send, ws };
 };
 
-test("a spent Claude plan moves the turn to openai-plan, which reads a file on the device and answers once; a mid-run message joins before its next request", async () => {
+test("a spent Claude plan stops the turn until the user picks openai-plan, which reads a file on the device and answers once; a mid-run message joins before its next request", async () => {
   const mini = `${home}/mini`, macbook = `${home}/macbook`;
   mkdirSync(mini);
   mkdirSync(macbook);
@@ -146,8 +150,13 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
         const read = JSON.stringify({ file_path: "notes.txt" });
         fake.state.script = [{ calls: [{ arguments: read, name: "Read" }], text: "Let me look." }, { text: "The note says: buy milk." }];
         c.send("what does my note say?");
-        yield* Effect.promise(async () => until("the first turn", () => c.ended().length === 1));
-        expect(c.ended()[0]?.type).toBe("RUN_FINISHED");
+        // no failover (E4): the turn stops, says why, and waits; the pick carries it on
+        yield* Effect.promise(async () => until("the stop", () => c.ended().length === 1));
+        expect(c.ended()[0]?.type).toBe("RUN_ERROR");
+        expect(fake.state.seen).toHaveLength(0);
+        c.pick("openai-plan:gpt-sol");
+        yield* Effect.promise(async () => until("the first turn", () => c.ended().length === 2));
+        expect(c.ended()[1]?.type).toBe("RUN_FINISHED");
 
         const echo = "     1\tbuy milk\n     2\tfix the boiler";
         expect(yield* Effect.promise(log)).toEqual([
@@ -157,7 +166,8 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
           ["echo", echo],
           ["talk", "The note says: buy milk."],
         ]);
-        expect(c.infos().filter((m) => m.startsWith("claude-code:opus → openai-plan:gpt-sol: Claude AI usage limit reached"))).toHaveLength(1);
+        // said once while it waited (the run's end, and `stopped` in the state), and once as the record
+        expect(c.infos().filter((m) => m.includes("Claude AI usage limit reached"))).toEqual(["Claude Opus (Claude Code) stopped (usage limit: Claude AI usage limit reached|1760000000); GPT Sol (ChatGPT plan) carries on"]);
         expect(c.events.flatMap((e) => (e.type === "TEXT_MESSAGE_CONTENT" && Schema.is(Schema.String)(e.delta) ? [e.delta] : [])).join("")).toContain("The note says: buy milk.");
 
         const usage = readUsage(`${home}/usage.jsonl`).filter((r) => r.role === "turn");
@@ -166,6 +176,8 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
           ["openai-plan", "chatgpt-pro", "claude-code:opus", "macbook"],
           ["openai-plan", "chatgpt-pro", "claude-code:opus", "macbook"],
         ]);
+        // the pick is the session's now, and outlives a restart (session.json in the data dir)
+        expect(readFileSync(`${home}/session.json`, "utf8")).toBe('{"followUp":"steer","lead":"openai-plan:gpt-sol"}\n');
 
         // what reached the Responses API: claude's exact system prompt, the view then the text, read-only tools
         const [first, second] = fake.state.seen.map((s) => decodeBody(s.body));
@@ -187,8 +199,8 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
         c.send("and say hi");
         for (let k = 0; k < 100 && !(yield* Effect.promise(queued)).includes("and say hi"); k++) yield* Effect.sleep("20 millis");
         gate.resolve(null);
-        yield* Effect.promise(async () => until("the second turn", () => c.ended().length === 2));
-        expect(c.ended()[1]?.type).toBe("RUN_FINISHED");
+        yield* Effect.promise(async () => until("the second turn", () => c.ended().length === 3));
+        expect(c.ended()[2]?.type).toBe("RUN_FINISHED");
         expect((yield* Effect.promise(log)).slice(5)).toEqual([
           ["user", "list my notes"],
           ["tool", 'Glob {"pattern":"*.txt"}'],
@@ -200,38 +212,45 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
         const next = decodeBody(fake.state.seen[1]?.body ?? "");
         expect(next.input.slice(-3).map((i) => i.type ?? i.role)).toEqual(["function_call", "function_call_output", "user"]);
 
-        // a limit after partial output: what claude logged stays, once, and openai-plan is told to carry on from it
+        // back on Claude, a limit after partial output: what claude logged stays, once, and
+        // openai-plan, picked, is told to carry on from it
         writeFileSync(`${home}/script.json`, JSON.stringify({ turn: [[{ text: "Starting on it." }, { result: { is_error: true, text: "Claude AI usage limit reached" } }]] }));
         fake.state.seen.length = 0;
         fake.state.script = [{ text: "Done." }];
+        c.pick("claude-code:opus");
         c.send("tidy up");
-        yield* Effect.promise(async () => until("the third turn", () => c.ended().length === 3));
+        yield* Effect.promise(async () => until("the second stop", () => c.ended().length === 4));
+        c.pick("openai-plan:gpt-sol");
+        yield* Effect.promise(async () => until("the third turn", () => c.ended().length === 5));
         expect((yield* Effect.promise(log)).slice(10)).toEqual([
           ["user", "tidy up"],
           ["talk", "Starting on it."],
           ["talk", "Done."],
         ]);
-        expect(c.infos().at(-1)).toContain("(after 1 logged entries; openai-plan:gpt-sol carries on from them)");
+        expect(c.infos().at(-1)).toBe("Claude Opus (Claude Code) stopped (usage limit: Claude AI usage limit reached); GPT Sol (ChatGPT plan) carries on from the 1 logged entries");
         const resumed = decodeBody(fake.state.seen[0]?.body ?? "").input[0]?.content ?? "";
         const said = Schema.is(Schema.String)(resumed) ? resumed : (resumed.at(-1)?.text ?? "");
-        expect(said).toStartWith("tidy up\n\n[optchat: another engine began this turn");
+        expect(said).toStartWith("tidy up\n\n[optchat: Another engine began this turn");
         expect(said).toEndWith("\ntalk: Starting on it.");
 
         // Claude Code reports the spent plan as its own assistant message (model "<synthetic>")
         // before an error result that here says nothing: that message is never logged as the
-        // model's reply nor handed on, yet it is why the turn fails over
+        // model's reply nor handed on, yet it is why the turn stops for a pick
         writeFileSync(`${home}/script.json`, JSON.stringify({ turn: [[{ text: "Looking." }, { synthetic: "Claude AI usage limit reached|1760000000" }, { result: { is_error: true, text: "" } }]] }));
         fake.state.seen.length = 0;
         fake.state.script = [{ text: "Here." }];
+        c.pick("claude-code:opus");
         c.send("one more");
-        yield* Effect.promise(async () => until("the fourth turn", () => c.ended().length === 4));
-        expect(c.ended()[3]?.type).toBe("RUN_FINISHED");
+        yield* Effect.promise(async () => until("the third stop", () => c.ended().length === 6));
+        c.pick("openai-plan:gpt-sol");
+        yield* Effect.promise(async () => until("the fourth turn", () => c.ended().length === 7));
+        expect(c.ended()[6]?.type).toBe("RUN_FINISHED");
         expect((yield* Effect.promise(log)).slice(13)).toEqual([
           ["user", "one more"],
           ["talk", "Looking."],
           ["talk", "Here."],
         ]);
-        expect(c.infos().at(-1)).toStartWith("claude-code:opus → openai-plan:gpt-sol: Claude AI usage limit reached|1760000000 (after 1 logged entries");
+        expect(c.infos().at(-1)).toBe("Claude Opus (Claude Code) stopped (usage limit: Claude AI usage limit reached|1760000000); GPT Sol (ChatGPT plan) carries on from the 1 logged entries");
         const handed = decodeBody(fake.state.seen[0]?.body ?? "").input[0]?.content ?? "";
         const carried = Schema.is(Schema.String)(handed) ? handed : (handed.at(-1)?.text ?? "");
         expect(carried).toEndWith("\ntalk: Looking.");

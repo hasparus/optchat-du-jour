@@ -180,7 +180,7 @@ const rig = (engines: readonly TurnEngine[], media: SessionMedia) =>
     return { chat, ended, events, log: () => chat.mem.root.map((m) => [m.kind, m.text]), session };
   });
 
-test("a message logs its marker with the caption once it comes; a failover to an engine not sent images gets the markers and a note, also mid-run", async () => {
+test("a message logs its marker with the caption once it comes; picked after a stop, an engine not sent images gets the markers and a note, also mid-run", async () => {
   await Effect.runPromise(
     Effect.gen(function* () {
       const seen: { ref: string; media: number; texts: readonly string[]; mid: Mid[] }[] = [];
@@ -217,11 +217,14 @@ test("a message logs its marker with the caption once it comes; a failover to an
       yield* until("the caption asked for", () => f.waiting.has(photo.sha));
       expect(r.log()).toEqual([]);
       f.describe(photo, "a red [square]");
+      // the seeing engine's limit stops the turn (E4); the user picks the blind one
+      yield* until("the stop", () => r.session.state().phase === "needs-model");
+      yield* r.session.configure({ lead: "blind:x" });
       yield* until("the blind engine's call", () => seen.length === 2);
       // a picture sent mid-run, its caption already known
       f.describe(later, "a blue circle");
       yield* r.session.input("", undefined, "c2", [later]);
-      yield* until("the run's end", () => r.ended() === 1);
+      yield* until("the run's end", () => r.ended() === 2); // the stop's, then the pick's
 
       const first = `what is this?\n[image ${shortSha(photo.sha)} 1568x1176 195KB: a red (square)]`;
       const second = `[image ${shortSha(later.sha)} 1568x1176 195KB: a blue circle]`;
@@ -274,7 +277,7 @@ test("a picture sent mid-run reaches an engine that sees with the message that c
 
 // SPEC "Media": after a failover the next link is sent the pictures of the mid-run messages the
 // link before took, which it sees in `earlier` only by their marker lines; a blind one gets the note
-test("a failover after a mid-run picture message sends the next link that picture, or the note to one not sent images", async () => {
+test("after a stop that followed a mid-run picture message, the engine picked next gets that picture, or the note if it is not sent images", async () => {
   await Effect.runPromise(
     Effect.gen(function* () {
       const seen: { ref: string; media: TurnInput["media"]; texts: readonly string[]; earlier: TurnInput["earlier"] }[] = [];
@@ -310,7 +313,12 @@ test("a failover after a mid-run picture message sends the next link that pictur
       yield* r.session.input("go", undefined, "c1");
       yield* until("the first call", () => seen.length === 1);
       yield* r.session.input("what is it?", undefined, "c2", [star]);
-      yield* until("the run's end", () => r.ended() === 1);
+      // each limit stops the turn (E4); the user picks the blind engine, then the seeing one
+      yield* until("the first stop", () => r.session.state().phase === "needs-model");
+      yield* r.session.configure({ lead: "blind:x" });
+      yield* until("the second stop", () => seen.length === 2 && r.session.state().phase === "needs-model");
+      yield* r.session.configure({ lead: "seeing:x" });
+      yield* until("the run's end", () => r.ended() === 3);
       const asked = `what is it?\n[image ${shortSha(star.sha)} 1568x1176 195KB: a yellow star]`;
       const earlier = [{ kind: "user", text: asked }] as const;
       expect(seen).toEqual([

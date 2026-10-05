@@ -2,9 +2,10 @@
 // the input line, so the scrollback works. The screen is a state machine fed keys and AG-UI
 // events; `runRepl` wires it to the terminal and the socket.
 import { Data, Effect, Option, Schema } from "effect";
+import { FollowUp } from "../src/wire.ts";
 import { type Key, makeKeys } from "./keys.ts";
 
-const Phase = Schema.Literals(["idle", "running", "waiting"]);
+const Phase = Schema.Literals(["idle", "running", "waiting", "needs-model"]);
 const State = Schema.Struct({
   phase: Phase,
   device: Schema.String,
@@ -12,6 +13,13 @@ const State = Schema.Struct({
   viewBytes: Schema.Number,
   budget: Schema.Number,
   messages: Schema.Number,
+  // what a message sent mid-run does, and the messages the server holds: a queued one waits for the next turn
+  followUp: Schema.optional(FollowUp),
+  pending: Schema.optional(Schema.Array(Schema.Struct({ clientId: Schema.NullOr(Schema.String), text: Schema.String, queued: Schema.optional(Schema.Boolean) }))),
+  // the engines turns may run on, the one they run on, and the one that stopped a turn waiting for a pick
+  engines: Schema.optional(Schema.Array(Schema.Struct({ ref: Schema.String, label: Schema.String, down: Schema.NullOr(Schema.String) }))),
+  lead: Schema.optional(Schema.String),
+  stopped: Schema.optional(Schema.NullOr(Schema.Struct({ ref: Schema.String, label: Schema.String, why: Schema.String }))),
 });
 type State = typeof State.Type;
 
@@ -34,6 +42,12 @@ const Inbound = Schema.Union([
     name: Schema.Literal("ack"),
     value: Schema.Struct({ clientId: Schema.String, messageId: Schema.NullOr(Schema.String), error: Schema.NullOr(Schema.String) }),
   }),
+  // a client took a held message back: one sent from here is not answered
+  Schema.Struct({
+    type: Schema.Literal("CUSTOM"),
+    name: Schema.Literal("taken-back"),
+    value: Schema.Struct({ clientId: Schema.String, error: Schema.NullOr(Schema.String), text: Schema.NullOr(Schema.String) }),
+  }),
   Schema.Struct({ type: Schema.Literal("STATE_SNAPSHOT"), snapshot: Schema.Record(Schema.String, Schema.Json) }),
   Schema.Struct({
     type: Schema.Literal("STATE_DELTA"),
@@ -50,6 +64,8 @@ const decodeView = Schema.decodeUnknownOption(ViewLines);
 
 export type Action =
   | { readonly type: "send"; readonly text: string; readonly id: string } // id: the AG-UI message id
+  | { readonly type: "follow-up"; readonly followUp: typeof FollowUp.Type } // "/steer" or "/queue" typed alone
+  | { readonly type: "pick"; readonly lead: string } // "/model <n>": the engine turns run on
   | { readonly type: "abort" | "exit" | "suspend" };
 
 export type ScreenOptions = {
@@ -85,6 +101,11 @@ export function makeScreen(o: ScreenOptions) {
   let offline = false; // the connection is down and the user has been told so
   const users = new Set<string>(); // the ids of user messages being logged
   const refused = new Set<string>(); // the ids of messages sent from here that the log refused
+  const queued = new Set<string>(); // the ids of messages sent from here that the user was told wait for the next turn
+  let followUp: string | null = null;
+  let engines: NonNullable<State["engines"]> = [];
+  let lead = "";
+  let stuck = false; // a turn waits for a pick
 
   const dim = (s: string) => (o.color ? `\u001B[2m${s}\u001B[0m` : s);
   const row = (s: string) => {
@@ -119,8 +140,8 @@ export function makeScreen(o: ScreenOptions) {
 
   const header = (st: State) => {
     const percent = Math.round((st.viewBytes / st.budget) * 100);
-    note(`optchat: ${st.messages} messages · view ${kb(st.viewBytes)}/${st.budget / 1000} KB (${percent}%) · device ${st.device}`);
-    note(o.tty ? "Ctrl-C cancels, Ctrl-D exits" : "reading messages from stdin");
+    note(`optchat: ${st.messages} messages · view ${kb(st.viewBytes)}/${st.budget / 1000} KB (${percent}%) · device ${st.device}${st.followUp ? ` · follow-ups ${st.followUp}` : ""}`);
+    note(o.tty ? "Ctrl-C cancels, Ctrl-D exits, /steer or /queue sets what a message sent mid-run does, /model picks the engine" : "reading messages from stdin");
   };
 
   const applyState = (next: Record<string, Schema.Json>) => {
@@ -130,7 +151,22 @@ export function makeScreen(o: ScreenOptions) {
     if (!headerShown) {
       headerShown = true;
       header(st);
-    }
+    } else if (st.followUp && followUp !== null && st.followUp !== followUp) note(`follow-ups: ${st.followUp === "queue" ? "queued for the next turn" : "steer the running turn"}`);
+    followUp = st.followUp ?? null;
+    engines = st.engines ?? [];
+    if (st.lead && lead !== "" && st.lead !== lead) note(`model: ${engines.find((e) => e.ref === st.lead)?.label ?? st.lead}`);
+    lead = st.lead ?? "";
+    // a turn stopped on a usage limit or an offline device waits for /model: why, said once
+    const nowStuck = st.phase === "needs-model";
+    const why = st.stopped ? `${st.stopped.label} stopped: ${clean(st.stopped.why)}. ` : "";
+    if (nowStuck && !stuck) listModels(`${why}${o.tty ? "/model <n> picks one to go on (the same one again retries), Ctrl-C stops:" : "A turn waits for a model to be picked; nothing here can pick one."}`);
+    stuck = nowStuck;
+    // ours that the server holds for the next turn while one runs: said once each
+    for (const m of st.pending ?? [])
+      if (m.queued && st.phase === "running" && m.clientId !== null && mine.includes(m.clientId) && !queued.has(m.clientId)) {
+        queued.add(m.clientId);
+        note(`queued for the next turn: ${row(clean(m.text))}`);
+      }
     busy = st.phase !== "idle";
     // idle comes after the loop committed: whatever of ours it logged has had its answer, or had
     // its turn cancelled before it began (waiting for summaries: no run, so no run end)
@@ -158,6 +194,35 @@ export function makeScreen(o: ScreenOptions) {
     note(`not logged: ${clean(error ?? "")}`);
   };
 
+  // the engines, numbered for /model, the one in use marked, a down one with why
+  const listModels = (head: string) => {
+    note(head);
+    for (const [k, e] of engines.entries()) note(`  ${k + 1}. ${e.label}${e.ref === lead ? " (in use)" : ""}${e.down === null ? "" : ` (unavailable: ${clean(e.down)})`}`);
+  };
+  // "/model" alone lists them; "/model 2" or "/model <ref>" picks one
+  const model = (arg: string): Action | null => {
+    if (arg === "") {
+      listModels("models (/model <n> picks one):");
+      return null;
+    }
+    const chosen = engines[Number(arg) - 1] ?? engines.find((e) => e.ref === arg);
+    if (!chosen) {
+      note(`no model ${arg}: /model lists them`);
+      return null;
+    }
+    return { lead: chosen.ref, type: "pick" };
+  };
+
+  // a held message of ours that a client (another, or this one) took back: it is not answered
+  const takenBack = (clientId: string, text: string | null) => {
+    const at = mine.indexOf(clientId);
+    if (at === -1 || text === null) return;
+    mine.splice(at, 1);
+    queued.delete(clientId);
+    failed++;
+    note(`taken back, not sent: ${row(clean(text))}`);
+  };
+
   const sent = (text: string): Action => {
     const id = crypto.randomUUID();
     mine.push(id);
@@ -180,6 +245,11 @@ export function makeScreen(o: ScreenOptions) {
     // messages sent from here that were not answered: not logged, or their run ended in an error
     get failed() {
       return failed;
+    },
+
+    // a turn waits for a model to be picked (piped, nothing will pick one)
+    get stuck() {
+      return stuck;
     },
 
     // the last view lines, before the socket's first state
@@ -224,6 +294,8 @@ export function makeScreen(o: ScreenOptions) {
           logging = 0;
           return;
         case "RUN_ERROR":
+          // a turn stopped for a pick is not over: its messages wait, and why was said with the models
+          if (stuck) return;
           failed += logging; // ours that this run logged ended unanswered with it
           logging = 0;
           note(`error: ${clean(e.message)}`);
@@ -231,6 +303,7 @@ export function makeScreen(o: ScreenOptions) {
         case "CUSTOM":
           if (e.name === "info") note(clean(e.value));
           else if (e.name === "ack") acked(e.value.clientId, e.value.messageId, e.value.error);
+          else if (e.name === "taken-back") takenBack(e.value.clientId, e.value.text);
           else if (!thinking) {
             thinking = true;
             note("thinking…");
@@ -290,6 +363,15 @@ export function makeScreen(o: ScreenOptions) {
             showPrompt();
             return null;
           }
+          if (text === "/steer" || text === "/queue") {
+            showPrompt();
+            return { followUp: text === "/steer" ? "steer" : "queue", type: "follow-up" };
+          }
+          if (text === "/model" || text.startsWith("/model ")) {
+            const picked = model(text.slice("/model".length).trim());
+            showPrompt();
+            return picked;
+          }
           return sent(text);
         }
         case "interrupt":
@@ -314,6 +396,11 @@ export function makeScreen(o: ScreenOptions) {
     // the abort a Ctrl-C asked for went to the server, or was dropped: the socket was not open
     cancel(sent: boolean) {
       note(sent ? "cancel sent; a second Ctrl-C exits" : "not connected: the cancel was not sent");
+    },
+
+    // the /model pick went to the server (the state will say it), or was dropped: not connected
+    picked(sent: boolean) {
+      if (!sent) note("not connected: the model was not changed; /model again once connected");
     },
 
     // back from Ctrl-Z
@@ -386,8 +473,13 @@ export function makeLink() {
       else outbox.push(frame);
     },
     abort() {
+      return this.now(ABORT);
+    },
+    // a frame that only means something now (an abort, a model pick: kept for later, it would
+    // settle whatever turn waits after the reconnect); false when it was not sent
+    now(frame: string) {
       if (!socket) return false;
-      socket.send(ABORT);
+      socket.send(frame);
       return true;
     },
   };
@@ -472,7 +564,8 @@ export const runRepl = (o: ReplOptions) =>
       // piped: the input is all sent and all answered; one the server could not log, or whose run
       // ended in an error (a refusal, a spent plan, a cancel), makes the exit code non-zero
       const finishedPiping = () => {
-        if (ended && screen.unanswered === 0) done(screen.failed > 0 ? `${screen.failed} message(s) not answered: not logged, or their run ended in an error` : undefined);
+        if (ended && screen.stuck) done("a turn stopped and waits for a model to be picked (optchat at a terminal: /model)");
+        else if (ended && screen.unanswered === 0) done(screen.failed > 0 ? `${screen.failed} message(s) not answered: not logged, or their run ended in an error` : undefined);
       };
       const act = (a: Action | null) => {
         if (!a) return;
@@ -482,6 +575,12 @@ export const runRepl = (o: ReplOptions) =>
             return;
           case "abort":
             screen.cancel(link.abort());
+            return;
+          case "follow-up":
+            link.send(JSON.stringify({ followUp: a.followUp, type: "settings" })); // a setting may wait for the connection, unlike an abort
+            return;
+          case "pick":
+            screen.picked(link.now(JSON.stringify({ lead: a.lead, type: "settings" })));
             return;
           case "exit":
             done();

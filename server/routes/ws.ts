@@ -1,17 +1,19 @@
-// GET /ws (SPEC "Protocol", E15): one WebSocket per client, AG-UI events out, RunAgentInput frames
-// and aborts in. Every client watches the same server-owned session.
+// GET /ws (SPEC "Protocol", E15): one WebSocket per client, AG-UI events out; RunAgentInput frames,
+// aborts, take-backs and settings in. Every client watches the same server-owned session.
 import { Effect, Option, Predicate, PubSub, Schema } from "effect";
 import { type HttpRouter, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 import type { Session } from "../../src/session.ts";
 import type { Entry } from "../../src/tree.ts";
-import { type Asset, shortSha } from "../../src/wire.ts";
+import { type Asset, FollowUp, shortSha } from "../../src/wire.ts";
 import { type AgUiEvent, openStream } from "../agui.ts";
 
 // What a client sends: AG-UI's RunAgentInput (its user messages not seen before are the ones to
-// answer), or an abort. A user message's content is its text, or AG-UI's parts: text, and image
+// answer), an abort, a take-back of a held message by the id its sender gave it, or a change to
+// the session's settings. A user message's content is its text, or AG-UI's parts: text, and image
 // or video parts whose source is a URL "asset:<sha256>", an upload PUT /api/assets stored
 // (SPEC "Media"). The server finds each in its own store; a client never names a path.
+// `forwardedProps.followUp` asks for the other follow-up behavior for this one message.
 const Source = Schema.Struct({ type: Schema.String, value: Schema.String });
 const ContentPart = Schema.Struct({ text: Schema.optional(Schema.String), type: Schema.String, source: Schema.optional(Source) });
 const InboundMessage = Schema.Struct({
@@ -22,11 +24,14 @@ const InboundMessage = Schema.Struct({
 type InboundMessage = typeof InboundMessage.Type;
 const Inbound = Schema.Union([
   Schema.Struct({ type: Schema.Literal("abort") }),
+  Schema.Struct({ type: Schema.Literal("take-back"), clientId: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("settings"), followUp: Schema.optional(FollowUp), lead: Schema.optional(Schema.String) }),
   Schema.Struct({
-    forwardedProps: Schema.optional(Schema.Struct({ device: Schema.optional(Schema.String) })),
+    forwardedProps: Schema.optional(Schema.Struct({ device: Schema.optional(Schema.String), followUp: Schema.optional(FollowUp) })),
     messages: Schema.Array(InboundMessage),
   }),
 ]);
+type Inbound = typeof Inbound.Type;
 const decodeInbound = Schema.decodeUnknownOption(Schema.fromJsonString(Inbound));
 
 const textOf = ({ content = "" }: InboundMessage) => (Predicate.isString(content) ? content : content.map((p) => (p.type === "text" ? (p.text ?? "") : "")).join(""));
@@ -100,21 +105,25 @@ export const wsRoute = (
           if (asset?.kind === kind) return Effect.succeed([asset]);
           return o.assets.report(`${kind} ${shortSha(sha)} is not on the server: left out of the message`).pipe(Effect.as([]));
         }).pipe(Effect.map((found) => found.flat()));
+      const handle = (m: Inbound) => {
+        if ("messages" in m) {
+          const { device, followUp } = m.forwardedProps ?? {};
+          return Effect.forEach(fresh(m.messages), (x) => attached(x).pipe(Effect.flatMap((media) => o.session.input(textOf(x), device, x.id, media, followUp))), {
+            discard: true,
+          });
+        }
+        switch (m.type) {
+          case "abort":
+            return o.session.cancel;
+          case "take-back":
+            return o.session.takeBack(m.clientId);
+          case "settings":
+            return o.session.configure({ followUp: m.followUp, lead: m.lead });
+        }
+      };
       const pull = yield* Socket.readerString(socket);
       yield* pull.pipe(
-        Effect.flatMap((frames) =>
-          Effect.forEach(frames, (frame) =>
-            Option.match(decodeInbound(frame), {
-              onNone: () => Effect.void,
-              onSome: (m) =>
-                "messages" in m
-                  ? Effect.forEach(fresh(m.messages), (x) => attached(x).pipe(Effect.flatMap((media) => o.session.input(textOf(x), m.forwardedProps?.device, x.id, media))), {
-                      discard: true,
-                    })
-                  : o.session.cancel,
-            }),
-          ),
-        ),
+        Effect.flatMap((frames) => Effect.forEach(frames, (frame) => Option.match(decodeInbound(frame), { onNone: () => Effect.void, onSome: handle }))),
         Effect.forever,
         Effect.ignore, // the socket closed
       );

@@ -169,7 +169,8 @@ export function Stats() {
         </>
       )}
       <section className="space-y-1">
-        <h2 className="text-sm font-medium">Failovers</h2>
+        <h2 className="text-sm font-medium">Engine changes</h2>
+        <p className="text-xs text-muted-foreground">Compactor and caption failovers, and turns taken up by the engine picked after a stop.</p>
         {all.failovers.length === 0 ? (
           <p className="text-sm text-muted-foreground">None.</p>
         ) : (

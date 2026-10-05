@@ -1,23 +1,28 @@
 // The session (ref §5.2, E1): the one turn loop the server owns. Messages wait in one inbox and
-// start a turn; a message sent while a turn runs is offered to its call. Every client sees the
-// same events. Priming runs only while idle, and a turn never waits for it (E17, SPEC "Turn and
+// start a turn; a message sent while a turn runs is offered to its call (steer) or held for the
+// next turn (queue), and a held one can be taken back. Turns run on one engine, the user's pick:
+// a usage limit or an offline device stops a turn until a client picks one (E4). Every client
+// sees the same events. Priming runs only while idle, and a turn never waits for it (E17, SPEC "Turn and
 // priming").
 import { Cause, Deferred, type Duration, Effect, Exit, Fiber, FiberSet, Option, PubSub, Queue, type Scope } from "effect";
+import type { Choices } from "./choices.ts";
 import { PRIME_IDLE } from "./config.ts";
 import type { Chat } from "./chat.ts";
-import { type DownList, failover } from "./engines/chain.ts";
+import type { DownList } from "./engines/chain.ts";
 import type { EngineError } from "./engines/errors.ts";
 import type { StoreError } from "./store.ts";
 import type { Entry } from "./tree.ts";
+import { giveBack as returned, held, type Incoming, nextTurn, offered, steerIn as joining, takeBack as takenFrom } from "./inbox.ts";
+import { type Lead, makeLead } from "./lead.ts";
 import { type Look, pictureBudget } from "./media/budget.ts";
 import type { Part } from "./media/part.ts";
 import { BLIND, type Mid, type TurnEngine, type TurnEvents } from "./turn/engine.ts";
 import type { UsageRecord } from "./usage.ts";
 import { allBuilt, render, settle, unbuilt, viewSize } from "./view.ts";
-import { type Asset, MAX_ATTACHMENTS, markerOf, NOT_DESCRIBED, type Phase, type SessionState, withMarkers } from "./wire.ts";
+import { type Asset, engineLabel, type FollowUp, MAX_ATTACHMENTS, markerOf, NOT_DESCRIBED, type Phase, type SessionState, withMarkers } from "./wire.ts";
 
 // the state every client is shown (STATE_SNAPSHOT, STATE_DELTA, /api/state): src/wire.ts
-export type { Phase, SessionState } from "./wire.ts";
+export type { FollowUp, Phase, SessionState } from "./wire.ts";
 
 export type SessionEvent =
   | { readonly type: "logged"; readonly entry: Entry; readonly runId: string | null }
@@ -25,7 +30,7 @@ export type SessionEvent =
   // `offset`: where the delta starts in that reply's text so far
   | { readonly type: "text"; readonly delta: string; readonly runId: string; readonly at: number; readonly offset: number }
   | { readonly type: "thinking"; readonly tokens: number; readonly runId: string }
-  // the reply streaming in was dropped unlogged (the engine failed over): the next one streams anew
+  // the reply streaming in was dropped unlogged (a usage limit stopped it): the next one streams anew
   | { readonly type: "reply-dropped"; readonly runId: string }
   | { readonly type: "run-started"; readonly runId: string }
   // every run-started gets exactly one, also after a cancel; `logged`: the log's length by then
@@ -34,20 +39,38 @@ export type SessionEvent =
   // a client's message (`clientId`, its AG-UI id) became log entry `at`, or could not be logged:
   // `error`. A message the log refused stays in the inbox, and is acked again when it is logged.
   | { readonly type: "ack"; readonly clientId: string; readonly at: number | null; readonly error: string | null }
+  // A client asked for a held message back (`clientId`, its sender's id for it): it left the inbox
+  // and is `message` again, never logged; or it could not be taken back (`error`: a turn has it,
+  // or the server holds no such message).
+  | {
+      readonly type: "taken-back";
+      readonly clientId: string;
+      readonly message: { readonly text: string; readonly media: readonly Asset[] } | null;
+      readonly error: string | null;
+    }
   | { readonly type: "usage"; readonly record: UsageRecord }
   | { readonly type: "state"; readonly state: SessionState };
 
 export type Session = {
   // a message from a client: it starts a turn, or joins the running one. With a `clientId` the
   // client is told (an "ack") which log entry the message became, or that it could not be logged.
-  // `media`: its attachments, already in the asset store (SPEC "Media")
-  readonly input: (text: string, device?: string, clientId?: string, media?: readonly Asset[]) => Effect.Effect<void>;
+  // `media`: its attachments, already in the asset store (SPEC "Media"); `followUp`: what it does
+  // if a turn runs, when not the session's setting
+  readonly input: (text: string, device?: string, clientId?: string, media?: readonly Asset[], followUp?: FollowUp) => Effect.Effect<void>;
+  // a client wants a held message back: a "taken-back" event says whether it got it
+  readonly takeBack: (clientId: string) => Effect.Effect<void>;
+  // the session's settings, shared by every client: what a mid-run message does, and which engine
+  // of the master's chain turns run on (a ref of that chain). A pick while a turn waits for one
+  // (phase "needs-model") lets it go on, on the picked engine.
+  readonly configure: (change: Choices) => Effect.Effect<void>;
   // the user's cancel: the wait or the turn stops; nothing sent is lost
   readonly cancel: Effect.Effect<void>;
   readonly events: PubSub.PubSub<SessionEvent>;
   readonly state: () => SessionState;
   // a client connected: a message usually follows, so prime the view (SPEC "Turn and priming")
   readonly primeSoon: Effect.Effect<void>;
+  // the engine turns run on: the user's pick (E4), without building the whole state
+  readonly lead: () => string;
   // the run going on, and the reply it is streaming (not logged yet), for a client joining now
   readonly live: () => LiveRun | null;
 };
@@ -58,21 +81,6 @@ export type LiveRun = { readonly runId: string; readonly reply: { readonly at: n
 export const deviceOf = (text: string, devices: readonly string[]) => {
   const m = /^\/on\s+(\S+)/.exec(text);
   return m?.[1] && devices.includes(m[1]) ? m[1] : null;
-};
-
-// A message from a client, the session's until it is logged: "held" for a turn, or "offered" to
-// the running call, which may take it (it is logged then) or leave it (it comes back "held" when
-// the call ends). Each carries the id its client sent it with, so its ack names it. (The state
-// clients see lists all of them as `pending`.)
-type Incoming = {
-  readonly seq: number; // the order messages came in
-  readonly text: string; // as typed; the log gets it with a marker line per attachment
-  readonly media: readonly Asset[];
-  device: string | null; // the device it was sent for; one a call left gets that call's device
-  readonly clientId: string | null;
-  state: "held" | "offered";
-  // the captions of its attachments, asked for once (`captionsOf`); null until someone needs them
-  described: Deferred.Deferred<readonly string[]> | null;
 };
 
 // What the session needs of the media service (src/media/media.ts) for attachments: a caption,
@@ -89,6 +97,13 @@ export const makeSession = (o: {
   readonly chat: Chat;
   readonly media: SessionMedia;
   readonly engines: readonly TurnEngine[]; // the master chain, first choice first
+  // the clients' choices it starts with (follow-ups "steer" and the chain's own lead unless set),
+  // and where each change goes, so a restart keeps them (src/choices.ts)
+  readonly choices?: Choices;
+  readonly saveChoices?: (c: Choices) => Effect.Effect<void>;
+  // the pick and the stop (src/lead.ts), when the server made it first for its engines to ask;
+  // else the session's own
+  readonly lead?: Lead;
   readonly devices: readonly string[];
   readonly defaultDevice: string;
   readonly commit: Effect.Effect<string | null>; // commit the data dir (its push is not waited for); an error message or null
@@ -103,11 +118,15 @@ export const makeSession = (o: {
     const publish = (e: SessionEvent) => PubSub.publish(events, e).pipe(Effect.asVoid);
     const info = (message: string) => publish({ message, type: "info" });
 
-    // every message not logged yet, in the order they came in: the offered ones, then the held
-    // ones; nothing is offered once anything is held, so the log keeps the order they were sent in
+    // every message not logged yet, in the order they came in (src/inbox.ts has its rules)
     const inbox: Incoming[] = [];
     let seq = 0;
     let phase: Phase = "idle", device = o.defaultDevice, engine: string | null = null;
+    // the settings every client shares (`configure`): what a mid-run message does, and the engine
+    // turns run on, which also holds a turn that stopped for a pick (src/lead.ts)
+    let followUp: FollowUp = o.choices?.followUp ?? "steer";
+    const lead = o.lead ?? (yield* makeLead({ initial: o.choices?.lead, refs: o.engines.map((e) => e.ref) }));
+    const master = () => o.engines.find((e) => e.ref === lead.ref());
     // a turn's call accepts mid-run messages, and the queue the call running now reads them from
     let accepting = false;
     let offerTo: Queue.Queue<Incoming> | null = null;
@@ -119,20 +138,6 @@ export const makeSession = (o: {
     // the store's refusal the turn's result said already, so the stop it may lead to does not say it twice
     let told: string | null = null;
 
-    const held = () => inbox.filter((m) => m.state === "held");
-    // a message sent for no device, or for the one the turn runs on, may join it; one sent for
-    // another waits, and the turn after it runs there (SPEC "Turn and priming")
-    const forThis = (sentFor: string | null, on = device) => sentFor === null || sentFor === on;
-    // The next turn's device and messages: the device of the first held message that has one (sent
-    // for it, or left by a call that ran there), else the default; and the held messages up to the
-    // first one for another device, which waits for the turn after, with all sent after it.
-    const nextTurn = () => {
-      const waiting = held();
-      const on = waiting.find((m) => m.device)?.device ?? o.defaultDevice;
-      const other = waiting.findIndex((m) => !forThis(m.device, on));
-      return { batch: other === -1 ? waiting : waiting.slice(0, other), on };
-    };
-    const offered = () => inbox.filter((m) => m.state === "offered");
 
     const state = (): SessionState => ({
       budget: chat.mem.budget,
@@ -141,12 +146,22 @@ export const makeSession = (o: {
       engine,
       messages: chat.mem.root.length,
       phase,
-      pending: inbox.map((m) => (m.media.length > 0 ? { attachments: m.media.length, clientId: m.clientId, text: m.text } : { clientId: m.clientId, text: m.text })),
+      pending: inbox.map((m) => {
+        const queued = m.state === "held";
+        return m.media.length > 0 ? { clientId: m.clientId, media: m.media, queued, text: m.text } : { clientId: m.clientId, queued, text: m.text };
+      }),
       viewBytes: viewSize(chat.mem),
       waiting: unbuilt(chat.mem),
+      followUp,
+      engines: lead.engines(),
+      lead: lead.ref(),
+      stopped: lead.stopped(),
     });
     const tell = Effect.suspend(() => publish({ state: state(), type: "state" }));
     const enter = (p: Phase) => Effect.suspend(() => ((phase = p), tell));
+    // an engine's down mark lapsed: clients see it in the state
+    const lapses = yield* PubSub.subscribe(lead.changes);
+    yield* PubSub.take(lapses).pipe(Effect.andThen(tell), Effect.forever, Effect.forkScoped);
     // a compactor engine went down or came back: clients see it in the state (subscribed here, so
     // no change is missed between now and the fiber's start)
     if (o.compactorDown) {
@@ -195,14 +210,6 @@ export const makeSession = (o: {
       });
     // these messages' captions, asked for together: a turn waits once for the lot
     const captioned = (ms: readonly Incoming[]) => Effect.forEach(ms, captionsOf, { concurrency: "unbounded", discard: true });
-
-    // A message's text as the log keeps it: what was typed, then a marker line per attachment with
-    // its caption (SPEC "Media")
-    const logText = (m: Incoming, said: readonly string[]) =>
-      withMarkers(
-        m.text,
-        m.media.map((a, k) => markerOf(a, said[k] ?? NOT_DESCRIBED)),
-      );
 
     // A message becomes a user entry, on device `on` or else the one it was sent for, once its
     // captions are in (the one place a marker is written). It leaves the inbox only once it is in
@@ -257,21 +264,21 @@ export const makeSession = (o: {
       });
 
     // Priming happens only while idle, in fibers of `primes`. A turn that starts stops them
-    // instead of waiting (E17): its own request writes the same prefix to the cache.
-    const lead = o.engines[0];
-    const primer = lead?.prime;
+    // instead of waiting (E17): its own request writes the same prefix to the cache. Priming and
+    // the warm process are the picked engine's, which the next turn runs on.
     const primes = yield* FiberSet.make();
-    const primeNow = Effect.suspend(() =>
-      !primer || running || !allBuilt(chat.mem) ? Effect.succeed(null) : FiberSet.run(primes, primer(render(chat.mem), o.defaultDevice)),
-    );
+    const primeNow = Effect.suspend(() => {
+      const primer = master()?.prime;
+      return !primer || running || !allBuilt(chat.mem) ? Effect.succeed(null) : FiberSet.run(primes, primer(render(chat.mem), o.defaultDevice));
+    });
     // the next turn's and priming's claude, started ahead on the default device (E18)
-    const warm = lead ? lead.warm(o.defaultDevice).pipe(Effect.forkIn(scope), Effect.asVoid) : Effect.void;
+    const warm = Effect.suspend(() => master()?.warm(o.defaultDevice).pipe(Effect.forkIn(scope), Effect.asVoid) ?? Effect.void);
 
     // the view changed (a message, a node): once it has been quiet for PRIME_IDLE and no turn runs,
     // prime it in the background. One fiber debounces every change, so bursts start one timer.
     const changes = yield* Queue.sliding<true>(1);
     const primeLater = Queue.offer(changes, true);
-    if (primer) {
+    if (o.engines.some((e) => e.prime)) {
       const quiet = o.idle ?? PRIME_IDLE;
       yield* Effect.gen(function* () {
         yield* Queue.take(changes);
@@ -301,27 +308,64 @@ export const makeSession = (o: {
         return String(entries[0]?.i ?? chat.mem.root.length);
       }).pipe(Effect.uninterruptible);
 
-    // The call is over: nothing more is offered to it, and what it was offered and never took is
-    // held again, on the call's device unless it was sent for one.
+    // The call is over, or its turn stopped: nothing more is offered to it, and what it was
+    // offered and never took is held again (src/inbox.ts giveBack). Returns the offered ones.
     const giveBack = (on: string) =>
       Effect.sync(() => {
         accepting = false;
         offerTo = null;
-        const left = offered();
-        for (const m of left) {
-          m.state = "held";
-          m.device ??= on;
-        }
-        return left;
+        return returned(inbox, on);
       });
 
-    // A call of one link of the chain, with its own queue of mid-run messages: first those offered
-    // before it (to a link that failed over), then each one as it comes. `took` logs one it took.
+    // a call accepts mid-run messages again: the held ones that join it (src/inbox.ts steerIn)
+    const steerIn = (on: string) => {
+      for (const m of joining(inbox, on)) if (offerTo) Queue.offerUnsafe(offerTo, m);
+    };
+
+    // A turn stopped by a usage limit or an offline device waits for a pick. What it logged stays,
+    // the text it streamed and never logged is dropped (the next engine's reply is not glued to
+    // it), what its call never took is held again, and no call accepts mid-run messages while it
+    // waits: a message sent meanwhile is held, so it can be taken back, and joins the resumed call
+    // (if it steers) once the pick comes. Clients learn why from the state (`stopped`, phase
+    // "needs-model"), set before the run's end, so they show it once, as the prompt to pick; the
+    // pick's notice is the record. The data dir is committed, since a pick may take hours. The
+    // resumed run has a run id of its own. A cancel while it waits ends the loop like any cancel.
+    let resumes = 0; // runs resumed after a pick, for their run ids
+    const stall = (ref: string, why: string, runId: string, since: number, on: string) =>
+      Effect.gen(function* () {
+        engine = null;
+        if (current?.reply) yield* publish({ runId, type: "reply-dropped" });
+        if (current) current.reply = null;
+        yield* giveBack(on);
+        const done = chat.mem.root.length - since;
+        // waiting for a pick before the run's end goes out: a client that picks on seeing it is heard
+        const pick = lead.stop(ref, why);
+        yield* enter("needs-model");
+        yield* endRun(why);
+        const failed = yield* o.commit;
+        if (failed) yield* info(`git: ${failed}`);
+        yield* Deferred.await(pick);
+        const resumed = `${runId.split("+")[0] ?? runId}+${++resumes}`;
+        yield* Effect.sync(() => {
+          lead.resumed();
+          phase = "running";
+          accepting = true;
+          steerIn(on);
+        });
+        yield* beginRun(resumed);
+        const next = lead.ref();
+        const goesOn = next === ref ? "picked again" : `${engineLabel(next)} carries on`;
+        yield* info(`${engineLabel(ref)} stopped (${why}); ${goesOn}${done > 0 ? ` from the ${done} logged entries` : ""}`);
+        return resumed;
+      });
+
+    // A call of one engine, with its own queue of mid-run messages: first those offered before it
+    // (to a call a usage limit stopped), then each one as it comes. `took` logs one it took.
     // An engine that is not sent images gets the marker lines only, and a note saying so. What
     // pictures a call is sent, the opening message's and each mid-run message's, is decided in
     // one place: `forEngine`, against the call's picture budget.
-    // `taken`: the mid-run messages this turn's calls took so far; after a failover the next link
-    // gets their pictures too, as they are in `earlier` only by their marker lines
+    // `taken`: the mid-run messages this turn's calls took so far; after a stop, the engine picked
+    // next gets their pictures too, as they are in `earlier` only by their marker lines
     const call = (e: TurnEngine, batch: readonly Incoming[], base: { readonly device: string; readonly view: string }, from: string | null, out: TurnEvents, since: number, taken: readonly Incoming[]) =>
       Effect.gen(function* () {
         const q = yield* Queue.unbounded<Incoming>();
@@ -346,47 +390,45 @@ export const makeSession = (o: {
         const midOf = (m: Incoming): Effect.Effect<Mid> => forEngine([m]).pipe(Effect.map(({ media, texts }) => ({ media, seq: m.seq, text: texts.join("\n") })));
         const { before, earlier } = yield* Effect.sync(() => {
           offerTo = q;
-          for (const m of offered()) Queue.offerUnsafe(q, m);
+          for (const m of offered(inbox)) Queue.offerUnsafe(q, m);
           engine = e.ref;
           return { before: [...taken], earlier: chat.mem.root.slice(since).map(({ kind, text }) => ({ kind, text })) };
         });
         yield* tell;
-        // the opening's pictures, then those of the mid-run messages a link before took
+        // the opening's pictures, then those of the mid-run messages a call before took
         const opening = yield* forEngine(batch, before);
         const mid = {
           next: Queue.take(q).pipe(Effect.flatMap(midOf)),
           ready: Queue.clear(q).pipe(Effect.flatMap((ms) => captioned(ms).pipe(Effect.andThen(Effect.forEach(ms, midOf))))),
         };
-        return yield* e.run({ ...base, ...opening, earlier, mid }, out, from);
+        return yield* e.run({ ...base, ...opening, again: from === e.ref, earlier, mid }, out, from);
       });
 
     const turn = Effect.gen(function* () {
       yield* FiberSet.clear(primes).pipe(Effect.forkIn(scope)); // not waited for: the killed claude may take a moment
-      while (held().length > 0) {
+      while (held(inbox).length > 0) {
         told = null;
         if (unbuilt(chat.mem)) {
-          device = nextTurn().on; // shown while it waits; read again after, with what came in meanwhile
+          device = nextTurn(inbox, o.defaultDevice).on; // shown while it waits; read again after, with what came in meanwhile
           yield* enter("waiting");
           yield* settle(chat.mem);
         }
-        // This turn's device and messages are read once the summaries are in; their captions are
-        // waited for together, briefly, before any is logged. One that comes in meanwhile waits for
-        // the call below, where it is offered unless it, or one sent before it, is for another device.
-        const { batch, on } = nextTurn();
+        // This turn's device and messages are read once the summaries are in, and picked at once, so
+        // none can be taken back any more; their captions are waited for together, briefly, before
+        // any is logged. One that comes in meanwhile waits for the call below, where it is offered
+        // if it steers (`steerIn`). All taken back while waiting: no turn.
+        const { batch, on } = nextTurn(inbox, o.defaultDevice);
+        if (batch.length === 0) continue;
         device = on;
+        for (const m of batch) m.state = "picked";
         yield* captioned(batch);
         const view = render(chat.mem); // BEFORE the new messages are logged (gist §7)
         yield* enter("running");
-        const runId = yield* logQueued(batch, on);
+        let runId = yield* logQueued(batch, on); // a resumed run gets one of its own (`stall`)
         const since = chat.mem.root.length; // what this turn's engines log starts here
         const taken: Incoming[] = []; // the mid-run messages its calls took, in the order they were logged
         accepting = true;
-        // the ones that came in while the captions or the log were awaited, up to the first sent for
-        // another device: it waits for the next turn, and so does everything sent after it
-        for (const m of held()) {
-          if (!forThis(m.device)) break;
-          m.state = "offered";
-        }
+        steerIn(on); // came in while the captions or the log were awaited
         const out: TurnEvents = {
           info,
           log: (kind, text) => logPublished(kind, text, runId, on),
@@ -411,21 +453,26 @@ export const makeSession = (o: {
         yield* beginRun(runId);
         yield* tell;
         const base = { device: on, view };
-        const result = yield* failover(
-          o.engines.map((e) => ({ ref: e.ref, run: (from: string | null) => call(e, batch, base, from, out, since, taken) })),
-          {
-            // A failover mid-turn keeps what was logged: the next engine is told and carries on from
-            // it. Text the engine before streamed and never logged is dropped, so the next engine's
-            // reply is not glued to it.
-            moved: (from, to, why) =>
-              Effect.suspend(() => {
-                const done = chat.mem.root.length - since;
-                const dropped = current?.reply ? publish({ runId, type: "reply-dropped" }) : Effect.void;
-                if (current) current.reply = null;
-                return dropped.pipe(Effect.andThen(info(`${from} → ${to}: ${why}${done > 0 ? ` (after ${done} logged entries; ${to} carries on from them)` : ""}`)));
-              }),
-          },
-        ).pipe(Effect.result);
+        // The turn runs on the current engine only: the master never fails over by itself (E4),
+        // since the user chooses which plan pays. A usage limit or an offline device stops it
+        // until a client picks an engine (`stall`), then the picked one carries on (E16).
+        // `ref`: the engine the attempt ran on (a pick made meanwhile counts from the next one)
+        const attempt = (from: string | null) =>
+          Effect.suspend(() => {
+            const e = master();
+            if (!e) return Effect.die(new Error("an empty engine chain"));
+            return call(e, batch, base, from, out, since, taken).pipe(
+              Effect.tapError((error) => (error._tag === "UsageLimit" ? lead.wentDown(e.ref, error.message).pipe(Effect.andThen(tell)) : Effect.void)),
+              Effect.tap(() => (lead.cameBack(e.ref) ? tell : Effect.void)),
+              Effect.result,
+              Effect.map((result) => ({ ref: e.ref, result })),
+            );
+          });
+        let { ref, result } = yield* attempt(null);
+        while (result._tag === "Failure" && waitsForPick(result.failure)) {
+          runId = yield* stall(ref, failureText(result.failure), runId, since, on);
+          ({ ref, result } = yield* attempt(ref));
+        }
         yield* Effect.uninterruptible(
           Effect.gen(function* () {
             engine = null;
@@ -473,6 +520,7 @@ export const makeSession = (o: {
         const cancelled = Cause.hasInterruptsOnly(cause);
         const refused = cancelled || Cause.hasDies(cause) ? Option.none() : Cause.findErrorOption(cause);
         const why = cancelled ? "cancelled" : Option.match(refused, { onNone: () => `the turn stopped: ${thrown(cause)}`, onSome: (e) => e.message });
+        lead.resumed(); // no longer waiting for a pick
         yield* giveBack(device);
         const inRun = current !== null;
         yield* endRun(why); // the run's end says it
@@ -501,36 +549,69 @@ export const makeSession = (o: {
       );
     });
 
-    const input = (text: string, on?: string, clientId?: string, attached: readonly Asset[] = []) =>
+    // A message is held; while a call accepts mid-run messages it joins that call if it steers
+    // (`steerIn`), else it waits for the next turn, which the loop starts when the call ends.
+    const input = (text: string, on?: string, clientId?: string, attached: readonly Asset[] = [], how?: FollowUp) =>
       Effect.gen(function* () {
         const media = attached.slice(0, MAX_ATTACHMENTS);
         if (attached.length > media.length) yield* info(`at most ${MAX_ATTACHMENTS} attachments per message: ${attached.length - media.length} left out`);
         if (text.trim() === "" && media.length === 0) return; // nothing to answer: no turn, no empty user entry
-        const picked = on && o.devices.includes(on) ? on : deviceOf(text, o.devices);
-        // offered to the running call only when it runs where the message was sent for, and nothing
-        // sent before it waits for the next turn: the log keeps the order they were sent in
-        const offer = accepting && forThis(picked) && held().length === 0;
-        const m: Incoming = { clientId: clientId ?? null, described: null, device: picked, media, seq: ++seq, state: offer ? "offered" : "held", text };
-        inbox.push(m);
-        if (m.state === "offered") {
-          if (offerTo) Queue.offerUnsafe(offerTo, m);
-          return yield* tell;
+        const sentFor = on && o.devices.includes(on) ? on : deviceOf(text, o.devices);
+        const steer = (how ?? followUp) === "steer";
+        inbox.push({ clientId: clientId ?? null, described: null, device: sentFor, media, seq: ++seq, state: "held", steer, text });
+        if (accepting) steerIn(device);
+        yield* start; // nothing to do while the loop is on: it takes held messages as it goes
+        yield* tell;
+      });
+
+    // Only a held message can be taken back (src/inbox.ts takeBack), by any client. Out of the
+    // inbox and told in one step, so no turn picks it in between.
+    const takeBack = (clientId: string) =>
+      Effect.suspend(() => {
+        const out = takenFrom(inbox, clientId);
+        if ("error" in out) return publish({ clientId, error: out.error, message: null, type: "taken-back" });
+        const { media, text } = out.taken;
+        return publish({ clientId, error: null, message: { media, text }, type: "taken-back" }).pipe(Effect.andThen(tell));
+      }).pipe(Effect.uninterruptible);
+
+    // A pick counts from the next turn; while idle the picked engine is warmed and primed at once,
+    // so that turn starts warm. Each change is saved, so a restart keeps it.
+    const configure = (change: Choices) =>
+      Effect.gen(function* () {
+        if (change.lead !== undefined) {
+          // a turn waiting for a pick goes on, on this one (the same again is a retry)
+          const refused = yield* lead.pick(change.lead);
+          if (refused !== null) return yield* info(refused);
+          if (!running) yield* warm.pipe(Effect.andThen(primeLater));
         }
-        yield* start;
+        if (change.followUp) followUp = change.followUp;
+        const picked = lead.choice();
+        if (o.saveChoices) yield* o.saveChoices(picked === undefined ? { followUp } : { followUp, lead: picked });
         yield* tell;
       });
 
     const cancel = Effect.suspend(() => (loop ? Fiber.interrupt(loop) : Effect.void));
     const primeSoon = Effect.asVoid(primeNow);
 
-    return { cancel, events, input, live, primeSoon, state };
+    return { cancel, configure, events, input, lead: lead.ref, live, primeSoon, state, takeBack };
   });
+
+// A message's text as the log keeps it: what was typed, then a marker line per attachment with
+// its caption (SPEC "Media")
+const logText = (m: Incoming, said: readonly string[]) =>
+  withMarkers(
+    m.text,
+    m.media.map((a, k) => markerOf(a, said[k] ?? NOT_DESCRIBED)),
+  );
 
 // a defect in one line: what was thrown
 const thrown = (cause: Cause.Cause<unknown>) => {
   const error = Cause.squash(cause);
   return error instanceof Error ? error.message : String(error);
 };
+
+// what stops a turn until a client picks an engine, rather than ending it (E4)
+const waitsForPick = (e: EngineError | StoreError) => e._tag === "UsageLimit" || e._tag === "DeviceOffline";
 
 const failureText = (e: EngineError | StoreError) => {
   switch (e._tag) {

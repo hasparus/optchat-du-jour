@@ -51,6 +51,57 @@ describe("repl screen", () => {
     expect(t.out()).toContain("[image 9d0c38e7aafe 1568x1176 212KB: a whiteboard with three arrows]");
   });
 
+  test("follow-ups: /queue and /steer set the server's setting; ours held for the next turn, or taken back, are said once", () => {
+    const t = screen();
+    t.feed({ snapshot: { ...IDLE, followUp: "steer", phase: "running" }, type: "STATE_SNAPSHOT" });
+    expect(t.out()).toContain("follow-ups steer");
+    for (const ch of "/queue") t.s.key({ text: ch, type: "text" });
+    expect(t.s.key({ type: "enter" })).toEqual({ followUp: "queue", type: "follow-up" });
+    t.feed({ delta: [{ op: "replace", path: "/followUp", value: "queue" }], type: "STATE_DELTA" });
+    expect(t.out()).toContain("follow-ups: queued for the next turn\n");
+    for (const ch of "later") t.s.key({ text: ch, type: "text" });
+    const sent = t.s.key({ type: "enter" });
+    const pending = [{ clientId: idOf(sent), queued: true, text: "later" }];
+    t.feed({ delta: [{ op: "replace", path: "/pending", value: pending }], type: "STATE_DELTA" });
+    t.feed({ delta: [{ op: "replace", path: "/pending", value: pending }], type: "STATE_DELTA" });
+    expect(t.out().match(/queued for the next turn: later\n/g)).toHaveLength(1);
+    // the phone took it back: it is not answered, and nothing waits for it
+    t.feed({ name: "taken-back", type: "CUSTOM", value: { clientId: idOf(sent), error: null, text: "later" } });
+    expect(t.out()).toContain("taken back, not sent: later\n");
+    expect([t.s.unanswered, t.s.failed]).toEqual([0, 1]);
+  });
+
+  test("a turn waiting for a model: the REPL lists the engines, and /model picks one by number or ref", () => {
+    const t = screen();
+    const engines = [
+      { down: null, label: "Claude Opus (Claude Code)", ref: "claude-code:opus" },
+      { down: null, label: "GPT-6.1 Sol (ChatGPT plan)", ref: "openai-plan:gpt-6.1-sol" },
+    ];
+    t.feed({ snapshot: { ...IDLE, engines, lead: "claude-code:opus", phase: "running", stopped: null }, type: "STATE_SNAPSHOT" });
+    const down = [
+      { down: "Claude AI usage limit reached", label: "Claude Opus (Claude Code)", ref: "claude-code:opus" },
+      { down: null, label: "GPT-6.1 Sol (ChatGPT plan)", ref: "openai-plan:gpt-6.1-sol" },
+    ];
+    const stopped = { label: "Claude Opus (Claude Code)", ref: "claude-code:opus", why: "usage limit: Claude AI usage limit reached" };
+    t.feed({ delta: [{ op: "replace", path: "/engines", value: down }, { op: "replace", path: "/phase", value: "needs-model" }, { op: "replace", path: "/stopped", value: stopped }], type: "STATE_DELTA" });
+    t.feed({ message: "usage limit: Claude AI usage limit reached", type: "RUN_ERROR" });
+    expect(t.out()).toContain("Claude Opus (Claude Code) stopped: usage limit: Claude AI usage limit reached. /model <n> picks one to go on");
+    expect(t.out()).not.toContain("error: usage limit"); // said once
+    expect(t.out()).toContain("  1. Claude Opus (Claude Code) (in use) (unavailable: Claude AI usage limit reached)\n");
+    expect(t.out()).toContain("  2. GPT-6.1 Sol (ChatGPT plan)\n");
+    expect(t.s.stuck).toBe(true);
+    for (const ch of "/model 2") t.s.key({ text: ch, type: "text" });
+    expect(t.s.key({ type: "enter" })).toEqual({ lead: "openai-plan:gpt-6.1-sol", type: "pick" });
+    for (const ch of "/model claude-code:opus") t.s.key({ text: ch, type: "text" });
+    expect(t.s.key({ type: "enter" })).toEqual({ lead: "claude-code:opus", type: "pick" });
+    for (const ch of "/model 9") t.s.key({ text: ch, type: "text" });
+    expect(t.s.key({ type: "enter" })).toBeNull();
+    expect(t.out()).toContain("no model 9: /model lists them\n");
+    t.feed({ delta: [{ op: "replace", path: "/lead", value: "openai-plan:gpt-6.1-sol" }, { op: "replace", path: "/phase", value: "running" }], type: "STATE_DELTA" });
+    expect(t.out()).toContain("model: GPT-6.1 Sol (ChatGPT plan)\n");
+    expect(t.s.stuck).toBe(false);
+  });
+
   test("output that arrives while typing keeps the typed text below it", () => {
     const t = screen();
     t.feed({ snapshot: { ...IDLE, phase: "running" }, type: "STATE_SNAPSHOT" });
@@ -171,5 +222,21 @@ describe("repl link", () => {
     link.opened(ws);
     expect(wire.at(-1)).toBe("fourth");
     expect(wire.filter((f) => f === ABORT)).toHaveLength(1);
+  });
+
+  // a pick kept for later would settle whatever turn waits after the reconnect, maybe retrying
+  // the engine that just hit its limit: the user never chose that
+  test("a model pick goes out only while connected, and the screen says when it didn't", () => {
+    const wire: string[] = [];
+    const link = makeLink();
+    const pick = JSON.stringify({ lead: "openai-plan:gpt-6.1-sol", type: "settings" });
+    expect(link.now(pick)).toBe(false);
+    link.opened({ send: (f: string) => void wire.push(f) });
+    expect(wire).toEqual([]);
+    expect(link.now(pick)).toBe(true);
+    expect(wire).toEqual([pick]);
+    const t = screen();
+    t.s.picked(false);
+    expect(t.out()).toContain("not connected: the model was not changed; /model again once connected\n");
   });
 });

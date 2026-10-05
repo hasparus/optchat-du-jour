@@ -10,12 +10,48 @@ export { Kind, Msg } from "./records.ts";
 // ---------------------------------------------------------------------------------------------
 // the session's shared state (STATE_SNAPSHOT, STATE_DELTA)
 
-export const Phase = Schema.Literals(["idle", "running", "waiting"]);
+// "needs-model": a turn stopped on a usage limit or an offline device, waiting for a client to
+// pick an engine (`stopped` says which stopped it, and why)
+export const Phase = Schema.Literals(["idle", "running", "waiting", "needs-model"]);
 export type Phase = typeof Phase.Type;
 
 // an engine of the compactor's chains that is down right now, and why
 export const Down = Schema.Struct({ ref: Schema.String, reason: Schema.String });
 export type Down = typeof Down.Type;
+
+// What a message sent while a turn runs does (SPEC "Turn and priming", follow-ups): "steer" offers
+// it to the running call, "queue" holds it for the next turn. The session has one setting, and a
+// message may ask for the other ("send now" while queueing, "queue" while steering).
+export const FollowUp = Schema.Literals(["steer", "queue"]);
+export type FollowUp = typeof FollowUp.Type;
+
+// An engine of the master's chain, for the composer's picker: its ref, a name for people
+// (`engineLabel`), and why it can't take a turn now (it hit a usage limit: signed out, no key, a
+// spent plan or budget), or null
+export const MasterEngine = Schema.Struct({ ref: Schema.String, label: Schema.String, down: Schema.NullOr(Schema.String) });
+export type MasterEngine = typeof MasterEngine.Type;
+
+const capital = (w: string) => (w === "" ? w : `${w[0]?.toUpperCase() ?? ""}${w.slice(1)}`);
+// a model id as people say it: "opus" Claude Opus, "claude-opus-5-5" Claude Opus 5.5, "gpt-6.1-sol" GPT-6.1 Sol
+const modelName = (id: string) => {
+  if (/^(opus|sonnet|haiku)$/.test(id)) return `Claude ${capital(id)}`;
+  const claude = /^claude-([a-z]+)(?:-(\d+)(?:-(\d+))?)?$/.exec(id);
+  if (claude?.[1]) return `Claude ${capital(claude[1])}${claude[2] ? ` ${claude[2]}${claude[3] ? `.${claude[3]}` : ""}` : ""}`;
+  const gpt = /^gpt-(?:([\d.]+)(?:-|$))?(.*)$/.exec(id);
+  if (gpt) return [`GPT${gpt[1] ? `-${gpt[1]}` : ""}`, ...(gpt[2] ?? "").split("-").filter((w) => w !== "").map(capital)].join(" ");
+  return id;
+};
+// an engine ref ("engine:model", src/config.ts) as the picker shows it: "Claude Opus (Claude Code)",
+// "GPT-6.1 Sol (ChatGPT plan)", "Claude Opus 5.5 (Anthropic API key)"
+export const engineLabel = (ref: string) => {
+  const [engine = "", model = ""] = ref.split(/:(.*)/s);
+  if (engine === "api-key") {
+    const [, provider = "", id = model] = /^(anthropic|openai)\/(.+)$/.exec(model) ?? [];
+    return `${modelName(id)} (${provider === "openai" ? "OpenAI" : "Anthropic"} API key)`;
+  }
+  const where = engine === "claude-code" ? "Claude Code" : engine === "openai-plan" ? "ChatGPT plan" : engine;
+  return `${modelName(model)} (${where})`;
+};
 
 export const SessionState = Schema.Struct({
   phase: Phase,
@@ -27,9 +63,18 @@ export const SessionState = Schema.Struct({
   messages: Schema.Number,
   // Every message the server holds and has not logged: waiting for a turn or for summaries, or
   // offered to the running call and not taken yet. `clientId`: the id its client sent it with;
-  // `text`: as typed; `attachments`: how many it has, when it has any.
-  pending: Schema.Array(Schema.Struct({ clientId: Schema.NullOr(Schema.String), text: Schema.String, attachments: Schema.optional(Schema.Number) })),
+  // `text`: as typed; `queued`: held for a later turn, so it can still be taken back; `media`: its
+  // attachments as stored, when it has any.
+  pending: Schema.Array(
+    Schema.Struct({ clientId: Schema.NullOr(Schema.String), text: Schema.String, queued: Schema.Boolean, media: Schema.optional(Schema.Array(Schema.suspend(() => Asset))) }),
+  ),
   down: Schema.Array(Down), // compactor engines down right now, with why (SPEC "Policy": never unseen)
+  followUp: FollowUp, // what a message sent mid-run does, unless it asks otherwise
+  // the engines the master may run on, in the configured order, and `lead`, the one turns run on
+  // (the user's pick; the first unless picked). The master never fails over by itself (E4).
+  engines: Schema.Array(MasterEngine),
+  lead: Schema.String,
+  stopped: Schema.NullOr(Schema.Struct({ ref: Schema.String, label: Schema.String, why: Schema.String })),
 });
 export type SessionState = typeof SessionState.Type;
 
@@ -134,6 +179,9 @@ export const UsageRecord = Schema.Struct({
   usage: Tokens,
   cold: Schema.Boolean,
   attempt: Schema.Number,
+  // the engine this call took over from: the link before it in a compactor's or caption's chain
+  // (a failover), or for a turn, the engine a usage limit or an offline device stopped before the
+  // user picked this one (E4); null for a first call
   failoverFrom: Schema.NullOr(Schema.String),
   ms: Schema.Number,
   dollars: Schema.optional(Schema.Number),

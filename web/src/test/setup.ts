@@ -7,4 +7,5 @@ GlobalRegistrator.register({ url: "http://127.0.0.1:7700/" });
 const { cleanup } = await import("@testing-library/react");
 afterEach(() => {
   cleanup();
+  localStorage.clear(); // a draft or an unacked message one test kept is not the next one's
 });

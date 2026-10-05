@@ -1,18 +1,19 @@
 // AI Elements' Prompt Input (elements.ai-sdk.dev registry), cut to a phone composer: a textarea
-// that sends on Enter (on a keyboard; on a touch screen Enter is a new line and the send button
-// sends), a footer for tools, send and stop buttons (SPEC "Web UI", Chat), and attachments: a
-// picker, a camera button, paste and drop, and a tray of removable thumbnails with their upload's
-// progress (SPEC "Media"). Screenshots, referenced sources, the command menu and the AI SDK's
-// ChatStatus are left out, and sending never waits for a reply.
+// that grows with its text and sends on Enter (on a keyboard; on a touch screen Enter is a new
+// line and the send button sends), a footer for tools, send and stop buttons (SPEC "Web UI",
+// Chat), and attachments: a picker, a camera button, paste and drop, and a tray of removable
+// thumbnails with their upload's progress and, for a photo, its tier (SPEC "Media"). Screenshots,
+// referenced sources, the command menu and the AI SDK's ChatStatus are left out, and sending never
+// waits for a reply. The text is the caller's state: the form does not clear it.
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "@/components/ui/input-group";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
-import { CameraIcon, CornerDownLeftIcon, FilmIcon, ImageOffIcon, PaperclipIcon, SquareIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, CameraIcon, FilmIcon, ImageOffIcon, PaperclipIcon, SquareIcon, XIcon } from "lucide-react";
 import type { ChangeEvent, ClipboardEvent, ComponentProps, DragEvent, HTMLAttributes, KeyboardEvent, ReactNode, SubmitEvent } from "react";
-import { useRef, useState, useSyncExternalStore } from "react";
+import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 
 export type PromptInputProps = Omit<HTMLAttributes<HTMLFormElement>, "onSubmit"> & {
-  // the text as typed, never trimmed. The form is cleared after
+  // the text as typed, never trimmed; the caller clears it
   onSubmit: (text: string) => void;
   // whether this text may be sent now; by default any that isn't blank
   canSubmit?: (text: string) => boolean;
@@ -31,7 +32,6 @@ export const PromptInput = ({ className, onSubmit, canSubmit = (text) => text.tr
     const field = form.elements.namedItem("message");
     const text = field instanceof HTMLTextAreaElement ? field.value : "";
     if (!canSubmit(text)) return;
-    form.reset();
     onSubmit(text);
   };
   // pasted files go to the tray; pasted text stays text
@@ -114,15 +114,18 @@ export const PromptInputAttachments = ({ className, ...props }: HTMLAttributes<H
 export type PromptInputAttachmentProps = {
   readonly name: string;
   readonly kind: "image" | "video";
-  readonly preview: string; // an object URL of the picked file
+  readonly preview: string; // an object URL of the picked file, or our own thumbnail of an upload
   readonly progress: number; // 0..1
   readonly done: boolean;
   readonly error: string | null;
   readonly onRemove: () => void;
+  // a photo's tier, and a toggle for it when the photo can be uploaded again (its file is here)
+  readonly high?: boolean;
+  readonly onHigh?: () => void;
   readonly children?: ReactNode;
 };
 
-export const PromptInputAttachment = ({ name, kind, preview, progress, done, error, onRemove }: PromptInputAttachmentProps) => {
+export const PromptInputAttachment = ({ name, kind, preview, progress, done, error, onRemove, high = false, onHigh }: PromptInputAttachmentProps) => {
   // a file the browser can't show (the server may still take it, or say why not)
   const [broken, setBroken] = useState(false);
   return (
@@ -151,6 +154,22 @@ export const PromptInputAttachment = ({ name, kind, preview, progress, done, err
       >
         <XIcon className="size-3" />
       </button>
+      {kind === "image" && (onHigh !== undefined || high) && (
+        <button
+          aria-label={`High detail for ${name}`}
+          aria-pressed={high}
+          className={cn(
+            "absolute bottom-1 left-1 rounded-sm border px-1 text-[10px]/4 font-semibold shadow-xs",
+            high ? "border-primary bg-primary text-primary-foreground" : "bg-background/90 text-foreground",
+          )}
+          disabled={!onHigh}
+          onClick={onHigh}
+          title={high ? "High detail: sent at up to 2576 px" : "Standard detail (1568 px): tap for high detail"}
+          type="button"
+        >
+          HD
+        </button>
+      )}
       {!done && !error && <Progress aria-label={`Uploading ${name}`} className="mt-1 h-1" value={Math.round(progress * 100)} />}
       {error !== null && (
         <p className="mt-1 line-clamp-3 text-[10px] leading-tight text-destructive" role="alert" title={error}>
@@ -177,10 +196,22 @@ const onPointerChange = (changed: () => void) => {
     query.removeEventListener("change", changed);
   };
 };
+export const useCoarsePointer = () => useSyncExternalStore(onPointerChange, coarse);
 
-export const PromptInputTextarea = ({ onKeyDown, className, placeholder = "Message", ...props }: PromptInputTextareaProps) => {
+// CSS grows the textarea with its text (field-sizing); where that isn't there yet (Firefox), its
+// height follows its content here, up to the max-height the class sets
+const sizedByCss = () => "CSS" in globalThis && CSS.supports("field-sizing", "content");
+
+export const PromptInputTextarea = ({ onKeyDown, className, placeholder = "Message", value, ...props }: PromptInputTextareaProps) => {
   const [composing, setComposing] = useState(false);
-  const touch = useSyncExternalStore(onPointerChange, coarse);
+  const touch = useCoarsePointer();
+  const own = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const el = own.current;
+    if (!el || sizedByCss()) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [value]);
 
   // Enter sends, Shift-Enter is a new line; not while an input method is composing, and not on a
   // touch screen, where the send button sends
@@ -196,6 +227,8 @@ export const PromptInputTextarea = ({ onKeyDown, className, placeholder = "Messa
       className={cn("field-sizing-content max-h-48 min-h-12", className)}
       enterKeyHint={touch ? "enter" : "send"}
       name="message"
+      ref={own}
+      value={value}
       onCompositionEnd={() => {
         setComposing(false);
       }}
@@ -224,17 +257,17 @@ export const PromptInputTools = ({ className, ...props }: PromptInputToolsProps)
 export type PromptInputSubmitProps = ComponentProps<typeof InputGroupButton>;
 
 export const PromptInputSubmit = ({ className, variant = "default", size = "icon-sm", children, ...props }: PromptInputSubmitProps) => (
-  <InputGroupButton aria-label="Send" className={cn(className)} size={size} type="submit" variant={variant} {...props}>
-    {children ?? <CornerDownLeftIcon className="size-4" />}
+  <InputGroupButton aria-label="Send" className={cn("rounded-full", className)} size={size} type="submit" variant={variant} {...props}>
+    {children ?? <ArrowUpIcon className="size-4" />}
   </InputGroupButton>
 );
 
 export type PromptInputStopProps = ComponentProps<typeof InputGroupButton>;
 
-// the registry's submit button turns into this while a reply streams; here both are shown, since
-// a message sent during a turn joins it
-export const PromptInputStop = ({ className, variant = "secondary", size = "icon-sm", children, ...props }: PromptInputStopProps) => (
-  <InputGroupButton aria-label="Stop" className={cn(className)} size={size} type="button" variant={variant} {...props}>
-    {children ?? <SquareIcon className="size-4" />}
+// the submit button turns into this while a turn runs and there is nothing to send: with text or
+// an attachment it is send again, since a message sent during a turn joins it or waits for the next
+export const PromptInputStop = ({ className, variant = "default", size = "icon-sm", children, ...props }: PromptInputStopProps) => (
+  <InputGroupButton aria-label="Stop" className={cn("rounded-full", className)} size={size} type="button" variant={variant} {...props}>
+    {children ?? <SquareIcon className="size-3.5 fill-current" />}
   </InputGroupButton>
 );

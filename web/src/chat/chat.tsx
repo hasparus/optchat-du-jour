@@ -1,7 +1,20 @@
 // The Chat screen (SPEC "Web UI", Chat): the log in a MessageScroller, newest last, older entries
 // prepended as the top comes into view; status and errors as markers between rows; the composer
-// (./composer.tsx); messages that wait for the model in a Queue above it.
-import { Queue, QueueItem, QueueItemContent, QueueItemIndicator, QueueList, QueueSection, QueueSectionContent, QueueSectionLabel, QueueSectionTrigger } from "@/components/ai-elements/queue";
+// (./composer.tsx); messages that wait for the model in a Queue above it, each with its
+// attachments, whether it is queued for a later turn, and (while it can be) a take-back.
+import {
+  Queue,
+  QueueItem,
+  QueueItemAction,
+  QueueItemContent,
+  QueueItemIndicator,
+  QueueList,
+  QueueSection,
+  QueueSectionContent,
+  QueueSectionLabel,
+  QueueSectionTrigger,
+} from "@/components/ai-elements/queue";
+import { Button } from "@/components/ui/button";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import {
   MessageScroller,
@@ -16,9 +29,9 @@ import { Spinner } from "@/components/ui/spinner";
 import type { Link } from "@/lib/connection";
 import { visible } from "@/lib/log";
 import { chatRows, entryRows, type Row, rowFor, rowIndexFor } from "@/lib/rows";
-import { type Marker as StatusMarker, queued, type Session, type SessionStore } from "@/lib/session";
-import type { Device } from "@wire";
-import { AlertCircleIcon, InfoIcon } from "lucide-react";
+import { type Marker as StatusMarker, type Queued, queued, type Session, type SessionStore } from "@/lib/session";
+import { type Device, type SessionState, shortSha } from "@wire";
+import { AlertCircleIcon, FilmIcon, InfoIcon, Undo2Icon } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Uploader } from "@/lib/attach";
 import { Composer } from "./composer";
@@ -31,6 +44,7 @@ function status(s: Session): string | null {
       return `waiting for ${s.state.waiting} summaries…`;
     case "running":
       return s.thinking ? "thinking…" : `running on ${s.state.device}${s.state.engine ? ` (${s.state.engine})` : ""}`;
+    case "needs-model": // said by its own banner
     case "idle":
     case undefined:
       return null;
@@ -58,6 +72,96 @@ const placeMarkers = (markers: readonly StatusMarker[], rows: readonly Row[]) =>
   }
   return { above, after };
 };
+
+// One message in the queue: its text, its attachments' thumbnails (our own /api/assets, as the
+// chat shows a logged message's), where it stands, and a take-back while it is still held.
+// `asking`: its take-back is asked for and not answered yet (a reconnect forgets that)
+function Waiting({ q, asking, onTakeBack }: { readonly q: Queued; readonly asking: boolean; readonly onTakeBack: () => void }) {
+  const queuedHere = q.where === "queued";
+  return (
+    <QueueItem data-state={q.where} data-testid="queue-item">
+      <QueueItemIndicator className={queuedHere ? "border-dashed" : q.where === "sent" ? "border-primary bg-primary/30" : undefined} />
+      <div className="min-w-0 grow">
+        {q.text.trim() !== "" && <QueueItemContent>{q.text}</QueueItemContent>}
+        {q.media.length > 0 && (
+          <div className="mt-1 flex gap-1" data-testid="queue-media">
+            {q.media.map((a) =>
+              a.kind === "image" ? (
+                <img
+                  alt={`image ${shortSha(a.sha)}`}
+                  className="size-8 rounded-sm border object-cover"
+                  key={a.sha}
+                  src={`/api/assets/${shortSha(a.sha)}/thumb`}
+                />
+              ) : (
+                <span aria-label={`video ${shortSha(a.sha)}`} className="flex size-8 items-center justify-center rounded-sm border bg-muted" key={a.sha} role="img">
+                  <FilmIcon className="size-4" />
+                </span>
+              ),
+            )}
+          </div>
+        )}
+        {q.where !== "failed" && (
+          <p className="text-[11px] text-muted-foreground" data-testid="queue-where">
+            {queuedHere ? "queued for the next turn" : q.where === "sent" ? "the turn has it" : "sending…"}
+          </p>
+        )}
+        {q.error !== null && (
+          <p className="text-xs text-destructive" data-testid="queue-error" role="alert">
+            not logged: {q.error}
+          </p>
+        )}
+      </div>
+      {q.back !== null && (
+        <QueueItemAction
+          aria-label={`Take back: ${q.text.trim() === "" ? `${q.media.length} attachments` : q.text}`}
+          disabled={asking && q.back === "server"}
+          onClick={() => {
+            onTakeBack();
+          }}
+          title="Back into the composer, to edit or send later"
+        >
+          <Undo2Icon />
+        </QueueItemAction>
+      )}
+    </QueueItem>
+  );
+}
+
+// A turn stopped on a usage limit or an offline device: which engine and why, and a button per
+// engine to go on with (the stopped one again is a retry; another that hit a limit is disabled,
+// with why). Stop, in the composer, ends the turn instead.
+function NeedsModel({ session, state }: { readonly session: Pick<SessionStore, "pick">; readonly state: SessionState }) {
+  const { stopped } = state;
+  if (stopped === null) return null;
+  return (
+    <div className="space-y-2 rounded-lg border border-destructive/50 bg-destructive/5 p-2.5 text-sm" data-testid="needs-model" role="alert">
+      <p>
+        <span className="font-medium">{stopped.label}</span>: {stopped.why}. Pick a model to go on.
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {state.engines.map((e) => {
+          const again = e.ref === stopped.ref;
+          const out = e.down !== null && !again;
+          return (
+            <Button
+              disabled={out}
+              key={e.ref}
+              onClick={() => {
+                session.pick(e.ref);
+              }}
+              size="sm"
+              title={e.down !== null && !again ? `unavailable: ${e.down}` : undefined}
+              variant={again ? "outline" : "default"}
+            >
+              {again ? `Try ${e.label} again` : e.label}
+            </Button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 export type ChatProps = {
   readonly link: Link;
@@ -177,6 +281,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
             {line}
           </div>
         )}
+        {state.state?.phase === "needs-model" && <NeedsModel session={session} state={state.state} />}
         {waiting.length > 0 && (
           <Queue data-testid="queue">
             <QueueSection>
@@ -185,25 +290,10 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
               </QueueSectionTrigger>
               <QueueSectionContent>
                 <QueueList>
-                  {waiting.map(({ attachments, error, text }, k) => (
-                    // the same text can wait twice; the position tells them apart
-                    // oxlint-disable-next-line react/no-array-index-key
-                    <QueueItem key={`${k}:${text}`}>
-                      <QueueItemIndicator />
-                      <div className="min-w-0">
-                        <QueueItemContent>{text}</QueueItemContent>
-                        {attachments > 0 && (
-                          <p className="text-xs text-muted-foreground">
-                            + {attachments} {attachments === 1 ? "attachment" : "attachments"}
-                          </p>
-                        )}
-                        {error !== null && (
-                          <p className="text-xs text-destructive" data-testid="queue-error" role="alert">
-                            not logged: {error}
-                          </p>
-                        )}
-                      </div>
-                    </QueueItem>
+                  {waiting.map((q) => (
+                    <Waiting asking={q.clientId !== null && state.asking.includes(q.clientId)} key={q.key} onTakeBack={() => {
+                        session.takeBack(q);
+                      }} q={q} />
                   ))}
                 </QueueList>
               </QueueSectionContent>
@@ -218,7 +308,9 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
           onDevice={setDevice}
           open={state.status === "open"}
           picked={picked}
+          restored={state.restored}
           session={session}
+          state={state.state}
           uploader={uploader}
         />
       </div>

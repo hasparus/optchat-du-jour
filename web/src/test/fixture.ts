@@ -16,9 +16,16 @@ export const IDLE: SessionState = {
   device: "mini",
   down: [],
   engine: null,
+  engines: [
+    { down: null, label: "Claude Opus (Claude Code)", ref: "claude-code:opus" },
+    { down: null, label: "GPT-6.1 Sol (ChatGPT plan)", ref: "openai-plan:gpt-6.1-sol" },
+  ],
+  followUp: "steer",
+  lead: "claude-code:opus",
   messages: 0,
   phase: "idle",
   pending: [],
+  stopped: null,
   viewBytes: 0,
   waiting: 0,
 };
@@ -71,7 +78,11 @@ const Sent = Schema.Struct({
   type: Schema.optional(Schema.String),
   // content: the text, or with attachments AG-UI's parts (lib/protocol.ts runInput)
   messages: Schema.optional(Schema.Array(Schema.Struct({ content: Schema.Union([Schema.String, Schema.Array(Schema.Json)]), id: Schema.String, role: Schema.String }))),
-  forwardedProps: Schema.optional(Schema.Struct({ device: Schema.optional(Schema.String) })),
+  forwardedProps: Schema.optional(Schema.Struct({ device: Schema.optional(Schema.String), followUp: Schema.optional(Schema.String) })),
+  // a take-back or a settings frame
+  clientId: Schema.optional(Schema.String),
+  followUp: Schema.optional(Schema.String),
+  lead: Schema.optional(Schema.String),
 });
 // the server's word on a message: logged at `at`, or (with an error) not
 export const ack = (clientId: string, at: number | null, error: string | null = null): Inbound => ({
