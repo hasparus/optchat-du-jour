@@ -10,7 +10,7 @@ import { loadChat } from "../src/store.ts";
 import { render, stats } from "../src/view.ts";
 
 const USAGE = "usage: optchat [view | import-optmem [LOG.txt]]   (server: $OPTCHAT_URL; data dir: $OPTCHAT_DIR or ~/.optchat/streams/mini)";
-const [cmd, arg] = process.argv.slice(2);
+const [cmd, arg] = [process.argv[2], process.argv[3]];
 const dir = streamDir("mini");
 
 const view = Effect.gen(function* () {

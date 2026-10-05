@@ -3,7 +3,7 @@
 // it takes numbers or bigints. src/kernel.ts is the only importer.
 export type Nat = bigint | number;
 export type List<T> = { readonly $: "Con"; readonly head: T; readonly tail: List<T> } | { readonly $: "Nil" };
-export type Coord = { readonly $: "Coord"; readonly i: Nat; readonly l: Nat; };
+export type Coord = { readonly $: "Coord"; readonly i: Nat; readonly l: Nat };
 export type Part = {
   readonly $: "Part";
   readonly built: boolean;
