@@ -181,7 +181,7 @@ const fakeRunner = (spawned: Spawn[]) =>
 const settings = (byLevel: (typeof Settings.Encoded)["compactor"]["byLevel"]) =>
   parseSettings({
     allowedLogins: [],
-    cache: { apiKeyTtls: [], claudeCodeTtl: "1h", primeTtl: "1h" },
+    cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
     compactor: { byLevel, effort: "medium" },
     defaultDevice: "mini",
     devices: { mini: { folders: [], url: "http://x" } },

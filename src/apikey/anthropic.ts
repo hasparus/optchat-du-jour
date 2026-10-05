@@ -1,11 +1,11 @@
 // Anthropic's Messages API with an API key (SPEC "Engines", api-key: overflow only). One streamed
-// request per call, cached as gist §8 lays it out: a breakpoint at each of the view's cuts (at most
-// 3, as many as `cache.apiKeyTtls` has entries) on the first user message, and the top-level
-// automatic `cache_control` on every request, which Anthropic puts on its last block, so each step
-// of a turn (or each size retry of a compactor call) reads everything the step before it sent.
-// That makes 4, Anthropic's limit. Every entry is a 5-minute one (gist §8, checklist item 10);
-// config.ts refuses "1h". Thinking blocks come back in the next request exactly as they arrived,
-// signature and all, as tool use with thinking requires.
+// request per call, cached as gist §8 lays it out: a breakpoint at each of the view's cuts (the
+// pieces a user Item's `marks` counts; cutBlocks makes at most 3) and the top-level automatic
+// `cache_control` on every request, which Anthropic puts on its last block, so each step of a
+// turn (or each size retry of a compactor call) reads everything the step before it sent. That
+// makes 4, Anthropic's limit. Every entry is a 5-minute one, the API's default (gist §8, checklist
+// item 10; E6's 1-hour entries are the Claude subscription's). Thinking blocks come back in the
+// next request exactly as they arrived, signature and all, as tool use with thinking requires.
 import { Effect, Option, Schema, Stream } from "effect";
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
@@ -23,14 +23,11 @@ export const MAX_TOKENS = 64_000; // streamed, so a long answer doesn't time out
 type Json = Schema.Json;
 // a 5-minute entry, the API's default and the only one gist §8 uses
 const EPHEMERAL = { type: "ephemeral" } as const;
-// breakpoints a request may hold in all; the request end takes one
-const BREAKPOINTS = 4;
 
 export type MessagesAsk<E extends Tagged = never> = {
   readonly model: string;
   readonly system: string;
   readonly history: readonly Item[];
-  readonly marks: number; // view breakpoints at most, 0 to 3 (`cache.apiKeyTtls`'s length)
   readonly tools?: readonly ToolDef[];
   readonly toolChoice?: "auto" | "none";
   readonly maxTokens?: number;
@@ -54,12 +51,10 @@ const decodeObject = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Rec
 const inputOf = (text: string): Json => Option.getOrElse(decodeObject(text), () => ({}));
 
 // The conversation as Messages: user parts and tool results on the user side, text, calls and
-// kept blocks on the assistant side, neighbours of one side merged into one message. The first
-// user message's parts that end at a view cut get the marks, at most `limit` of them.
-export const messagesOf = (history: readonly Item[], limit: number) => {
+// kept blocks on the assistant side, neighbours of one side merged into one message. A user
+// message's parts that end at a view cut (its `marks`) get a breakpoint each.
+export const messagesOf = (history: readonly Item[]) => {
   const out: { role: "user" | "assistant"; content: Json[] }[] = [];
-  const most = Math.min(limit, BREAKPOINTS - 1);
-  let marked = false;
   const push = (role: "user" | "assistant", blocks: readonly Json[]) => {
     if (blocks.length === 0) return;
     const last = out.at(-1);
@@ -69,8 +64,7 @@ export const messagesOf = (history: readonly Item[], limit: number) => {
   for (const item of history) {
     switch (item.type) {
       case "user": {
-        const marks: number = marked ? 0 : Math.max(0, Math.min(item.marks ?? 0, most));
-        marked ||= marks > 0;
+        const marks = item.marks ?? 0;
         const blocks: Json[] = [];
         for (const [k, part] of item.parts.entries()) {
           if (isPicture(part)) {
@@ -119,7 +113,7 @@ export const requestBody = (ask: MessagesAsk<Tagged>) => {
   return encodeBody({
     cache_control: EPHEMERAL,
     max_tokens: ask.maxTokens ?? MAX_TOKENS,
-    messages: messagesOf(ask.history, ask.marks),
+    messages: messagesOf(ask.history),
     model: ask.model,
     output_config: ask.effort === undefined ? undefined : { effort: ask.effort },
     stream: true,

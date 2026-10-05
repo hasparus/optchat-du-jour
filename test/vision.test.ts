@@ -57,7 +57,7 @@ const settings = parseSettings({
     openaiUrl: `${openai.base}/v1`,
     prices: { "anthropic/claude-opus-5-5": { cacheRead: 0, input: 1, output: 1 }, "openai/gpt-6": { cacheRead: 0, input: 1, output: 1 } },
   },
-  cache: { apiKeyTtls: ["5m"], claudeCodeTtl: "1h", primeTtl: "1h" },
+  cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
   compactor: { byLevel: [{ chain: ["claude-code:sonnet"], from: 0 }], effort: "medium" },
   defaultDevice: "mini",
   devices: { mini: { folders: [], url: "http://127.0.0.1:9" } },

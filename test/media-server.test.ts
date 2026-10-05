@@ -30,7 +30,7 @@ beforeAll(async () => {
   const settings = {
     master: { chain: ["claude-code:opus"], effort: "high", permissionMode: "bypassPermissions" },
     compactor: { byLevel: [{ from: 0, chain: ["claude-code:sonnet"] }], effort: "medium" },
-    cache: { claudeCodeTtl: "1h", primeTtl: "1h", apiKeyTtls: ["5m"] },
+    cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
     devices: { mini: { url: "http://127.0.0.1:1", folders: [dir] } },
     defaultDevice: "mini",
     allowedLogins: [],

@@ -1,6 +1,6 @@
 // The api-key engine (SPEC "Engines", api-key; "Usage and cost tracking") against a fake Messages
-// API: gist §8's cache layout (a 5-minute mark at each view cut, at most 3, and the top-level
-// automatic one), every call priced from the table, the thinking sent back on a retry, and a spent
+// API: gist §8's cache layout (a 5-minute mark at each view cut and the top-level automatic
+// one), every call priced from the table, the thinking sent back on a retry, and a spent
 // monthly budget that stops the key and says so once.
 import { afterAll, expect, test } from "bun:test";
 import { Effect, Layer, Option, Schema } from "effect";
@@ -38,7 +38,7 @@ const settings = (monthlyBudget: number): Settings =>
   parseSettings({
     allowedLogins: [],
     apiKey: { anthropicUrl: fake.base, monthlyBudget, prices: { "anthropic/claude-opus-5-5": price } },
-    cache: { apiKeyTtls: ["5m", "5m", "5m"], claudeCodeTtl: "1h", primeTtl: "1h" },
+    cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
     compactor: { byLevel: [{ chain: [REF], from: 0 }], effort: "medium" },
     defaultDevice: "mini",
     devices: { mini: { folders: [], url: "http://127.0.0.1:9" } },
@@ -165,20 +165,22 @@ test("a spent monthly budget is a UsageLimit, reported once, and nothing more re
   expect(fake.state.seen).toHaveLength(1);
 });
 
-test("the config refuses a 1-hour api-key entry or a fourth view mark (gist §8), and an engine ref it can't decode", async () => {
+test("an older config with cache.apiKeyTtls still loads, the key ignored; an engine ref the config can't decode is refused", async () => {
   const written = Schema.encodeSync(Settings)(settings(5));
   let configs = 0;
-  const refused = async (config: typeof Settings.Encoded) => {
+  // an older config's shape: what Settings takes, and anything it no longer does
+  const write = (config: typeof Settings.Encoded | Readonly<Record<string, Schema.Json>>) => {
     const path = `${dir}/optchat-${++configs}.config.ts`; // a module is imported once per path
     writeFileSync(path, `export default ${JSON.stringify(config)};\n`);
-    const error = await Effect.runPromise(Effect.flip(loadSettings(path)));
+    return path;
+  };
+  const refused = async (config: typeof Settings.Encoded) => {
+    const error = await Effect.runPromise(Effect.flip(loadSettings(write(config))));
     return error.message;
   };
-  const ttls = (apiKeyTtls: readonly ("1h" | "5m")[]) => ({ ...written, cache: { apiKeyTtls, claudeCodeTtl: "1h" as const, primeTtl: "1h" as const } });
-  for (const bad of [["1h"], ["1h", "5m", "5m"], ["5m", "1h"]] as const) expect(await refused(ttls(bad))).toContain('takes "5m" entries only: gist §8');
-  expect(await refused(ttls(["5m", "5m", "5m", "5m"]))).toContain("at most 3 entries");
-  // the subscription's own TTLs (E6) are not the key's: 1-hour stays allowed there
-  expect(parseSettings(ttls(["5m"])).cache.claudeCodeTtl).toBe("1h");
+  // gist §8 leaves nothing to set on a key; the old setting is dropped like any unknown key
+  const old = await Effect.runPromise(loadSettings(write({ ...written, cache: { ...written.cache, apiKeyTtls: ["1h", "5m", "5m", "5m"] } })));
+  expect(old.cache).toEqual({ claudeCodeTtl: "1h", primeTtl: "1h" });
   expect(await refused({ ...written, master: { ...written.master, chain: ["gpt:x"] } })).toContain("engine gpt:x: no such engine");
   expect(await refused({ ...written, master: { ...written.master, chain: ["api-key:claude-sonnet"] } })).toContain("must be api-key:anthropic/<model>");
 });

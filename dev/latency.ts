@@ -143,7 +143,7 @@ else if (values.fake) {
   mkdirSync(`${dir}/work`);
   const settings = {
     allowedLogins: [],
-    cache: { apiKeyTtls: ["5m"], claudeCodeTtl: "1h", primeTtl: "1h" },
+    cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
     compactor: { byLevel: [{ chain: ["claude-code:haiku"], from: 0 }], effort: "low" },
     defaultDevice: "mini",
     devices: { mini: { folders: [`${dir}/work`], url: "http://127.0.0.1:1" } },
