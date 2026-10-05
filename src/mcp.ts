@@ -167,16 +167,41 @@ export function handleMcp(mem: Mem, body: string): Reply {
 export const mcpConfig = (url: string, transport: McpTransport = "ws") =>
   JSON.stringify({ mcpServers: { optchat: { type: transport, url: transport === "ws" ? url.replace(/^http/, "ws") : url } } });
 
-// The transport per device: `preferred` until a claude there starts without optchat connected
-// over ws; that device then uses http from the next call on, and the user is told once.
+// What a claude showed of the MCP server optchat: the status its system/init gives it ("not
+// listed" when init leaves it out), or, when it ended before any init, why it ended.
+export type McpSeen = { readonly status: string } | { readonly ended: string };
+
+// Claude Code checks --mcp-config as it starts and ends before system/init on a config it rejects,
+// saying "Error: Invalid MCP configuration:" and the path of each entry at fault
+const REJECTED = /Invalid MCP configuration|mcpServers/;
+
+// The transport per device: `preferred` until a claude there shows that ws does not work for it;
+// that device then uses http from the next call on, and the user is told once. While on ws, it
+// shows when init lists optchat as failed, or not at all (2.1.289 skips an entry of a type it
+// doesn't know, with a warning), when claude ends before init with its config rejected, or when it
+// ends before init twice in a row for any reason. "pending" and "needs-auth" are not: they say
+// nothing about the type. `seen` is true when it moved the device to http.
 export const mcpTransports = (preferred: McpTransport, report: (message: string) => Effect.Effect<void>) => {
   const fellBack = new Set<string>();
+  const early = new Map<string, number>(); // claude ended before init, in a row, per device
   const of = (device: string): McpTransport => (fellBack.has(device) ? "http" : preferred);
-  const down = (device: string, status: string) =>
+  const verdict = (device: string, s: McpSeen) => {
+    if ("status" in s) {
+      early.delete(device);
+      return s.status === "failed" || s.status === "not listed" ? `MCP server optchat is ${s.status}` : null;
+    }
+    const n = (early.get(device) ?? 0) + 1;
+    early.set(device, n);
+    if (REJECTED.test(s.ended)) return `its MCP config was rejected: ${s.ended}`;
+    return n >= 2 ? `it ended twice in a row before starting: ${s.ended}` : null;
+  };
+  const seen = (device: string, s: McpSeen): Effect.Effect<boolean> =>
     Effect.suspend(() => {
-      if (of(device) !== "ws") return Effect.void; // over http, the turn's own notice says it
+      if (of(device) !== "ws") return Effect.succeed(false); // over http, the turn's own notice says it
+      const why = verdict(device, s);
+      if (why === null) return Effect.succeed(false);
       fellBack.add(device);
-      return report(`claude on ${device} did not connect to zoom and date over WebSocket (MCP server optchat is ${status}); using HTTP from now on`);
+      return report(`zoom and date over WebSocket did not work for claude on ${device} (${why}); trying HTTP there from now on`).pipe(Effect.as(true));
     });
-  return { down, of };
+  return { of, seen };
 };

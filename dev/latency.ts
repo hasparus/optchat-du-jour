@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { parseArgs } from "node:util";
 import { type Inbound, parseInbound } from "../cli/repl.ts";
 import { loadSettings } from "../src/config.ts";
-import { freePort } from "../test/ports.ts";
+import { freePort } from "../test/ports.ts"; // a dev tool on the tests' helpers, as with their fake claude
 
 const HERE = `${import.meta.dir}/..`;
 

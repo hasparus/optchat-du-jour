@@ -20,6 +20,8 @@ export type Claude = {
   readonly model: () => string | undefined;
   // waits until its output has closed: the process ended (a warm process that died while idle)
   readonly ended: Effect.Effect<void>;
+  // whether `ended` has resolved already
+  readonly hasEnded: () => boolean;
 };
 
 export type Spawn = {
@@ -29,12 +31,13 @@ export type Spawn = {
 };
 
 // DeviceOffline: a device runner could not be reached or would not start claude (SPEC "Device offline").
-// `warm`, on a Runner that keeps processes started ahead (./warm.ts): the spawns to expect next.
+// `warm`: the spawns to expect next, for a Runner that keeps processes started ahead (./warm.ts);
+// every other Runner ignores it.
 export class Runner extends Context.Service<
   Runner,
   {
     readonly spawn: (o: Spawn) => Effect.Effect<Claude, ClaudeError | DeviceOffline, Scope.Scope>;
-    readonly warm?: (expected: readonly Spawn[]) => Effect.Effect<void>;
+    readonly warm: (expected: readonly Spawn[]) => Effect.Effect<void>;
   }
 >()("optchat/Runner") {}
 
@@ -80,6 +83,7 @@ export const makeClaude = Effect.fnUntraced(function* (o: {
   });
   return {
     ended: Effect.asVoid(Deferred.await(closed)),
+    hasEnded: () => Deferred.isDoneUnsafe(closed),
     model: () => current,
     next,
     result,
@@ -176,6 +180,6 @@ export const LocalRunner = Layer.effect(
         Effect.flatMap((p) => makeClaude({ exit: Effect.map(p.exit, (e) => exitText(e)), lines: p.lines, stdin: p.stdin })),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       );
-    return { spawn };
+    return { spawn, warm: () => Effect.void };
   }),
 );

@@ -141,7 +141,7 @@ export const routes = (o: ServerOptions) =>
           (): Placement => ({
             cwd,
             mcpConfig: mcpConfig(`${base.replace(/\/$/, "")}/mcp?key=${secret}`, transports.of(name)),
-            mcpDown: (status) => transports.down(name, status),
+            mcpSeen: (seen) => transports.seen(name, seen),
             runner,
           }),
         );

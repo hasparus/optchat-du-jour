@@ -127,7 +127,7 @@ export const remoteRunner = (device: string, url: string, timeouts: Partial<Remo
     );
     return yield* makeClaude({ exit: Deferred.await(ended), lines: Stream.fromQueue(lines), stdin });
   });
-  return { spawn };
+  return { spawn, warm: () => Effect.void }; // claude elsewhere starts on demand (E18)
 };
 
 const decodeHealth = Schema.decodeUnknownEffect(Schema.fromJsonString(Health));

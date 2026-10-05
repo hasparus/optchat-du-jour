@@ -129,5 +129,5 @@ export const toolLoop = (o: {
         }
       }
     }).pipe(Effect.scoped); // the forwarder ends with the turn
-  return { ref: o.ref, run };
+  return { ref: o.ref, run, warm: () => Effect.void }; // nothing to start ahead
 };

@@ -72,6 +72,7 @@ test("a turn that dies with messages steered into it logs every one of them unan
       let calls = 0;
       const engine: TurnEngine = {
         ref: "fake:x",
+        warm: () => Effect.void,
         run: (input) =>
           Effect.gen(function* () {
             if (++calls > 1) return;
@@ -117,6 +118,7 @@ test("a defect before the messages are logged stops the loop once, and logs them
       const engine: TurnEngine = {
         ref: "fake:x",
         run: () => Effect.sync(() => (runs += 1)),
+        warm: () => Effect.void,
       };
       const r = yield* rig(engine);
       r.disk.bugs = 1; // the first write, the message's, throws; the next one logs it unanswered
@@ -135,7 +137,7 @@ test("a defect before the messages are logged stops the loop once, and logs them
 test("a message the log refuses stays queued, its sender is told, and the next message logs it", async () => {
   await Effect.runPromise(
     Effect.gen(function* () {
-      const engine: TurnEngine = { ref: "fake:x", run: (_input, out) => out.log("talk", "an answer") };
+      const engine: TurnEngine = { ref: "fake:x", run: (_input, out) => out.log("talk", "an answer"), warm: () => Effect.void };
       const r = yield* rig(engine);
       r.disk.full = true;
       yield* r.session.input("lost?", undefined, "c1");

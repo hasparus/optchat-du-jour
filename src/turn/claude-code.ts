@@ -3,13 +3,15 @@
 // and the process killed at the first result. Priming writes the same view blocks to the cache
 // while the session is idle, with our own marks; that call ends at message_start, once the API
 // has taken the request. A turn never waits for it (E17). `warm` tells a device's Runner which
-// two spawns come next, so it can start them ahead (E18).
+// two spawns come next, so it can start them ahead (E18). What each claude shows of the MCP server
+// optchat goes to the device's transport, which may fall back from ws to http (E8).
 import { Clock, Effect, Option, Queue, Semaphore } from "effect";
 import { baseArgs } from "../claude/args.ts";
 import type { Assistant, Block, Event, Init, StreamEvent, Usage, User } from "../claude/events.ts";
 import type { Claude, Runner, Spawn } from "../claude/process.ts";
 import { CAP, PRIME_TIMEOUT } from "../config.ts";
 import { type DeviceOffline, fromResult, ModelError } from "../engines/errors.ts";
+import type { McpSeen } from "../mcp.ts";
 import type { StoreError } from "../store.ts";
 import { isCold, tokensOf, type UsageRecord } from "../usage.ts";
 import { cutBlocks } from "../view.ts";
@@ -23,8 +25,9 @@ export type Placement = {
   readonly runner: Runner["Service"];
   readonly cwd: string | undefined;
   readonly mcpConfig: string;
-  // claude's init said the optchat MCP server is not connected (its status): the transport may fall back
-  readonly mcpDown?: (status: string) => Effect.Effect<void>;
+  // what a claude there showed of optchat, for the transport to act on; true when that moved the
+  // device to another transport, so mcpConfig is a new one from now on
+  readonly mcpSeen: (seen: McpSeen) => Effect.Effect<boolean>;
 };
 
 export type ClaudeCodeTurnOptions = {
@@ -90,15 +93,15 @@ const resultText = (content: ResultContent) => {
 export const mcpStatus = (e: typeof Init.Type) => e.mcp_servers?.find(({ name }) => name === "optchat")?.status ?? "not listed";
 
 // Stream events to log entries, in stream order (ref §5.3). Live text goes out as it streams;
-// a thought only by its size. Replays: see onReplay.
-export function makeMapper(out: TurnEvents, sent: Sent[]) {
+// a thought only by its size. Replays: see onReplay. `mcp` hears optchat's status from init.
+export function makeMapper(out: TurnEvents, sent: Sent[], mcp: (status: string) => Effect.Effect<void>) {
   let openingSeen = false;
   let thoughtChars = 0;
 
   // without the server named optchat the model has no memory tools; say so, and let the turn run
   const onInit = (e: typeof Init.Type) => {
     const status = mcpStatus(e);
-    return status === "connected" ? Effect.void : out.info(`no zoom or date in this turn: MCP server optchat is ${status}`);
+    return Effect.andThen(mcp(status), status === "connected" ? Effect.void : out.info(`no zoom or date in this turn: MCP server optchat is ${status}`));
   };
 
   const onStream = (e: typeof StreamEvent.Type) => {
@@ -217,13 +220,6 @@ const usageRecord = (o: {
   };
 };
 
-// init names the MCP servers it reached; optchat missing is the placement's to act on
-const checkMcp = (p: Placement) => (e: Event) => {
-  if (e.type !== "system" || !p.mcpDown) return Effect.void;
-  const status = mcpStatus(e);
-  return status === "connected" ? Effect.void : p.mcpDown(status);
-};
-
 // a priming of this view older than this is redone: the TTL minus a margin (ref §2, E6)
 export const primeMaxAge = (ttl: Ttl) => (ttl === "1h" ? 3_300_000 : 270_000);
 
@@ -235,6 +231,29 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
     const env = { CLAUDE_CODE_PROMPT_CACHE_TTL: o.ttl };
     const turnSpawn = (p: Placement): Spawn => ({ args: masterArgs({ ...o, mcpConfig: p.mcpConfig }), cwd: p.cwd, env });
     const primeSpawn = (p: Placement): Spawn => ({ ...turnSpawn(p), env: { ...env, DISABLE_PROMPT_CACHING: "1" } });
+
+    // the next turn and priming on `device`, for a Runner that starts processes ahead (E18)
+    const warm = (device: string) =>
+      o.runnerFor(device).pipe(
+        Effect.flatMap((p) => p.runner.warm([turnSpawn(p), primeSpawn(p)])),
+        Effect.ignore,
+      );
+
+    // What one claude shows of optchat goes to its device's transport (E8): init's status, or why
+    // it ended before any init. A device moved to another transport is warmed again, so its next
+    // spawns, with the new --mcp-config, find processes started ahead and the stale ones close.
+    const mcpWatch = (device: string, p: Placement) => {
+      let init = false;
+      const tell = (seen: McpSeen) => p.mcpSeen(seen).pipe(Effect.flatMap((moved) => (moved ? warm(device) : Effect.void)));
+      return {
+        ended: (e: ModelError) => Effect.suspend(() => (init ? Effect.void : tell({ ended: e.message }))),
+        init: (status: string) =>
+          Effect.suspend(() => {
+            init = true;
+            return tell({ status });
+          }),
+      };
+    };
 
     const run: TurnEngine["run"] = (input, out, failoverFrom) =>
       Effect.gen(function* () {
@@ -263,15 +282,15 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
           ),
         ).pipe(Effect.forever, Effect.forkScoped);
 
-        const map = makeMapper(out, input.sent);
-        const mcp = checkMcp(placement);
+        const mcp = mcpWatch(input.device, placement);
+        const map = makeMapper(out, input.sent, mcp.init);
         let opening: Usage | undefined;
         const each = (e: Event) => {
           if (opening === undefined && e.type === "stream_event" && e.event.type === "message_start") opening = e.event.message.usage;
-          return Effect.andThen(map(e), mcp(e));
+          return map(e);
         };
         const found = yield* readUntil(claude, (e) => (e.type === "result" ? Option.some(e) : Option.none()), each);
-        const r = yield* Option.match(found, { onNone: () => died(claude), onSome: Effect.succeed });
+        const r = yield* Option.match(found, { onNone: () => Effect.tapError(died(claude), mcp.ended), onSome: Effect.succeed });
         const now = yield* Clock.currentTimeMillis;
         yield* out.usage(usageRecord({ device: input.device, failoverFrom, model: claude.model(), now, opening, role: "turn", started, usage: r.usage }));
         yield* r.is_error || r.stop_reason === "refusal"
@@ -295,17 +314,19 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
         const mark = { ttl: o.primeTtl, type: "ephemeral" } as const;
         const marked = cutBlocks(view).map((piece): Block => ({ cache_control: mark, text: piece, type: "text" }));
         yield* claude.send([...marked, text("ok")]);
+        // priming is often the first call after the server starts: a transport that fails shows here first
+        const mcp = mcpWatch(device, placement);
         const first = yield* readUntil(
           claude,
           (e) => (e.type === "result" || (e.type === "stream_event" && e.event.type === "message_start") ? Option.some(e) : Option.none()),
-          checkMcp(placement), // priming is the first call after a start: a transport claude refuses shows here first
+          (e) => (e.type === "system" ? mcp.init(mcpStatus(e)) : Effect.void),
         ).pipe(
           Effect.timeoutOrElse({
             duration: PRIME_TIMEOUT,
             orElse: () => Effect.fail(new ModelError({ message: "the API did not accept the request in time" })),
           }),
         );
-        const e = yield* Option.match(first, { onNone: () => died(claude), onSome: Effect.succeed });
+        const e = yield* Option.match(first, { onNone: () => Effect.tapError(died(claude), mcp.ended), onSome: Effect.succeed });
         const start = e.type === "stream_event" && e.event.type === "message_start" ? e.event.message : null;
         if (!start) {
           const said = e.type === "result" && e.result ? `: ${e.result}` : "";
@@ -332,13 +353,6 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
           if (!failing) yield* o.report(`priming failed, the turn goes on without it: ${outcome.failure.message}`);
           failing = true;
         }),
-      );
-
-    // the next turn and priming on `device`, for a Runner that starts processes ahead (E18)
-    const warm = (device: string) =>
-      o.runnerFor(device).pipe(
-        Effect.flatMap((p) => p.runner.warm?.([turnSpawn(p), primeSpawn(p)]) ?? Effect.void),
-        Effect.ignore,
       );
 
     return { prime, ref: `claude-code:${o.model}`, run, warm } satisfies TurnEngine;

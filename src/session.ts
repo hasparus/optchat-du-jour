@@ -176,7 +176,7 @@ export const makeSession = (o: {
       !primer || running || !allBuilt(chat.mem) ? Effect.succeed(null) : FiberSet.run(primes, primer(render(chat.mem), o.defaultDevice)),
     );
     // the next turn's and priming's claude, started ahead on the default device (E18)
-    const warm = lead?.warm ? lead.warm(o.defaultDevice).pipe(Effect.forkIn(scope), Effect.asVoid) : Effect.void;
+    const warm = lead ? lead.warm(o.defaultDevice).pipe(Effect.forkIn(scope), Effect.asVoid) : Effect.void;
 
     // the view changed (a message, a node): once it has been quiet for PRIME_IDLE and no turn runs,
     // prime it in the background. One fiber debounces every change, so bursts start one timer.
