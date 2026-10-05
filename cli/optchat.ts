@@ -3,7 +3,7 @@
 // default http://127.0.0.1:7700). The rest run once and exit: `view` reads the data dir without
 // taking the lock, `import-optmem` fills an empty chat from OptMem's notes.
 import { BunRuntime } from "@effect/platform-bun";
-import { Console, Effect } from "effect";
+import { Cause, Console, Effect, Predicate } from "effect";
 import { importOptmem } from "../src/import.ts";
 import { runRepl } from "./repl.ts";
 import { streamDir } from "../src/paths.ts";
@@ -47,13 +47,25 @@ const commands = new Map<string, Effect.Effect<void, { readonly message: string 
 const repl = runRepl({ url: Bun.env.OPTCHAT_URL ?? "http://127.0.0.1:7700" });
 const command = cmd === undefined ? repl : (commands.get(cmd) ?? help(false));
 
+// why the command stopped, in one line: its error, or what was thrown (a defect, e.g. in the kernel)
+const reason = (cause: Cause.Cause<{ readonly message: string }>) => {
+  if (Cause.hasInterruptsOnly(cause)) return "interrupted";
+  const thrown = Cause.squash(cause);
+  if (thrown instanceof Error) return thrown.message;
+  return Predicate.hasProperty(thrown, "message") && Predicate.isString(thrown.message) ? thrown.message : String(thrown);
+};
+
 BunRuntime.runMain(
   command.pipe(
-    Effect.matchEffect({
-      onFailure: (error) =>
-        Console.error(`optchat: ${error.message}`).pipe(Effect.andThen(Effect.sync(() => (process.exitCode = 1)))),
-      onSuccess: () => Effect.void,
-    }),
+    Effect.catchCause((cause) =>
+      Console.error(`optchat: ${reason(cause)}`).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            process.exitCode = 1;
+          }),
+        ),
+      ),
+    ),
   ),
   { disableErrorReporting: true },
 );
