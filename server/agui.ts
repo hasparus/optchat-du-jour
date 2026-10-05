@@ -168,6 +168,9 @@ export function openStream(o: {
       }
       case "info":
         return [{ name: "info", type: EventType.CUSTOM, value: e.message }];
+      // before the user entry it names, so its sender knows the message is its own
+      case "ack":
+        return [{ name: "ack", type: EventType.CUSTOM, value: { clientId: e.clientId, error: e.error, messageId: e.at === null ? null : String(e.at) } }];
       case "usage":
         return [{ name: "usage", type: EventType.CUSTOM, value: e.record }];
       case "state": {

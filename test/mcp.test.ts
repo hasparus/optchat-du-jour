@@ -68,6 +68,7 @@ test("zoom and date over JSON-RPC: the handshake, the verbatim tools, a zoom dow
     [4, 2, "No line 4+2."], // not built yet
     [6, 1, "No line 6+1."], // no such message
     [-2, 2, "No line -2+2."],
+    [2 ** 52, 2 ** 52, `No line ${2 ** 52}+${2 ** 52}.`], // past what the kernel takes
     [0.5, 1, "No line 0.5+1."],
     ["0", 1, 'No line "0"+1.'], // not an integer either
   ];

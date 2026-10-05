@@ -272,7 +272,7 @@ The server exposes `zoom` and `date` as an HTTP MCP server at `/mcp` on the tail
 - **Behaviour:** exactly ref §9 and gist §7.1, with the gist's tool descriptions verbatim. `zoom(id, n)` validates integers, `n` a power of 2, `id % n == 0`, `id + n ≤ T`, the node built; otherwise `No line id+n.` `zoom(id, 1)` returns `id+0|kind: text` in full and works for any existing message. `date(id)` returns local time as `2026-10-04 14:03`, or `No message N.`
 - **Read-only:** answers from the server's in-memory tree; never takes the lock.
 - **Cache stability:** the `--mcp-config` JSON is generated once per device and is identical for priming and real turns. The server name stays `optchat`, so the tool names (`mcp__optchat__zoom`, `mcp__optchat__date`) and the cached tool list are the same on every device; only the URL differs, and the URL isn't sent to the model.
-- **Auth:** only tailnet peers in `devices` may call it (Tailscale WhoIs on the connecting address).
+- **Auth (M1):** the server makes a secret at each start and puts it in the URL it hands the master (`/mcp?key=<secret>`); a request without it gets 403. `tailscale serve` hides the peer's address, so there is nothing for WhoIs to check. Like every route, `/mcp` also passes the loopback and Tailscale-login guard (`server/auth.ts`). Remote devices (M4) get the URL with the secret along with their turn.
 - **Offline mode (M6):** gains `who`, plus `grep(regex, who)`, as in Intrepidus.
 
 ## Multi-machine
@@ -312,7 +312,8 @@ The reference's session object (`createSession` in ref `turn.ts`) moves into the
 | Usage records, failovers, errors, refusals, device offline | `CUSTOM` (`usage`, `info`) | Shown in the status line and the stats screen |
 | Thinking | `CUSTOM` (`thinking`) | Token count only; thinking text is never sent |
 | The turn ends | `RUN_FINISHED` or `RUN_ERROR`, then `MESSAGES_SNAPSHOT` | Exactly one per `RUN_STARTED`, also on a cancel (`RUN_ERROR` "cancelled"), before anything else is logged; the open reply is closed first. The snapshot resyncs every client to the log, so a reply cut off before its `talk` entry disappears before its index goes to the next entry |
-| Client sends a message | a `RunAgentInput` frame | Starts a turn, or becomes a mid-run message when a turn is running; a blank text is ignored |
+| Client sends a message | a `RunAgentInput` frame | Starts a turn, or becomes a mid-run message when a turn is running; a blank text is ignored. Only user messages whose ids the connection has not sent before are taken (a client may resend the whole history); ids that are log indexes name entries and are never new |
+| A client's message is logged, or cannot be | `CUSTOM` (`ack`: `{clientId, messageId, error}`) | Before the user entry it names; `messageId` null and `error` set when the log refused it (it stays queued for the next message). A client tells its own messages by this, not by their text |
 | Client cancels | `{"type":"abort"}` | Same as Ctrl-C in ref §10; a client sends it only while connected, so a stale one never cancels the next turn |
 
 The log stays the source of truth. A client's state is only a view of it, rebuilt from `MESSAGES_SNAPSHOT` on every reconnect and after every run, so there is no replay protocol.
@@ -356,10 +357,10 @@ Nothing listens on a public interface; the tailnet is the only way in (E9).
 - **Publishing:** `tailscale serve --bg --https=443 http://127.0.0.1:7700` on the Mini gives `https://<mini>.<tailnet>.ts.net` with a valid certificate. Device runners listen on their tailnet address only.
 - **User auth:** `tailscale serve` adds identity headers (`Tailscale-User-Login`) to each request. The server accepts a request only if that login is in `allowedLogins` and the request came through serve on loopback; anything else gets 403.
 - **Browsers:** `/ws` drives a master with `bypassPermissions`, so a web page must not reach it from someone's browser (cross-site WebSocket hijacking, DNS rebinding, or a page on the phone riding the user's own serve identity). Every route checks `Host` (`127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>` or the host of `server.publicUrl`) and, when an `Origin` is sent, that it is the server's own origin; CLI clients send none. The threat model is written out in `server/auth.ts`.
-- **Machine auth:** device runners and `/mcp` check the caller with Tailscale's local WhoIs API against the configured device names. No tokens to rotate.
+- **Machine auth:** `/mcp` takes the per-start secret in its URL (`?key=`), on top of the loopback and Tailscale-login guard every route has (see zoom and date over HTTP); a restart rotates it. Device runners (M4) check the caller with Tailscale's local WhoIs API against the configured device names.
 - **Processes:** two launchd agents on the Mini (`optchat-server`, `optchat-device`), one on the MacBook (`optchat-device`), each with `KeepAlive`, logs in `~/Library/Logs/optchat/`. The Mini's energy settings keep it awake.
 - **Permissions:** the master runs with `bypassPermissions` (ref D9), so it can run any command in the configured folders of the device it lands on. The device runner's folder allowlist is the boundary.
-- **Persistence:** the data dir is its own git repo, committed after every turn as in ref §10, and pushed to a private remote (E10). The push is the backup and, in M6, the sync.
+- **Persistence:** the data dir is its own git repo, committed after every turn as in ref §10, and pushed to a private remote (E10). The push is the backup and, in M6, the sync. The session turns idle once the commit is made; the push runs in the background, one at a time, and a failing push is reported once until one goes through again.
 - **Secrets:** the ChatGPT plan token and API keys live in the macOS Keychain, never in the repo or the data dir.
 
 ## Usage and cost tracking
@@ -430,7 +431,7 @@ Later, unscheduled: layout B for the compactor (ref §7), media in a content-add
 Follow-ups after M5 (held back so the M1–M5 branches merge cleanly):
 
 - The session's single inbox: one queue of incoming messages instead of `queue`, `steer` and `sent`, so every message has one owner at any moment.
-- Remove the mutable `sent` array shared between the session and the engine; the engine reports what it took as events.
+- Remove the mutable `sent` array shared between the session and the engine; the engine reports what it took as events. Today every link of a failover chain shares one `sent`, so a link that failed over can leave it holding what it took (review of PR #4, finding 2; M5 reworks failover).
 - An engine-ref registry: one place that turns `engine:model` into a turn or compactor engine, instead of the parsing in `server/app.ts` and `src/summarize/`.
 - Split `server/app.ts` into route modules (`/ws`, `/mcp`, `/api/*`, static files).
 
