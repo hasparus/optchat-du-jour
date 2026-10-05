@@ -4,7 +4,7 @@
 export type Key =
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "paste"; readonly text: string }
-  | { readonly type: "enter" | "backspace" | "clear" | "interrupt" | "eof" | "suspend" };
+  | { readonly type: "backspace" | "clear" | "enter" | "eof" | "interrupt" | "suspend" };
 
 const PASTE_START = "\u001B[200~";
 const PASTE_END = "\u001B[201~";
@@ -34,16 +34,21 @@ function escapeLength(s: string, at: number): number | null {
   return 2;
 }
 
+// what is left after the control keys: tab and everything from space up; other C0 bytes are dropped
+const printable = (ch: string) => ch === "\t" || (ch.codePointAt(0) ?? 0) > 0x1F;
+
 export function makeKeys() {
-  const decoder = new TextDecoder();
-  let buf = "", paste: string | null = null;
+  let buf = ""; // decoded, not yet turned into keys
+  let paste: string | null = null; // inside a bracketed paste: its text so far
+  const decoder = new TextDecoder(); // keeps a character cut between two chunks
   return (chunk: Uint8Array): Key[] => {
     buf += decoder.decode(chunk, { stream: true });
     const keys: Key[] = [];
-    let text = "";
-    const flush = () => {
-      if (text) keys.push({ text, type: "text" });
-      text = "";
+    // typed characters in a row become one text key: a new one is joined to a text key just before it
+    const typed = (ch: string) => {
+      const last = keys.at(-1);
+      if (last?.type === "text") keys[keys.length - 1] = { text: last.text + ch, type: "text" };
+      else keys.push({ text: ch, type: "text" });
     };
     for (;;) {
       if (paste !== null) {
@@ -64,7 +69,6 @@ export function makeKeys() {
       const c = buf[0] ?? "";
       if (c === "\u001B") {
         if (buf.startsWith(PASTE_START)) {
-          flush();
           paste = "";
           buf = buf.slice(PASTE_START.length);
           continue;
@@ -77,16 +81,14 @@ export function makeKeys() {
       }
       const key = CONTROL.get(c);
       if (key) {
-        flush();
         // CRLF is one Enter
         keys.push(key);
         buf = buf.slice(c === "\r" && buf[1] === "\n" ? 2 : 1);
         continue;
       }
       buf = buf.slice(1);
-      if (c >= " " || c === "\t") text += c;
+      if (printable(c)) typed(c);
     }
-    flush();
     return keys;
   };
 }

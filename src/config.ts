@@ -1,7 +1,8 @@
-import { Data, Effect, Schema } from "effect";
 // The gist's constants (gist §1) and the reference's timings (ref §2, §7). Sizes are UTF-8
 // bytes, cache marks are characters. Everything that may differ per machine is in
 // optchat.config.ts instead.
+import { Data, Effect, Schema } from "effect";
+
 export const NODE = 512;
 export const VIEW = 128_000;
 export const JOBS = 8;
@@ -18,10 +19,8 @@ export const PRIME_IDLE = "1 second";
 // call tools, so the turn ends with an answer (M5)
 export const TOOL_ROUNDS = 40;
 
-// ---------------------------------------------------------------------------------------------
 // optchat.config.ts (SPEC "Constants and configuration"): engines, compactor chains per level,
 // cache TTLs, devices, who may connect.
-
 
 const Ttl = Schema.Literals(["1h", "5m"]);
 const Effort = Schema.Literals(["low", "medium", "high", "xhigh", "max"]);

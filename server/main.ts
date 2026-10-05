@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// optchat-server: run on the machine that owns the memory (SPEC "System shape"), published to the
+// The server process. Run it on the machine that owns the memory (SPEC "System shape"), published to the
 // tailnet with `tailscale serve --bg --https=443 http://127.0.0.1:7700`.
 import { BunRuntime } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
@@ -7,7 +7,7 @@ import { loadSettings } from "../src/config.ts";
 import { HOME } from "../src/paths.ts";
 import { serverLayer } from "./app.ts";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = `${import.meta.dir}/../`;
 
 const main = Effect.gen(function* () {
   const settings = yield* loadSettings(Bun.env.OPTCHAT_CONFIG ?? `${root}optchat.config.ts`);

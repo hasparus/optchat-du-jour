@@ -57,7 +57,6 @@ export function date(mem: Mem, id: number): string {
   return m ? localTime(m.date) : `No message ${id}.`;
 }
 
-// ---------------------------------------------------------------------------------------------
 // JSON-RPC 2.0, the subset Claude Code uses: initialize, ping, tools/list, tools/call.
 
 const Id = Schema.Union([Schema.String, Schema.Number, Schema.Null]);

@@ -1,5 +1,6 @@
 // End to end: optchat-server as a process with a fake `claude`, two clients on its /ws (a raw
-// socket and the REPL with piped stdin), the master's MCP endpoint, and the data dir's git commits.
+// socket and the REPL with piped stdin), the master's MCP endpoint, the data dir's git commits,
+// and who the server lets in.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { Option, Schema } from "effect";
 import { spawnSync } from "node:child_process";
@@ -7,17 +8,18 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { type Inbound, parseInbound } from "../cli/repl.ts";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+const ROOT = `${import.meta.dir}/../`;
 const FAKE = `${ROOT}test/fake-claude.ts`;
 const REPLY = "hi from the fake";
+const PUBLIC = "https://mini.example.ts.net";
 
-const dir = mkdtempSync(`${tmpdir()}/optchat-e2e-`);
+const dir = mkdtempSync(`${tmpdir()}/odj-e2e-`);
 const port = 20_000 + Math.floor(Math.random() * 20_000);
 const base = `http://127.0.0.1:${port}`;
 const env = {
   ...Bun.env,
   FAKE_CLAUDE_LOG: `${dir}/fake.jsonl`,
-  FAKE_CLAUDE_SCRIPT: `${dir}/script.json`,
+  FAKE_CLAUDE_SCRIPT: `${dir}/plan.json`,
   OPTCHAT_CLAUDE: FAKE,
   OPTCHAT_CONFIG: `${dir}/optchat.config.ts`,
   OPTCHAT_HOME: `${dir}/home`,
@@ -26,7 +28,8 @@ const env = {
 let server: Bun.Subprocess<"ignore", "pipe", "pipe">;
 
 beforeAll(async () => {
-  writeFileSync(env.FAKE_CLAUDE_SCRIPT, JSON.stringify({ turn: [[{ text: REPLY }]] }));
+  // the second turn (the REPL's) is slow: the REPL must wait for its answer, not for an idle state
+  writeFileSync(env.FAKE_CLAUDE_SCRIPT, JSON.stringify({ turn: [[{ text: REPLY }], [{ sleep: 1500 }, { text: REPLY }]] }));
   const settings = {
     master: { chain: ["claude-code:opus"], effort: "high", permissionMode: "bypassPermissions" },
     compactor: { byLevel: [{ from: 0, chain: ["claude-code:sonnet"] }], effort: "medium" },
@@ -34,7 +37,7 @@ beforeAll(async () => {
     devices: { mini: { url: "http://127.0.0.1:1", folders: [dir] } },
     defaultDevice: "mini",
     allowedLogins: [],
-    server: { host: "127.0.0.1", port },
+    server: { host: "127.0.0.1", port, publicUrl: PUBLIC },
   };
   writeFileSync(env.OPTCHAT_CONFIG, `export default ${JSON.stringify(settings)};\n`);
   server = Bun.spawn(["bun", `${ROOT}server/main.ts`], { env, stderr: "pipe", stdout: "pipe" });
@@ -103,12 +106,14 @@ test("a turn over /ws streams to every client; the REPL is one of them; the mast
   const stranger = await fetch(`${base}/mcp?key=wrong`, { body: JSON.stringify(call), method: "POST" });
   expect(stranger.status).toBe(403);
 
-  // the REPL, piped: one message per line, echoed, answered, and it exits once the turn is done
+  // the REPL, piped: one message per line, echoed, answered, and it exits once its turn is done,
+  // even though stdin ends at once and the turn takes a while
   const repl = Bun.spawn(["bun", `${ROOT}cli/optchat.ts`], { env, stdin: new TextEncoder().encode("second\n"), stdout: "pipe" });
   const out = await new Response(repl.stdout).text();
   expect(await repl.exited).toBe(0);
-  expect(out).toContain("> second\n");
-  expect(out).toContain(`${REPLY}\n`);
+  const after = out.slice(out.indexOf("> second\n")); // the intro above it shows the first reply already
+  expect(after).toContain("> second\n");
+  expect(after).toContain(`${REPLY}\n`);
 
   // the first client watched the REPL's turn too
   await web.until((es) => finished(es) === 2);
@@ -117,9 +122,65 @@ test("a turn over /ws streams to every client; the REPL is one of them; the mast
 
   const state = await fetch(`${base}/api/state`);
   expect(Schema.decodeUnknownSync(State)(await state.json()).messages).toBe(4);
-  const log = spawnSync("git", ["-C", env.OPTCHAT_HOME, "log", "--format=%s"], { encoding: "utf8" });
-  expect(log.stdout).toContain("chore(chat): 4 messages");
+  // the commit lands after the run's end; the session turns idle only once it has
+  const commits = () => spawnSync("git", ["-C", env.OPTCHAT_HOME, "log", "--format=%s"], { encoding: "utf8" }).stdout;
+  const deadline = Date.now() + 10_000;
+  while (!commits().includes("chore(chat): 4 messages")) {
+    if (Date.now() > deadline) throw new Error(`no commit of 4 messages; the log has: ${commits()}`);
+    await Bun.sleep(50);
+  }
 }, 30_000);
+
+test("a piped REPL that cannot reach the server says so and exits non-zero", async () => {
+  const nowhere = `http://127.0.0.1:${port + 1}`;
+  const repl = Bun.spawn(["bun", `${ROOT}cli/optchat.ts`], {
+    env: { ...env, OPTCHAT_URL: nowhere },
+    stderr: "pipe",
+    stdin: new TextEncoder().encode("anyone there?\n"),
+    stdout: "pipe",
+  });
+  expect(await repl.exited).toBe(1);
+  expect(await new Response(repl.stderr).text()).toContain(`cannot reach the server at ${nowhere}`);
+});
+
+// Host and Origin: a web page in some browser must not be able to drive the server (server/auth.ts)
+test("only our own Host names and Origins get in; a client without an Origin does too", async () => {
+  const status = async (path: string, headers: Record<string, string>) => {
+    const response = await fetch(`${base}${path}`, { headers });
+    return response.status;
+  };
+  expect(await status("/api/state", {})).toBe(200);
+  expect(await status("/api/state", { host: `localhost:${port}` })).toBe(200);
+  expect(await status("/api/state", { host: new URL(PUBLIC).host })).toBe(200);
+  expect(await status("/api/state", { host: `rebound.example:${port}` })).toBe(403); // DNS rebinding
+  expect(await status("/api/state", { host: "127.0.0.1:1" })).toBe(403);
+  expect(await status("/api/state", { origin: "https://evil.example" })).toBe(403);
+
+  const upgrade = { connection: "Upgrade", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==", "sec-websocket-version": "13", upgrade: "websocket" };
+  expect(await status("/ws", { ...upgrade, origin: "https://evil.example" })).toBe(403);
+  expect(await status("/ws", { ...upgrade, origin: "null" })).toBe(403);
+  expect(await status("/mcp?key=x", { origin: "https://evil.example" })).toBe(403);
+
+  // same-origin pages, and the CLI with no Origin at all, open the socket
+  const opens = async (headers: Record<string, string>) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers });
+    const { promise, resolve } = Promise.withResolvers<boolean>();
+    socket.addEventListener("open", () => {
+      resolve(true);
+    });
+    socket.addEventListener("error", () => {
+      resolve(false);
+    });
+    const ok = await promise;
+    socket.close();
+    return ok;
+  };
+  expect(await opens({})).toBe(true);
+  expect(await opens({ origin: base })).toBe(true);
+  expect(await opens({ origin: `http://localhost:${port}` })).toBe(true);
+  expect(await opens({ origin: PUBLIC })).toBe(true);
+  expect(await opens({ origin: "https://evil.example" })).toBe(false);
+});
 
 test("the server leaves no claude behind when it stops", async () => {
   server.kill("SIGTERM");

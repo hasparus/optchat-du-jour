@@ -34,7 +34,7 @@ import { openAiPlanTurn } from "../src/turn/openai-plan.ts";
 import { type UsageRecord, logUsage, readUsage } from "../src/usage.ts";
 import { PLACEHOLDER, render, viewSize } from "../src/view.ts";
 import { type AgUiEvent, makeTranslator, snapshot } from "./agui.ts";
-import { allowed } from "./auth.ts";
+import { allowed, policyFor } from "./auth.ts";
 import { deviceStatuses, versionWarning } from "./devices.ts";
 
 export type ServerOptions = {
@@ -92,7 +92,7 @@ export const routes = (o: ServerOptions) =>
           Effect.flatMap((e) => (e ? report(e) : Effect.void)),
         );
       const clients = yield* ApiKeys;
-      const summarize = o.summarize ?? (yield* makeSummarize({ apiKey: { budget, clients }, log: usage, report: (m) => report(m), settings }));
+      const summarize = o.summarize ?? (yield* makeSummarize({ apiKey: { budget, clients }, device: o.device, log: usage, report: (m) => report(m), settings }));
       const chat = yield* openChat(stream, { report: (m) => report(m), summarize });
 
       const instructions = systemPrompt(o.home); // one text for every engine and device (gist §7.2)
@@ -168,17 +168,21 @@ export const routes = (o: ServerOptions) =>
         yield* report(notice);
       }
 
+      // every request, on every route, passes the same check first (server/auth.ts has the threat model)
+      const policy = policyFor(o.port, settings.allowedLogins, settings.server?.publicUrl);
       const guard = (request: HttpServerRequest.HttpServerRequest) =>
-        allowed({ header: (name) => request.headers[name], remoteAddress: request.remoteAddress }, settings.allowedLogins);
+        allowed({ header: (name) => request.headers[name], remoteAddress: request.remoteAddress }, policy);
+      yield* router.addGlobalMiddleware((handle) =>
+        Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => (guard(request) ? handle : Effect.succeed(forbidden))),
+      );
 
       yield* router.add("GET", "/ws", (request) =>
         Effect.gen(function* () {
-          if (!guard(request)) return forbidden;
           const socket = yield* request.upgrade;
           const write = yield* socket.writer;
           const send = (events: readonly AgUiEvent[]) => Effect.forEach(events, (e) => write.write(JSON.stringify(e)), { discard: true });
           const live = yield* PubSub.subscribe(session.events); // before the snapshot, so nothing falls between
-          const translate = makeTranslator(thread, session.state(), () => chat.mem.root.length);
+          const translate = makeTranslator(thread, session.state());
           yield* send(snapshot(chat.mem.root.slice(-(o.window ?? 200)), session.state()));
           yield* session.primeSoon;
           yield* PubSub.take(live).pipe(
@@ -206,7 +210,7 @@ export const routes = (o: ServerOptions) =>
       // MCP over HTTP (E8). tailscale serve hides the peer, so the URL carries a secret, made at startup
       yield* router.add("POST", "/mcp", (request) =>
         Effect.gen(function* () {
-          if (request.url.split("key=")[1]?.split("&")[0] !== secret || !guard(request)) return forbidden;
+          if (new URL(request.url, "http://x").searchParams.get("key") !== secret) return forbidden;
           const reply = handleMcp(chat.mem, yield* request.text);
           return reply.body === null
             ? HttpServerResponse.empty({ status: reply.status })
@@ -215,12 +219,11 @@ export const routes = (o: ServerOptions) =>
       );
       yield* router.add("GET", "/mcp", HttpServerResponse.empty({ status: 405 }));
 
-      yield* router.add("GET", "/api/state", (request) => Effect.succeed(guard(request) ? json(session.state()) : forbidden));
+      yield* router.add("GET", "/api/state", Effect.sync(() => json(session.state())));
 
       // the log, a page at a time, newest last; `before` is a message id
-      yield* router.add("GET", "/api/messages", (request) =>
+      yield* router.add("GET", "/api/messages", () =>
         Effect.gen(function* () {
-          if (!guard(request)) return forbidden;
           const q = yield* HttpServerRequest.schemaSearchParams(Before);
           const end = Math.min(q.before ?? chat.mem.root.length, chat.mem.root.length);
           const start = Math.max(0, end - (q.limit ?? 100));
@@ -229,37 +232,36 @@ export const routes = (o: ServerOptions) =>
       );
 
       // what the model sees: each view line with its range, dates and size (SPEC "Web UI", Memory)
-      yield* router.add("GET", "/api/view", (request) =>
-        Effect.succeed(
-          guard(request)
-            ? json({
-                budget: chat.mem.budget,
-                lines: chat.mem.view.map((c) => {
-                  const { id, n } = span(c), node = getNode(chat.mem, c.l, c.i);
-                  const from = chat.mem.root[id], to = chat.mem.root[id + n - 1];
-                  return {
-                    built: node !== undefined,
-                    from: from ? localTime(from.date) : null,
-                    id,
-                    l: c.l,
-                    i: c.i,
-                    n,
-                    size: node?.size ?? null,
-                    text: node?.text ?? PLACEHOLDER,
-                    to: to ? localTime(to.date) : null,
-                  };
-                }),
-                size: viewSize(chat.mem),
-                text: render(chat.mem),
-              })
-            : forbidden,
+      yield* router.add(
+        "GET",
+        "/api/view",
+        Effect.sync(() =>
+          json({
+            budget: chat.mem.budget,
+            lines: chat.mem.view.map((c) => {
+              const { id, n } = span(c), node = getNode(chat.mem, c.l, c.i);
+              const from = chat.mem.root[id], to = chat.mem.root[id + n - 1];
+              return {
+                built: node !== undefined,
+                from: from ? localTime(from.date) : null,
+                id,
+                l: c.l,
+                i: c.i,
+                n,
+                size: node?.size ?? null,
+                text: node?.text ?? PLACEHOLDER,
+                to: to ? localTime(to.date) : null,
+              };
+            }),
+            size: viewSize(chat.mem),
+            text: render(chat.mem),
+          }),
         ),
       );
 
       // one node and its two children, down to the message (the memory browser's zoom)
-      yield* router.add("GET", "/api/node", (request) =>
+      yield* router.add("GET", "/api/node", () =>
         Effect.gen(function* () {
-          if (!guard(request)) return forbidden;
           const { i, l } = yield* HttpServerRequest.schemaSearchParams(NodeAt);
           const { id, n } = span({ i, l });
           if (l === 0) {
@@ -278,13 +280,14 @@ export const routes = (o: ServerOptions) =>
         }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
       );
 
-      yield* router.add("GET", "/api/usage", (request) => Effect.succeed(guard(request) ? json(readUsage(usagePath)) : forbidden));
+      yield* router.add("GET", "/api/usage", Effect.sync(() => json(readUsage(usagePath))));
       // which devices answer and which claude they run (./devices.ts)
       const localVersion = yield* Effect.cachedWithTTL(claudeVersion(claudeBinary()), "10 minutes");
       let warned = "";
-      yield* router.add("GET", "/api/devices", (request) =>
+      yield* router.add(
+        "GET",
+        "/api/devices",
         Effect.gen(function* () {
-          if (!guard(request)) return forbidden;
           const list = yield* deviceStatuses({ devices: settings.devices, localVersion, self: o.device });
           const warning = versionWarning(list);
           if (warning && warning.key !== warned) {
@@ -300,7 +303,6 @@ export const routes = (o: ServerOptions) =>
         const { web } = o;
         yield* router.add("GET", "/*", (request) =>
           Effect.gen(function* () {
-            if (!guard(request)) return forbidden;
             const path = new URL(request.url, "http://x").pathname;
             const file = `${web}${path}`;
             const found = !path.includes("..") && path !== "/" && existsSync(file);

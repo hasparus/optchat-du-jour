@@ -11,7 +11,7 @@ import { type DeviceOffline, fromResult, ModelError } from "../engines/errors.ts
 import type { StoreError } from "../store.ts";
 import { isCold, tokensOf, type UsageRecord } from "../usage.ts";
 import { cutBlocks } from "../view.ts";
-import { opening, type Sent, type TurnEngine, type TurnEvents } from "./engine.ts";
+import { openingText, type Sent, type TurnEngine, type TurnEvents } from "./engine.ts";
 
 type Ttl = "1h" | "5m";
 
@@ -50,10 +50,12 @@ export const masterArgs = (o: Pick<ClaudeCodeTurnOptions, "effort" | "model" | "
 
 // A tool result as the log keeps it: at most CAP characters, the head and the tail, with what
 // was cut in between (gist §7, ref §5.3).
-export function cap(s: string): string {
-  if (s.length <= CAP) return s;
-  const half = CAP / 2;
-  return `${s.slice(0, half)}\n[… ${s.length - CAP} chars cut …]\n${s.slice(-half)}`;
+export function cap(full: string): string {
+  const over = full.length - CAP;
+  if (over <= 0) return full;
+  const keep = CAP / 2;
+  const head = full.slice(0, keep), tail = full.slice(full.length - keep);
+  return `${head}\n[… ${over} chars cut …]\n${tail}`;
 }
 
 const text = (t: string): Block => ({ text: t, type: "text" });
@@ -76,21 +78,20 @@ const isPlainResult = (c: NonNullable<ResultContent>): c is string => typeof c =
 const resultText = (content: ResultContent) => {
   if (content === undefined) return "";
   if (isPlainResult(content)) return content;
-  return content.map((p) => (p.type === "text" ? (p.text ?? "") : `[${p.type}]`)).join("\n");
+  const parts = content.map((part) => (part.type === "text" ? (part.text ?? "") : `[${part.type}]`));
+  return parts.join("\n");
 };
 
 // Stream events to log entries, in stream order (ref §5.3). Live text goes out as it streams;
-// a thought only by its size. The first replay is the turn's own opening message, which the
-// session has logged already; each later one is a mid-run message the call just took.
+// a thought only by its size. Replays: see onReplay.
 export function makeMapper(out: TurnEvents, sent: Sent[]) {
-  let replays = 0;
+  let openingSeen = false;
   let thoughtChars = 0;
 
+  // without the server named optchat the model has no memory tools; say so, and let the turn run
   const onInit = (e: typeof Init.Type) => {
-    const optchat = e.mcp_servers?.find((s) => s.name === "optchat");
-    return optchat?.status === "connected"
-      ? Effect.void
-      : out.info(`warning: the optchat MCP server is ${optchat?.status ?? "missing"}, so zoom and date are unavailable this turn`);
+    const status = e.mcp_servers?.find(({ name }) => name === "optchat")?.status ?? "not listed";
+    return status === "connected" ? Effect.void : out.info(`no zoom or date in this turn: MCP server optchat is ${status}`);
   };
 
   const onStream = (e: typeof StreamEvent.Type) => {
@@ -115,12 +116,20 @@ export function makeMapper(out: TurnEvents, sent: Sent[]) {
       { discard: true },
     );
 
+  // Claude Code echoes each user message as it takes it. The opening message comes back first and
+  // the session logged it before the call. Mid-run messages come back in the order they went to
+  // stdin, so each later echo is the oldest one in `sent` still waiting.
   const onReplay = () => {
-    if (replays++ === 0) return Effect.void;
-    const taken = sent.find((s) => !s.taken);
-    if (!taken) return Effect.void; // a replay we did not send: nothing of ours to log
-    taken.taken = true;
-    return out.log("user", taken.text);
+    if (!openingSeen) {
+      openingSeen = true;
+      return Effect.void;
+    }
+    for (const waiting of sent) {
+      if (waiting.taken) continue;
+      waiting.taken = true;
+      return out.log("user", waiting.text);
+    }
+    return Effect.void; // an echo of something we never sent: nothing to log
   };
 
   const onUser = (e: User) => {
@@ -172,9 +181,12 @@ const died = (claude: Claude) =>
     }),
   );
 
+// `usage` is what the call cost in all; `opening`, the usage of its first request, decides `cold`:
+// only that request reads the view, the later steps of a turn read the turn's own tail
 const usageRecord = (o: {
   readonly role: "turn" | "prime";
   readonly usage: Usage | undefined;
+  readonly opening?: Usage | undefined;
   readonly model: string | undefined;
   readonly device: string;
   readonly failoverFrom: string | null;
@@ -185,7 +197,7 @@ const usageRecord = (o: {
   return {
     attempt: 1,
     auth: "claude-max",
-    cold: isCold(usage),
+    cold: isCold(o.opening === undefined ? usage : tokensOf(o.opening)),
     date: new Date(o.now).toISOString(),
     device: o.device,
     engine: "claude-code",
@@ -215,7 +227,8 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
           .pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(new ModelError({ message: e.message })))); // DeviceOffline fails over
         const started = yield* Clock.currentTimeMillis;
         // the view exactly as priming cut it, with no marks: Claude Code's own marks are on (D2)
-        yield* claude.send([...cutBlocks(input.view).map(text), text(opening(input))]);
+        // the new messages, a blank line apart (ref §5.1), and after a failover what came before
+        yield* claude.send([...cutBlocks(input.view).map(text), text(openingText(input))]);
         // after a failover, the mid-run messages the engine before never took: replayed in order
         for (const s of input.sent) if (!s.taken) yield* claude.send([text(s.text)]);
 
@@ -234,11 +247,15 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
         ).pipe(Effect.forever, Effect.forkScoped);
 
         const map = makeMapper(out, input.sent);
-        const found = yield* readUntil(claude, (e) => (e.type === "result" ? Option.some(e) : Option.none()), map);
+        let opening: Usage | undefined;
+        const each = (e: Event) => {
+          if (opening === undefined && e.type === "stream_event" && e.event.type === "message_start") opening = e.event.message.usage;
+          return map(e);
+        };
+        const found = yield* readUntil(claude, (e) => (e.type === "result" ? Option.some(e) : Option.none()), each);
         const r = yield* Option.match(found, { onNone: () => died(claude), onSome: Effect.succeed });
-        yield* out.usage(
-          usageRecord({ device: input.device, failoverFrom, model: claude.model(), now: yield* Clock.currentTimeMillis, role: "turn", started, usage: r.usage }),
-        );
+        const now = yield* Clock.currentTimeMillis;
+        yield* out.usage(usageRecord({ device: input.device, failoverFrom, model: claude.model(), now, opening, role: "turn", started, usage: r.usage }));
         yield* r.is_error || r.stop_reason === "refusal"
           ? Effect.fail(fromResult(r.result ?? `the turn ended with ${r.subtype ?? "an error"}`, r.stop_reason))
           : Effect.void;
@@ -257,7 +274,8 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
           .spawn({ args: argsFor(mcpConfig), cwd, env: { ...env, DISABLE_PROMPT_CACHING: "1" } })
           .pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(new ModelError({ message: e.message })))); // DeviceOffline fails over
         const started = yield* Clock.currentTimeMillis;
-        const marked = cutBlocks(view).map((t): Block => ({ cache_control: { ttl: o.primeTtl, type: "ephemeral" }, text: t, type: "text" }));
+        const mark = { ttl: o.primeTtl, type: "ephemeral" } as const;
+        const marked = cutBlocks(view).map((piece): Block => ({ cache_control: mark, text: piece, type: "text" }));
         yield* claude.send([...marked, text("ok")]);
         const first = yield* readUntil(
           claude,

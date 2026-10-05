@@ -15,7 +15,7 @@ import type { ToolDef } from "../tools/files.ts";
 import { isCold, type Tokens, type UsageRecord } from "../usage.ts";
 import { cutBlocks } from "../view.ts";
 import { cap } from "./claude-code.ts";
-import { opening, type TurnEngine, type TurnEvents, type TurnInput } from "./engine.ts";
+import { openingText, type TurnEngine, type TurnEvents, type TurnInput } from "./engine.ts";
 
 // The conversation, provider-neutral. `stable` counts a user message's leading parts that stay
 // byte-identical from call to call (the view blocks): where a provider puts its cache marks.
@@ -89,7 +89,7 @@ export const toolLoop = (o: {
         ),
       ).pipe(Effect.forever, Effect.forkScoped);
       const view = cutBlocks(input.view);
-      const history: Item[] = [{ parts: [...view, opening(input)], stable: view.length, type: "user" }];
+      const history: Item[] = [{ parts: [...view, openingText(input)], stable: view.length, type: "user" }];
       for (let round = 1; ; round++) {
         history.push(...(yield* steered(input, out)));
         const started = yield* Clock.currentTimeMillis;

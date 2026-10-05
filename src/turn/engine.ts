@@ -25,7 +25,7 @@ export type TurnInput = {
 
 // The opening message's own text: the new texts, and after a failover mid-turn what the engine
 // before logged, so the next one carries on from there instead of starting again.
-export const opening = (input: Pick<TurnInput, "earlier" | "texts">) => {
+export const openingText = (input: Pick<TurnInput, "earlier" | "texts">) => {
   const asked = input.texts.join("\n\n");
   if (input.earlier.length === 0) return asked;
   const done = input.earlier.map((e) => `${e.kind}: ${e.text}`).join("\n");

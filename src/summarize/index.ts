@@ -16,6 +16,7 @@ export const makeSummarize = (o: {
   readonly log: (record: UsageRecord) => Effect.Effect<void>;
   readonly report: (message: string) => Effect.Effect<void>;
   readonly apiKey?: { readonly clients: ApiKeys["Service"]; readonly budget: Budget }; // for api-key links
+  readonly device?: string; // the machine the compactor calls run on
 }) =>
   Effect.gen(function* () {
     const engines = new Map<string, (job: Job, failoverFrom: string | null) => Effect.Effect<string, EngineError>>();
@@ -23,7 +24,7 @@ export const makeSummarize = (o: {
     for (const ref of new Set(o.settings.compactor.byLevel.flatMap((b) => b.chain))) {
       const [engine, model = ""] = ref.split(/:(.*)/s);
       // loadSettings refuses a chain naming an engine not built yet
-      if (engine === "claude-code") engines.set(ref, yield* claudeCodeCompactor({ effort, log: o.log, model, ttl: o.settings.cache.claudeCodeTtl }));
+      if (engine === "claude-code") engines.set(ref, yield* claudeCodeCompactor({ device: o.device, effort, log: o.log, model, ttl: o.settings.cache.claudeCodeTtl }));
       if (engine === "openai-plan") engines.set(ref, yield* openAiPlanCompactor({ effort, log: o.log, model }));
       if (engine === "api-key")
         engines.set(

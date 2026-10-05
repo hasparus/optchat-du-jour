@@ -17,6 +17,7 @@ export type CompactorOptions = {
   readonly effort: string;
   readonly ttl: "1h" | "5m";
   readonly log: (record: UsageRecord) => Effect.Effect<void>;
+  readonly device?: string; // where the call runs, for its usage record: the server's own machine
   readonly timeout?: Duration.Input; // CALL_TIMEOUT
 };
 
@@ -53,7 +54,7 @@ export const claudeCodeCompactor = (o: CompactorOptions) =>
             auth: "claude-max",
             cold: isCold(usage),
             date: new Date(yield* Clock.currentTimeMillis).toISOString(),
-            device: null,
+            device: o.device ?? null,
             engine: "claude-code",
             failoverFrom,
             level: job.l,
