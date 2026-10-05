@@ -1,7 +1,8 @@
 // The data dir is its own git repo, committed after every turn (gist §10, ref §10 "Git") and
 // pushed when it has a remote (E10). Git is a backup here, never a reason to fail a turn: every
-// problem comes back as a message for the caller to show.
-import { Data, Effect, Semaphore } from "effect";
+// problem comes back as a message for the caller to show. The push runs in the background, so an
+// unreachable remote never holds up the end of a turn.
+import { Data, Effect, type Scope, Semaphore } from "effect";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -51,8 +52,10 @@ const staged = (dir: string) => {
 const files = (what: string, f: () => void) =>
   Effect.try({ catch: (error) => new GitFailed({ message: `${what}: ${error instanceof Error ? error.message : String(error)}` }), try: f });
 
-// how long one git command may take; a push to an unreachable remote must not hold the turn loop
+// how long a commit or a push may take
 const GIT_TIMEOUT = "2 minutes";
+const inTime = <A, R>(work: Effect.Effect<A, GitFailed, R>) =>
+  work.pipe(Effect.timeoutOrElse({ duration: GIT_TIMEOUT, orElse: () => Effect.fail(new GitFailed({ message: `git took longer than ${GIT_TIMEOUT}` })) }));
 
 const save = (dir: string, message: string) =>
   Effect.gen(function* () {
@@ -70,23 +73,50 @@ const save = (dir: string, message: string) =>
       });
     yield* must(dir, ["add", "-A"]);
     if (yield* staged(dir)) yield* must(dir, ["commit", "-q", "--no-verify", "-m", message]);
+  }).pipe(inTime);
+
+// HEAD to the remote ("origin", else the first one), if there is one
+const push = (dir: string) =>
+  Effect.gen(function* () {
     const remotes = (yield* must(dir, ["remote"])).out.split("\n").filter((name) => name !== "");
     const remote = remotes.includes("origin") ? "origin" : remotes[0];
-    // also when nothing new was committed: a push that failed last time goes out now
     if (remote) yield* must(dir, ["push", "-q", remote, "HEAD"]);
-  }).pipe(
-    Effect.timeoutOrElse({ duration: GIT_TIMEOUT, orElse: () => Effect.fail(new GitFailed({ message: `git took longer than ${GIT_TIMEOUT}` })) }),
-  );
+  }).pipe(inTime);
 
-// `persist(dir, message)`: an error message, or null when the data dir is saved (and pushed)
-export const makePersist = Effect.gen(function* () {
-  // a single git at once: two in the same repo would fight over index.lock
-  const one = yield* Semaphore.make(1);
-  return (dir: string, message: string): Effect.Effect<string | null> =>
-    one.withPermit(
-      save(dir, message).pipe(
+// `persist(dir, message)`: an error message, or null once the data dir is committed. Each commit
+// is then pushed in the background, one push at a time: commits made during a push are pushed
+// by one more after it. A failing push is reported once, until a push goes through again.
+export const makePersist = (report: (message: string) => Effect.Effect<void>) =>
+  Effect.gen(function* () {
+    // a single commit at once: two in the same repo would fight over index.lock (a push takes none)
+    const one = yield* Semaphore.make(1);
+    const scope: Scope.Scope = yield* Effect.scope;
+    let pushing = false;
+    let next: string | null = null; // a dir to push once the push going on is done
+    let failing = false;
+    const pushes: Effect.Effect<void> = Effect.suspend(() => {
+      const dir = next;
+      next = null;
+      if (dir === null) return Effect.sync(() => (pushing = false));
+      return push(dir).pipe(
+        Effect.matchEffect({
+          onFailure: (error) => (failing ? Effect.void : Effect.sync(() => (failing = true)).pipe(Effect.andThen(report(`git: ${error.message}`)))),
+          onSuccess: () => Effect.sync(() => (failing = false)),
+        }),
+        Effect.andThen(pushes),
+      );
+    });
+    const pushSoon = (dir: string) =>
+      Effect.suspend(() => {
+        next = dir;
+        if (pushing) return Effect.void;
+        pushing = true;
+        return pushes.pipe(Effect.forkIn(scope), Effect.asVoid);
+      });
+    return (dir: string, message: string): Effect.Effect<string | null> =>
+      one.withPermit(save(dir, message)).pipe(
+        Effect.andThen(pushSoon(dir)), // also when nothing new was committed: a push that failed goes out again
         Effect.as(null),
         Effect.catch((error) => Effect.succeed(error.message)),
-      ),
-    );
-});
+      );
+  });

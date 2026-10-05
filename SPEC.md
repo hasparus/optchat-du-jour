@@ -313,7 +313,8 @@ The reference's session object (`createSession` in ref `turn.ts`) moves into the
 | Usage records, failovers, errors, refusals, device offline | `CUSTOM` (`usage`, `info`) | Shown in the status line and the stats screen |
 | Thinking | `CUSTOM` (`thinking`) | Token count only; thinking text is never sent |
 | The turn ends | `RUN_FINISHED` or `RUN_ERROR`, then `MESSAGES_SNAPSHOT` | Exactly one per `RUN_STARTED`, also on a cancel (`RUN_ERROR` "cancelled"), before anything else is logged; the open reply is closed first. The snapshot resyncs every client to the log, so a reply cut off before its `talk` entry disappears before its index goes to the next entry |
-| Client sends a message | adapter `send()` | Starts a turn, or becomes a mid-run message when a turn is running |
+| Client sends a message | adapter `send()` | Starts a turn, or becomes a mid-run message when a turn is running. Only user messages whose ids the connection has not sent before are taken (a client may resend the whole history); ids that are log indexes name entries and are never new |
+| A client's message is logged, or cannot be | `CUSTOM` (`ack`: `{clientId, messageId, error}`) | Before the user entry it names; `messageId` null and `error` set when the log refused it (it stays queued for the next message). The REPL tells its own messages by this, not by their text |
 | Client cancels | abort | Same as Ctrl-C in ref §10 |
 
 The log stays the source of truth. TanStack AI's client state is only a view of it, rebuilt from `MESSAGES_SNAPSHOT` on every reconnect, so there is no replay protocol. Verify the event names against the AG-UI version TanStack AI ships when M2 starts.
@@ -358,7 +359,7 @@ Nothing listens on a public interface; the tailnet is the only way in (E9).
 - **Machine auth:** a device runner asks Tailscale's local WhoIs which node is calling and compares its full MagicDNS name with the other configured devices' (the URL's host plus this tailnet's suffix, so a device URL must use a name, not an IP address). Answers are cached per address for 10 s, and at most 4 WhoIs calls run at once. Before that it refuses any request with an `Origin` header: a page in a browser on an allowed machine is that machine's node too, and the server's runner sends none. `/mcp` is covered under zoom and date. No tokens to rotate.
 - **Processes:** one launchd agent on the Mini (`optchat-server`) and one on the MacBook (`optchat-device`), each with `KeepAlive`, logs in `~/Library/Logs/optchat/`. The Mini's energy settings keep it awake.
 - **Permissions:** the master runs with `bypassPermissions` (ref D9). The device's folder allowlist only sets the working directory; it does not confine `claude`, whose Bash can reach anything that user can. The boundary is who may call the runner: the other configured devices' nodes, and no browser.
-- **Persistence:** the data dir is its own git repo, committed after every turn as in ref §10, and pushed to a private remote (E10). The push is the backup and, in M6, the sync.
+- **Persistence:** the data dir is its own git repo, committed after every turn as in ref §10, and pushed to a private remote (E10). The push is the backup and, in M6, the sync. The session turns idle once the commit is made; the push runs in the background, one at a time, and a failing push is reported once until one goes through again.
 - **Secrets:** the ChatGPT plan token and API keys live in the macOS Keychain, never in the repo or the data dir.
 
 ## Usage and cost tracking
@@ -429,7 +430,7 @@ Later, unscheduled: layout B for the compactor (ref §7), media in a content-add
 Follow-ups after M5 (held back so the M1–M5 branches merge cleanly):
 
 - The session's single inbox: one queue of incoming messages instead of `queue`, `steer` and `sent`, so every message has one owner at any moment.
-- Remove the mutable `sent` array shared between the session and the engine; the engine reports what it took as events.
+- Remove the mutable `sent` array shared between the session and the engine; the engine reports what it took as events. Today every link of a failover chain shares one `sent`, so a link that failed over can leave it holding what it took (review of PR #4, finding 2; M5 reworks failover).
 - An engine-ref registry: one place that turns `engine:model` into a turn or compactor engine, instead of the parsing in `server/app.ts` and `src/summarize/`.
 - Split `server/app.ts` into route modules (`/ws`, `/mcp`, `/api/*`, static files).
 

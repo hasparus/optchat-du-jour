@@ -45,7 +45,7 @@ const turn = async (url: string, text: string, device: string) => {
   await new Promise((resolve) => {
     ws.addEventListener("open", resolve, { once: true });
   });
-  ws.send(JSON.stringify({ forwardedProps: { device }, messages: [{ content: text, role: "user" }] }));
+  ws.send(JSON.stringify({ forwardedProps: { device }, messages: [{ content: text, id: crypto.randomUUID(), role: "user" }] }));
   await ended.promise;
   ws.close();
   return events;
