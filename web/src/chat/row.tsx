@@ -51,7 +51,7 @@ export class RowBoundary extends Component<{ readonly text: string; readonly chi
   static getDerivedStateFromError() {
     return { failed: true };
   }
-  override render() {
+  override render(): ReactNode {
     return this.state.failed ? <pre className="font-mono text-xs wrap-break-word whitespace-pre-wrap">{this.props.text}</pre> : this.props.children;
   }
 }

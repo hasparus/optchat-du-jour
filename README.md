@@ -6,7 +6,9 @@ A fresh view every turn. [SPEC.md](./SPEC.md) is the build spec.
 
 ```sh
 bun install
-bun run build   # typecheck
+bun run build   # typecheck, and the web UI into web/dist
 bun run lint    # oxlint, @hasparus/oxlint-config
-bun run test
+bun run test    # also the web UI's tests (web/, happy-dom)
+cd web && bun run e2e   # Playwright: the real server, a fake claude, Chromium at 360 px
+cd web && bun run dev   # Vite, proxying /ws and /api to a server on 127.0.0.1:7700
 ```

@@ -15,7 +15,10 @@ import { Devices } from "./devices/devices";
 import { Memory } from "./memory/memory";
 
 // recharts is most of a chart's weight; the chat shouldn't wait for it
-const Stats = lazy(async () => ({ default: (await import("./stats/stats")).Stats }));
+const Stats = lazy(async () => {
+  const module = await import("./stats/stats");
+  return { default: module.Stats };
+});
 
 type Tab = "chat" | "memory" | "stats" | "devices";
 const TABS: readonly Tab[] = ["chat", "memory", "stats", "devices"];

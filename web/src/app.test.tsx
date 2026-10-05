@@ -71,7 +71,8 @@ test("the snapshot shows the log: messages, a collapsed tool call, markdown with
   expect(screen.getByText(/^Bash/)).toBeTruthy();
   expect(screen.getByText("Completed")).toBeTruthy();
   fireEvent.click(screen.getByText(/^Bash/));
-  expect((await screen.findByText(/notes\.md/)).textContent).toContain("repo");
+  const output = await screen.findByText(/notes\.md/);
+  expect(output.textContent).toContain("repo");
   await screen.findByText("notes"); // rendered: the asterisks are markup
   expect(screen.queryByText(/\*\*notes\*\*/)).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Show raw text" }));
