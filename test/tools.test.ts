@@ -48,6 +48,8 @@ test("Read, Glob and Grep stay inside the folders through .., symlinks and absol
   expect(await call("Glob", { path: outside, pattern: "*" })).toStartWith("Error: ");
   expect(await call("Grep", { pattern: "secret" })).toBe("No matches found");
   expect(await call("Grep", { output_mode: "content", pattern: "^b" })).toBe(`${inside}/src/a.txt:2:beta`);
+  // a file ending in a newline has two lines, not a third empty one, even for a pattern that matches ""
+  expect(await call("Grep", { output_mode: "count", path: "src", pattern: "^" })).toBe(`${inside}/src/a.txt:2`);
 
   for (const name of ["Write", "Edit", "Bash"]) expect(await call(name, { command: "touch x", file_path: "x" })).toStartWith(`Error: there is no tool named ${name}`);
   const box = toolBox({ device: "mini", files: run, folders: [inside], mem: newMem() });
