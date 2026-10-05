@@ -304,7 +304,7 @@ test("a truncated clip, garbage behind an MP4 header and bytes of another contai
     const right = await Effect.runPromise(extract(tools, matroska, "video/webm", 180));
     expect(right.frames.length).toBeGreaterThan(0);
   }
-});
+}, 30_000); // a real encode and extraction beside the refusals: more than bun's 5 s default under load
 
 test("a call that runs past its time is killed and the upload is refused; at most two are worked on at once", async () => {
   const dir = fresh();

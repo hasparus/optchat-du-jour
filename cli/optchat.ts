@@ -3,7 +3,8 @@
 // default http://127.0.0.1:7700). The rest run once and exit: `view` reads the data dir without
 // taking the lock, `import-optmem` fills an empty chat from OptMem's notes, `login openai` signs
 // in with ChatGPT for the openai-plan engine and `key anthropic|openai` saves an API key for the
-// api-key engine, both into Secrets.
+// api-key engine, both into Secrets. `server` and `device NAME` start the long-running processes
+// (server/main.ts, device/main.ts), so one command on PATH (`bun link`) covers everything.
 import { BunRuntime } from "@effect/platform-bun";
 import { Cause, Console, Data, Effect, Predicate } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -17,7 +18,7 @@ import { streamDir } from "../src/paths.ts";
 import { loadChat } from "../src/store.ts";
 import { stats, render } from "../src/view.ts";
 
-const USAGE = "usage: optchat [view | import-optmem [LOG.txt] | login openai | key anthropic|openai]   (server: $OPTCHAT_URL; data dir: $OPTCHAT_DIR or ~/.optchat/streams/mini)";
+const USAGE = "usage: optchat [server | device NAME | view | import-optmem [LOG.txt] | login openai | key anthropic|openai]   (server: $OPTCHAT_URL; data dir: $OPTCHAT_DIR or ~/.optchat/streams/mini)";
 const [cmd, arg] = [process.argv[2], process.argv[3]];
 const dir = streamDir("mini");
 
@@ -83,13 +84,15 @@ const commands = new Map<string, Effect.Effect<void, { readonly message: string 
   ["key", arg === "anthropic" || arg === "openai" ? saveKey(arg) : help(false)],
   ["login", arg === "openai" ? loginOpenai : help(false)],
   ["view", view],
+  // the long-running processes, loaded only when asked for
+  ["server", Effect.promise(async () => import("../server/main.ts")).pipe(Effect.flatMap((m) => m.main))],
+  ["device", arg === undefined ? help(false) : Effect.promise(async () => import("../device/main.ts")).pipe(Effect.flatMap((m) => m.main(arg)))],
 ]);
 const repl = runRepl({ url: Bun.env.OPTCHAT_URL ?? "http://127.0.0.1:7700" });
 const command = cmd === undefined ? repl : (commands.get(cmd) ?? help(false));
 
 // why the command stopped, in one line: its error, or what was thrown (a defect, e.g. in the kernel)
 const reason = (cause: Cause.Cause<{ readonly message: string }>) => {
-  if (Cause.hasInterruptsOnly(cause)) return "interrupted";
   const thrown = Cause.squash(cause);
   if (thrown instanceof Error) return thrown.message;
   return Predicate.hasProperty(thrown, "message") && Predicate.isString(thrown.message) ? thrown.message : String(thrown);
@@ -98,13 +101,16 @@ const reason = (cause: Cause.Cause<{ readonly message: string }>) => {
 BunRuntime.runMain(
   command.pipe(
     Effect.catchCause((cause) =>
-      Console.error(`optchat: ${reason(cause)}`).pipe(
-        Effect.andThen(
-          Effect.sync(() => {
-            process.exitCode = 1;
-          }),
-        ),
-      ),
+      // an interrupt (Ctrl-C, SIGTERM to the server or a device) ends the run as it ends any Effect program
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.failCause(cause)
+        : Console.error(`optchat: ${reason(cause)}`).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                process.exitCode = 1;
+              }),
+            ),
+          ),
     ),
   ),
   { disableErrorReporting: true },
