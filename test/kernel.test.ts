@@ -154,3 +154,21 @@ test("id+n addressing matches the gist for every id, n and T under 70", () => {
   expect(K.address(1.5, 1, 4)).toBeNull();
   expect(K.address(-1, 1, 4)).toBeNull();
 });
+
+// A view waits on a long backlog after a big import: 100k lines, nothing to merge. Every walk over it
+// must stay off the JS stack (it overflows past ~20k nested calls), and refold must not go quadratic.
+test("a 100k-line view refolds, appends, fits and offers without blowing the stack", () => {
+  const T = 100_000, mem = newMem(128_000);
+  for (let i = 0; i < T; i++) mem.root.push({ date: "2026-10-05T00:00:00.000Z", i, kind: "user", size: 9, text: "x" });
+  for (let i = 0; i < T; i += 2) setNode(mem, { i, l: 0, size: 100, text: "z".repeat(100) }); // every other leaf built
+  const t0 = performance.now();
+  mem.view = K.refold(mem, HOLE);
+  expect(mem.view).toHaveLength(T);
+  expect(performance.now() - t0).toBeLessThan(5000);
+  expect(K.first(mem)).toBe(1);
+  expect(K.offers(mem)).toEqual([{ i: 1, l: 0 }]);
+  mem.root.push({ date: "2026-10-05T00:00:00.000Z", i: T, kind: "user", size: 9, text: "x" });
+  mem.view = K.append(mem, HOLE);
+  expect(mem.view).toHaveLength(T + 1);
+  expect(K.fit(mem, HOLE)).toHaveLength(T + 1);
+});
