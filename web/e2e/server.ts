@@ -5,7 +5,11 @@
 // Opus, then GPT-6.1 Sol on the plan, to pick between. Every Claude turn runs a tool, then streams
 // its reply slowly enough for a second page to watch it and for a cancel to land; every plan turn
 // answers SOL_REPLY. e2e/fixture.ts starts one per test:
-//   E2E_PORT  the port
+//   E2E_PORT  the port; unset or 0, the server picks a free one itself, just before it binds. Either
+//             way it writes the port to $E2E_HOME/port once it is listening, so the file means this
+//             server holds the port (e2e/fixture.ts reads it, and starts again on another port when
+//             the bind found it taken). The port can't be left to the OS (`port: 0`): the
+//             Host guard, the MCP URL of the local claude and the device routes all need it up front.
 //   E2E_HOME  the data dir (a restart keeps it); a fresh one when unset
 //   E2E_QUICK_SUMMARIES=1  summaries without a `claude` call each, for a test that seeds a long log
 //   E2E_SPENT=1  every Claude turn ends on a usage limit
@@ -13,7 +17,7 @@ import { BunRuntime } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/http";
 import type { Summarize } from "../../src/compactor.ts";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { serverLayer } from "../../server/app.ts";
 import { parseSettings } from "../../src/config.ts";
@@ -25,7 +29,6 @@ import { SOL_REPLY } from "./replies.ts";
 
 const root = new URL("../..", import.meta.url).pathname;
 const home = Bun.env.E2E_HOME ?? mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
-const port = Number(Bun.env.E2E_PORT ?? 7791);
 
 const delta = (text: string) => ({ emit: { event: { delta: { text, type: "text_delta" }, index: 0, type: "content_block_delta" }, type: "stream_event" } });
 const words = ["Streamed ", "reply ", "from ", "the ", "fake ", "claude."];
@@ -62,10 +65,22 @@ const settings = parseSettings({
   master: { chain: ["claude-code:opus", "openai-plan:gpt-6.1-sol"], effort: "high", permissionMode: "bypassPermissions" },
 });
 
+// written whole (a rename), and only when `serverLayer` has bound its port: a layer provided with
+// it is built after it
+const announce = (port: number) =>
+  Layer.effectDiscard(
+    Effect.sync(() => {
+      writeFileSync(`${home}/port.tmp`, String(port));
+      renameSync(`${home}/port.tmp`, `${home}/port`);
+    }),
+  );
+
 BunRuntime.runMain(
   Effect.gen(function* () {
+    const port = Number(Bun.env.E2E_PORT ?? 0) || freePort(); // as late as possible: the bind is next
     yield* Effect.logInfo(`e2e optchat-server on http://127.0.0.1:${port}, home ${home}`);
     const summarize: Summarize | undefined = Bun.env.E2E_QUICK_SUMMARIES ? (job) => Effect.succeed(`summary of ${job.l}:${job.i}`) : undefined;
-    return yield* Layer.launch(serverLayer({ device: "mini", home, host: "127.0.0.1", port, secrets, settings, summarize, web: `${root}web/dist` }));
+    const serve = serverLayer({ device: "mini", home, host: "127.0.0.1", port, secrets, settings, summarize, web: `${root}web/dist` });
+    return yield* Layer.launch(announce(port).pipe(Layer.provide(serve)));
   }),
 );

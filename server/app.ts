@@ -19,7 +19,7 @@ import { OpenAiPlan, openAiPlanLayer } from "../src/openai/responses.ts";
 import { makeCaptioner } from "../src/media/caption.ts";
 import { makeMedia } from "../src/media/media.ts";
 import { makePersist } from "../src/persist.ts";
-import { promptFile, systemPrompt } from "../src/prompts.ts";
+import { systemPrompt } from "../src/prompts.ts";
 import { type Secrets, SecretsLive } from "../src/secrets.ts";
 import { makeSession, type SessionEvent } from "../src/session.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
@@ -85,14 +85,13 @@ export const routes = (o: ServerOptions) =>
       const chat = yield* openChat(stream, { report, summarize: compactor.summarize });
 
       const instructions = systemPrompt(o.home); // one text for every engine and device (gist §7.2)
-      const systemFile = yield* promptFile(instructions);
       const { runnerFor, toolsFor, unreachable } = yield* makePlacements({ device: o.device, local, mem: chat.mem, port: o.port, report, secret, settings });
       // the master's chain as the session keeps it (src/master.ts), made here so each engine can
       // ask whether the warm processes follow it: the most recent turn's (E18)
       const master = yield* makeMaster(settings.master.chain.map((r) => r.ref));
       const choices = startingChoices({ followUp: settings.master.followUp }, yield* loadChoices(choicesPath, report));
       const engines = yield* Effect.forEach(settings.master.chain, (ref) =>
-        turnEngine(ref, { ...needs, instructions, runnerFor, systemFile, toolsFor, warms: () => master.latest() === ref.ref }),
+        turnEngine(ref, { ...needs, instructions, runnerFor, toolsFor, warms: () => master.latest() === ref.ref }),
       );
       // attachments: the shared asset store under the home, captions by their own chain (SPEC "Media")
       const mediaConfig = mediaSettings(settings);

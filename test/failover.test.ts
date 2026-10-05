@@ -180,7 +180,7 @@ test("a spent Claude plan stops the turn until the user resumes it on openai-pla
 
         // what reached the Responses API: claude's exact system prompt, the view then the text, read-only tools
         const [first, second] = fake.state.seen.map((s) => decodeBody(s.body));
-        const turn = readFileSync(`${home}/fake.jsonl`, "utf8").split("\n").flatMap((l) => Option.toArray(decodeStart(l))).find((s) => s.role === "turn" && s.argv.includes("--system-prompt")); // macbook's, not mini's warm one
+        const turn = readFileSync(`${home}/fake.jsonl`, "utf8").split("\n").flatMap((l) => Option.toArray(decodeStart(l))).find((s) => s.role === "turn"); // any device's: all carry the same --system-prompt
         const argv = turn?.argv ?? [];
         expect(first?.instructions).toBe(argv[argv.indexOf("--system-prompt") + 1] ?? "");
         expect(first?.tools.map((t) => t.name)).toEqual(["Read", "Glob", "Grep", "zoom", "date"]);
