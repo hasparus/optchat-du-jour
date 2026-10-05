@@ -79,7 +79,10 @@ export function openStream(o: {
   let from = o.entries.length; // the first log index this connection has not been shown
   let run: string | null = null; // the run whose RUN_STARTED it got
   let text: { id: string; sent: number } | null = null; // the open reply: its id (log index) and how much of it went out
-  let tool: string | null = null;
+  // the tool call its next echo answers: for a client that joins between a tool entry and its
+  // echo, that tool, the snapshot's last entry, as toMessages pairs them
+  const last = o.entries.at(-1);
+  let tool: string | null = last?.kind === "tool" ? toolCallId(last.i) : null;
 
   const closeText = (): AgUiEvent[] => {
     if (text === null) return [];
