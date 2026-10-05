@@ -51,20 +51,10 @@ const shown = (input: string) => {
   return parsed._tag === "Some" ? JSON.stringify(parsed.value) : input;
 };
 
-// The mid-run messages waiting now: off the queue into `sent` before anything can interrupt (so
-// the session finds each one in the queue or in `sent`), then logged and marked taken one by one.
-// Also the ones an engine before this one never took, after a failover.
+// The mid-run messages passed on so far and not yet taken, now taken: logged and marked one by
+// one, each a user message of its own. Also the ones an engine before this one never took.
 const steered = (input: TurnInput, out: TurnEvents): Effect.Effect<Item[], StoreError> =>
   Effect.gen(function* () {
-    yield* Effect.uninterruptible(
-      Queue.clear(input.steer).pipe(
-        Effect.tap((texts) =>
-          Effect.sync(() => {
-            for (const text of texts) input.sent.push({ taken: false, text });
-          }),
-        ),
-      ),
-    );
     const items: Item[] = [];
     for (const s of input.sent) {
       if (s.taken) continue;
@@ -86,6 +76,18 @@ export const toolLoop = (o: {
   const run: TurnEngine["run"] = (input, out, failoverFrom) =>
     Effect.gen(function* () {
       const box = o.toolsFor(input.device);
+      // Mid-run messages move from the queue to `sent` as they come, as claude-code passes them to
+      // stdin: taken off the queue and into `sent` before anything can interrupt, so the session
+      // finds each one in one place or the other. They join at the next round.
+      yield* Effect.uninterruptibleMask((restore) =>
+        restore(Queue.take(input.steer)).pipe(
+          Effect.tap((text) =>
+            Effect.sync(() => {
+              input.sent.push({ taken: false, text });
+            }),
+          ),
+        ),
+      ).pipe(Effect.forever, Effect.forkScoped);
       const view = cutBlocks(input.view);
       const history: Item[] = [{ parts: [...view, opening(input)], stable: view.length, type: "user" }];
       for (let round = 1; ; round++) {
@@ -126,6 +128,6 @@ export const toolLoop = (o: {
           history.push({ id: call.id, output, type: "result" });
         }
       }
-    });
+    }).pipe(Effect.scoped); // the forwarder ends with the turn
   return { ref: o.ref, run };
 };

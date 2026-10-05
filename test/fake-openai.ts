@@ -1,11 +1,14 @@
 // A stand-in for auth.openai.com and the Responses API, in one Bun.serve on a free port: the
 // authorize page (it signs in at once and redirects, as a browser would after a click), the token
-// endpoint (PKCE checked, refresh tokens rotated) and /v1/responses, which answers from a script.
+// endpoint (PKCE checked, refresh tokens rotated) and /v1/responses, which answers from a script:
+// streamed text, function calls, an HTTP error or a failed stream. An answer may wait on `gate`
+// before it starts, so a test can act while a request is in flight.
 import { createHash } from "node:crypto";
 
 // what the next /v1/responses call does
+export type Call = { readonly name: string; readonly arguments: string };
 export type Answer =
-  | { readonly text: string; readonly cached?: number }
+  | { readonly text?: string; readonly calls?: readonly Call[]; readonly cached?: number; readonly gate?: Promise<unknown> }
   | { readonly status: number; readonly code: string } // an HTTP error with an OpenAI error body
   | { readonly failed: string }; // the stream starts, then response.failed
 
@@ -78,6 +81,7 @@ export function fakeOpenAi() {
         const body = await req.text();
         state.seen.push({ body, token });
         const answer = state.script.shift() ?? { text: "user: ok" };
+        if ("gate" in answer) await answer.gate;
         if ("status" in answer) return json({ error: { code: answer.code, message: "limit" } }, answer.status);
         type Event = Parameters<typeof sse>[0];
         const events: Event[] =
@@ -85,7 +89,12 @@ export function fakeOpenAi() {
             ? [{ type: "response.created" }, { response: { error: { code: answer.failed, message: "stopped" } }, type: "response.failed" }]
             : [
                 { type: "response.created" },
-                ...[...answer.text.match(/.{1,40}/gsu) ?? []].map((delta) => ({ delta, type: "response.output_text.delta" })),
+                ...[...(answer.text ?? "").match(/.{1,40}/gsu) ?? []].map((delta) => ({ delta, type: "response.output_text.delta" })),
+                ...(answer.text ? [{ item: { content: [{ text: answer.text, type: "output_text" }], type: "message" }, type: "response.output_item.done" }] : []),
+                ...(answer.calls ?? []).map((c, k) => ({
+                  item: { arguments: c.arguments, call_id: `call_${state.seen.length}_${k}`, name: c.name, type: "function_call" },
+                  type: "response.output_item.done",
+                })),
                 {
                   response: { model: "fake-luna", usage: { input_tokens: 1000, input_tokens_details: { cached_tokens: answer.cached ?? 0 }, output_tokens: 50 } },
                   type: "response.completed",

@@ -7,13 +7,14 @@ import { FetchHttpClient } from "effect/http";
 import { loadSettings } from "../src/config.ts";
 import { importOptmem } from "../src/import.ts";
 import { endpointsOf, login } from "../src/openai/auth.ts";
-import { SecretsLive } from "../src/secrets.ts";
+import { KEY_SECRETS } from "../src/apikey/clients.ts";
+import { Secrets, SecretsLive } from "../src/secrets.ts";
 import { runRepl } from "./repl.ts";
 import { streamDir } from "../src/paths.ts";
 import { loadChat } from "../src/store.ts";
 import { render, stats } from "../src/view.ts";
 
-const USAGE = "usage: optchat [view | import-optmem [LOG.txt] | login openai]   (server: $OPTCHAT_URL; data dir: $OPTCHAT_DIR or ~/.optchat/streams/mini)";
+const USAGE = "usage: optchat [view | import-optmem [LOG.txt] | login openai | key anthropic|openai]   (server: $OPTCHAT_URL; data dir: $OPTCHAT_DIR or ~/.optchat/streams/mini)";
 const [cmd, arg] = [process.argv[2], process.argv[3]];
 const dir = streamDir("mini");
 
@@ -45,6 +46,20 @@ const loginOpenai = Effect.gen(function* () {
   yield* Console.log(`signed in${c.email === undefined ? "" : ` as ${c.email}`}; the compactor can use your ChatGPT plan`);
 });
 
+// an API key for the api-key engine, read from stdin (pasted, or piped) into the Keychain; never an argument, which ps would show
+const saveKey = (provider: keyof typeof KEY_SECRETS) =>
+  Effect.gen(function* () {
+    if (process.stdin.isTTY) yield* Console.log(`Paste the ${provider} API key and press Enter:`);
+    const key = yield* Effect.promise(async () => {
+      for await (const line of console) return line.trim();
+      return "";
+    });
+    if (!key) return yield* Effect.fail({ message: "no key given" });
+    const secrets = yield* Secrets;
+    yield* secrets.set(KEY_SECRETS[provider], key);
+    yield* Console.log(`saved; the api-key engine can use ${provider} within the monthly budget in optchat.config.ts`);
+  }).pipe(Effect.provide(SecretsLive));
+
 const usage = Effect.gen(function* () {
   yield* Console.error(USAGE);
   process.exitCode = cmd === "--help" || cmd === "-h" ? 0 : 2;
@@ -62,6 +77,8 @@ const pick = (): Effect.Effect<void, { readonly message: string }> => {
       return importNotes;
     case "login":
       return arg === "openai" ? loginOpenai : usage;
+    case "key":
+      return arg === "anthropic" || arg === "openai" ? saveKey(arg) : usage;
     default:
       return usage;
   }

@@ -98,12 +98,14 @@ const binary = (text: string) => text.slice(0, 8000).includes("\u0000");
 
 // output cut at OUTPUT characters, saying so
 const bounded = (lines: readonly string[]) => {
-  let out = "";
+  const kept: string[] = [];
+  let size = 0;
   for (const line of lines) {
-    if (out.length + line.length + 1 > OUTPUT) return `${out}[… output cut at ${OUTPUT} characters …]`;
-    out += `${line}\n`;
+    size += line.length + 1;
+    if (size > OUTPUT) return [...kept, `[… output cut at ${OUTPUT} characters …]`].join("\n");
+    kept.push(line);
   }
-  return out.trimEnd();
+  return kept.join("\n");
 };
 
 // a pattern stays below the folder it searches: no absolute patterns, no `..`
@@ -135,6 +137,7 @@ export const makeFileTools = (folders: readonly string[]) =>
         if (binary(text)) return yield* new Refused({ message: `${i.file_path} is a binary file` });
         if (text === "") return "(empty file)";
         const lines = text.split("\n");
+        if (text.endsWith("\n")) lines.pop(); // a final newline ends the last line; it starts none
         const from = Math.max(1, i.offset ?? 1);
         const shown = lines.slice(from - 1, from - 1 + Math.max(1, i.limit ?? READ_LINES));
         return bounded(shown.map((line, k) => `${String(from + k).padStart(6)}\t${line.length > LINE_CHARS ? `${line.slice(0, LINE_CHARS)}[…]` : line}`));
