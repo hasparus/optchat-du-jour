@@ -125,6 +125,11 @@ test("an unexplained end before init moves a device only when it happens twice i
   const crash = { ended: "claude was killed (SIGKILL): no error output" };
   expect(await seen(crash)).toBe(false);
   expect(await seen({ status: "connected" })).toBe(false); // an init in between: the count starts over
+  // a config rejected for another entry, or a mention of mcpServers alone, says nothing about ours
+  expect(await seen({ ended: "Error: Invalid MCP configuration:\nmcpServers.other: Does not adhere to MCP server configuration schema" })).toBe(false);
+  expect(await seen({ status: "connected" })).toBe(false);
+  expect(await seen({ ended: "Error: could not read mcpServers.optchat" })).toBe(false);
+  expect(await seen({ status: "connected" })).toBe(false);
   expect(await seen(crash)).toBe(false);
   expect(t.of("mini")).toBe("ws");
   expect(await seen(crash)).toBe(true);

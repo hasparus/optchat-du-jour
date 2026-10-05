@@ -43,6 +43,9 @@ export type ClaudeCodeTurnOptions = {
   readonly runnerFor: (device: string) => Effect.Effect<Placement, DeviceOffline>;
   readonly report: (message: string) => Effect.Effect<void>;
   readonly logUsage: TurnEvents["usage"];
+  // the first engine of the master's chain: the session has only its spawns started ahead (E18),
+  // so only it starts them again when a device moves to another MCP transport
+  readonly lead: boolean;
 };
 
 // One argv for the turn and its priming call: any difference between the two would cost the
@@ -228,11 +231,13 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
       );
 
     // What one claude shows of optchat goes to its device's transport (E8): init's status, or why
-    // it ended before any init. A device moved to another transport is warmed again, so its next
-    // spawns, with the new --mcp-config, find processes started ahead and the stale ones close.
+    // it ended before any init. A device moved to another transport is warmed again by the lead
+    // engine, so its next spawns, with the new --mcp-config, find processes started ahead and the
+    // stale ones close. Another engine's move leaves them to the session's next warm, when it goes
+    // idle: started now, its own spawns would take the lead's place.
     const mcpWatch = (device: string, p: Placement) => {
       let init = false;
-      const tell = (seen: McpSeen) => p.mcpSeen(seen).pipe(Effect.flatMap((moved) => (moved ? warm(device) : Effect.void)));
+      const tell = (seen: McpSeen) => p.mcpSeen(seen).pipe(Effect.flatMap((moved) => (moved && o.lead ? warm(device) : Effect.void)));
       return {
         ended: (e: ModelError) => Effect.suspend(() => (init ? Effect.void : tell({ ended: e.message }))),
         init: (status: string) =>

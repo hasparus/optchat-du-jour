@@ -81,7 +81,7 @@ export const routes = (o: ServerOptions) =>
       const instructions = systemPrompt(o.home); // one text for every engine and device (gist §7.2)
       const systemFile = yield* promptFile(instructions);
       const { runnerFor, toolsFor, unreachable } = yield* makePlacements({ device: o.device, local, mem: chat.mem, port: o.port, report, secret, settings });
-      const engines = yield* Effect.forEach(settings.master.chain, (ref) => turnEngine(ref, { ...needs, instructions, runnerFor, systemFile, toolsFor }));
+      const engines = yield* Effect.forEach(settings.master.chain, (ref, k) => turnEngine(ref, { ...needs, instructions, lead: k === 0, runnerFor, systemFile, toolsFor }));
       const persist = yield* makePersist(report);
       const session = yield* makeSession({
         chat,

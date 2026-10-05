@@ -172,8 +172,9 @@ export const mcpConfig = (url: string, transport: McpTransport = "ws") =>
 export type McpSeen = { readonly status: string } | { readonly ended: string };
 
 // Claude Code checks --mcp-config as it starts and ends before system/init on a config it rejects,
-// saying "Error: Invalid MCP configuration:" and the path of each entry at fault
-const REJECTED = /Invalid MCP configuration|mcpServers/;
+// saying "Error: Invalid MCP configuration:" and the path of each entry at fault: ours only when
+// that names mcpServers.optchat
+const REJECTED = /Invalid MCP configuration[\s\S]*\bmcpServers\.optchat\b/;
 
 // The transport per device: `preferred` until a claude there shows that ws does not work for it;
 // that device then uses http from the next call on, and the user is told once. While on ws, it

@@ -41,6 +41,7 @@ export type CompactorNeeds = EngineNeeds & { readonly device?: string; readonly 
 // a turn engine's needs: the one system prompt (gist §7.2), where each device's claude runs (E7),
 // and the read-only tools of an engine with its own loop (M5)
 export type TurnNeeds = EngineNeeds & {
+  readonly lead: boolean; // the first link of the master's chain (E18)
   readonly instructions: string;
   readonly systemFile: string;
   readonly runnerFor: (device: string) => Effect.Effect<Placement, DeviceOffline>;
@@ -68,6 +69,7 @@ export const turnEngine = (ref: Ref, o: TurnNeeds): Effect.Effect<TurnEngine> =>
     case "claude-code":
       return claudeCodeTurn({
         effort,
+        lead: o.lead,
         logUsage: o.log,
         model: ref.model,
         permissionMode,

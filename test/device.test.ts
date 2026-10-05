@@ -382,6 +382,7 @@ test("a connection lost mid-turn is a ModelError, so the chain doesn't run the t
       Effect.gen(function* () {
         const engine = yield* claudeCodeTurn({
           effort: "high",
+          lead: true,
           logUsage: () => Effect.void,
           model: "opus",
           permissionMode: "bypassPermissions",
