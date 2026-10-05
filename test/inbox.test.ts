@@ -32,6 +32,11 @@ describe("inbox", () => {
     expect(texts(nextTurn([msg("o", { state: "offered" }), msg("p", { state: "picked" }), msg("h")], "mini").batch)).toEqual(["h"]);
   });
 
+  test("nextTurn: the device comes from the batch: one named only past the cut for another engine is not the batch's", () => {
+    const inbox = [msg("m1"), msg("m2", { device: "macbook", engine: "b:x" })];
+    expect(nextTurn(inbox, "mini")).toEqual({ batch: inbox.slice(0, 1), engine: "a:x", on: "mini" });
+  });
+
   test("nextTurn: the engine of the first held message, and the held ones up to the first for another engine", () => {
     const inbox = [msg("a", { engine: "b:x" }), msg("b", { engine: "b:x" }), msg("c"), msg("d", { engine: "b:x" })];
     expect(nextTurn(inbox, "mini")).toEqual({ batch: inbox.slice(0, 2), engine: "b:x", on: "mini" });

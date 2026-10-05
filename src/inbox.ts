@@ -43,13 +43,21 @@ const runnable = (inbox: readonly Incoming[], at: Where) => {
   return other === -1 ? waiting : waiting.slice(0, other);
 };
 
-// The next turn's device, engine and messages: the device of the first held message that has one
-// (sent for it, or left by a call that ran there), else the default; the engine of the first held
-// message; and the held messages up to the first one for another device or engine.
+// The next turn's engine, device and messages: the engine of the first held message, and the held
+// messages from it up to the first one for another engine, or for another device than the first
+// of them that names one (sent for it, or left by a call that ran there). That device is the
+// turn's, else the default: a batch never runs on a device only a message outside it named.
 export const nextTurn = (inbox: readonly Incoming[], defaultDevice: string) => {
   const waiting = held(inbox);
-  const at: Where = { engine: waiting[0]?.engine ?? "", on: waiting.find((m) => m.device)?.device ?? defaultDevice };
-  return { ...at, batch: runnable(inbox, at) };
+  const engine = waiting[0]?.engine ?? "";
+  let on: string | null = null;
+  const batch: Incoming[] = [];
+  for (const m of waiting) {
+    if (m.engine !== engine || (m.device !== null && on !== null && m.device !== on)) break;
+    on ??= m.device;
+    batch.push(m);
+  }
+  return { batch, engine, on: on ?? defaultDevice };
 };
 
 // The held messages that join the call running at `at`, marked offered and returned for its
