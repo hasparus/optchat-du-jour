@@ -17,7 +17,7 @@ import { makePersist } from "../src/persist.ts";
 import { promptFile, systemPrompt } from "../src/prompts.ts";
 import { makeSession } from "../src/session.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
-import { getNode, localTime, span } from "../src/tree.ts";
+import { children, getNode, localTime, span } from "../src/tree.ts";
 import { claudeCodeTurn } from "../src/turn/claude-code.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
 import { type UsageRecord, logUsage, readUsage } from "../src/usage.ts";
@@ -188,7 +188,8 @@ export const routes = (o: ServerOptions) =>
           json({
             budget: chat.mem.budget,
             lines: chat.mem.view.map((c) => {
-              const { id, n } = span(c), node = getNode(chat.mem, c.l, c.i);
+              const node = getNode(chat.mem, c);
+              const { id, n } = span(c);
               const from = chat.mem.root[id], to = chat.mem.root[id + n - 1];
               return {
                 built: node !== undefined,
@@ -217,14 +218,16 @@ export const routes = (o: ServerOptions) =>
             const m = chat.mem.root[i];
             return m ? json({ id, kind: m.kind, l, i, n, text: m.text, date: localTime(m.date) }) : HttpServerResponse.empty({ status: 404 });
           }
-          const kids = [getNode(chat.mem, l - 1, 2 * i), getNode(chat.mem, l - 1, 2 * i + 1)];
           return json({
-            children: kids.map((k, j) => ({ built: k !== undefined, i: 2 * i + j, l: l - 1, text: k?.text ?? null })),
+            children: children({ i, l }).map((c) => {
+              const half = getNode(chat.mem, c);
+              return { built: half !== undefined, i: c.i, l: c.l, text: half?.text ?? null };
+            }),
             id,
             l,
             i,
             n,
-            text: getNode(chat.mem, l, i)?.text ?? null,
+            text: getNode(chat.mem, { i, l })?.text ?? null,
           });
         }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
       );

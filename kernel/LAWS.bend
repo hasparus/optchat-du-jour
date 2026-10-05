@@ -153,17 +153,6 @@ def UnbuiltAt(ps: List<&2, K.Part>, x: Nat) -> Type:
       K.Part{+l, i, _, b, _} = p
       (({Start(l, i) == x : Nat} & {b == False{} : Bool}) | UnbuiltAt(rest, x))
 
-# where a node's stretch ends, for rule 3 (gist §4.1): message i itself for
-# a level-0 node (everything before it must be summarized), the end of
-# the stretch for a merge
-def End(c: K.Coord) -> Nat:
-  K.Coord{l, i} = c
-  match l:
-    case 0n:
-      i
-    case 1n+m:
-      Start(1n+m, 1n+i)
-
 # an offer rule 3 allows (gist §4.1): the node exists and is unbuilt, its
 # sources exist (above level 0, both children are built), and every view
 # line before the node's end is built
