@@ -84,6 +84,7 @@ export function makeScreen(o: ScreenOptions) {
   let failed = 0; // sent from here, and the server could not log them
   let offline = false; // the connection is down and the user has been told so
   const users = new Set<string>(); // the ids of user messages being logged
+  const refused = new Set<string>(); // the ids of messages sent from here that the log refused
 
   const dim = (s: string) => (o.color ? `\u001B[2m${s}\u001B[0m` : s);
   const row = (s: string) => {
@@ -143,6 +144,8 @@ export function makeScreen(o: ScreenOptions) {
   // again when its user entry follows) or could not be, and counts as answered with an error
   const acked = (clientId: string, messageId: string | null, error: string | null) => {
     const at = mine.indexOf(clientId);
+    // one the log refused is acked again when a later turn logs it: not shown again either
+    if (at === -1 && messageId !== null && refused.delete(clientId)) own.add(messageId);
     if (at === -1) return;
     mine.splice(at, 1);
     if (messageId !== null) {
@@ -151,6 +154,7 @@ export function makeScreen(o: ScreenOptions) {
       return;
     }
     failed++;
+    refused.add(clientId);
     note(`not logged: ${clean(error ?? "")}`);
   };
 

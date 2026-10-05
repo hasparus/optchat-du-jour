@@ -107,6 +107,9 @@ describe("repl screen", () => {
     expect(t.s.unanswered).toBe(0);
     expect(t.s.failed).toBe(1);
     expect(t.out()).toContain("not logged: disk full\n");
+    // a later turn logs it after all, acked again: still not shown as another client's
+    t.feed(ack(lost, "7"), ...said("7", "user", "lost"));
+    expect(t.out().match(/> lost/g)).toHaveLength(1); // its echo as it was sent
   });
 
   test("a lost connection is told once, and so is its return", () => {

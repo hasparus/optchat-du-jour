@@ -2,7 +2,7 @@
 // the folder boundary, how claude ended, children that outlive their socket, an offline device and
 // a connection lost mid-turn. A fake claude, no model.
 import { afterAll, expect, test } from "bun:test";
-import { Effect, Layer, Option, Queue, type Scope } from "effect";
+import { Effect, Layer, Option, type Scope } from "effect";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { type Trust, type WhoIs, cachedWhois, callerNames, trusted } from "../device/auth.ts";
@@ -392,8 +392,8 @@ test("a connection lost mid-turn is a ModelError, so the chain doesn't run the t
           tools: MASTER_TOOLS,
           ttl: "1h",
         });
-        const input = { device: "macbook", earlier: [], sent: [], steer: yield* Queue.unbounded<string>(), texts: ["edit it"], view: "<chat>\n</chat>" };
-        const out = { info: () => Effect.void, log: () => Effect.void, text: () => Effect.void, thinking: () => Effect.void, usage: () => Effect.void };
+        const input = { device: "macbook", earlier: [], mid: { next: Effect.never, ready: Effect.succeed([]) }, texts: ["edit it"], view: "<chat>\n</chat>" };
+        const out = { info: () => Effect.void, log: () => Effect.void, text: () => Effect.void, thinking: () => Effect.void, took: () => Effect.void, usage: () => Effect.void };
         return yield* failover(
           [
             { ref: "claude-code:opus", run: (from) => engine.run(input, out, from) },

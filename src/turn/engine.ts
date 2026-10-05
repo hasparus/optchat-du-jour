@@ -1,26 +1,29 @@
 // What a turn engine is given and what it reports (SPEC "Engines"): the view and the new texts in,
-// log entries and live events out. Mid-run messages arrive on `steer`; the engine says which it
-// took, and the session decides what becomes of the rest. When the chain fails over in the
-// middle of a turn, the next engine gets the same input: what the first one logged is in
-// `earlier`, and the mid-run messages it never took are still untaken in `sent` or the queue.
-import type { Effect, Queue } from "effect";
+// log entries and live events out. Mid-run messages stay the session's until a call takes one:
+// they are offered to the running call on `mid`, the call reports each one it passed to the model
+// with `took` (the session logs it then), and whatever it was offered and never took goes back to
+// the session when the call ends. When the chain fails over in the middle of a turn, the next
+// engine gets the same view and texts, what the turn has logged so far as `earlier`, and on `mid`
+// the messages the engine before never took, then any new ones.
+import type { Effect } from "effect";
 import type { EngineError } from "../engines/errors.ts";
 import type { Kind } from "../records.ts";
 import type { StoreError } from "../store.ts";
 import type { UsageRecord } from "../usage.ts";
 
-export type Sent = { readonly text: string; taken: boolean };
+// a message sent while the turn runs, as offered to one call; `seq` is the session's name for it
+export type Mid = { readonly seq: number; readonly text: string };
 export type Logged = { readonly kind: Kind; readonly text: string };
 
 export type TurnInput = {
   readonly view: string;
   readonly texts: readonly string[];
   readonly device: string;
-  // messages the user sends while the turn runs; the engine appends each to `sent` as it passes it on
-  readonly steer: Queue.Queue<string>;
-  readonly sent: Sent[];
-  // what this turn's engines logged so far, in order; the session appends, an engine reads
-  readonly earlier: Logged[];
+  // the mid-run messages offered to this call, oldest first: `next` waits for one, `ready` takes
+  // every one there now without waiting
+  readonly mid: { readonly next: Effect.Effect<Mid>; readonly ready: Effect.Effect<readonly Mid[]> };
+  // what this turn's engines logged before this call, in order (read from the log)
+  readonly earlier: readonly Logged[];
 };
 
 // The opening message's own text: the new texts, and after a failover mid-turn what the engine
@@ -33,7 +36,9 @@ export const openingText = (input: Pick<TurnInput, "earlier" | "texts">) => {
 };
 
 export type TurnEvents = {
-  readonly log: (kind: Kind, body: string) => Effect.Effect<void, StoreError>;
+  readonly log: (kind: Exclude<Kind, "user">, body: string) => Effect.Effect<void, StoreError>;
+  // the call passed this mid-run message to the model: it is logged as `user` now, once
+  readonly took: (message: Mid) => Effect.Effect<void, StoreError>;
   readonly text: (delta: string) => Effect.Effect<void>; // live reply text, never logged as such
   readonly thinking: (tokens: number) => Effect.Effect<void>; // the size of a thought; its text is never kept
   readonly info: (message: string) => Effect.Effect<void>;

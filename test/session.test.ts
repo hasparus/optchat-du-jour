@@ -1,13 +1,16 @@
 // The session's turn loop with scripted engines: how it ends when a turn throws (a defect) or the
-// log refuses a message. Nothing sent may be lost, and the loop never spins.
+// log refuses a message, and what becomes of each message in the inbox: its ack names its own
+// entry, and a failover hands on exactly what the engine before never took. Nothing sent may be
+// lost or logged twice, and the loop never spins.
 import { afterAll, expect, test } from "bun:test";
-import { Effect, PubSub, Queue } from "effect";
+import { Effect, PubSub } from "effect";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
+import { UsageLimit } from "../src/engines/errors.ts";
 import { makeSession, type SessionEvent } from "../src/session.ts";
 import { StoreError } from "../src/store.ts";
-import type { TurnEngine } from "../src/turn/engine.ts";
+import type { Mid, TurnEngine, TurnInput } from "../src/turn/engine.ts";
 
 const dirs: string[] = [];
 afterAll(() => {
@@ -24,7 +27,7 @@ const until = (what: string, ok: () => boolean, ms = 4000) =>
   });
 
 // a session over a fresh chat whose log can be made to fail; every event it publishes is kept
-const rig = (engine: TurnEngine) =>
+const rig = (engine: TurnEngine | readonly TurnEngine[], o: { readonly commit?: Effect.Effect<void> } = {}) =>
   Effect.gen(function* () {
     const dir = mkdtempSync(`${tmpdir()}/oc-`);
     dirs.push(dir);
@@ -38,13 +41,13 @@ const rig = (engine: TurnEngine) =>
       return disk.full ? Effect.fail(new StoreError({ message: "disk full" })) : chat.log(kind, body, extra);
     };
     const counts = { commits: 0 };
-    const commit = Effect.sync(() => ((counts.commits += 1), null));
+    const commit = (o.commit ?? Effect.void).pipe(Effect.andThen(Effect.sync(() => ((counts.commits += 1), null))));
     const session = yield* makeSession({
       chat: { ...chat, log },
       commit,
       defaultDevice: "mini",
       devices: ["mini"],
-      engines: [engine],
+      engines: Array.isArray(engine) ? engine : [engine],
       idle: "1 hour",
       logUsage: () => Effect.void,
     });
@@ -76,8 +79,9 @@ test("a turn that dies with messages steered into it logs every one of them unan
         run: (input) =>
           Effect.gen(function* () {
             if (++calls > 1) return;
-            // the first call takes one message, then dies while a second still waits on `steer`
-            input.sent.push({ taken: false, text: yield* Queue.take(input.steer) });
+            // the first call is passed one message and never takes it, then dies while a second
+            // is still on its way
+            yield* input.mid.next;
             yield* Effect.sleep("50 millis");
             return yield* Effect.die(new Error("boom in engine"));
           }),
@@ -154,6 +158,116 @@ test("a message the log refuses stays queued, its sender is told, and the next m
         ["talk", "an answer"],
       ]);
       expect(r.said().at(-2)).toBe("ack c2: 1");
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("two clients sending the same text get acks naming their own entries, also once the log refused one", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const engine: TurnEngine = { ref: "fake:x", run: (_input, out) => out.log("talk", "an answer"), warm: () => Effect.void };
+      const r = yield* rig(engine);
+      r.disk.full = true;
+      yield* r.session.input("same", undefined, "a1");
+      yield* until("idle", () => r.events.some((e) => e.type === "state" && e.state.phase === "idle"));
+      r.disk.full = false;
+      // b's message has a's text; the next turn logs a's first, then b's
+      yield* r.session.input("same", undefined, "b1");
+      yield* until("the run's end", () => r.events.some((e) => e.type === "run-finished"));
+      expect(r.log()).toEqual([
+        ["user", "same"],
+        ["user", "same"],
+        ["talk", "an answer"],
+      ]);
+      expect(r.said()).toEqual(["info: error: disk full", "ack a1: disk full", "ack a1: 0", "ack b1: 1", "end: ok"]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("a message that comes in while the loop winds down after a defect gets its turn, not an error", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      let calls = 0;
+      const engine: TurnEngine = {
+        ref: "fake:x",
+        run: (_input, out) => (++calls === 1 ? Effect.die(new Error("boom")) : out.log("talk", "an answer")),
+        warm: () => Effect.void,
+      };
+      const committing = { now: false };
+      const commit = Effect.sync(() => (committing.now = true)).pipe(Effect.andThen(Effect.sleep("100 millis")), Effect.ensuring(Effect.sync(() => (committing.now = false))));
+      const r = yield* rig(engine, { commit });
+      yield* r.session.input("first", undefined, "c1");
+      yield* until("the commit after the defect", () => committing.now);
+      yield* r.session.input("second", undefined, "c2");
+      yield* until("the second run's end", () => r.events.filter((e) => e.type === "run-finished").length === 2);
+      expect(r.log()).toEqual([
+        ["user", "first"],
+        ["user", "second"],
+        ["talk", "an answer"],
+      ]);
+      expect(r.said()).toEqual(["ack c1: 0", "end: the turn stopped: boom", "info: error: the turn stopped: boom", "ack c2: 1", "end: ok"]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("a failover mid-turn hands the next engine what the first never took, once, with the log so far; each ack names its own entry", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const seen: { earlier: TurnInput["earlier"]; mid: string[] }[] = [];
+      const passed = { now: 0 };
+      // takes the first mid-run message it is passed, is passed a second, then hits its limit
+      const first: TurnEngine = {
+        ref: "first:x",
+        run: (input, out) =>
+          Effect.gen(function* () {
+            yield* out.log("talk", "on it");
+            const m: Mid = yield* input.mid.next;
+            passed.now += 1;
+            yield* out.took(m);
+            yield* out.took(m); // a second report of the same message logs nothing
+            yield* input.mid.next;
+            passed.now += 1;
+            return yield* new UsageLimit({ message: "spent" });
+          }),
+        warm: () => Effect.void,
+      };
+      const second: TurnEngine = {
+        ref: "second:x",
+        run: (input, out) =>
+          Effect.gen(function* () {
+            const ready = yield* input.mid.ready;
+            seen.push({ earlier: input.earlier, mid: ready.map((m) => m.text) });
+            for (const m of ready) yield* out.took(m);
+            yield* out.log("talk", "done");
+          }),
+        warm: () => Effect.void,
+      };
+      const r = yield* rig([first, second]);
+      yield* r.session.input("go", undefined, "a1");
+      yield* until("the reply", () => r.log().some(([kind]) => kind === "talk"));
+      // two clients, the same text, both sent mid-run
+      yield* r.session.input("same", undefined, "a2");
+      yield* until("the first passed", () => passed.now === 1);
+      yield* r.session.input("same", undefined, "b1");
+      yield* until("the run's end", () => r.events.some((e) => e.type === "run-finished"));
+      expect(r.log()).toEqual([
+        ["user", "go"],
+        ["talk", "on it"],
+        ["user", "same"],
+        ["user", "same"],
+        ["talk", "done"],
+      ]);
+      expect(seen).toEqual([
+        {
+          earlier: [
+            { kind: "talk", text: "on it" },
+            { kind: "user", text: "same" },
+          ],
+          mid: ["same"],
+        },
+      ]);
+      expect(r.said()).toEqual(["ack a1: 0", "ack a2: 2", "info: first:x → second:x: spent (after 2 logged entries; second:x carries on from them)", "ack b1: 3", "end: ok"]);
+      expect(r.session.state().queued).toEqual([]);
     }).pipe(Effect.scoped),
   );
 });

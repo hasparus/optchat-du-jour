@@ -7,7 +7,7 @@
 // results, before the next request, and logged as `user` then (SPEC "Mid-run messages on
 // openai-plan"). The turn ends at the first reply that calls no tool; the last allowed request
 // may not call any.
-import { Clock, Effect, Queue, Schema } from "effect";
+import { Clock, Effect, Schema } from "effect";
 import { TOOL_ROUNDS } from "../config.ts";
 import type { EngineError } from "../engines/errors.ts";
 import type { StoreError } from "../store.ts";
@@ -51,16 +51,14 @@ const shown = (input: string) => {
   return parsed._tag === "Some" ? JSON.stringify(parsed.value) : input;
 };
 
-// The mid-run messages passed on so far and not yet taken, now taken: logged and marked one by
-// one, each a user message of its own. Also the ones an engine before this one never took.
+// The mid-run messages offered so far (first any an engine before this one never took), taken
+// now: each logged as it is taken, each a user message of its own.
 const steered = (input: TurnInput, out: TurnEvents): Effect.Effect<Item[], StoreError> =>
   Effect.gen(function* () {
     const items: Item[] = [];
-    for (const s of input.sent) {
-      if (s.taken) continue;
-      yield* out.log("user", s.text);
-      s.taken = true;
-      items.push({ parts: [s.text], type: "user" });
+    for (const m of yield* input.mid.ready) {
+      yield* out.took(m);
+      items.push({ parts: [m.text], type: "user" });
     }
     return items;
   });
@@ -76,18 +74,6 @@ export const toolLoop = (o: {
   const run: TurnEngine["run"] = (input, out, failoverFrom) =>
     Effect.gen(function* () {
       const box = o.toolsFor(input.device);
-      // Mid-run messages move from the queue to `sent` as they come, as claude-code passes them to
-      // stdin: taken off the queue and into `sent` before anything can interrupt, so the session
-      // finds each one in one place or the other. They join at the next round.
-      yield* Effect.uninterruptibleMask((restore) =>
-        restore(Queue.take(input.steer)).pipe(
-          Effect.tap((text) =>
-            Effect.sync(() => {
-              input.sent.push({ taken: false, text });
-            }),
-          ),
-        ),
-      ).pipe(Effect.forever, Effect.forkScoped);
       const view = cutBlocks(input.view);
       const history: Item[] = [{ parts: [...view, openingText(input)], stable: view.length, type: "user" }];
       for (let round = 1; ; round++) {
@@ -128,6 +114,6 @@ export const toolLoop = (o: {
           history.push({ id: call.id, output, type: "result" });
         }
       }
-    }).pipe(Effect.scoped); // the forwarder ends with the turn
+    });
   return { ref: o.ref, run, warm: () => Effect.void }; // nothing to start ahead
 };
