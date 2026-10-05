@@ -102,6 +102,16 @@ type Part is Data:
 type Msg is Data:
   Msg{size: Nat, built: Bool, ups: List<&2, Nat>}
 
+# xs reversed onto acc. Every walk over a view or a log is tail-recursive:
+# the JS output overflows its stack past ~20k nested calls, and a view
+# waiting on a large backlog can be that long.
+def rev_onto(xs: List<&2, Part>, acc: List<&2, Part>) -> List<&2, Part>:
+  match xs:
+    case Nil{}:
+      acc
+    case Con{h, t}:
+      rev_onto(t, h <> acc)
+
 def total(ps: List<&2, Part>, acc: Nat) -> Nat:
   match ps:
     case Nil{}:
@@ -193,15 +203,19 @@ def merge_head(a: Part, rest: List<&2, Part>) -> List<&2, Part>:
     case Con{_, more}:
       parent(a) <> more
 
-# ps with lines k and k+1 replaced by their parent
-def merge_at(ps: List<&2, Part>, k: Nat) -> List<&2, Part>:
+# the lines before k are reversed onto done as the walk passes them
+def merge_at.go(ps: List<&2, Part>, k: Nat, done: List<&2, Part>) -> List<&2, Part>:
   match ps k:
     case Nil{} _:
-      Nil{}
+      rev_onto(done, Nil{})
     case Con{a, rest} 0n:
-      merge_head(a, rest)
+      rev_onto(done, merge_head(a, rest))
     case Con{a, rest} 1n+j:
-      a <> merge_at(rest, j)
+      merge_at.go(rest, j, a <> done)
+
+# ps with lines k and k+1 replaced by their parent
+def merge_at(ps: List<&2, Part>, k: Nat) -> List<&2, Part>:
+  merge_at.go(ps, k, Nil{})
 
 # One step of fit: Stop when the view fits or no pair can merge; else More
 # with the most due pair merged.
@@ -251,11 +265,7 @@ def fit(+T: Nat, +budget: Nat, +ps: List<&2, Part>) -> List<&2, Part>:
   fit.go(1n+length(ps, 0n), More{ps}, T, budget)
 
 def snoc(ps: List<&2, Part>, p: Part) -> List<&2, Part>:
-  match ps:
-    case Nil{}:
-      [p]
-    case Con{h, t}:
-      h <> snoc(t, p)
+  rev_onto(rev_onto(ps, Nil{}), [p])
 
 # message T arrives: its line (0, T) goes at the end, then fit with T + 1
 # messages
@@ -263,35 +273,95 @@ def append(+T: Nat, +budget: Nat, ps: List<&2, Part>, m: Msg) -> List<&2, Part>:
   Msg{s, b, ups} = m
   fit(1n+T, budget, snoc(ps, Part{0n, T, s, b, ups}))
 
-def refold.go(ms: List<&2, Msg>, +budget: Nat, +T: Nat, ps: List<&2, Part>) -> List<&2, Part>:
+# What refold carries from one message to the next: the view newest first
+# (so a new line costs nothing), its size, and whether no pair in it can
+# merge. A view within budget, or stuck with nothing to merge and no new
+# pair, is what fit would leave unchanged, so fit is skipped: after a big
+# import the view waits on a long backlog, and scanning it on every message
+# would make the refold quadratic.
+type Fold is Data:
+  Fold{rev: List<&2, Part>, size: Nat, stuck: Bool}
+
+# the newest line of the view and p are a pair that can merge
+def pairs_with(rev: List<&2, Part>, +p: Part) -> Bool:
+  match rev:
+    case Nil{}:
+      False{}
+    case Con{q, _}:
+      mergeable(q, p)
+
+def fold.fit(+T: Nat, +budget: Nat, ps: List<&2, Part>) -> Fold:
+  +fitted = fit(T, budget, ps)
+  +n = size(fitted)
+  Fold{rev_onto(fitted, Nil{}), n, Nat.is_gt(n, budget)}
+
+def fold.decide(fits: Bool, +T: Nat, +budget: Nat, rev: List<&2, Part>, n: Nat, stuck: Bool) -> Fold:
+  match fits:
+    case True{}:
+      Fold{rev, n, stuck}
+    case False{}:
+      fold.fit(T, budget, rev_onto(rev, Nil{}))
+
+# message T arrives; T + 1 messages afterwards
+def fold.push(+T: Nat, +budget: Nat, f: Fold, m: Msg) -> Fold:
+  Fold{+rev, n, stuck} = f
+  Msg{+s, b, ups} = m
+  +p = {Part{0n, T, s, b, ups} : Part}
+  +stuck2 = stuck && Bool.not(pairs_with(rev, p))
+  +n2 = Nat.add(n, s)
+  fold.decide(Nat.is_le(n2, budget) || stuck2, 1n+T, budget, p <> rev, n2, stuck2)
+
+def refold.go(ms: List<&2, Msg>, +budget: Nat, +T: Nat, f: Fold) -> Fold:
   match ms:
     case Nil{}:
-      ps
+      f
     case Con{m, rest}:
-      refold.go(rest, budget, 1n+T, append(T, budget, ps, m))
+      refold.go(rest, budget, 1n+T, fold.push(T, budget, f, m))
+
+def refold.end(f: Fold) -> List<&2, Part>:
+  Fold{rev, _, _} = f
+  rev_onto(rev, Nil{})
 
 # the view is not saved: fold it again from message 0 (gist §5.2 "At load")
 def refold(+budget: Nat, ms: List<&2, Msg>) -> List<&2, Part>:
-  refold.go(ms, budget, 0n, Nil{})
+  refold.end(refold.go(ms, budget, 0n, Fold{Nil{}, 0n, True{}}))
 
 # Rule 3
 # ------
 
-def first.pick(b: Bool, s: Nat, rest: Nat) -> Nat:
+def first.unbuilt(b: Bool, s: Nat) -> Maybe<&2, Nat>:
   match b:
     case True{}:
-      rest
+      None{}
     case False{}:
-      s
+      Some{s}
+
+def first.or(found: Maybe<&2, Nat>, T: Nat) -> Nat:
+  match found:
+    case Some{x}:
+      x
+    case None{}:
+      T
+
+# the start of the first unbuilt line among those walked, if any
+def first.keep(found: Maybe<&2, Nat>, p: Part) -> Maybe<&2, Nat>:
+  match found:
+    case Some{x}:
+      Some{x}
+    case None{}:
+      Part{+l, i, _, b, _} = p
+      first.unbuilt(b, start(l, i))
+
+def first.go(ps: List<&2, Part>, +T: Nat, found: Maybe<&2, Nat>) -> Nat:
+  match ps:
+    case Nil{}:
+      first.or(found, T)
+    case Con{p, rest}:
+      first.go(rest, T, first.keep(found, p))
 
 # the first message whose view line is unbuilt, else T (gist §4.1)
 def first(+T: Nat, ps: List<&2, Part>) -> Nat:
-  match ps:
-    case Nil{}:
-      T
-    case Con{p, rest}:
-      Part{+l, i, _, b, _} = p
-      first.pick(b, start(l, i), first(T, rest))
+  first.go(ps, T, None{})
 
 def offer(ok: Bool, c: Coord, acc: List<&2, Coord>) -> List<&2, Coord>:
   match ok:

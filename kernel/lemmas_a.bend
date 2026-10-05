@@ -4,7 +4,7 @@
 # of a list, with what it says about Nth and Len.
 
 import Base
-import ./LAWS.bend as Laws
+import ./kspec.bend as KS
 
 # Refutations
 # -----------
@@ -137,8 +137,8 @@ def tl(-A: Data, xs: List<&2, A>) -> List<&2, A>:
 # the suffix from n is b <> rest: so xs[n] is b, n is in range, and the
 # suffix from n + 1 is rest
 def DropCon(-A: Data, n: Nat, xs: List<&2, A>, d: A, b: A, rest: List<&2, A>) -> Type:
-  {Laws.Nth(A, xs, n, d) == b : A}
-    & {Nat.is_lt(n, Laws.Len(A, xs)) == True{} : Bool}
+  {KS.Nth(A, xs, n, d) == b : A}
+    & {Nat.is_lt(n, KS.Len(A, xs)) == True{} : Bool}
     & {Drop(A, 1n+n, xs) == rest : List<&2, A>}
 
 def drop_con(-A: Data, n: Nat, xs: List<&2, A>, -d: A, -b: A, -rest: List<&2, A>,
@@ -148,7 +148,7 @@ def drop_con(-A: Data, n: Nat, xs: List<&2, A>, -d: A, -b: A, -rest: List<&2, A>
       nil_con(A, DropCon(A, 0n, Nil{}, d, b, rest), b, rest, e)
     case 0n Con{h, t}:
       %e : ({h == hd(A, _, h) : A}
-        & {Nat.is_lt(0n, 1n+Laws.Len(A, t)) == True{} : Bool}
+        & {Nat.is_lt(0n, 1n+KS.Len(A, t)) == True{} : Bool}
         & {t == tl(A, _) : List<&2, A>})
       ({==}, {==}, {==})
     case 1n+k Nil{}:

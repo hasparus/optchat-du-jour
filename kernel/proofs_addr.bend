@@ -4,20 +4,20 @@
 
 import Base
 import ./kernel.bend as K
-import ./LAWS.bend as Laws
+import ./kspec.bend as KS
 import ./lemmas_a.bend as A
 
-def Laws.span_size(l):
+def span_size_k(+l: Nat) -> {K.pow2(l) == Nat.pow(2n, l) : Nat}:
   match l:
     case 0n:
       {==}
     case 1n+p:
       %A.mul2(Nat.pow(2n, p)) : {Nat.double(K.pow2(p)) == _ : Nat}
-      %Laws.span_size(p) : {Nat.double(K.pow2(p)) == Nat.double(_) : Nat}
+      %span_size_k(p) : {Nat.double(K.pow2(p)) == Nat.double(_) : Nat}
       {==}
 
-def Laws.span_start(l, i):
-  %Laws.span_size(l) : {Nat.mul(i, K.pow2(l)) == Nat.mul(i, _) : Nat}
+def span_start_k(+l: Nat, +i: Nat) -> {K.start(l, i) == Nat.mul(i, Nat.pow(2n, l)) : Nat}:
+  %span_size_k(l) : {Nat.mul(i, K.pow2(l)) == Nat.mul(i, _) : Nat}
   {==}
 
 # log2 answers only a level l with pow2(l) == n
@@ -75,14 +75,14 @@ def Addr.log2_ok(fuel: Nat, st: K.Search, +n: Nat, h: Addr.StOk(st, n)) -> Addr.
 def Addr.check_yes(+l: Nat, +i: Nat, +id: Nat, -n: Nat, -T: Nat,
   w: {Nat.is_eq(K.start(l, i), id) == True{} : Bool} & {Nat.is_le(Nat.add(id, n), T) == True{} : Bool},
   pl: {K.pow2(l) == n : Nat})
-  -> Laws.Names(Some{K.Coord{l, i}}, id, n, T):
+  -> KS.Names(Some{K.Coord{l, i}}, id, n, T):
   (s, le) = w
   (A.eq_sound(K.start(l, i), id, s), pl, le)
 
 def Addr.check_ok(ok: Bool, +l: Nat, +i: Nat, +id: Nat, -n: Nat, -T: Nat,
   e: {Bool.and(Nat.is_eq(K.start(l, i), id), Nat.is_le(Nat.add(id, n), T)) == ok : Bool},
   pl: {K.pow2(l) == n : Nat})
-  -> Laws.Names(K.coords.check(ok, l, i), id, n, T):
+  -> KS.Names(K.coords.check(ok, l, i), id, n, T):
   match ok:
     case False{}:
       Unit{}
@@ -90,7 +90,7 @@ def Addr.check_ok(ok: Bool, +l: Nat, +i: Nat, +id: Nat, -n: Nat, -T: Nat,
       Addr.check_yes(l, i, id, n, T, A.and_true(Nat.is_eq(K.start(l, i), id), Nat.is_le(Nat.add(id, n), T), e), pl)
 
 def Addr.at_ok(+id: Nat, +n: Nat, +T: Nat, ml: Maybe<&2, Nat>, h: Addr.LogOk(ml, n))
-  -> Laws.Names(K.coords.at(id, n, T, ml), id, n, T):
+  -> KS.Names(K.coords.at(id, n, T, ml), id, n, T):
   match ml:
     case None{}:
       Unit{}
@@ -98,5 +98,5 @@ def Addr.at_ok(+id: Nat, +n: Nat, +T: Nat, ml: Maybe<&2, Nat>, h: Addr.LogOk(ml,
       +i = Nat.div(id, n)
       Addr.check_ok(Bool.and(Nat.is_eq(K.start(l, i), id), Nat.is_le(Nat.add(id, n), T)), l, i, id, n, T, {==}, h)
 
-def Laws.coords_names(id, n, T):
+def coords_names_k(+id: Nat, +n: Nat, +T: Nat) -> KS.Names(K.coords(id, n, T), id, n, T):
   Addr.at_ok(id, n, T, K.log2(1n+n, K.Below{0n}, n), Addr.log2_ok(1n+n, K.Below{0n}, n, Unit{}))

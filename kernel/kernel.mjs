@@ -246,6 +246,24 @@ function $coords$(_id_0, _n_0, _T_0) {
   return $coords$at$(_id_0, _n_0, _T_0, ($log2$(nat_chk(_n_0 + 1), {$: "Below", "l": 0}, _n_0)));
 }
 
+function $rev_onto$($0, $1) {
+  for (;;) {
+    {
+      const _xs_0 = $0;
+      const _acc_0 = $1;
+      if (_xs_0.$ === "Nil") {
+        return _acc_0;
+      } else {
+        const _h_0 = _xs_0["head"];
+        const _t_0 = _xs_0["tail"];
+        $0 = _t_0;
+        $1 = {$: "Con", "head": _h_0, "tail": _acc_0};
+        continue;
+      }
+    }
+  }
+}
+
 function $total$($0, $1) {
   for (;;) {
     {
@@ -385,19 +403,33 @@ function $merge_head$(_a_0, _rest_0) {
   }
 }
 
-function $merge_at$(_ps_0, _k_0) {
-  if (_ps_0.$ === "Nil") {
-    return {$: "Nil"};
-  } else {
-    const _a_0 = _ps_0["head"];
-    const _rest_0 = _ps_0["tail"];
-    if (_k_0 === 0) {
-      return $merge_head$(_a_0, _rest_0);
-    } else {
-      const _j_0 = (_k_0 - 1);
-      return {$: "Con", "head": _a_0, "tail": ($merge_at$(_rest_0, _j_0))};
+function $merge_at$go$($0, $1, $2) {
+  for (;;) {
+    {
+      const _ps_0 = $0;
+      const _k_0 = $1;
+      const _done_0 = $2;
+      if (_ps_0.$ === "Nil") {
+        return $rev_onto$(_done_0, {$: "Nil"});
+      } else {
+        const _a_0 = _ps_0["head"];
+        const _rest_0 = _ps_0["tail"];
+        if (_k_0 === 0) {
+          return $rev_onto$(_done_0, ($merge_head$(_a_0, _rest_0)));
+        } else {
+          const _j_0 = (_k_0 - 1);
+          $0 = _rest_0;
+          $1 = _j_0;
+          $2 = {$: "Con", "head": _a_0, "tail": _done_0};
+          continue;
+        }
+      }
     }
   }
+}
+
+function $merge_at$(_ps_0, _k_0) {
+  return $merge_at$go$(_ps_0, _k_0, {$: "Nil"});
 }
 
 function $step$merge$(_ps_0, _b_0) {
@@ -477,13 +509,7 @@ function $fit$(_T_0, _budget_0, _ps_0) {
 }
 
 function $snoc$(_ps_0, _p_0) {
-  if (_ps_0.$ === "Nil") {
-    return {$: "Con", "head": _p_0, "tail": {$: "Nil"}};
-  } else {
-    const _h_0 = _ps_0["head"];
-    const _t_0 = _ps_0["tail"];
-    return {$: "Con", "head": _h_0, "tail": ($snoc$(_t_0, _p_0))};
-  }
+  return $rev_onto$(($rev_onto$(_ps_0, {$: "Nil"})), {$: "Con", "head": _p_0, "tail": {$: "Nil"}});
 }
 
 function $append$(_T_0, _budget_0, _ps_0, _m_0) {
@@ -493,51 +519,125 @@ function $append$(_T_0, _budget_0, _ps_0, _m_0) {
   return $fit$(nat_chk(_T_0 + 1), _budget_0, ($snoc$(_ps_0, {$: "Part", "l": 0, "i": _T_0, "size": _s_0, "built": _b_0, "ups": _ups_0})));
 }
 
+function $pairs_with$(_rev_0, _p_0) {
+  if (_rev_0.$ === "Nil") {
+    return false;
+  } else {
+    const _q_0 = _rev_0["head"];
+    return $mergeable$(_q_0, _p_0);
+  }
+}
+
+function $fold$fit$(_T_0, _budget_0, _ps_0) {
+  const _fitted_0 = ($fit$(_T_0, _budget_0, _ps_0));
+  const _n_0 = ($size$(_fitted_0));
+  return {$: "Fold", "rev": ($rev_onto$(_fitted_0, {$: "Nil"})), "size": _n_0, "stuck": ($Nat$is_gt$(_n_0, _budget_0))};
+}
+
+function $fold$decide$(_fits_0, _T_0, _budget_0, _rev_0, _n_0, _stuck_0) {
+  if (_fits_0) {
+    return {$: "Fold", "rev": _rev_0, "size": _n_0, "stuck": _stuck_0};
+  } else {
+    return $fold$fit$(_T_0, _budget_0, ($rev_onto$(_rev_0, {$: "Nil"})));
+  }
+}
+
+function $fold$push$(_T_0, _budget_0, _f_0, _m_0) {
+  const _rev_0 = _f_0["rev"];
+  const _n_0 = _f_0["size"];
+  const _stuck_0 = _f_0["stuck"];
+  const _s_0 = _m_0["size"];
+  const _b_0 = _m_0["built"];
+  const _ups_0 = _m_0["ups"];
+  const _p_0 = {$: "Part", "l": 0, "i": _T_0, "size": _s_0, "built": _b_0, "ups": _ups_0};
+  const _stuck2_0 = ($Bool$and$(_stuck_0, ($Bool$not$(($pairs_with$(_rev_0, _p_0))))));
+  const _n2_0 = nat_chk(_n_0 + _s_0);
+  const _x_0 = ($Nat$is_le$(_n2_0, _budget_0));
+  return $fold$decide$((_x_0 || _stuck2_0), nat_chk(_T_0 + 1), _budget_0, {$: "Con", "head": _p_0, "tail": _rev_0}, _n2_0, _stuck2_0);
+}
+
 function $refold$go$($0, $1, $2, $3) {
   for (;;) {
     {
       const _ms_0 = $0;
       const _budget_0 = $1;
       const _T_0 = $2;
-      const _ps_0 = $3;
+      const _f_0 = $3;
       if (_ms_0.$ === "Nil") {
-        return _ps_0;
+        return _f_0;
       } else {
         const _m_0 = _ms_0["head"];
         const _rest_0 = _ms_0["tail"];
         $0 = _rest_0;
         $1 = _budget_0;
         $2 = nat_chk(_T_0 + 1);
-        $3 = ($append$(_T_0, _budget_0, _ps_0, _m_0));
+        $3 = ($fold$push$(_T_0, _budget_0, _f_0, _m_0));
         continue;
       }
     }
   }
 }
 
-function $refold$(_budget_0, _ms_0) {
-  return $refold$go$(_ms_0, _budget_0, 0, {$: "Nil"});
+function $refold$end$(_f_0) {
+  const _rev_0 = _f_0["rev"];
+  return $rev_onto$(_rev_0, {$: "Nil"});
 }
 
-function $first$pick$(_b_0, _s_0, _rest_0) {
+function $refold$(_budget_0, _ms_0) {
+  return $refold$end$(($refold$go$(_ms_0, _budget_0, 0, {$: "Fold", "rev": {$: "Nil"}, "size": 0, "stuck": true})));
+}
+
+function $first$unbuilt$(_b_0, _s_0) {
   if (_b_0) {
-    return _rest_0;
+    return {$: "None"};
   } else {
-    return _s_0;
+    return {$: "Some", "value": _s_0};
+  }
+}
+
+function $first$or$(_found_0, _T_0) {
+  if (_found_0.$ === "Some") {
+    const _x_0 = _found_0["value"];
+    return _x_0;
+  } else {
+    return _T_0;
+  }
+}
+
+function $first$keep$(_found_0, _p_0) {
+  if (_found_0.$ === "Some") {
+    const _x_0 = _found_0["value"];
+    return {$: "Some", "value": _x_0};
+  } else {
+    const _l_0 = _p_0["l"];
+    const _i_0 = _p_0["i"];
+    const _b_0 = _p_0["built"];
+    return $first$unbuilt$(_b_0, ($start$(_l_0, _i_0)));
+  }
+}
+
+function $first$go$($0, $1, $2) {
+  for (;;) {
+    {
+      const _ps_0 = $0;
+      const _T_0 = $1;
+      const _found_0 = $2;
+      if (_ps_0.$ === "Nil") {
+        return $first$or$(_found_0, _T_0);
+      } else {
+        const _p_0 = _ps_0["head"];
+        const _rest_0 = _ps_0["tail"];
+        $0 = _rest_0;
+        $1 = _T_0;
+        $2 = ($first$keep$(_found_0, _p_0));
+        continue;
+      }
+    }
   }
 }
 
 function $first$(_T_0, _ps_0) {
-  if (_ps_0.$ === "Nil") {
-    return _T_0;
-  } else {
-    const _t_0 = _ps_0["head"];
-    const _l_0 = _t_0["l"];
-    const _i_0 = _t_0["i"];
-    const _b_0 = _t_0["built"];
-    const _rest_0 = _ps_0["tail"];
-    return $first$pick$(_b_0, ($start$(_l_0, _i_0)), ($first$(_T_0, _rest_0)));
-  }
+  return $first$go$(_ps_0, _T_0, {$: "None"});
 }
 
 function $offer$(_ok_0, _c_0, _acc_0) {
@@ -979,6 +1079,30 @@ function $0m20(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
+      case "Fold": at = at[key] = {...v, "rev": $0m9(v["rev"]), "size": BigInt(v["size"])}; return top[0];
+      default: throw "bend: Fold has no tag " + v?.$ + " (its tags: Fold); a tag names its constructor as the"
+      + " loading file sees it, which a later version will make the same"
+      + " everywhere (#1105)";
+    }
+  }
+}
+
+function $0m21(v) {
+  const top = [v];
+  for (let at = top, key = 0;;) {
+    switch (v.$) {
+      case "Fold": at = at[key] = {...v, "rev": $0m6(v["rev"]), "size": nat_host(v["size"])}; return top[0];
+      default: throw "bend: Fold has no tag " + v?.$ + " (its tags: Fold); a tag names its constructor as the"
+      + " loading file sees it, which a later version will make the same"
+      + " everywhere (#1105)";
+    }
+  }
+}
+
+function $0m22(v) {
+  const top = [v];
+  for (let at = top, key = 0;;) {
+    switch (v.$) {
       case "Nil": at[key] = v; return top[0];
       case "Con": at = at[key] = {...v, "head": $0m18(v["head"])}; key = "tail"; v = v[key]; continue;
       default: throw "bend: List has no tag " + v?.$ + " (its tags: Nil, Con); a tag names its constructor as the"
@@ -988,7 +1112,7 @@ function $0m20(v) {
   }
 }
 
-function $0m21(v) {
+function $0m23(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
@@ -1001,7 +1125,7 @@ function $0m21(v) {
   }
 }
 
-function $0m22(v) {
+function $0m24(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
@@ -1013,12 +1137,12 @@ function $0m22(v) {
   }
 }
 
-function $0m23(v) {
+function $0m25(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
       case "Nil": at[key] = v; return top[0];
-      case "Con": at = at[key] = {...v, "head": $0m22(v["head"])}; key = "tail"; v = v[key]; continue;
+      case "Con": at = at[key] = {...v, "head": $0m24(v["head"])}; key = "tail"; v = v[key]; continue;
       default: throw "bend: List has no tag " + v?.$ + " (its tags: Nil, Con); a tag names its constructor as the"
       + " loading file sees it, which a later version will make the same"
       + " everywhere (#1105)";
@@ -1026,7 +1150,7 @@ function $0m23(v) {
   }
 }
 
-function $0m24(v) {
+function $0m26(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
@@ -1047,6 +1171,7 @@ export default {
   "coords.check": run_lib((a0, a1, a2) => { const r = $0m3(run_loop($coords$check$((a0), nat_host(a1), nat_host(a2)))); (a0); BigInt(a1); BigInt(a2); return r; }, 3),
   "coords.at": run_lib((a0, a1, a2, a3) => { const r = $0m3(run_loop($coords$at$(nat_host(a0), nat_host(a1), nat_host(a2), $0m5(a3)))); BigInt(a0); BigInt(a1); BigInt(a2); $0m2(a3); return r; }, 4),
   "coords": run_lib((a0, a1, a2) => { const r = $0m3(run_loop($coords$(nat_host(a0), nat_host(a1), nat_host(a2)))); BigInt(a0); BigInt(a1); BigInt(a2); return r; }, 3),
+  "rev_onto": run_lib((a0, a1) => { const r = $0m9(run_loop($rev_onto$($0m6(a0), $0m6(a1)))); $0m9(a0); $0m9(a1); return r; }, 2),
   "total": run_lib((a0, a1) => { const r = BigInt(run_loop($total$($0m6(a0), nat_host(a1)))); $0m9(a0); BigInt(a1); return r; }, 2),
   "size": run_lib((a0) => { const r = BigInt(run_loop($size$($0m6(a0)))); $0m9(a0); return r; }, 1),
   "built_up": run_lib((a0) => { const r = (run_loop($built_up$($0m8(a0)))); $0m11(a0); return r; }, 1),
@@ -1059,6 +1184,7 @@ export default {
   "best.go": run_lib((a0, a1, a2, a3) => { const r = $0m14(run_loop($best$go$($0m6(a0), nat_host(a1), nat_host(a2), $0m15(a3)))); $0m9(a0); BigInt(a1); BigInt(a2); $0m14(a3); return r; }, 4),
   "best": run_lib((a0, a1) => { const r = $0m14(run_loop($best$(nat_host(a0), $0m6(a1)))); BigInt(a0); $0m9(a1); return r; }, 2),
   "merge_head": run_lib((a0, a1) => { const r = $0m9(run_loop($merge_head$($0m7(a0), $0m6(a1)))); $0m10(a0); $0m9(a1); return r; }, 2),
+  "merge_at.go": run_lib((a0, a1, a2) => { const r = $0m9(run_loop($merge_at$go$($0m6(a0), nat_host(a1), $0m6(a2)))); $0m9(a0); BigInt(a1); $0m9(a2); return r; }, 3),
   "merge_at": run_lib((a0, a1) => { const r = $0m9(run_loop($merge_at$($0m6(a0), nat_host(a1)))); $0m9(a0); BigInt(a1); return r; }, 2),
   "step.merge": run_lib((a0, a1) => { const r = $0m16(run_loop($step$merge$($0m6(a0), $0m15(a1)))); $0m9(a0); $0m14(a1); return r; }, 2),
   "step.over": run_lib((a0, a1, a2) => { const r = $0m16(run_loop($step$over$((a0), nat_host(a1), $0m6(a2)))); (a0); BigInt(a1); $0m9(a2); return r; }, 3),
@@ -1068,15 +1194,23 @@ export default {
   "fit": run_lib((a0, a1, a2) => { const r = $0m9(run_loop($fit$(nat_host(a0), nat_host(a1), $0m6(a2)))); BigInt(a0); BigInt(a1); $0m9(a2); return r; }, 3),
   "snoc": run_lib((a0, a1) => { const r = $0m9(run_loop($snoc$($0m6(a0), $0m7(a1)))); $0m9(a0); $0m10(a1); return r; }, 2),
   "append": run_lib((a0, a1, a2, a3) => { const r = $0m9(run_loop($append$(nat_host(a0), nat_host(a1), $0m6(a2), $0m18(a3)))); BigInt(a0); BigInt(a1); $0m9(a2); $0m19(a3); return r; }, 4),
-  "refold.go": run_lib((a0, a1, a2, a3) => { const r = $0m9(run_loop($refold$go$($0m20(a0), nat_host(a1), nat_host(a2), $0m6(a3)))); $0m21(a0); BigInt(a1); BigInt(a2); $0m9(a3); return r; }, 4),
-  "refold": run_lib((a0, a1) => { const r = $0m9(run_loop($refold$(nat_host(a0), $0m20(a1)))); BigInt(a0); $0m21(a1); return r; }, 2),
-  "first.pick": run_lib((a0, a1, a2) => { const r = BigInt(run_loop($first$pick$((a0), nat_host(a1), nat_host(a2)))); (a0); BigInt(a1); BigInt(a2); return r; }, 3),
+  "pairs_with": run_lib((a0, a1) => { const r = (run_loop($pairs_with$($0m6(a0), $0m7(a1)))); $0m9(a0); $0m10(a1); return r; }, 2),
+  "fold.fit": run_lib((a0, a1, a2) => { const r = $0m20(run_loop($fold$fit$(nat_host(a0), nat_host(a1), $0m6(a2)))); BigInt(a0); BigInt(a1); $0m9(a2); return r; }, 3),
+  "fold.decide": run_lib((a0, a1, a2, a3, a4, a5) => { const r = $0m20(run_loop($fold$decide$((a0), nat_host(a1), nat_host(a2), $0m6(a3), nat_host(a4), (a5)))); (a0); BigInt(a1); BigInt(a2); $0m9(a3); BigInt(a4); (a5); return r; }, 6),
+  "fold.push": run_lib((a0, a1, a2, a3) => { const r = $0m20(run_loop($fold$push$(nat_host(a0), nat_host(a1), $0m21(a2), $0m18(a3)))); BigInt(a0); BigInt(a1); $0m20(a2); $0m19(a3); return r; }, 4),
+  "refold.go": run_lib((a0, a1, a2, a3) => { const r = $0m20(run_loop($refold$go$($0m22(a0), nat_host(a1), nat_host(a2), $0m21(a3)))); $0m23(a0); BigInt(a1); BigInt(a2); $0m20(a3); return r; }, 4),
+  "refold.end": run_lib((a0) => { const r = $0m9(run_loop($refold$end$($0m21(a0)))); $0m20(a0); return r; }, 1),
+  "refold": run_lib((a0, a1) => { const r = $0m9(run_loop($refold$(nat_host(a0), $0m22(a1)))); BigInt(a0); $0m23(a1); return r; }, 2),
+  "first.unbuilt": run_lib((a0, a1) => { const r = $0m2(run_loop($first$unbuilt$((a0), nat_host(a1)))); (a0); BigInt(a1); return r; }, 2),
+  "first.or": run_lib((a0, a1) => { const r = BigInt(run_loop($first$or$($0m5(a0), nat_host(a1)))); $0m2(a0); BigInt(a1); return r; }, 2),
+  "first.keep": run_lib((a0, a1) => { const r = $0m2(run_loop($first$keep$($0m5(a0), $0m7(a1)))); $0m2(a0); $0m10(a1); return r; }, 2),
+  "first.go": run_lib((a0, a1, a2) => { const r = BigInt(run_loop($first$go$($0m6(a0), nat_host(a1), $0m5(a2)))); $0m9(a0); BigInt(a1); $0m2(a2); return r; }, 3),
   "first": run_lib((a0, a1) => { const r = BigInt(run_loop($first$(nat_host(a0), $0m6(a1)))); BigInt(a0); $0m9(a1); return r; }, 2),
-  "offer": run_lib((a0, a1, a2) => { const r = $0m24(run_loop($offer$((a0), $0m22(a1), $0m23(a2)))); (a0); $0m4(a1); $0m24(a2); return r; }, 3),
-  "offers.leaves": run_lib((a0, a1, a2, a3) => { const r = $0m24(run_loop($offers$leaves$((a0), nat_host(a1), nat_host(a2), $0m23(a3)))); (a0); BigInt(a1); BigInt(a2); $0m24(a3); return r; }, 4),
+  "offer": run_lib((a0, a1, a2) => { const r = $0m26(run_loop($offer$((a0), $0m24(a1), $0m25(a2)))); (a0); $0m4(a1); $0m26(a2); return r; }, 3),
+  "offers.leaves": run_lib((a0, a1, a2, a3) => { const r = $0m26(run_loop($offers$leaves$((a0), nat_host(a1), nat_host(a2), $0m25(a3)))); (a0); BigInt(a1); BigInt(a2); $0m26(a3); return r; }, 4),
   "offers.node": run_lib((a0, a1, a2, a3, a4) => { const r = (run_loop($offers$node$(nat_host(a0), nat_host(a1), nat_host(a2), (a3), (a4)))); BigInt(a0); BigInt(a1); BigInt(a2); (a3); (a4); return r; }, 5),
   "offers.drop2": run_lib((a0) => { const r = (run_loop($offers$drop2$((a0)))); (a0); return r; }, 1),
-  "offers.level": run_lib((a0, a1, a2, a3, a4, a5) => { const r = $0m24(run_loop($offers$level$((a0), (a1), nat_host(a2), nat_host(a3), nat_host(a4), $0m23(a5)))); (a0); (a1); BigInt(a2); BigInt(a3); BigInt(a4); $0m24(a5); return r; }, 6),
-  "offers.up": run_lib((a0, a1, a2, a3, a4) => { const r = $0m24(run_loop($offers$up$((a0), (a1), nat_host(a2), nat_host(a3), $0m23(a4)))); (a0); (a1); BigInt(a2); BigInt(a3); $0m24(a4); return r; }, 5),
-  "offers": run_lib((a0, a1) => { const r = $0m24(run_loop($offers$((a0), nat_host(a1)))); (a0); BigInt(a1); return r; }, 2),
+  "offers.level": run_lib((a0, a1, a2, a3, a4, a5) => { const r = $0m26(run_loop($offers$level$((a0), (a1), nat_host(a2), nat_host(a3), nat_host(a4), $0m25(a5)))); (a0); (a1); BigInt(a2); BigInt(a3); BigInt(a4); $0m26(a5); return r; }, 6),
+  "offers.up": run_lib((a0, a1, a2, a3, a4) => { const r = $0m26(run_loop($offers$up$((a0), (a1), nat_host(a2), nat_host(a3), $0m25(a4)))); (a0); (a1); BigInt(a2); BigInt(a3); $0m26(a4); return r; }, 5),
+  "offers": run_lib((a0, a1) => { const r = $0m26(run_loop($offers$((a0), nat_host(a1)))); (a0); BigInt(a1); return r; }, 2),
 };
