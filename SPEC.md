@@ -302,7 +302,7 @@ The reference's session object (`createSession` in ref `turn.ts`) moves into the
 
 | What happens | AG-UI event | Notes |
 | --- | --- | --- |
-| Client connects or reconnects | `MESSAGES_SNAPSHOT` + `STATE_SNAPSHOT` | The last window of log entries and the current state |
+| Client connects or reconnects | `MESSAGES_SNAPSHOT` + `STATE_SNAPSHOT` | The last window of log entries and the current state; mid-run also `RUN_STARTED` and the reply streamed so far, so a client that joins mid-reply gets all of it |
 | A turn starts | `RUN_STARTED` | `threadId` = stream name (`mini`), `runId` = the turn's first `user` entry |
 | A `user` entry is logged (also mid-run, also from another client) | `MESSAGES_SNAPSHOT` delta or a user text message | So every client sees every message |
 | Live reply text, then the `talk` entry | `TEXT_MESSAGE_START` / `CONTENT` / `END` | Message id = the entry's log index `i` |
@@ -311,7 +311,7 @@ The reference's session object (`createSession` in ref `turn.ts`) moves into the
 | Waiting for summaries, priming, device, engine, view size | `STATE_DELTA` | One shared state object |
 | Usage records, failovers, errors, refusals, device offline | `CUSTOM` (`usage`, `info`) | Shown in the status line and the stats screen |
 | Thinking | `CUSTOM` (`thinking`) | Token count only; thinking text is never sent |
-| The turn ends | `RUN_FINISHED` or `RUN_ERROR` | |
+| The turn ends | `RUN_FINISHED` or `RUN_ERROR`, then `MESSAGES_SNAPSHOT` | Exactly one per `RUN_STARTED`, also on a cancel (`RUN_ERROR` "cancelled"), before anything else is logged; the open reply is closed first. The snapshot resyncs every client to the log, so a reply cut off before its `talk` entry disappears before its index goes to the next entry |
 | Client sends a message | adapter `send()` | Starts a turn, or becomes a mid-run message when a turn is running |
 | Client cancels | abort | Same as Ctrl-C in ref §10 |
 

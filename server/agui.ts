@@ -3,7 +3,7 @@
 // started it. Message ids are log indexes.
 import type { AGUIEvent, Message } from "@ag-ui/core";
 import { EventType } from "@ag-ui/core";
-import type { SessionEvent, SessionState } from "../src/session.ts";
+import type { LiveRun, SessionEvent, SessionState } from "../src/session.ts";
 import type { Entry } from "../src/tree.ts";
 
 export type AgUiEvent = AGUIEvent;
@@ -61,30 +61,63 @@ const delta = (before: SessionState, after: SessionState) => {
     .map(([k, v]) => ({ op: "replace" as const, path: `/${k}`, value: v }));
 };
 
-// One translator per connection: it remembers the open text message and tool call of the turn.
-export function makeTranslator(thread: string, initial: SessionState) {
-  let state = initial;
-  let text: string | null = null; // the live reply's message id: the log index its talk entry will get
+// a message sent in one piece
+const whole = (id: string, role: "assistant" | "user", body: string): AgUiEvent[] => [
+  { messageId: id, role, type: EventType.TEXT_MESSAGE_START },
+  { delta: body, messageId: id, type: EventType.TEXT_MESSAGE_CONTENT },
+  { messageId: id, type: EventType.TEXT_MESSAGE_END },
+];
+
+// What one connection is told. It starts with a snapshot of the log's last `window` entries and
+// the state; if a run is going on, its RUN_STARTED and the reply streamed so far follow, so a client
+// that joins mid-reply has all of it. Then `translate` turns each session event into AG-UI events.
+// Every run's end is followed by a fresh MESSAGES_SNAPSHOT, so a client always resyncs to the log
+// (a reply cut off by a cancel or a crash disappears there, since nothing logged it).
+export function openStream(o: {
+  readonly thread: string;
+  readonly entries: readonly Entry[]; // the log, append-only: a slice of it never changes
+  readonly window: number;
+  readonly state: SessionState;
+  readonly live: LiveRun | null;
+}) {
+  const upTo = (n: number) => o.entries.slice(Math.max(0, n - o.window), n);
+  let { state } = o;
+  let from = o.entries.length; // the first log index this connection has not been shown
+  let run: string | null = null; // the run whose RUN_STARTED it got
+  let text: { id: string; sent: number } | null = null; // the open reply: its id (log index) and how much of it went out
   let tool: string | null = null;
 
   const closeText = (): AgUiEvent[] => {
     if (text === null) return [];
-    const id = text;
+    const { id } = text;
     text = null;
     return [{ messageId: id, type: EventType.TEXT_MESSAGE_END }];
   };
 
+  // a piece of the reply at log index `at`, starting `offset` characters into it; what this
+  // connection has already had (a seeded prefix) is not sent again
+  const reply = (at: number, offset: number, delta: string): AgUiEvent[] => {
+    const out: AgUiEvent[] = [];
+    const id = String(at);
+    if (text?.id !== id) {
+      out.push(...closeText(), { messageId: id, role: "assistant", type: EventType.TEXT_MESSAGE_START });
+      text = { id, sent: offset };
+    }
+    const fresh = delta.slice(Math.max(0, text.sent - offset));
+    text.sent = Math.max(text.sent, offset + delta.length);
+    if (fresh !== "") out.push({ delta: fresh, messageId: id, type: EventType.TEXT_MESSAGE_CONTENT });
+    return out;
+  };
+
   const logged = (entry: Entry): AgUiEvent[] => {
+    if (entry.i < from) return []; // in the snapshot already
+    from = entry.i + 1;
     const id = String(entry.i);
     switch (entry.kind) {
-      case "talk": {
-        if (text !== null) return closeText(); // streamed already; the entry is what was streamed
-        return [
-          { messageId: id, role: "assistant", type: EventType.TEXT_MESSAGE_START },
-          { delta: entry.text, messageId: id, type: EventType.TEXT_MESSAGE_CONTENT },
-          { messageId: id, type: EventType.TEXT_MESSAGE_END },
-        ];
-      }
+      case "talk":
+        // streamed already under this id: the entry is what was streamed
+        if (text?.id === id) return closeText();
+        return [...closeText(), ...whole(id, "assistant", entry.text)];
       case "tool": {
         const { args, name } = splitTool(entry.text);
         tool = toolCallId(entry.i);
@@ -98,42 +131,41 @@ export function makeTranslator(thread: string, initial: SessionState) {
       case "echo": {
         const call = tool ?? toolCallId(entry.i);
         tool = null;
-        return [{ content: entry.text, messageId: id, role: "tool", toolCallId: call, type: EventType.TOOL_CALL_RESULT }];
+        return [...closeText(), { content: entry.text, messageId: id, role: "tool", toolCallId: call, type: EventType.TOOL_CALL_RESULT }];
       }
       case "user":
       case "note":
-        return [
-          ...closeText(),
-          { messageId: id, role: "user", type: EventType.TEXT_MESSAGE_START },
-          { delta: entry.text, messageId: id, type: EventType.TEXT_MESSAGE_CONTENT },
-          { messageId: id, type: EventType.TEXT_MESSAGE_END },
-        ];
+        return [...closeText(), ...whole(id, "user", entry.text)];
     }
   };
 
-  return (e: SessionEvent): AgUiEvent[] => {
+  const first: AgUiEvent[] = [...snapshot(upTo(from), state)];
+  if (o.live) {
+    run = o.live.runId;
+    first.push({ runId: run, threadId: o.thread, type: EventType.RUN_STARTED });
+    if (o.live.reply && o.live.reply.at >= from) first.push(...reply(o.live.reply.at, 0, o.live.reply.text));
+  }
+
+  const translate = (e: SessionEvent): AgUiEvent[] => {
     switch (e.type) {
       case "logged":
         return logged(e.entry);
-      case "text": {
-        const start: AgUiEvent[] = [];
-        if (text === null) {
-          text = String(e.at); // where its talk entry goes, as of when the session published it
-          start.push({ messageId: text, role: "assistant", type: EventType.TEXT_MESSAGE_START });
-        }
-        return [...start, { delta: e.delta, messageId: text, type: EventType.TEXT_MESSAGE_CONTENT }];
-      }
+      case "text":
+        return reply(e.at, e.offset, e.delta);
       case "thinking":
         return [{ name: "thinking", type: EventType.CUSTOM, value: { tokens: e.tokens } }];
       case "run-started":
-        return [{ runId: e.runId, threadId: thread, type: EventType.RUN_STARTED }];
-      case "run-finished":
-        return [
-          ...closeText(),
-          e.error === null
-            ? { runId: e.runId, threadId: thread, type: EventType.RUN_FINISHED }
-            : { message: e.error, type: EventType.RUN_ERROR },
-        ];
+        if (run === e.runId) return []; // told at connect
+        run = e.runId;
+        return [{ runId: e.runId, threadId: o.thread, type: EventType.RUN_STARTED }];
+      case "run-finished": {
+        run = null;
+        tool = null;
+        const end: AgUiEvent =
+          e.error === null ? { runId: e.runId, threadId: o.thread, type: EventType.RUN_FINISHED } : { message: e.error, type: EventType.RUN_ERROR };
+        from = Math.max(from, e.logged);
+        return [...closeText(), end, { messages: toMessages(upTo(e.logged)), type: EventType.MESSAGES_SNAPSHOT }];
+      }
       case "info":
         return [{ name: "info", type: EventType.CUSTOM, value: e.message }];
       case "usage":
@@ -145,4 +177,6 @@ export function makeTranslator(thread: string, initial: SessionState) {
       }
     }
   };
+
+  return { first, translate };
 }

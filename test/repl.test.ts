@@ -81,7 +81,7 @@ describe("repl screen", () => {
     t.feed(...said("4", "assistant", "done"), { type: "RUN_FINISHED" });
     expect(t.s.unanswered).toBe(0);
 
-    // cancelled from another client: logged unanswered, no run end, then the session goes idle
+    // cancelled from another client before its run began: logged unanswered, no run end, then idle
     t.s.submit("never answered");
     t.feed({ delta: [{ op: "replace", path: "/phase", value: "priming" }], type: "STATE_DELTA" });
     t.feed(...said("5", "user", "never answered"));

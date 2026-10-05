@@ -34,7 +34,7 @@ export function step(job: Job): string {
 // one call to the next, so the next call reads them from the cache.
 export function blocks(job: Job, ttl: "1h" | "5m"): Block[] {
   const chat = ["<chat>", ...job.ctx, "</chat>"].join("\n");
-  const context = cutBlocks(chat).map((text): Block => ({ cache_control: { ttl, type: "ephemeral" }, text, type: "text" }));
+  const context = cutBlocks(chat).map((piece): Block => ({ cache_control: { ttl, type: "ephemeral" }, text: piece, type: "text" }));
   return [...context, { text: step(job), type: "text" }];
 }
 

@@ -19,7 +19,7 @@ export type TurnInput = {
 };
 
 export type TurnEvents = {
-  readonly log: (kind: Kind, text: string) => Effect.Effect<void, StoreError>;
+  readonly log: (kind: Kind, body: string) => Effect.Effect<void, StoreError>;
   readonly text: (delta: string) => Effect.Effect<void>; // live reply text, never logged as such
   readonly thinking: (tokens: number) => Effect.Effect<void>; // the size of a thought; its text is never kept
   readonly info: (message: string) => Effect.Effect<void>;

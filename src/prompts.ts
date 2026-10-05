@@ -2,6 +2,7 @@
 import { Effect } from "effect";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const shipped = (file: string) => `${import.meta.dir}/../prompts/${file}`;
 const contents = (path: string) => readFileSync(path, "utf8");
@@ -21,7 +22,7 @@ export const systemPrompt = (home: string) =>
 export const promptFile = (text: string) =>
   Effect.acquireRelease(
     Effect.sync(() => {
-      const dir = mkdtempSync(`${tmpdir()}/optchat-system-`);
+      const dir = mkdtempSync(join(tmpdir(), "optchat-system-"));
       writeFileSync(`${dir}/system.txt`, text);
       return { dir, path: `${dir}/system.txt` };
     }),

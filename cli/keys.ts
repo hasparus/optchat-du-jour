@@ -4,7 +4,7 @@
 export type Key =
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "paste"; readonly text: string }
-  | { readonly type: "backspace" | "clear" | "enter" | "eof" | "interrupt" | "suspend" };
+  | { readonly type: "backspace" | "clear" | "enter" | "suspend" | "interrupt" | "eof" };
 
 const PASTE_START = "\u001B[200~";
 const PASTE_END = "\u001B[201~";

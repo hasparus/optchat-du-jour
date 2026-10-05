@@ -128,7 +128,7 @@ export function handleMcp(mem: Mem, body: string): Reply {
       return respond(id, {
         capabilities: { tools: {} },
         protocolVersion: asked ?? FALLBACK_PROTOCOL,
-        serverInfo: { name: "optchat", version: "1.0.0" },
+        serverInfo: { name: "optchat", version: "0.1.0" },
       });
     }
     case "ping":
