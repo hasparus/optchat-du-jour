@@ -136,7 +136,7 @@ const until = (what: string, ok: () => boolean, ms = 4000) =>
     }
   });
 
-const textOf = (b: Block | undefined) => b?.text ?? "";
+const textOf = (b: Block | undefined) => (b?.type === "text" ? b.text : "");
 const long = (n: number) => "w".repeat(n);
 
 // the compactor engine

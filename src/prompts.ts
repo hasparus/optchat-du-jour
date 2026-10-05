@@ -10,6 +10,8 @@ const contents = (path: string) => readFileSync(path, "utf8");
 const contentsIfAny = (path: string) => (existsSync(path) ? contents(path) : "");
 
 export const COMPACT_FILE = shipped("compact.txt");
+export const CAPTION_FILE = shipped("caption.txt"); // the caption call's system prompt (SPEC "Media")
+export const CAPTION = contents(CAPTION_FILE);
 export const SCALE = contents(shipped("scale.txt"));
 
 // The master's system prompt (gist §7.2): our two shipped prompts, then the user's own

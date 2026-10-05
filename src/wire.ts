@@ -110,7 +110,7 @@ export type Device = typeof Device.Type;
 export const Devices = Schema.Array(Device);
 
 // /api/usage: usage.jsonl, one record per model call (E11)
-export const Role = Schema.Literals(["turn", "prime", "compact", "subagent"]);
+export const Role = Schema.Literals(["turn", "prime", "compact", "subagent", "caption"]);
 export const Engine = Schema.Literals(["claude-code", "openai-plan", "api-key"]);
 export const Auth = Schema.Literals(["claude-max", "chatgpt-pro", "api-key"]);
 
@@ -139,3 +139,93 @@ export const UsageRecord = Schema.Struct({
 });
 export type UsageRecord = typeof UsageRecord.Type;
 export const Usage = Schema.Array(UsageRecord);
+
+// ---------------------------------------------------------------------------------------------
+// media (SPEC "Media"): what PUT /api/assets answers, and the marker lines a message with
+// attachments carries in the log
+
+export const ImageMime = Schema.Literals(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+export const VideoMime = Schema.Literals(["video/mp4", "video/quicktime", "video/webm"]);
+
+// a stored image: the normalized one (downscaled, re-encoded, metadata stripped), which is what
+// every engine and zoom get
+export const ImageAsset = Schema.Struct({
+  kind: Schema.Literal("image"),
+  sha: Schema.String,
+  mime: ImageMime,
+  width: Schema.Number,
+  height: Schema.Number,
+  bytes: Schema.Number,
+});
+export type ImageAsset = typeof ImageAsset.Type;
+
+// a frame of a video, `t` seconds in; itself an image asset
+export const Frame = Schema.Struct({ sha: Schema.String, t: Schema.Number, width: Schema.Number, height: Schema.Number });
+export type Frame = typeof Frame.Type;
+
+// A stored video: the upload as it came, its frames (at most 24, one per 2 s or spread over a
+// longer clip), `sheet` (one image of the frames, what a thumbnail and zoom show), and the audio's
+// transcript when a local whisper made one; `notice` says why something is missing.
+export const VideoAsset = Schema.Struct({
+  kind: Schema.Literal("video"),
+  sha: Schema.String,
+  mime: VideoMime,
+  bytes: Schema.Number,
+  duration: Schema.Number,
+  width: Schema.Number,
+  height: Schema.Number,
+  frames: Schema.Array(Frame),
+  sheet: Schema.String,
+  transcript: Schema.NullOr(Schema.String),
+  notice: Schema.NullOr(Schema.String),
+});
+export type VideoAsset = typeof VideoAsset.Type;
+
+export const Asset = Schema.Union([ImageAsset, VideoAsset]);
+export type Asset = typeof Asset.Type;
+
+// attachments per message: each is one marker line, and the line must stay well inside a node
+export const MAX_ATTACHMENTS = 4;
+// a caption's length in characters, at most; the marker grammar forbids brackets and newlines in it
+export const CAPTION_MAX = 100;
+export const NOT_DESCRIBED = "(not described)";
+
+// what a marker and a thumbnail name an asset by
+export const shortSha = (sha: string) => sha.slice(0, 12);
+
+// one line of at most CAPTION_MAX characters with no brackets, so it can't end its marker early
+export const cleanCaption = (text: string) => {
+  const flat = text.replaceAll(/\s+/g, " ").replaceAll("[", "(").replaceAll("]", ")").trim();
+  if (flat === "") return NOT_DESCRIBED;
+  return flat.length > CAPTION_MAX ? `${flat.slice(0, CAPTION_MAX - 1)}…` : flat;
+};
+
+// [image 9d0c38e7aafe 1568x1176 212KB: a whiteboard with three arrows]
+// [video 9d0c38e7aafe 47s, 24 frames: a cat jumping onto a desk]
+export const markerOf = (a: Asset, caption: string) => {
+  const what = a.kind === "image" ? `${a.width}x${a.height} ${Math.max(1, Math.round(a.bytes / 1024))}KB` : `${Math.round(a.duration)}s, ${a.frames.length} frames`;
+  return `[${a.kind} ${shortSha(a.sha)} ${what}: ${cleanCaption(caption)}]`;
+};
+
+const MARKER = /^\[(image|video) ([0-9a-f]{12}) [^\]\n:]*: [^\]\n]*\]$/;
+export type Marker = { readonly kind: "image" | "video"; readonly sha: string; readonly line: string };
+export type Marked = { readonly body: string; readonly markers: readonly Marker[] };
+
+// A user entry's text: what was typed, then one marker line per attachment. Only marker lines at
+// the end count; one typed in the middle of a message is text.
+export const splitMarkers = (text: string): Marked => {
+  const lines = text.split("\n");
+  const markers: Marker[] = [];
+  while (lines.length > 0) {
+    const line = lines.at(-1) ?? "";
+    const m = MARKER.exec(line);
+    if (!m?.[1] || !m[2]) break;
+    markers.unshift({ kind: m[1] === "video" ? "video" : "image", line, sha: m[2] });
+    lines.pop();
+  }
+  return { body: lines.join("\n"), markers };
+};
+
+// splitMarkers' inverse: the text as typed (none when it is blank), then the marker lines
+export const withMarkers = (body: string, markers: readonly string[]) =>
+  markers.length === 0 ? body : body.trim() === "" ? markers.join("\n") : `${body}\n${markers.join("\n")}`;
