@@ -2,7 +2,7 @@
 // POST, answered from the server's memory. It only reads; the lock stays with the chat.
 import { Option, Schema } from "effect";
 import { address } from "./kernel.ts";
-import { children, getNode, label, localTime, type Mem } from "./tree.ts";
+import { type Built, children, type Coord, type Entry, getNode, label, localTime, type Mem } from "./tree.ts";
 import { flat } from "./view.ts";
 
 // The descriptions are the gist's, word for word; the input schemas carry no descriptions (ref §9).
@@ -27,20 +27,29 @@ export const TOOLS = [
 const shown = (x: Schema.Json | undefined) => (x === undefined ? "undefined" : JSON.stringify(x));
 const noLine = (id: number | string, n: number | string) => `No line ${id}+${n}.`;
 
+// Node id+n of the tree, opened: for n = 1 the message, else the node (if built) and its two halves.
+// Null when there is no such node in a chat of this length (address() decides, gist §7.1).
+export type Opened =
+  | { readonly at: Coord; readonly message: Entry }
+  | { readonly at: Coord; readonly node: Built | undefined; readonly halves: readonly { readonly at: Coord; readonly node: Built | undefined }[] };
+export function openNode(mem: Mem, id: number, n: number): Opened | null {
+  const at = address(id, n, mem.root.length);
+  if (!at) return null;
+  if (at.l > 0) return { at, halves: children(at).map((h) => ({ at: h, node: getNode(mem, h) })), node: getNode(mem, at) };
+  const message = mem.root[id];
+  return message ? { at, message } : null;
+}
+
 // Line id+n opened into its two halves, or for n = 1 the message itself, whole. A merge that is
 // not built yet is no line at all; a single message always opens, since the view tells the model
 // to zoom a line that has no summary yet.
 export function zoom(mem: Mem, id: number, n: number): string {
-  const c = address(id, n, mem.root.length);
-  if (!c) return noLine(id, n);
-  if (c.l === 0) {
-    const m = mem.root[id];
-    return m ? `${id}+0|${m.kind}: ${m.text}` : noLine(id, n);
-  }
-  if (!getNode(mem, c)) return noLine(id, n);
-  const [left, right] = children(c).map((h) => ({ at: h, node: getNode(mem, h) }));
+  const found = openNode(mem, id, n);
+  if (!found) return noLine(id, n);
+  if ("message" in found) return `${id}+0|${found.message.kind}: ${found.message.text}`;
+  const [left, right] = found.halves;
   // a parent is only built after its children: a missing half is a broken tree
-  if (!left?.node || !right?.node) return noLine(id, n);
+  if (!found.node || !left?.node || !right?.node) return noLine(id, n);
   return `${label(left.at)}|${flat(left.node.text)}\n${label(right.at)}|${flat(right.node.text)}`;
 }
 

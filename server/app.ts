@@ -6,27 +6,30 @@ import { Effect, Layer, Option, Predicate, PubSub, Schema } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { openChat } from "../src/chat.ts";
 import { type Settings, MASTER_TOOLS } from "../src/config.ts";
-import { LocalRunner, Runner } from "../src/claude/process.ts";
+import { LocalRunner, Runner, claudeBinary, claudeVersion } from "../src/claude/process.ts";
+import { remoteRunner } from "../src/claude/remote.ts";
 import type { Summarize } from "../src/compactor.ts";
 import type { Down } from "../src/engines/chain.ts";
 import { DeviceOffline } from "../src/engines/errors.ts";
-import { handleMcp, mcpConfig } from "../src/mcp.ts";
-import { openAiPlanLayer } from "../src/openai/responses.ts";
+import { handleMcp, mcpConfig, openNode } from "../src/mcp.ts";
+import { forbidden, mount } from "../src/http.ts";
+import { expandHome } from "../src/paths.ts";
 import { makePersist } from "../src/persist.ts";
 import { promptFile, systemPrompt } from "../src/prompts.ts";
-import { makeSession } from "../src/session.ts";
+import { makeSession, type SessionEvent } from "../src/session.ts";
+import { openAiPlanLayer } from "../src/openai/responses.ts";
 import { SecretsLive } from "../src/secrets.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
-import { children, getNode, localTime, span } from "../src/tree.ts";
-import { claudeCodeTurn } from "../src/turn/claude-code.ts";
+import { getNode, localTime, span } from "../src/tree.ts";
+import { type Placement, claudeCodeTurn } from "../src/turn/claude-code.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
 import { type UsageRecord, logUsage, readUsage } from "../src/usage.ts";
 import { PLACEHOLDER, render, viewSize } from "../src/view.ts";
 import { type AgUiEvent, openStream } from "./agui.ts";
 import { allowed, policyFor } from "./auth.ts";
+import { deviceStatuses, versionWarning } from "./devices.ts";
 
 export type ServerOptions = {
   readonly home: string; // ~/.optchat: streams/, usage.jsonl, instructions.md, its own git repo
@@ -39,11 +42,14 @@ export type ServerOptions = {
   readonly window?: number; // log entries in a client's first snapshot
 };
 
-const expand = (path: string) => path.replace(/^~(?=\/|$)/, homedir());
 
-// What a client sends: AG-UI's RunAgentInput (the newest user message is the one to answer), or an abort
+// What a client sends: AG-UI's RunAgentInput (its user messages not seen before are the ones to answer), or an abort
 const TextPart = Schema.Struct({ text: Schema.optional(Schema.String), type: Schema.String });
-const InboundMessage = Schema.Struct({ content: Schema.optional(Schema.Union([Schema.String, Schema.Array(TextPart)])), role: Schema.String });
+const InboundMessage = Schema.Struct({
+  content: Schema.optional(Schema.Union([Schema.String, Schema.Array(TextPart)])),
+  id: Schema.String,
+  role: Schema.String,
+});
 const Inbound = Schema.Union([
   Schema.Struct({ type: Schema.Literal("abort") }),
   Schema.Struct({
@@ -53,19 +59,35 @@ const Inbound = Schema.Union([
 ]);
 const decodeInbound = Schema.decodeUnknownOption(Schema.fromJsonString(Inbound));
 
-const lastUserText = (messages: readonly (typeof InboundMessage.Type)[]) => {
-  const content = messages.findLast((x) => x.role === "user")?.content ?? "";
-  return Predicate.isString(content) ? content : content.map((p) => p.text ?? "").join("");
+const textOf = ({ content = "" }: typeof InboundMessage.Type) => (Predicate.isString(content) ? content : content.map((p) => p.text ?? "").join(""));
+
+// how many message ids a connection remembers
+const SEEN = 1000;
+
+// The user messages of each RunAgentInput on one connection that it has not sent before: a client
+// that sends the whole history every time must not have old texts answered again. An id that is a
+// log index names an entry the server sent (message ids are log indexes, server/agui.ts).
+const unseen = (logged: () => number) => {
+  const seen = new Set<string>();
+  return (messages: readonly (typeof InboundMessage.Type)[]) =>
+    messages.filter(({ id, role }) => {
+      if (role !== "user" || seen.has(id) || (/^\d+$/.test(id) && Number(id) < logged())) return false;
+      seen.add(id);
+      for (const old of seen) {
+        if (seen.size <= SEEN) break;
+        seen.delete(old); // the oldest first
+      }
+      return true;
+    });
 };
 
 const Before = Schema.Struct({ before: Schema.optional(Schema.NumberFromString), limit: Schema.optional(Schema.NumberFromString) });
-const NodeAt = Schema.Struct({ i: Schema.NumberFromString, l: Schema.NumberFromString });
-
-const logReport = (message: string) => Effect.logInfo(message);
-const forbidden = HttpServerResponse.text("forbidden", { status: 403 });
+// a node's level and index: integers, and a level whose span 2^l is still a safe integer
+const NodeAt = Schema.Struct({
+  i: Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  l: Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ maximum: 52, minimum: 0 })),
+});
 const json = (body: Schema.Json) => HttpServerResponse.jsonUnsafe(body);
-// HttpRouter.use, renamed: the React hooks rule takes any `use(` call for a hook
-const mount = HttpRouter.use;
 
 export const routes = (o: ServerOptions) =>
   mount((router) =>
@@ -77,23 +99,38 @@ export const routes = (o: ServerOptions) =>
       const secret = crypto.randomUUID();
       const local = yield* Runner;
 
-      let report = logReport;
+      // every client is told what goes wrong, and so is the server's own log (no client may be connected)
+      const events = yield* PubSub.unbounded<SessionEvent>();
+      const report = (message: string) => Effect.logInfo(message).pipe(Effect.andThen(PubSub.publish(events, { message, type: "info" })), Effect.asVoid);
       const usage = (record: UsageRecord) => logUsage(usagePath, record).pipe(Effect.flatMap((e) => (e ? report(e) : Effect.void)));
       // built here so that a refresh token it can't save is told to the clients, not only logged
-      const plan = yield* Layer.build(openAiPlanLayer(settings.openai, { report: (m) => report(m) }).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer])));
+      const plan = yield* Layer.build(openAiPlanLayer(settings.openai, { report }).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer])));
       // a failover notice also changes the state's `down`, for clients that connect later
       let tellState: Effect.Effect<void> = Effect.void;
       const compactor = o.summarize
         ? { down: (): readonly Down[] => [], summarize: o.summarize }
         : yield* makeSummarize({ device: o.device, log: usage, report: (m) => report(m).pipe(Effect.andThen(tellState)), settings }).pipe(Effect.provide(plan));
-      const chat = yield* openChat(stream, { report: (m) => report(m), summarize: compactor.summarize });
+      const chat = yield* openChat(stream, { report, summarize: compactor.summarize });
 
       const systemFile = yield* promptFile(systemPrompt(o.home));
-      const mcp = mcpConfig(`http://127.0.0.1:${o.port}/mcp?key=${secret}`);
-      const runnerFor = (device: string) =>
-        device === o.device
-          ? Effect.succeed({ cwd: settings.devices[device]?.folders[0] ? expand(settings.devices[device].folders[0]) : undefined, runner: local })
-          : Effect.fail(new DeviceOffline({ message: `${device} has no device runner yet` }));
+      // Where each device's claude runs (E7): this machine's own Runner, or that device's runner
+      // over the tailnet. A claude elsewhere reaches /mcp through `tailscale serve` at
+      // server.publicUrl (E8); without it, turns there are refused rather than handed the
+      // loopback URL and its key, which no other machine can use.
+      const mcpAt = (base: string) => mcpConfig(`${base.replace(/\/$/, "")}/mcp?key=${secret}`);
+      const { publicUrl } = settings.server ?? {};
+      const placements = new Map<string, Effect.Effect<Placement, DeviceOffline>>();
+      const unreachable: string[] = [];
+      for (const [name, d] of Object.entries(settings.devices)) {
+        const folder = d.folders[0];
+        if (name === o.device)
+          placements.set(name, Effect.succeed({ cwd: folder === undefined ? undefined : expandHome(folder), mcpConfig: mcpAt(`http://127.0.0.1:${o.port}`), runner: local }));
+        else if (publicUrl === undefined) {
+          unreachable.push(name);
+          placements.set(name, Effect.fail(new DeviceOffline({ message: `${name}: server.publicUrl is not set, so claude there could not reach zoom and date` })));
+        } else placements.set(name, Effect.succeed({ cwd: folder, mcpConfig: mcpAt(publicUrl), runner: remoteRunner(name, d.url) })); // `~` is the device's home: it expands it
+      }
+      const runnerFor = (device: string) => placements.get(device) ?? Effect.fail(new DeviceOffline({ message: `${device} is not a configured device` }));
       const engines: TurnEngine[] = [];
       for (const ref of settings.master.chain) {
         const [engine, model = ""] = ref.split(/:(.*)/s);
@@ -102,11 +139,10 @@ export const routes = (o: ServerOptions) =>
           yield* claudeCodeTurn({
             effort: settings.master.effort,
             logUsage: usage,
-            mcpConfig: mcp,
             model,
             permissionMode: settings.master.permissionMode,
             primeTtl: settings.cache.primeTtl,
-            report: (m) => report(m),
+            report,
             runnerFor,
             systemFile,
             tools: settings.master.tools ?? MASTER_TOOLS,
@@ -114,7 +150,7 @@ export const routes = (o: ServerOptions) =>
           }),
         );
       }
-      const persist = yield* makePersist;
+      const persist = yield* makePersist(report);
       const session = yield* makeSession({
         chat,
         commit: Effect.suspend(() => persist(o.home, `chore(chat): ${chat.mem.root.length} messages`)),
@@ -122,11 +158,16 @@ export const routes = (o: ServerOptions) =>
         defaultDevice: settings.defaultDevice,
         devices: Object.keys(settings.devices),
         engines,
+        events,
         logUsage: usage,
       });
-      report = (message) => PubSub.publish(session.events, { message, type: "info" }).pipe(Effect.asVoid);
       tellState = session.tell;
       for (const p of chat.problems) yield* report(p);
+      if (unreachable.length > 0) {
+        const notice = `server.publicUrl is not set: turns on ${unreachable.join(", ")} are refused, since claude there could not reach zoom and date`;
+        yield* Effect.logWarning(notice);
+        yield* report(notice);
+      }
 
       // every request, on every route, passes the same check first (server/auth.ts has the threat model)
       const policy = policyFor(o.port, settings.allowedLogins, settings.server?.publicUrl);
@@ -150,13 +191,17 @@ export const routes = (o: ServerOptions) =>
             Effect.forever,
             Effect.forkScoped,
           );
+          const fresh = unseen(() => chat.mem.root.length);
           const pull = yield* Socket.readerString(socket);
           yield* pull.pipe(
             Effect.flatMap((frames) =>
               Effect.forEach(frames, (frame) =>
                 Option.match(decodeInbound(frame), {
                   onNone: () => Effect.void,
-                  onSome: (m) => ("messages" in m ? session.input(lastUserText(m.messages), m.forwardedProps?.device) : session.cancel),
+                  onSome: (m) =>
+                    "messages" in m
+                      ? Effect.forEach(fresh(m.messages), (x) => session.input(textOf(x), m.forwardedProps?.device, x.id), { discard: true })
+                      : session.cancel,
                 }),
               ),
             ),
@@ -220,34 +265,44 @@ export const routes = (o: ServerOptions) =>
         ),
       );
 
-      // one node and its two children, down to the message (the memory browser's zoom)
+      // one node and its two children, down to the message (the memory browser's zoom, as mcp.ts opens it)
       yield* router.add("GET", "/api/node", () =>
         Effect.gen(function* () {
           const { i, l } = yield* HttpServerRequest.schemaSearchParams(NodeAt);
           const { id, n } = span({ i, l });
-          if (l === 0) {
-            const m = chat.mem.root[i];
-            return m ? json({ id, kind: m.kind, l, i, n, text: m.text, date: localTime(m.date) }) : HttpServerResponse.empty({ status: 404 });
+          const found = openNode(chat.mem, id, n);
+          if (!found) return HttpServerResponse.empty({ status: 404 });
+          if ("message" in found) {
+            const m = found.message;
+            return json({ id, kind: m.kind, l, i, n, text: m.text, date: localTime(m.date) });
           }
           return json({
-            children: children({ i, l }).map((c) => {
-              const half = getNode(chat.mem, c);
-              return { built: half !== undefined, i: c.i, l: c.l, text: half?.text ?? null };
-            }),
+            children: found.halves.map((h) => ({ built: h.node !== undefined, i: h.at.i, l: h.at.l, text: h.node?.text ?? null })),
             id,
             l,
             i,
             n,
-            text: getNode(chat.mem, { i, l })?.text ?? null,
+            text: found.node?.text ?? null,
           });
         }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
       );
 
       yield* router.add("GET", "/api/usage", Effect.sync(() => json(readUsage(usagePath))));
+      // which devices answer and which claude they run (./devices.ts)
+      const localVersion = yield* Effect.cachedWithTTL(claudeVersion(claudeBinary()), "10 minutes");
+      let warned = "";
       yield* router.add(
         "GET",
         "/api/devices",
-        Effect.sync(() => json(Object.entries(settings.devices).map(([name, d]) => ({ folders: d.folders, local: name === o.device, name, url: d.url })))),
+        Effect.gen(function* () {
+          const list = yield* deviceStatuses({ devices: settings.devices, localVersion, self: o.device });
+          const warning = versionWarning(list);
+          if (warning && warning.key !== warned) {
+            warned = warning.key;
+            yield* report(warning.message);
+          }
+          return json(list);
+        }),
       );
 
       // the built web UI; any other path is the app's (it has no router)
@@ -268,7 +323,8 @@ export const routes = (o: ServerOptions) =>
 
 export const serverLayer = (o: ServerOptions) =>
   HttpRouter.serve(routes(o)).pipe(
-    Layer.provide(BunHttpServer.layer({ hostname: o.host, port: o.port })),
+    // on SIGTERM, open sockets (a web page's /ws) are closed at once instead of waited for
+    Layer.provide(BunHttpServer.layer({ disablePreemptiveShutdown: true, hostname: o.host, port: o.port })),
     Layer.provide(LocalRunner),
     Layer.provide(BunServices.layer),
   );

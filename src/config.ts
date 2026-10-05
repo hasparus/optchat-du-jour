@@ -99,6 +99,10 @@ export const loadSettings = (path: string) =>
         const parsed = parseRef(role, ref);
         if (Result.isFailure(parsed)) return yield* new ConfigError({ message: `${path}: ${parsed.failure}` });
       }
+    for (const [name, d] of Object.entries(settings.devices))
+      // http only: the runner listens on the tailnet address itself, and RemoteRunner dials its IPv4
+      if (!URL.canParse(d.url) || new URL(d.url).protocol !== "http:")
+        return yield* new ConfigError({ message: `${path}: device ${name}'s url ${d.url} is not an http:// URL` });
     if (!(settings.defaultDevice in settings.devices))
       return yield* new ConfigError({ message: `${path}: defaultDevice ${settings.defaultDevice} is not among the devices` });
     return settings;
