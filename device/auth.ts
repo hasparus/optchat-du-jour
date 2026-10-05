@@ -1,7 +1,8 @@
 // Machine auth for the device runner (SPEC "Tailscale, auth and operations", E9). No tokens: the
 // runner listens on its tailnet address only, and asks Tailscale's local WhoIs which node is
-// calling. A caller is let in when that node's full MagicDNS name is one of the other configured
-// devices' (their URL's host plus this tailnet's suffix). A browser on an allowed machine is that
+// calling. A caller is let in when that node's full MagicDNS name is in `names`: ./main.ts gives
+// the server's device's only (its URL's host plus this tailnet's suffix), the runner's one
+// legitimate caller (SPEC "Multi-machine"). A browser on an allowed machine is that
 // machine's node too, so routes also refuse any request that carries an Origin (./runner.ts).
 // `loopback` lets in callers on this machine only and never asks Tailscale: tests and development.
 import { Clock, Duration, Effect, Option, Schema, Semaphore } from "effect";

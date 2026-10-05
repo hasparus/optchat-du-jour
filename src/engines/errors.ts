@@ -19,7 +19,9 @@ export type Tagged = { readonly _tag: string };
 const ENGINE_ERRORS: ReadonlySet<string> = new Set<EngineError["_tag"]>(["DeviceOffline", "ModelError", "Refusal", "UsageLimit"]);
 export const isEngineError = (e: Tagged): e is EngineError => ENGINE_ERRORS.has(e._tag);
 
-// Claude Code reports a spent plan or a rate limit as an error result whose text says so
+// Claude Code reports a spent plan or a rate limit as an error result whose text says so. An
+// overload (529) fails over too, though it is transient: the next engine answers now, where a
+// failed turn would have the user send again (SPEC "Failover", E4).
 const LIMIT = /usage limit|rate limit|rate_limit|overloaded|\b429\b/i;
 
 export const fromResult = (text: string, stopReason: string | null | undefined, spent?: Spent): EngineError => {

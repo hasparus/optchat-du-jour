@@ -47,10 +47,16 @@ const ToolUseBlock = Schema.Struct({
 });
 const OtherBlock = Schema.Struct({ type: Schema.String });
 
+// `model` is "<synthetic>" on a message Claude Code wrote itself rather than the model: how it
+// reports an API error (a spent plan, an overload) just before the error result
 export const Assistant = Schema.Struct({
   type: Schema.Literal("assistant"),
-  message: Schema.Struct({ content: Schema.Array(Schema.Union([TextBlock, ThinkingBlock, ToolUseBlock, OtherBlock])) }),
+  message: Schema.Struct({
+    model: Schema.optional(Schema.String),
+    content: Schema.Array(Schema.Union([TextBlock, ThinkingBlock, ToolUseBlock, OtherBlock])),
+  }),
 });
+export const SYNTHETIC = "<synthetic>";
 
 const ResultPart = Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String) });
 const ToolResultBlock = Schema.Struct({
