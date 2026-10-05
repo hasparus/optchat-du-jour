@@ -9,7 +9,8 @@ import { Sse } from "effect/encoding";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { type EngineError, ModelError, Refusal, type Spent, UsageLimit } from "../engines/errors.ts";
 import type { Tokens as Usage } from "../usage.ts";
-import { type Endpoints, type TokenError, makeTokenManager } from "./auth.ts";
+import { type TokenError, makeTokenManager } from "./auth.ts";
+import type { Endpoints } from "./endpoints.ts";
 
 // a user message is a list of text parts, so stable context blocks stay byte-stable on the wire
 export type Turn = { readonly role: "user"; readonly parts: readonly string[] } | { readonly role: "assistant"; readonly text: string };
