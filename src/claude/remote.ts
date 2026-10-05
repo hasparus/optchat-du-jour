@@ -3,11 +3,12 @@
 // Until the device says claude started, every failure is DeviceOffline, so the master's chain can
 // move on at once (SPEC "Device offline": fail fast, never queue). Closing the scope closes the
 // socket, and the device runner kills the process.
-import { type Cause, Deferred, type Duration, Effect, Option, Queue, Schema, Stream } from "effect";
+import { type Cause, Deferred, Duration, Effect, Option, Queue, Schema, Stream } from "effect";
 import { Socket } from "effect/socket";
 import { DeviceOffline } from "../engines/errors.ts";
 import { ClaudeError, type Runner, type Spawn, makeClaude } from "./process.ts";
-import { Health, type ToDevice, decodeFromDevice, frame, inbox } from "./wire.ts";
+import { TOOL_TIMEOUT } from "../tools/files.ts";
+import { Health, type ToDevice, type ToolCall, ToolReply, decodeFromDevice, frame, inbox } from "./wire.ts";
 
 const CONNECT_TIMEOUT = "5 seconds"; // an asleep or unreachable peer on the tailnet hangs rather than refuses
 const SPAWN_TIMEOUT = "15 seconds";
@@ -95,3 +96,26 @@ export const deviceHealth = (url: string, timeout: Duration.Input) =>
       return response.text();
     },
   }).pipe(Effect.flatMap(decodeHealth), Effect.timeout(timeout), Effect.option);
+
+const decodeReply = Schema.decodeUnknownEffect(Schema.fromJsonString(ToolReply));
+
+// One read-only tool call on a device runner (POST /tool, M5). An unreachable device or a refusal
+// is the tool's answer, as text: the turn goes on and the model reads why.
+export const remoteTool =
+  (device: string, url: string) =>
+  (name: string, input: Schema.Json): Effect.Effect<string> => {
+    const call: ToolCall = { input, name };
+    return Effect.tryPromise({
+      catch: (cause) => cause,
+      try: async (signal) => {
+        const response = await fetch(new URL("/tool", url), { body: JSON.stringify(call), headers: { "content-type": "application/json" }, method: "POST", signal });
+        if (!response.ok) throw new Error(`the device runner answered ${response.status}`);
+        return response.text();
+      },
+    }).pipe(
+      Effect.flatMap(decodeReply),
+      Effect.map((r) => r.output),
+      Effect.timeout(Duration.sum(Duration.fromInputUnsafe(TOOL_TIMEOUT), Duration.seconds(5))),
+      Effect.catch((error) => Effect.succeed(`Error: ${device} did not run ${name}: ${error instanceof Error ? error.message : String(error)}`)),
+    );
+  };

@@ -123,6 +123,12 @@ function call(mem: Mem, params: Schema.Json | undefined): ToolResult {
   }
 }
 
+// zoom and date for an engine with its own tool loop (M5): the same answers, run on the server
+// from memory. The text the tool returns, or null for a tool that isn't one of these.
+export const MEMORY_TOOLS: readonly string[] = TOOLS.map((t) => t.name);
+export const memoryTool = (mem: Mem, name: string, args: Schema.Json): string | null =>
+  MEMORY_TOOLS.includes(name) ? (call(mem, { arguments: args, name }).content[0]?.text ?? "") : null;
+
 // One POSTed message in, the HTTP status and body out. A notification (no id) or a client's
 // response gets 202 and no body, as MCP's HTTP transport asks.
 export function handleMcp(mem: Mem, body: string): Reply {

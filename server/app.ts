@@ -9,21 +9,27 @@ import { existsSync } from "node:fs";
 import { openChat } from "../src/chat.ts";
 import { type Settings, MASTER_TOOLS } from "../src/config.ts";
 import { LocalRunner, Runner, claudeBinary, claudeVersion } from "../src/claude/process.ts";
-import { deviceHealth, remoteRunner } from "../src/claude/remote.ts";
+import { deviceHealth, remoteRunner, remoteTool } from "../src/claude/remote.ts";
+import { makeBudget } from "../src/apikey/budget.ts";
+import { ApiKeys, apiKeysLayer } from "../src/apikey/clients.ts";
 import type { Summarize } from "../src/compactor.ts";
 import { DeviceOffline } from "../src/engines/errors.ts";
 import { handleMcp, mcpConfig } from "../src/mcp.ts";
 import { endpointsOf } from "../src/openai/auth.ts";
-import { openAiPlanLayer } from "../src/openai/responses.ts";
+import { OpenAiPlan, openAiPlanLayer } from "../src/openai/responses.ts";
 import { expandHome } from "../src/paths.ts";
 import { makePersist } from "../src/persist.ts";
 import { promptFile, systemPrompt } from "../src/prompts.ts";
 import { makeSession } from "../src/session.ts";
-import { SecretsLive } from "../src/secrets.ts";
+import { type Secrets, SecretsLive } from "../src/secrets.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
 import { getNode, localTime, span } from "../src/tree.ts";
 import { type ClaudeCodeTurnOptions, claudeCodeTurn } from "../src/turn/claude-code.ts";
+import { toolBox } from "../src/tools/box.ts";
+import { type FileTools, makeFileTools } from "../src/tools/files.ts";
+import { apiKeyTurn } from "../src/turn/api-key.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
+import { openAiPlanTurn } from "../src/turn/openai-plan.ts";
 import { type UsageRecord, logUsage, readUsage } from "../src/usage.ts";
 import { PLACEHOLDER, render, viewSize } from "../src/view.ts";
 import { type AgUiEvent, makeTranslator, snapshot } from "./agui.ts";
@@ -38,6 +44,7 @@ export type ServerOptions = {
   readonly web?: string; // the built web UI
   readonly summarize?: Summarize; // tests replace the compactor
   readonly window?: number; // log entries in a client's first snapshot
+  readonly secrets?: Layer.Layer<Secrets>; // the plan's tokens and the API keys; SecretsLive unless a test says
 };
 
 
@@ -79,11 +86,19 @@ export const routes = (o: ServerOptions) =>
       const local = yield* Runner;
 
       let report = logReport;
-      const usage = (record: UsageRecord) => logUsage(usagePath, record).pipe(Effect.flatMap((e) => (e ? report(e) : Effect.void)));
-      const summarize = o.summarize ?? (yield* makeSummarize({ log: usage, report: (m) => report(m), settings }));
+      // the api-key engine's monthly budget sees every record before usage.jsonl does
+      const budget = makeBudget({ monthly: settings.apiKey?.monthlyBudget ?? 0, report: (m) => report(m), usagePath });
+      const usage = (record: UsageRecord) =>
+        budget.note(record).pipe(
+          Effect.andThen(logUsage(usagePath, record)),
+          Effect.flatMap((e) => (e ? report(e) : Effect.void)),
+        );
+      const clients = yield* ApiKeys;
+      const summarize = o.summarize ?? (yield* makeSummarize({ apiKey: { budget, clients }, log: usage, report: (m) => report(m), settings }));
       const chat = yield* openChat(stream, { report: (m) => report(m), summarize });
 
-      const systemFile = yield* promptFile(systemPrompt(o.home));
+      const instructions = systemPrompt(o.home); // one text for every engine and device (gist §7.2)
+      const systemFile = yield* promptFile(instructions);
       // where each device's claude runs (E7): this machine's own Runner, or that device's runner over
       // the tailnet. A claude elsewhere reaches /mcp through the server's tailnet URL (E8).
       const mcpAt = (base: string) => mcpConfig(`${base.replace(/\/$/, "")}/mcp?key=${secret}`);
@@ -103,9 +118,26 @@ export const routes = (o: ServerOptions) =>
         if (!runner) return Effect.fail(new DeviceOffline({ message: `${device} is not a configured device` }));
         return Effect.succeed({ cwd: folder, mcpConfig: remoteMcp, runner }); // `~` is the device's home, so it expands it
       };
+      // the read-only tools of an engine with its own loop (M5): this machine's in-process, another
+      // device's over its runner's POST /tool, zoom and date from memory
+      const localFiles = yield* makeFileTools(settings.devices[o.device]?.folders ?? []);
+      const files = new Map<string, FileTools>(
+        Object.entries(settings.devices).map(([name, d]) => [name, name === o.device ? localFiles : remoteTool(name, d.url)] as const),
+      );
+      const toolsFor = (device: string) =>
+        toolBox({
+          device,
+          files: files.get(device) ?? ((name) => Effect.succeed(`Error: ${device} is not a configured device, so ${name} can't run`)),
+          folders: settings.devices[device]?.folders ?? [],
+          mem: chat.mem,
+        });
+      const plan = yield* OpenAiPlan;
       const engines: TurnEngine[] = [];
       for (const ref of settings.master.chain) {
         const [engine, model = ""] = ref.split(/:(.*)/s);
+        const { effort } = settings.master;
+        if (engine === "openai-plan") engines.push(yield* openAiPlanTurn({ effort, instructions, model, toolsFor }).pipe(Effect.provideService(OpenAiPlan, plan)));
+        if (engine === "api-key") engines.push(apiKeyTurn({ budget, clients, effort, instructions, ref, settings, toolsFor }));
         if (engine !== "claude-code") continue;
         engines.push(
           yield* claudeCodeTurn({
@@ -299,11 +331,14 @@ export const routes = (o: ServerOptions) =>
     }),
   );
 
-export const serverLayer = (o: ServerOptions) =>
-  HttpRouter.serve(routes(o)).pipe(
+export const serverLayer = (o: ServerOptions) => {
+  const outside = Layer.mergeAll(o.secrets ?? SecretsLive, FetchHttpClient.layer);
+  return HttpRouter.serve(routes(o)).pipe(
     Layer.provide(BunHttpServer.layer({ hostname: o.host, port: o.port })),
     Layer.provide(LocalRunner),
-    Layer.provide(openAiPlanLayer(endpointsOf(o.settings.openai)).pipe(Layer.provide([SecretsLive, FetchHttpClient.layer]))),
+    Layer.provide(openAiPlanLayer(endpointsOf(o.settings.openai)).pipe(Layer.provide(outside))),
+    Layer.provide(apiKeysLayer(o.settings.apiKey).pipe(Layer.provide(outside))),
     Layer.provide(BunServices.layer),
   );
+};
 

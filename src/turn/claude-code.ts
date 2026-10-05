@@ -11,7 +11,7 @@ import { type DeviceOffline, fromResult, ModelError } from "../engines/errors.ts
 import type { StoreError } from "../store.ts";
 import { isCold, tokensOf, type UsageRecord } from "../usage.ts";
 import { cutBlocks } from "../view.ts";
-import type { Sent, TurnEngine, TurnEvents } from "./engine.ts";
+import { opening, type Sent, type TurnEngine, type TurnEvents } from "./engine.ts";
 
 type Ttl = "1h" | "5m";
 
@@ -211,7 +211,9 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
           .pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(new ModelError({ message: e.message })))); // DeviceOffline fails over
         const started = yield* Clock.currentTimeMillis;
         // the view exactly as priming cut it, with no marks: Claude Code's own marks are on (D2)
-        yield* claude.send([...cutBlocks(input.view).map(text), text(input.texts.join("\n\n"))]);
+        yield* claude.send([...cutBlocks(input.view).map(text), text(opening(input))]);
+        // after a failover, the mid-run messages the engine before never took: replayed in order
+        for (const s of input.sent) if (!s.taken) yield* claude.send([text(s.text)]);
 
         // Mid-run messages go to stdin as they come, each recorded in `sent` as it goes. Once
         // taken from the queue it is in `sent` before anything can interrupt, so the session
