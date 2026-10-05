@@ -11,7 +11,7 @@ import type { Trust } from "../device/auth.ts";
 import { deviceLayer } from "../device/runner.ts";
 import { serverLayer } from "../server/app.ts";
 import { CompactError } from "../src/compactor.ts";
-import type { Settings } from "../src/config.ts";
+import { parseSettings } from "../src/config.ts";
 import { DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 import { freePort } from "./ports.ts";
 
@@ -68,7 +68,7 @@ test("a turn on another device runs there, and a turn on an offline device fails
   Bun.env.FAKE_CLAUDE_LOG = log; // the device's claude inherits it: the runner passes on no such env itself
   const port = freePort(), devicePort = freePort();
   const strangerPort = freePort();
-  const settings: Settings = {
+  const settings = parseSettings({
     openai: DEFAULT_ENDPOINTS,
     allowedLogins: [ME],
     cache: { apiKeyTtls: [], claudeCodeTtl: "1h", primeTtl: "1h" },
@@ -82,7 +82,7 @@ test("a turn on another device runs there, and a turn on an offline device fails
     },
     master: { chain: ["claude-code:opus"], effort: "high", permissionMode: "bypassPermissions" },
     server: { host: "127.0.0.1", port, publicUrl: `http://localhost:${port}` },
-  };
+  });
   const trust: Trust = { _tag: "loopback" };
   // a runner that doesn't know the server's node: up, but it answers 403
   const strict: Trust = { _tag: "tailnet", names: ["optchat-mini.tail1234.ts.net"], whois: () => Effect.succeed(Option.none()) };
@@ -163,7 +163,7 @@ test("without server.publicUrl a turn on another device is refused at once, and 
   Bun.env.OPTCHAT_CLAUDE = FAKE;
   Bun.env.FAKE_CLAUDE_LOG = log;
   const port = freePort(), devicePort = freePort();
-  const settings: Settings = {
+  const settings = parseSettings({
     openai: DEFAULT_ENDPOINTS,
     allowedLogins: [],
     cache: { apiKeyTtls: [], claudeCodeTtl: "1h", primeTtl: "1h" },
@@ -175,7 +175,7 @@ test("without server.publicUrl a turn on another device is refused at once, and 
     },
     master: { chain: ["claude-code:opus"], effort: "high", permissionMode: "bypassPermissions" },
     server: { host: "127.0.0.1", port },
-  };
+  });
   const both = Layer.mergeAll(
     deviceLayer({ claude: FAKE, folders: [dir], host: "127.0.0.1", name: "macbook", port: devicePort, trust: { _tag: "loopback" } }),
     serverLayer({ device: "mini", home: dir, host: "127.0.0.1", port, settings, summarize: () => Effect.fail(new CompactError({ message: "none" })) }),

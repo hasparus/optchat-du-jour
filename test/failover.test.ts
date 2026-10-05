@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { deviceLayer } from "../device/runner.ts";
 import { serverLayer } from "../server/app.ts";
 import { CompactError } from "../src/compactor.ts";
-import type { Settings } from "../src/config.ts";
+import { parseSettings } from "../src/config.ts";
 import { login } from "../src/openai/auth.ts";
 import { memorySecrets } from "../src/secrets.ts";
 import { readUsage } from "../src/usage.ts";
@@ -94,7 +94,7 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
   const endpoints = { agentName: "optchat-test", api: `${fake.base}/v1`, issuer: fake.base, port: freePort(), registerClientId: "dynamic_agent_client" };
   await Effect.runPromise(login({ endpoints, open: (url) => Effect.promise(async () => void (await fetch(url))) }).pipe(Effect.provide([secrets, FetchHttpClient.layer])));
   const port = freePort(), devicePort = freePort();
-  const settings: Settings = {
+  const settings = parseSettings({
     allowedLogins: [],
     cache: { apiKeyTtls: ["1h"], claudeCodeTtl: "1h", primeTtl: "1h" },
     compactor: { byLevel: [{ chain: ["claude-code:sonnet"], from: 0 }], effort: "medium" },
@@ -106,7 +106,7 @@ test("a spent Claude plan moves the turn to openai-plan, which reads a file on t
     master: { chain: ["claude-code:opus", "openai-plan:gpt-sol"], effort: "high", permissionMode: "bypassPermissions" },
     openai: endpoints,
     server: { host: "127.0.0.1", port, publicUrl: `http://localhost:${port}` },
-  };
+  });
   const trust = { _tag: "loopback" } as const;
   const both = Layer.mergeAll(
     deviceLayer({ claude: FAKE, folders: [macbook], host: "127.0.0.1", name: "macbook", port: devicePort, trust }),

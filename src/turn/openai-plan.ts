@@ -5,7 +5,7 @@
 // by itself. The same provider carries an OpenAI API key for the api-key engine.
 import { Effect } from "effect";
 import type { EngineError } from "../engines/errors.ts";
-import { OpenAiPlan, type Respond, type Turn } from "../openai/responses.ts";
+import type { OpenAiPlan, Respond, Turn } from "../openai/responses.ts";
 import type { Tokens } from "../usage.ts";
 import { type Item, type Provider, type ToolBox, toolLoop } from "./loop.ts";
 
@@ -52,9 +52,13 @@ export const responsesProvider = (o: {
   engine: o.engine,
 });
 
-export const openAiPlanTurn = (o: { readonly model: string; readonly effort?: string; readonly instructions: string; readonly toolsFor: (device: string) => ToolBox }) =>
-  Effect.gen(function* () {
-    const plan = yield* OpenAiPlan;
-    const provider = responsesProvider({ auth: "chatgpt-pro", effort: o.effort, engine: "openai-plan", model: o.model, respond: plan.respond });
-    return toolLoop({ instructions: o.instructions, provider, ref: `openai-plan:${o.model}`, toolsFor: o.toolsFor });
-  });
+export const openAiPlanTurn = (o: {
+  readonly model: string;
+  readonly effort?: string;
+  readonly instructions: string;
+  readonly toolsFor: (device: string) => ToolBox;
+  readonly plan: OpenAiPlan["Service"];
+}) => {
+  const provider = responsesProvider({ auth: "chatgpt-pro", effort: o.effort, engine: "openai-plan", model: o.model, respond: o.plan.respond });
+  return toolLoop({ instructions: o.instructions, provider, ref: `openai-plan:${o.model}`, toolsFor: o.toolsFor });
+};

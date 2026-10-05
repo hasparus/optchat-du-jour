@@ -12,7 +12,7 @@ import type { Summarize } from "../../src/compactor.ts";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { serverLayer } from "../../server/app.ts";
-import type { Settings } from "../../src/config.ts";
+import { parseSettings } from "../../src/config.ts";
 import { DEFAULT_ENDPOINTS } from "../../src/openai/endpoints.ts";
 import { memorySecrets } from "../../src/secrets.ts";
 
@@ -37,7 +37,7 @@ Object.assign(process.env, {
   OPTCHAT_CLAUDE: `${root}test/fake-claude.ts`,
 });
 
-const settings: Settings = {
+const settings = parseSettings({
   openai: DEFAULT_ENDPOINTS,
   allowedLogins: [],
   cache: { apiKeyTtls: ["1h"], claudeCodeTtl: "1h", primeTtl: "1h" },
@@ -45,7 +45,7 @@ const settings: Settings = {
   defaultDevice: "mini",
   devices: { macbook: { folders: ["~/repos"], url: "http://optchat-macbook:7710" }, mini: { folders: [home], url: "http://optchat-mini:7710" } },
   master: { chain: ["claude-code:opus"], effort: "high", permissionMode: "bypassPermissions" },
-};
+});
 
 BunRuntime.runMain(
   Effect.gen(function* () {

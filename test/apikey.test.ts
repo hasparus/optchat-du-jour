@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { makeBudget } from "../src/apikey/budget.ts";
 import { ApiKeys, KEY_SECRETS, apiKeysLayer } from "../src/apikey/clients.ts";
 import type { Job } from "../src/compactor.ts";
-import { type Settings, loadSettings } from "../src/config.ts";
+import { type ApiKeyRef, Settings, loadSettings, parseSettings } from "../src/config.ts";
 import { DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 import { memorySecrets } from "../src/secrets.ts";
 import { newMsg } from "../src/store.ts";
@@ -30,16 +30,19 @@ const price = { cacheRead: 0.2, cacheWrite1h: 8, cacheWrite5m: 5, input: 4, outp
 // 100 in × $4 + 500 read × $0.2 + 2000 5-min writes × $5 + 1000 1-hour writes × $8 + 50 out × $20, per million
 const DOLLARS = (100 * 4 + 500 * 0.2 + 2000 * 5 + 1000 * 8 + 50 * 20) / 1_000_000;
 
-const settings = (monthlyBudget: number): Settings => ({
-  allowedLogins: [],
-  apiKey: { anthropicUrl: fake.base, monthlyBudget, prices: { "anthropic/claude-opus-5-5": price } },
-  cache: { apiKeyTtls: ["1h", "5m", "5m"], claudeCodeTtl: "1h", primeTtl: "1h" },
-  compactor: { byLevel: [{ chain: [REF], from: 0 }], effort: "medium" },
-  defaultDevice: "mini",
-  devices: { mini: { folders: [], url: "http://127.0.0.1:9" } },
-  master: { chain: [REF], effort: "high", permissionMode: "bypassPermissions" },
-  openai: DEFAULT_ENDPOINTS,
-});
+const settings = (monthlyBudget: number): Settings =>
+  parseSettings({
+    allowedLogins: [],
+    apiKey: { anthropicUrl: fake.base, monthlyBudget, prices: { "anthropic/claude-opus-5-5": price } },
+    cache: { apiKeyTtls: ["1h", "5m", "5m"], claudeCodeTtl: "1h", primeTtl: "1h" },
+    compactor: { byLevel: [{ chain: [REF], from: 0 }], effort: "medium" },
+    defaultDevice: "mini",
+    devices: { mini: { folders: [], url: "http://127.0.0.1:9" } },
+    master: { chain: [REF], effort: "high", permissionMode: "bypassPermissions" },
+    openai: DEFAULT_ENDPOINTS,
+  });
+// REF as the config decodes it
+const API_KEY: ApiKeyRef = { engine: "api-key", model: "claude-opus-5-5", provider: "anthropic", ref: REF };
 
 const clients = Effect.runSync(
   Effect.gen(function* () {
@@ -56,7 +59,7 @@ const rig = (monthly: number, usagePath: string) => {
       Effect.andThen(logUsage(usagePath, r)),
       Effect.andThen(Effect.sync(() => void records.push(r))),
     );
-  const compact = apiKeyCompactor({ budget, clients, effort: "medium", log, ref: REF, settings: settings(monthly) });
+  const compact = apiKeyCompactor({ budget, clients, effort: "medium", log, ref: API_KEY, settings: settings(monthly) });
   return { budget, compact, records, reports };
 };
 
@@ -99,7 +102,7 @@ test("Anthropic gets 1-hour marks before 5-minute ones on the stable blocks, the
   ]);
 
   // as the master: the view's blocks marked, the read-only tools offered, the last round without tools
-  const provider = apiKeyProvider({ budget: r.budget, clients, effort: "high", ref: REF, settings: settings(5) });
+  const provider = apiKeyProvider({ budget: r.budget, clients, effort: "high", ref: API_KEY, settings: settings(5) });
   const history = [{ parts: ["<chat>\n0+1|user: hi\n</chat>", "what now?"], stable: 1, type: "user" as const }];
   const tools = [{ description: "Read a file", name: "Read", parameters: { properties: { file_path: { type: "string" } }, type: "object" } }];
   await Effect.runPromise(provider.call({ final: false, history, instructions: "MASTER", onText: () => Effect.void, tools }));
@@ -148,10 +151,16 @@ test("a spent monthly budget is a UsageLimit, reported once, and nothing more re
   expect(fake.state.seen).toHaveLength(1);
 });
 
-test("the config refuses a 5-minute mark before a 1-hour one", async () => {
-  const path = `${dir}/optchat.config.ts`;
-  const bad = { ...settings(5), cache: { apiKeyTtls: ["5m", "1h"], claudeCodeTtl: "1h", primeTtl: "1h" } };
-  writeFileSync(path, `export default ${JSON.stringify(bad)};\n`);
-  const error = await Effect.runPromise(Effect.flip(loadSettings(path)));
-  expect(error.message).toContain('every "1h" before any "5m"');
+test("the config refuses a 5-minute mark before a 1-hour one, and an engine ref it can't decode", async () => {
+  const written = Schema.encodeSync(Settings)(settings(5));
+  let configs = 0;
+  const refused = async (config: typeof Settings.Encoded) => {
+    const path = `${dir}/optchat-${++configs}.config.ts`; // a module is imported once per path
+    writeFileSync(path, `export default ${JSON.stringify(config)};\n`);
+    const error = await Effect.runPromise(Effect.flip(loadSettings(path)));
+    return error.message;
+  };
+  expect(await refused({ ...written, cache: { apiKeyTtls: ["5m", "1h"], claudeCodeTtl: "1h", primeTtl: "1h" } })).toContain('every "1h" before any "5m"');
+  expect(await refused({ ...written, master: { ...written.master, chain: ["gpt:x"] } })).toContain("engine gpt:x: no such engine");
+  expect(await refused({ ...written, master: { ...written.master, chain: ["api-key:claude-sonnet"] } })).toContain("must be api-key:anthropic/<model>");
 });

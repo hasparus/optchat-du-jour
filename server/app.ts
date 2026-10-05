@@ -2,12 +2,12 @@
 // and their HTTP face on one port: /ws (AG-UI), /mcp (zoom and date, over a WebSocket or POST),
 // /api/* (read-only JSON for the web UI) and / (the built web UI).
 import { BunHttpServer, BunServices } from "@effect/platform-bun";
-import { Context, Effect, Layer, Option, Predicate, PubSub, Result, Schema } from "effect";
+import { Context, Effect, Layer, Option, Predicate, PubSub, Schema } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 import { existsSync } from "node:fs";
 import { openChat } from "../src/chat.ts";
-import { type Settings, MASTER_TOOLS, parseRef } from "../src/config.ts";
+import type { Settings } from "../src/config.ts";
 import { Runner, claudeBinary, claudeVersion } from "../src/claude/process.ts";
 import { remoteRunner, remoteTool } from "../src/claude/remote.ts";
 import { WarmLocalRunner } from "../src/claude/warm.ts";
@@ -16,9 +16,10 @@ import { ApiKeys, apiKeysLayer } from "../src/apikey/clients.ts";
 import type { Summarize } from "../src/compactor.ts";
 import type { DownList } from "../src/engines/chain.ts";
 import { DeviceOffline } from "../src/engines/errors.ts";
+import { turnEngine } from "../src/engines/registry.ts";
 import { handleMcp, mcpConfig, mcpTransports, openNode } from "../src/mcp.ts";
 import { forbidden, mount } from "../src/http.ts";
-import { openAiPlanLayer } from "../src/openai/responses.ts";
+import { OpenAiPlan, openAiPlanLayer } from "../src/openai/responses.ts";
 import { expandHome } from "../src/paths.ts";
 import { makePersist } from "../src/persist.ts";
 import { promptFile, systemPrompt } from "../src/prompts.ts";
@@ -26,12 +27,9 @@ import { makeSession, type SessionEvent } from "../src/session.ts";
 import { type Secrets, SecretsLive } from "../src/secrets.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
 import { getNode, localTime, span } from "../src/tree.ts";
-import { type Placement, claudeCodeTurn } from "../src/turn/claude-code.ts";
+import type { Placement } from "../src/turn/claude-code.ts";
 import { toolBox } from "../src/tools/box.ts";
 import { type FileTools, makeFileTools } from "../src/tools/files.ts";
-import { apiKeyTurn } from "../src/turn/api-key.ts";
-import type { TurnEngine } from "../src/turn/engine.ts";
-import { openAiPlanTurn } from "../src/turn/openai-plan.ts";
 import { type UsageRecord, logUsage, readUsage } from "../src/usage.ts";
 import { PLACEHOLDER, render, viewSize } from "../src/view.ts";
 import { type AgUiEvent, openStream } from "./agui.ts";
@@ -117,14 +115,22 @@ export const routes = (o: ServerOptions) =>
           Effect.andThen(logUsage(usagePath, record)),
           Effect.flatMap((e) => (e ? report(e) : Effect.void)),
         );
-      // built here so that a refresh token it can't save is told to the clients, not only logged
+      // The ChatGPT plan's client and the API keys' clients, built on first use and then kept: a
+      // server whose chains name neither engine, or whose compactor a test replaced, never builds
+      // them. Built here so that a refresh token the plan can't save is told to the clients.
+      const scope = yield* Effect.scope;
       const outside = Layer.mergeAll(o.secrets ?? SecretsLive, FetchHttpClient.layer);
-      const plan = yield* Layer.build(openAiPlanLayer(settings.openai, { report }).pipe(Layer.provide(outside)));
-      const clients = Context.get(yield* Layer.build(apiKeysLayer(settings.apiKey).pipe(Layer.provide(outside))), ApiKeys);
+      const plan = yield* Effect.cached(
+        Layer.buildWithScope(openAiPlanLayer(settings.openai, { report }).pipe(Layer.provide(outside)), scope).pipe(Effect.map((c) => Context.get(c, OpenAiPlan))),
+      );
+      const apiKeys = yield* Effect.cached(
+        Layer.buildWithScope(apiKeysLayer(settings.apiKey).pipe(Layer.provide(outside)), scope).pipe(Effect.map((c) => Context.get(c, ApiKeys))),
+      );
+      const needs = { apiKeys, budget, log: usage, plan, report, settings };
       // the session shows the compactor's engines that are down, for clients that connect later
       const compactor: { readonly down?: DownList; readonly summarize: Summarize } = o.summarize
         ? { summarize: o.summarize }
-        : yield* makeSummarize({ apiKey: { budget, clients }, device: o.device, log: usage, report, settings }).pipe(Effect.provide(plan));
+        : yield* makeSummarize({ ...needs, device: o.device, runner: local });
       const chat = yield* openChat(stream, { report, summarize: compactor.summarize });
 
       const instructions = systemPrompt(o.home); // one text for every engine and device (gist §7.2)
@@ -169,37 +175,7 @@ export const routes = (o: ServerOptions) =>
           folders: settings.devices[device]?.folders ?? [],
           mem: chat.mem,
         });
-      const engines: TurnEngine[] = [];
-      for (const ref of settings.master.chain) {
-        const parsed = parseRef("master", ref);
-        // loadSettings refuses such a chain first
-        if (Result.isFailure(parsed)) return yield* Effect.die(new Error(parsed.failure));
-        const { engine, model } = parsed.success;
-        const { effort } = settings.master;
-        switch (engine) {
-          case "openai-plan":
-            engines.push(yield* openAiPlanTurn({ effort, instructions, model, toolsFor }).pipe(Effect.provide(plan)));
-            break;
-          case "api-key":
-            engines.push(apiKeyTurn({ budget, clients, effort, instructions, ref, settings, toolsFor }));
-            break;
-          case "claude-code":
-            engines.push(
-              yield* claudeCodeTurn({
-                effort,
-                logUsage: usage,
-                model,
-                permissionMode: settings.master.permissionMode,
-                primeTtl: settings.cache.primeTtl,
-                report,
-                runnerFor,
-                systemFile,
-                tools: settings.master.tools ?? MASTER_TOOLS,
-                ttl: settings.cache.claudeCodeTtl,
-              }),
-            );
-        }
-      }
+      const engines = yield* Effect.forEach(settings.master.chain, (ref) => turnEngine(ref, { ...needs, instructions, runnerFor, systemFile, toolsFor }));
       const persist = yield* makePersist(report);
       const session = yield* makeSession({
         chat,
