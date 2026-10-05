@@ -148,6 +148,10 @@ export function openStream(o: {
         return reply(e.at, e.offset, e.delta);
       case "thinking":
         return [{ name: "thinking", type: EventType.CUSTOM, value: { tokens: e.tokens } }];
+      // the next text under that index starts the reply again (TEXT_MESSAGE_START clears a draft)
+      case "reply-dropped":
+        text = null;
+        return [];
       case "run-started":
         if (run === e.runId) return []; // told at connect
         run = e.runId;

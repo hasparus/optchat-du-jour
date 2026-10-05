@@ -23,6 +23,8 @@ export type SessionEvent =
   // `offset`: where the delta starts in that reply's text so far
   | { readonly type: "text"; readonly delta: string; readonly runId: string; readonly at: number; readonly offset: number }
   | { readonly type: "thinking"; readonly tokens: number; readonly runId: string }
+  // the reply streaming in was dropped unlogged (the engine failed over): the next one streams anew
+  | { readonly type: "reply-dropped"; readonly runId: string }
   | { readonly type: "run-started"; readonly runId: string }
   // every run-started gets exactly one, also after a cancel; `logged`: the log's length by then
   | { readonly type: "run-finished"; readonly runId: string; readonly error: string | null; readonly logged: number }
@@ -282,11 +284,15 @@ export const makeSession = (o: {
         const result = yield* failover(
           o.engines.map((e) => ({ ref: e.ref, run: (from: string | null) => call(e, base, from, out, since) })),
           {
-            // a failover mid-turn keeps what was logged: the next engine is told and carries on from it
+            // A failover mid-turn keeps what was logged: the next engine is told and carries on from
+            // it. Text the engine before streamed and never logged is dropped, so the next engine's
+            // reply is not glued to it.
             moved: (from, to, why) =>
               Effect.suspend(() => {
                 const done = chat.mem.root.length - since;
-                return info(`${from} → ${to}: ${why}${done > 0 ? ` (after ${done} logged entries; ${to} carries on from them)` : ""}`);
+                const dropped = current?.reply ? publish({ runId, type: "reply-dropped" }) : Effect.void;
+                if (current) current.reply = null;
+                return dropped.pipe(Effect.andThen(info(`${from} → ${to}: ${why}${done > 0 ? ` (after ${done} logged entries; ${to} carries on from them)` : ""}`)));
               }),
           },
         ).pipe(Effect.result);

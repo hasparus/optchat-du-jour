@@ -3,10 +3,12 @@
 // entry, and a failover hands on exactly what the engine before never took. Nothing sent may be
 // lost or logged twice, and the loop never spins.
 import { afterAll, expect, test } from "bun:test";
+import { type AGUIEvent, EventType } from "@ag-ui/core";
 import { Effect, PubSub } from "effect";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
+import { openStream } from "../server/agui.ts";
 import { UsageLimit } from "../src/engines/errors.ts";
 import { makeSession, type SessionEvent } from "../src/session.ts";
 import { StoreError } from "../src/store.ts";
@@ -268,6 +270,50 @@ test("a failover mid-turn hands the next engine what the first never took, once,
       ]);
       expect(r.said()).toEqual(["ack a1: 0", "ack a2: 2", "info: first:x → second:x: spent (after 2 logged entries; second:x carries on from them)", "ack b1: 3", "end: ok"]);
       expect(r.session.state().queued).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("text an engine streamed and never logged is dropped at a failover, so the next engine's reply is not glued to it", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const spent: TurnEngine = {
+        ref: "first:x",
+        run: (_input, out) => out.text("Starting on").pipe(Effect.andThen(Effect.fail(new UsageLimit({ message: "spent" })))),
+        warm: () => Effect.void,
+      };
+      const next: TurnEngine = {
+        ref: "second:x",
+        run: (_input, out) => out.text("Done.").pipe(Effect.andThen(Effect.sleep("100 millis")), Effect.andThen(out.log("talk", "Done."))),
+        warm: () => Effect.void,
+      };
+      const r = yield* rig([spent, next]);
+      // a client watching from the start
+      const sub = yield* PubSub.subscribe(r.session.events);
+      const watched = openStream({ entries: r.chat.mem.root, live: null, state: r.session.state(), thread: "mini", window: 50 });
+      const seen: AGUIEvent[] = [];
+      yield* PubSub.take(sub).pipe(
+        Effect.tap((e) => Effect.sync(() => seen.push(...watched.translate(e)))),
+        Effect.forever,
+        Effect.forkScoped,
+      );
+      yield* r.session.input("go");
+      yield* until("the second engine's text", () => r.session.live()?.reply?.text === "Done.");
+      // one that joins now gets the second engine's reply only
+      const late = openStream({ entries: r.chat.mem.root, live: r.session.live(), state: r.session.state(), thread: "mini", window: 50 });
+      expect(late.first.flatMap((e) => (e.type === EventType.TEXT_MESSAGE_CONTENT ? [e.delta] : []))).toEqual(["Done."]);
+      yield* until("the run's end", () => r.events.some((e) => e.type === "run-finished"));
+      expect(r.log()).toEqual([
+        ["user", "go"],
+        ["talk", "Done."],
+      ]);
+      // the watching client: the reply started again under the same index, from its first character
+      const reply = seen.flatMap((e) => {
+        if (e.type === EventType.TEXT_MESSAGE_START) return [`start ${e.messageId}`];
+        if (e.type === EventType.TEXT_MESSAGE_CONTENT) return [`${e.messageId}: ${e.delta}`];
+        return [];
+      });
+      expect(reply).toEqual(["start 0", "0: go", "start 1", "1: Starting on", "start 1", "1: Done."]);
     }).pipe(Effect.scoped),
   );
 });
