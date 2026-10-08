@@ -176,14 +176,17 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
   };
   // The server's word on one of our messages: it is logged, and the user entry follows at once, or
   // it could not be (it stays queued there, and is logged with the next message, unannounced).
-  const acked = (id: string, error: string | null, index: number | null) => {
-    if (index !== null) {
-      ackedAt.add(index);
-      for (const old of ackedAt) {
-        if (ackedAt.size <= MAX_ACKED) break;
-        ackedAt.delete(old); // the oldest first
-      }
+  // a log index is a message's now (acked to some client, or matched to one of ours): no other
+  // message of ours is matched on it
+  const claim = (index: number) => {
+    ackedAt.add(index);
+    for (const old of ackedAt) {
+      if (ackedAt.size <= MAX_ACKED) break;
+      ackedAt.delete(old); // the oldest first
     }
+  };
+  const acked = (id: string, error: string | null, index: number | null) => {
+    if (index !== null) claim(index);
     const at = s.pending.findIndex((p) => p.id === id);
     const p = s.pending[at];
     if (p === undefined) return; // another client's message
@@ -205,11 +208,14 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
   // A user entry was logged without an ack for us: one a failed ack told of earlier, or one sent on
   // a connection that has dropped since (its ack, told to nobody, is lost). Only these are matched
   // by their text, on the entry's index, as the oldest of them it can be, and never on an index
-  // whose ack named another message.
-  const logged = (i: number, text: string) => {
+  // whose ack named another message or that one of ours was matched on. `may`: which of ours may
+  // be matched now.
+  const logged = (i: number, text: string, may: (p: Pending) => boolean = () => true) => {
     if (ackedAt.has(i)) return;
-    const at = s.pending.findIndex((p) => (p.error !== null || p.conn < conns) && sameMessage(text, p) && i >= p.from);
-    if (at !== -1) set({ pending: s.pending.toSpliced(at, 1) });
+    const at = s.pending.findIndex((p) => may(p) && (p.error !== null || p.conn < conns) && sameMessage(text, p) && i >= p.from);
+    if (at === -1) return;
+    claim(i);
+    set({ pending: s.pending.toSpliced(at, 1) });
   };
   // After a reconnect: a message sent on a connection that dropped, which the log doesn't hold and
   // the server doesn't hold either (its id is not among the state's pending), may have been lost
@@ -243,9 +249,11 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
     } catch {
       return;
     }
-    for (const e of found) if (e.kind === "user") logged(e.i, e.text);
-    const there = new Set((s.state?.pending ?? []).map((m) => m.clientId));
+    // in log order: those below the window, then the window's (one a newer message of ours took is claimed)
     const ids = new Set(older.map((p) => p.id));
+    const window = [...s.log.items.values()].filter((e) => e.i >= low).toSorted((a, b) => a.i - b.i);
+    for (const e of [...found, ...window]) if (e.kind === "user") logged(e.i, e.text, (p) => ids.has(p.id));
+    const there = new Set((s.state?.pending ?? []).map((m) => m.clientId));
     const marked = s.pending.map((p) => (ids.has(p.id) && unheard(p, there) ? { ...p, error: UNSENT } : p));
     if (marked.some((p, k) => p !== s.pending[k])) set({ pending: marked });
   };
@@ -288,7 +296,11 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
         // the snapshot is the log: a marker placed after what it doesn't hold (a reply cut off by a
         // cancel, whose index goes to the next entry) goes after its last entry instead
         const { newest } = s.log;
-        if (s.pending.length > 0) for (const item of s.log.items.values()) if (item.kind === "user" && item.i >= s.log.base) logged(item.i, item.text);
+        // one of ours sent from below the window waits for `below`, which matches it in log order
+        // with the window's entries, so it never takes an entry that is a later one's
+        const low = lowest(s.log);
+        if (s.pending.length > 0)
+          for (const item of s.log.items.values()) if (item.kind === "user" && item.i >= s.log.base) logged(item.i, item.text, (p) => p.from >= low || p.error !== null);
         set({ markers: s.markers.some((m) => m.after > newest) ? s.markers.map((m) => (m.after > newest ? { ...m, after: newest } : m)) : s.markers, thinking: false });
         if (hole(s.log)) void fill();
         return;

@@ -231,6 +231,13 @@ describe("log", () => {
   });
 });
 
+// user entries from..to-1: m<i>, except "same" at 12 and 600
+const twice = (from: number, to: number) => Array.from({ length: to - from }, (_, k): Entry => ({ kind: "user", text: from + k === 12 || from + k === 600 ? "same" : `m${from + k}` }));
+// /api/messages over `twice`
+const twicePages = async (before: number, limit: number) => {
+  const from = Math.max(0, before - limit);
+  return { entries: twice(from, before).map((e, k) => entry(from + k, e.kind, e.text)) };
+};
 const waiting = (session: { readonly get: () => Session }) => queued(session.get()).map((q) => (q.error === null ? q.text : `${q.text} (${q.error})`));
 const idOf = (server: { readonly sent: readonly string[] }, k: number) => parseSent(server.sent[k] ?? "{}").messages?.at(-1)?.id ?? "";
 
@@ -263,6 +270,19 @@ describe("session", () => {
     await tick(20);
     expect(asked).toEqual(["500/490"]); // from the oldest one's `from` to the window, one page
     expect(waiting(session)).toEqual([`never logged (${UNSENT})`]);
+  });
+
+  test("two kept messages with the same text, one from below the window: each is matched once, in log order, and neither is marked", async () => {
+    const sent = [
+      { from: 10, id: "a", media: [], text: "same" },
+      { from: 550, id: "b", media: [], text: "same" },
+    ];
+    localStorage.setItem(sentKey, JSON.stringify({ at: Date.now(), sent }));
+    // the log has "same" at 12 (a's) and at 600 (b's); the window holds 500..699
+    const server = fakeServer(() => [snapshot(twice(500, 700), 500), { snapshot: { ...IDLE, messages: 700 }, type: EventType.STATE_SNAPSHOT }]);
+    const session = makeSession(openLink("ws://x/ws", { retryMs: 1, socket: server.socket }), { messages: twicePages });
+    await tick(20);
+    expect(waiting(session)).toEqual([]);
   });
 
   test("a take-back asked for and not answered is forgotten on a reconnect, so it can be asked again", async () => {
