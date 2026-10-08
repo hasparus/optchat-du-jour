@@ -60,6 +60,13 @@ export const fit = (mem: Mem, view: readonly Coord[], budget: number, hole: numb
 export const append = (mem: Mem, at: Saw, marks: Marks, hole: number, i = mem.root.length - 1) =>
   sawOf(kernel.append(i, marks.high, marks.low, at.folding, parts(mem, at.view, hole), msg(mem, i, hole)));
 
+// A saved view of the messages before `from`, the rest of the log appended: the first message
+// as append does, the others as the rebuild does (fast while a batch is owed and stuck)
+export const extend = (mem: Mem, at: Saw, marks: Marks, hole: number, from: number) =>
+  sawOf(
+    kernel.extend(from, marks.high, marks.low, { $: "Saw", folding: at.folding, ps: parts(mem, at.view, hole) }, list(mem.root.slice(from).map((m) => msg(mem, m.i, hole)))),
+  );
+
 // the view rebuilt from message 0 with the tree as it is today: for a data dir with no saved
 // view, or a damaged one (docs/optchat.md §3.2: never otherwise, since a rebuilt view differs from the live one)
 export const refold = (mem: Mem, marks: Marks, hole: number) =>

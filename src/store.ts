@@ -2,7 +2,7 @@
 // one write and one fsync per line; the view, replaced whole and atomically (docs/optchat.md §1,
 // §3.2); and a unix-socket lock that keeps a second writer out.
 import { Data, Effect, Option, Schema } from "effect";
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { createServer, type Server, connect } from "node:net";
 import { dirname, resolve } from "node:path";
 import { type Kind, Msg, Node } from "./records.ts";
@@ -115,6 +115,7 @@ export function saveView(dir: string, mem: Mem) {
 function readView(dir: string): Found {
   const target = `${dir}/chat/${VIEW_FILE}`;
   if (!existsSync(target)) return { ok: false, why: "missing" };
+  if (!statSync(target).isFile()) return { ok: false, why: "not a file" };
   return Option.match(decodeView(readFileSync(target, "utf8")), {
     onNone: (): Found => ({ ok: false, why: "unreadable" }),
     onSome: (saved): Found => ({ ok: true, saved }),
@@ -157,15 +158,30 @@ function readStream<A>(dir: string, stream: string, decode: (line: string) => Op
 const decodeMsg = Schema.decodeUnknownOption(Schema.fromJsonString(Msg));
 const decodeNode = Schema.decodeUnknownOption(Schema.fromJsonString(Node));
 
+// Something other than a file where the view goes (a directory, say) can't be replaced by a
+// rename: the writer moves it aside, keeping it, before it saves the rebuilt view.
+function moveAside(dir: string) {
+  const target = `${dir}/chat/${VIEW_FILE}`;
+  if (!existsSync(target) || statSync(target).isFile()) return null;
+  const aside = `${target}.broken-${Date.now()}`;
+  renameSync(target, aside);
+  return `chat/view.json: moved aside to ${aside}`;
+}
+
+// `writer`: the caller holds the stream's lock, so it repairs a torn last line and saves a view it
+// had to rebuild; a reader only reads.
 export const loadChat = (
   dir: string,
-  o: { readonly marks?: Marks; readonly repair?: boolean; readonly view?: boolean } = {},
+  o: { readonly marks?: Marks; readonly writer?: boolean; readonly view?: boolean } = {},
 ): Effect.Effect<Loaded, StoreError> =>
   Effect.gen(function* () {
-    const { repair = true, view = true } = o;
+    const { writer = true, view = true } = o;
     const skipped: string[] = [];
-    const msgs = yield* io(`cannot read ${dir}/chat/main`, () => readStream(dir, "main", decodeMsg, repair, skipped));
-    const recs = yield* io(`cannot read ${dir}/chat/tree`, () => readStream(dir, "tree", decodeNode, repair, skipped));
+    // The view first, then the logs: the writer saves the view after the log line, so whatever
+    // view a reader finds, the logs it reads next cover it (it may be behind them, never ahead)
+    const found = view ? yield* io(`cannot read ${dir}/chat/${VIEW_FILE}`, () => readView(dir)) : null;
+    const msgs = yield* io(`cannot read ${dir}/chat/main`, () => readStream(dir, "main", decodeMsg, writer, skipped));
+    const recs = yield* io(`cannot read ${dir}/chat/tree`, () => readStream(dir, "tree", decodeNode, writer, skipped));
     const mem = newMem(o.marks);
     const byId = msgs.toSorted((x, y) => x.i - y.i);
     for (const [expected, logged] of byId.entries()) {
@@ -177,14 +193,16 @@ export const loadChat = (
     }
     for (const n of recs) setNode(mem, n);
     // a reader that wants the records only (an exporter, a check) skips the view
-    if (!view) return { problems: skipped, mem };
-    const found = yield* io(`cannot read ${dir}/chat/${VIEW_FILE}`, () => readView(dir));
+    if (found === null) return { problems: skipped, mem };
     // a new chat has no view to save yet: its first message saves one
     const note = !found.ok && mem.root.length === 0 ? null : restore(mem, found);
     if (note === null) return { problems: skipped, mem };
     skipped.push(note);
     // only the lock holder writes; a reader keeps what it rebuilt to itself
-    if (repair) yield* saveView(dir, mem);
+    if (!writer) return { problems: skipped, mem };
+    const moved = yield* io(`cannot move ${dir}/chat/${VIEW_FILE} aside`, () => moveAside(dir));
+    if (moved !== null) skipped.push(moved);
+    yield* saveView(dir, mem);
     return { problems: skipped, mem };
   });
 

@@ -1,7 +1,7 @@
 // The view's text (docs/optchat.md §3, §6; ref §5.1). Which nodes are in the view is the kernel's call
 // (kernel.ts); this file keeps mem.view up to date, checks a saved one, renders it and waits on it.
 import { Effect } from "effect";
-import { BLOCK } from "./config.ts";
+import { BLOCK, NODE } from "./config.ts";
 import * as K from "./kernel.ts";
 import type { Node } from "./records.ts";
 import { built, bytes, dayOf, end, type Entry, getNode, label, type Mem, nodes, type Saw, setNode } from "./tree.ts";
@@ -10,6 +10,11 @@ import { built, bytes, dayOf, end, type Entry, getNode, label, type Mem, nodes, 
 // of every compactor call, and a turn waits until no view line shows it.
 export const PLACEHOLDER = "(not summarized yet: zoom it)";
 const HOLE = bytes(PLACEHOLDER);
+// What an unbuilt line counts as when the sawtooth weighs the view: its summary's size to come,
+// at most NODE, not the placeholder's. A line built after the last message then never takes the
+// view past its high mark (a summary a few bytes over NODE aside). Sizes are the lines' texts,
+// not their rendered `id+n|` heads and newlines: 2-3% under the rendered bytes, as the reference.
+export const UNBUILT = NODE;
 
 const tell = (mem: Mem) => {
   for (const listener of mem.listeners) listener();
@@ -26,7 +31,7 @@ export function addMessage(mem: Mem, msg: Entry) {
   const next = mem.root.length;
   if (msg.i !== next) throw new Error(`addMessage: the next id is ${next}, ${msg.i} is out of turn`);
   mem.root.push(msg);
-  changed(mem, K.append(mem, mem, mem.marks, HOLE));
+  changed(mem, K.append(mem, { folding: mem.folding, view: mem.view }, mem.marks, UNBUILT));
 }
 
 // A node was built: kept. The view's lines stay as they are until the next message (a batch owed
@@ -38,7 +43,7 @@ export function addNode(mem: Mem, record: Node): void {
 
 // after a bulk import, or with no usable saved view: the view rebuilt from message 0, once
 export const refold = (mem: Mem): void => {
-  changed(mem, K.refold(mem, mem.marks, HOLE));
+  changed(mem, K.refold(mem, mem.marks, UNBUILT));
 };
 
 // A saved view (chat/view.json) as [l, i] pairs, and whether a batch is owed; or why there is none
@@ -75,9 +80,8 @@ export function restore(mem: Mem, found: Found): string | null {
   if (!found.ok) return rebuilt(found.why);
   const ends = savedEnd(mem, found.saved);
   if (!ends.ok) return rebuilt(ends.why);
-  let at: Saw = { folding: found.saved.folding, view: found.saved.view.map(([l, i]) => ({ i, l })) };
-  for (let i = ends.end; i < mem.root.length; i++) at = K.append(mem, at, mem.marks, HOLE, i);
-  changed(mem, at);
+  const at: Saw = { folding: found.saved.folding, view: found.saved.view.map(([l, i]) => ({ i, l })) };
+  changed(mem, ends.end === mem.root.length ? at : K.extend(mem, at, mem.marks, UNBUILT, ends.end));
   const behind = mem.root.length - ends.end;
   return behind === 0 ? null : `chat/view.json: ${behind} messages behind the log; appended them`;
 }
