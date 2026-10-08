@@ -1,6 +1,6 @@
 # The fold kernel (SPEC E14): id+n addressing, the view's merge order, its
 # sawtooth and the rebuild from the log, `first` and the pump's rule 3
-# (gist §3, §4). It never sees text, only sizes in bytes, as Nats. LAWS.bend
+# (docs/optchat.md §2-§4). It never sees text, only sizes in bytes, as Nats. LAWS.bend
 # states what must hold; PROOF.bend proves it. src/kernel.ts is the only
 # caller.
 #
@@ -83,7 +83,7 @@ def coords.at(+id: Nat, +n: Nat, +T: Nat, ml: Maybe<&2, Nat>) -> Maybe<&2, Coord
       coords.check(ok, l, i)
 
 # the node named id+n in a chat of T messages: n a power of two, id a
-# multiple of n, id + n <= T (gist §3 "Addressing"). log2 needs at most
+# multiple of n, id + n <= T (docs/optchat.md §2). log2 needs at most
 # n + 1 steps, since 2^n > n.
 def coords(+id: Nat, +n: Nat, +T: Nat) -> Maybe<&2, Coord>:
   coords.at(id, n, T, log2(1n+n, Below{0n}, n))
@@ -153,13 +153,13 @@ def parent(a: Part) -> Part:
 type Best is Data:
   Best{k: Nat, e: Nat, l: Nat}
 
-# Due is measured from the pair's LAST message (gist §3.2, §7 mistake 1):
+# Due is measured from the pair's LAST message (docs/optchat.md §3.2, §7 mistake 1):
 #
 #   due = (T - last) / 2^l,  last = e - 1,  so  due = (1 + T - e) / 2^l
 #
 # how long ago the pair ended, in its own line size. A pair lies inside the
 # view, which tiles [0, T), so e <= T and 1 + T - e >= 1: the Nat
-# subtraction never clips. (The gist's code writes it (T + 1)/2^l - i, the
+# subtraction never clips. (docs/optchat.md's code writes it (T + 1)/2^l - i, the
 # same number shifted by 2: e = (i + 2) * 2^l.)
 #
 # a is more due than b when (1 + T - ea) / 2^la > (1 + T - eb) / 2^lb.
@@ -272,7 +272,7 @@ def length(ps: List<&2, Part>, acc: Nat) -> Nat:
     case Con{_, rest}:
       length(rest, 1n+acc)
 
-# merge the most due built pair while over budget (gist §3.2). Every merge
+# merge the most due built pair while over budget (docs/optchat.md §3.2). Every merge
 # shortens the view by one, so its length plus one steps always suffice.
 def fit(+T: Nat, +budget: Nat, +ps: List<&2, Part>) -> List<&2, Part>:
   fit.go(1n+length(ps, 0n), More{ps}, T, budget)
@@ -280,8 +280,8 @@ def fit(+T: Nat, +budget: Nat, +ps: List<&2, Part>) -> List<&2, Part>:
 def snoc(ps: List<&2, Part>, p: Part) -> List<&2, Part>:
   rev_onto(rev_onto(ps, Nil{}), [p])
 
-# The sawtooth (gist §3.2 "When", §7 mistake 2)
-# ---------------------------------------------
+# The sawtooth (docs/optchat.md §3.2 "When", §7 mistake 2)
+# -------------------------------------------------------
 # The view, and whether a batch is still owed: the last one stopped over
 # low because the parents it needed were not built yet. high and low are
 # parameters: the turns' view runs 128 KB down to 64 KB, and a compaction
@@ -304,7 +304,7 @@ def saw.go(due: Bool, +T: Nat, +low: Nat, +ps: List<&2, Part>) -> Saw:
 
 # a view past high, or one a batch still owes, merges down to low; any
 # other view stays as it is, so between batches it only grows at its end
-# and the prompt cache keeps all of it (gist §3.3)
+# and the prompt cache keeps all of it (docs/optchat.md §3.3)
 def saw(+T: Nat, +high: Nat, +low: Nat, folding: Bool, +ps: List<&2, Part>) -> Saw:
   saw.go(folding || Nat.is_gt(size(ps), high), T, low, ps)
 
@@ -316,7 +316,7 @@ def append(+T: Nat, +high: Nat, +low: Nat, folding: Bool, ps: List<&2, Part>, m:
 
 # The rebuild
 # -----------
-# The view is saved and loaded, never rebuilt (gist §3.2, §7 mistake 3);
+# The view is saved and loaded, never rebuilt (docs/optchat.md §3.2, §7 mistake 3);
 # this is for a data dir with no saved view, or a damaged one. It appends
 # every message as append does, against today's tree.
 #
@@ -410,7 +410,7 @@ def first.go(ps: List<&2, Part>, +T: Nat, found: Maybe<&2, Nat>) -> Nat:
     case Con{p, rest}:
       first.go(rest, T, first.keep(found, p))
 
-# the first message whose view line is unbuilt, else T (gist §4.1)
+# the first message whose view line is unbuilt, else T (rule 3)
 def first(+T: Nat, ps: List<&2, Part>) -> Nat:
   first.go(ps, T, None{})
 
@@ -469,7 +469,7 @@ def offers.up(levels: List<&2, List<&2, Bool>>, +below: List<&2, Bool>, +l: Nat,
     case Con{+own, rest}:
       offers.up(rest, own, 1n+l, head, offers.level(own, below, l, head, 0n, acc))
 
-# The nodes rule 3 lets the pump start (gist §4.1): levels[l][i] says
+# The nodes rule 3 lets the pump start (SPEC E25): levels[l][i] says
 # whether node (l, i) is built, level 0 first, one entry per node that
 # exists; head is first(view). Most recent offer first: the caller reverses.
 def offers(levels: List<&2, List<&2, Bool>>, +head: Nat) -> List<&2, Coord>:

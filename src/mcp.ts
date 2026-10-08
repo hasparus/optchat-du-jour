@@ -1,4 +1,4 @@
-// zoom and date (gist §7.1, ref §9) as an MCP server (E8): one JSON-RPC message per WebSocket
+// zoom and date (docs/optchat.md §6, ref §9) as an MCP server (E8): one JSON-RPC message per WebSocket
 // frame, or per POST over HTTP, answered from the server's memory. It only reads; the lock stays
 // with the chat.
 import { Effect, Option, Schema } from "effect";
@@ -8,7 +8,7 @@ import { wireJson } from "./text.ts";
 import { type Built, children, type Coord, type Entry, getNode, label, localTime, type Mem } from "./tree.ts";
 import { flat } from "./view.ts";
 
-// The descriptions are the gist's, word for word; the input schemas carry no descriptions (ref §9).
+// The descriptions are docs/optchat.md §6's, word for word; the input schemas carry no descriptions (ref §9).
 export const TOOLS = [
   {
     description: "Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole.",
@@ -31,7 +31,7 @@ const shown = (x: Schema.Json | undefined) => (x === undefined ? "undefined" : J
 const noLine = (id: number | string, n: number | string) => `No line ${id}+${n}.`;
 
 // Node id+n of the tree, opened: for n = 1 the message, else the node (if built) and its two halves.
-// Null when there is no such node in a chat of this length (address() decides, gist §7.1).
+// Null when there is no such node in a chat of this length (address() decides, docs/optchat.md §6).
 export type Opened =
   | { readonly at: Coord; readonly message: Entry }
   | { readonly at: Coord; readonly node: Built | undefined; readonly halves: readonly { readonly at: Coord; readonly node: Built | undefined }[] };

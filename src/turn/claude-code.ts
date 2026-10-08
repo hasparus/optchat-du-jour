@@ -1,4 +1,4 @@
-// The claude-code turn engine (ref §4-§6, gist §7, E6/E7): one `claude -p` per turn on the
+// The claude-code turn engine (ref §4-§6, docs/optchat.md §6, E6/E7): one `claude -p` per turn on the
 // turn's device, the view without cache marks then the new texts, the stream mapped to the log,
 // and the process killed at the first result. Priming writes the same view blocks to the cache
 // while the session is idle, with our own marks; that call ends at message_start, once the API
@@ -39,7 +39,7 @@ export type ClaudeCodeTurnOptions = {
   readonly permissionMode: string;
   readonly ttl: Ttl; // the TTL of Claude Code's own marks on a turn (E6)
   readonly primeTtl: Ttl; // the TTL of the marks priming writes
-  readonly instructions: string; // the one system prompt (gist §7.2), sent inline on every device
+  readonly instructions: string; // the one system prompt (docs/optchat.md §5), sent inline on every device
   // DeviceOffline when the device can't be reached or can't be used
   readonly runnerFor: (device: string) => Effect.Effect<Placement, DeviceOffline>;
   readonly report: (message: string) => Effect.Effect<void>;
@@ -126,7 +126,7 @@ export function makeMapper(out: TurnEvents, passed: Mid[], mcp: (status: string)
       (block) => {
         if (isText(block)) return block.text.trim() ? out.log("talk", block.text) : Effect.void;
         if (isToolUse(block)) return out.log("tool", `${block.name} ${JSON.stringify(block.input)}`);
-        if (block.type === "thinking") thoughtChars = 0; // a thought ended; never logged (gist §2)
+        if (block.type === "thinking") thoughtChars = 0; // a thought ended; never logged (docs/optchat.md §1)
         return Effect.void;
       },
       { discard: true },

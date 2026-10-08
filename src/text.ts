@@ -1,7 +1,7 @@
 // Cutting text by length without splitting a character (SPEC "Constants and configuration"). A
 // length here is in UTF-16 code units, as JavaScript counts a string, but a cut never falls
 // between the two halves of a surrogate pair: a lone half is ill-formed text, which a provider
-// may refuse outright (gist §7: what is logged is sent again on every later call). No runtime imports, so
+// may refuse outright (docs/optchat.md §1: what is logged is sent again on every later call). No runtime imports, so
 // the Grep worker can use it too (the one type import is erased).
 import type { Schema } from "effect";
 

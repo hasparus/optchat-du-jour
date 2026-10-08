@@ -1,4 +1,4 @@
-// The view's text (gist §5, §6; ref §5.1). Which nodes are in the view is the kernel's call
+// The view's text (docs/optchat.md §3, §6; ref §5.1). Which nodes are in the view is the kernel's call
 // (kernel.ts); this file keeps mem.view up to date, checks a saved one, renders it and waits on it.
 import { Effect } from "effect";
 import { MARKS } from "./config.ts";
@@ -6,7 +6,7 @@ import * as K from "./kernel.ts";
 import type { Node } from "./records.ts";
 import { built, bytes, dayOf, end, type Entry, getNode, label, type Mem, nodes, type Saw, setNode } from "./tree.ts";
 
-// What a line shows until its summary exists (gist §6). Only people read it: rule 3 keeps it out
+// What a line shows until its summary exists (docs/optchat.md §3, §6). Only people read it: rule 3 keeps it out
 // of every compactor call, and a turn waits until no view line shows it.
 export const PLACEHOLDER = "(not summarized yet: zoom it)";
 const HOLE = bytes(PLACEHOLDER);
@@ -21,7 +21,7 @@ function changed(mem: Mem, next: Saw) {
 }
 
 // Message i arrives: its line goes at the end, and only past the high mark, or with a batch still
-// owed, does anything merge (gist 2026-10-08 §3.2). The caller saves the view (store.saveView).
+// owed, does anything merge (docs/optchat.md §3.2). The caller saves the view (store.saveView).
 export function addMessage(mem: Mem, msg: Entry) {
   const next = mem.root.length;
   if (msg.i !== next) throw new Error(`addMessage: the next id is ${next}, ${msg.i} is out of turn`);
@@ -63,7 +63,7 @@ function savedEnd(mem: Mem, saved: Saved): { readonly ok: true; readonly end: nu
   return { end: at, ok: true };
 }
 
-// The view at load (gist §3.2 "Save the view to view.json and load it at start"): the saved one
+// The view at load (docs/optchat.md §3.2 "Save the view to view.json and load it at start"): the saved one
 // when it fits the log and the tree. One that stops short of the log (a crash between logging a
 // message and saving the view) gets the missing messages appended, as they would have been.
 // Missing or damaged, it is rebuilt from the log; every cache entry dies then, so it is said.
@@ -91,7 +91,7 @@ export function render(mem: Mem): string {
   return `${["<chat>", ...lines].join("\n")}\n</chat>`;
 }
 
-// The view in blocks (gist §8). Each mark inside the text moves back to just after the last
+// The view in blocks (E26). Each mark inside the text moves back to just after the last
 // line end before it; the text is then sliced at those points. The marks from the first one
 // at or past the end are dropped, and a point that is no further on than the one before adds
 // no block.
@@ -118,7 +118,7 @@ export function viewSize(mem: Mem) {
 }
 
 // the bare text of the view lines that end at or before message `upTo`: a compactor call's
-// context (gist §4.2). Rule 3 keeps every one of them built; an unbuilt one is a bug.
+// context (E24). Rule 3 keeps every one of them built; an unbuilt one is a bug.
 export function context(mem: Mem, upTo: number): string[] {
   const texts: string[] = [];
   for (const c of mem.view) {
@@ -130,7 +130,7 @@ export function context(mem: Mem, upTo: number): string[] {
   return texts;
 }
 
-// done once every view line is a summary (gist §6). Interrupting it is the user's cancel; it
+// done once every view line is a summary (docs/optchat.md §6). Interrupting it is the user's cancel; it
 // leaves no listener behind either way.
 export const settle = (mem: Mem): Effect.Effect<void> =>
   Effect.callback<undefined>((resume) => {

@@ -1,5 +1,5 @@
 // The api-key engine (SPEC "Engines", api-key; "Usage and cost tracking") against a fake Messages
-// API: gist §8's cache layout (a 5-minute mark at each view cut and the top-level automatic
+// API: our cache layout (E26: a 5-minute mark at each view cut and the top-level automatic
 // one), every call priced from the table, the thinking sent back on a retry, and a spent
 // monthly budget that stops the key and says so once.
 import { afterAll, expect, test } from "bun:test";
@@ -92,7 +92,7 @@ const decodeBody = Schema.decodeUnknownSync(Schema.fromJsonString(Body));
 // a block's mark as sent, "5m" for one with no TTL (the API's default), null for none
 const markOf = (b: typeof Block.Type) => (b.cache_control === undefined ? null : `${b.cache_control.type} ${b.cache_control.ttl ?? "5m"}`);
 
-test("Anthropic gets gist §8's layout: a 5-minute mark at each view cut and the request end, the thinking back on a retry, and every call is priced", async () => {
+test("Anthropic gets our cache layout: a 5-minute mark at each view cut and the request end, the thinking back on a retry, and every call is priced", async () => {
   const r = rig(5, `${dir}/priced.jsonl`);
   fake.state.seen.length = 0;
   fake.state.script = [{ text: `user: ${"x".repeat(600)}`, thinking: "too long, but first" }, { text: "user: squeeze me" }];
@@ -180,7 +180,7 @@ test("an older config with cache.apiKeyTtls still loads, the key ignored; an eng
     const error = await Effect.runPromise(Effect.flip(loadSettings(write(config))));
     return error.message;
   };
-  // gist §8 leaves nothing to set on a key; the old setting is dropped like any unknown key
+  // docs/optchat.md §3.3 leaves nothing to set on a key; the old setting is dropped like any unknown key
   const old = await Effect.runPromise(loadSettings(write({ ...written, cache: { ...written.cache, apiKeyTtls: ["1h", "5m", "5m", "5m"] } })));
   expect(old.cache).toEqual({ claudeCodeTtl: "1h", primeTtl: "1h" });
   expect(await refused({ ...written, master: { ...written.master, chain: ["gpt:x"] } })).toContain("engine gpt:x: no such engine");

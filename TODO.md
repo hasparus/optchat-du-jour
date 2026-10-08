@@ -18,7 +18,7 @@ Everything is built and tested against fakes. Each check below needs a real logi
 - [ ] `optchat login openai` end to end: callback, refresh, Keychain (SPEC M3).
 - [ ] Model ids the token lists; are `gpt-6-luna` and `gpt-6.1-sol` right? Does the route take `reasoning.effort`? (SPEC M3)
 - [ ] Function tools and `tool_choice` on the plan route (SPEC M5).
-- [ ] Gist §8 Responses fields: `prompt_cache_breakpoint`, `reasoning.encrypted_content`, `reasoning.context` (SPEC M5).
+- [ ] Our Responses cache fields (from the gist's earlier revision; docs/optchat.md has none): `prompt_cache_breakpoint`, `reasoning.encrypted_content`, `reasoning.context` (SPEC M5).
 - [ ] `input_image` and PDFs on the plan route, before `media.planImages` goes on (SPEC Media).
 - [ ] Does prefix caching count against limits at a discount, and stay warm across bursts? (SPEC M3)
 - [ ] Does the compactor fit the ChatGPT Pro weekly limit alongside Codex work? (SPEC Usage and cost tracking)

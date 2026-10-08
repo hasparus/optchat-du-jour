@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// The cache simulation of gist 2026-10-08 §3.3: replay synthetic messages with the compactor caught
+// The cache simulation of docs/optchat.md §3.3: replay synthetic messages with the compactor caught
 // up (every node built as soon as its messages are logged) and count, per message, the line-inputs
 // a call must write anew: the view's lines from the first one that differs from the last call's
 // view to its end (the new line included). Three ways to keep the view:

@@ -89,8 +89,8 @@ const CurrentNode = Context.Reference<string | null>("bakeoff/CurrentNode", { de
 const unbuiltOf = (mem: Mem) => [...nodes(mem.root.length)].filter((c) => !built(mem, c)).map((c) => `${c.l}.${c.i}`);
 
 // One contender: log each message as a live chat would, wait until the view is summarized (a
-// turn waits for that too, gist §6), then let the pump finish every node. At the deadline it
-// stops where it is and says what is left: a failing engine retries forever (gist rule 3).
+// turn waits for that too, docs/optchat.md §6), then let the pump finish every node. At the deadline it
+// stops where it is and says what is left: a failing engine retries forever (rule 3, SPEC "Storage, tree, view and compactor ordering").
 export const replay = <R>(o: {
   readonly contender: Contender;
   readonly messages: readonly Message[];
@@ -221,7 +221,7 @@ export function wordsKept(mem: Mem, levels: readonly number[] = [0, 2, 3], kinds
   });
 }
 
-// over NODE after every try: kept anyway (gist §4.3), but worth counting
+// over NODE after every try: kept anyway (docs/optchat.md §4 "The size"), but worth counting
 export const overLimit = (mem: Mem) => [...mem.tree.values()].filter((n) => n.size > NODE).length;
 
 // ---------------------------------------------------------------------------------------------

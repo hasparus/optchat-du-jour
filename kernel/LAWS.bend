@@ -176,7 +176,7 @@ def UnbuiltAt(ps: List<&2, K.Part>, x: Nat) -> Type:
       K.Part{+l, i, _, b, _} = p
       (({Start(l, i) == x : Nat} & {b == False{} : Bool}) | UnbuiltAt(rest, x))
 
-# an offer rule 3 allows (gist §4.1): the node exists and is unbuilt, its
+# an offer rule 3 allows (SPEC "Storage, tree, view and compactor ordering"): the node exists and is unbuilt, its
 # sources exist (above level 0, both children are built), and every view
 # line before the node's end is built
 def Allowed(levels: List<&2, List<&2, Bool>>, ps: List<&2, K.Part>, c: K.Coord) -> Type:
@@ -316,7 +316,7 @@ law append_merges:
   Merges(n, Snoc(ps, Line(T, m)), ViewOf(K.append(T, high, low, folding, ps, m)))
 
 # fit_within for the sawtooth: a view within high that owes no batch is
-# left as it is, still owing none (gist §3.2 "When")
+# left as it is, still owing none (docs/optchat.md §3.2 "When")
 law saw_within:
   for +T: Nat
   for +high: Nat
@@ -324,7 +324,7 @@ law saw_within:
   for +ps: List<&2, K.Part>
   {Nat.is_gt(Total(ps), high) == False{} : Bool} -> {K.saw(T, high, low, False{}, ps) == K.Saw{ps, False{}} : K.Saw}
 
-# Between batches the view only grows at its end (gist §3.3): a message
+# Between batches the view only grows at its end (docs/optchat.md §3.3): a message
 # that leaves a view owing no batch within high is its line put after the
 # last, and nothing else changes, so the last call's view is a prefix of
 # the next one's

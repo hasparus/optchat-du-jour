@@ -1,4 +1,4 @@
-// The view's sawtooth and its saved copy (gist 2026-10-08 §3.2, §3.3; SPEC "Storage, tree, view
+// The view's sawtooth and its saved copy (docs/optchat.md §3.2, §3.3; SPEC "Storage, tree, view
 // and compactor ordering"): between batches the view only grows at its end; past the high mark one
 // batch takes it to the low mark, or as far as built parents allow and on at later messages; and
 // a restart loads the view it saved instead of rebuilding it. No model calls.
@@ -70,7 +70,7 @@ function sawtooth(seed: number, keepUp: number, messages: number) {
     const appended = [...before.view, { i: t, l: 0 }];
     if (!before.folding && before.grown <= MARKS.high) {
       // between batches: the line goes at the end and nothing else changes, so the last call's
-      // whole view is a prefix of this one's (gist §3.3)
+      // whole view is a prefix of this one's (docs/optchat.md §3.3)
       expect(mem.view).toEqual(appended);
       expect(mem.folding).toBe(false);
       expect(render(mem).startsWith(before.text)).toBe(true);

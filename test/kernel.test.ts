@@ -1,9 +1,9 @@
-// The Bend kernel against a literal model of the view, written from the gist's prose alone
-// (gist §3 "Addressing", §4.1; the merge order and the sawtooth of the 2026-10-08 gist §3.2).
+// The Bend kernel against a literal model of the view, written from the spec's prose alone
+// (docs/optchat.md §2, §3.2; rule 3 as SPEC E25 has it).
 // Seeded random chats, several pairs of marks; after every step the kernel and the model must
 // agree on the view, whether a batch is owed, `first` and rule 3's offers, and now and then on the
 // rebuild from message 0. Then what kernel.ts hands the kernel, and the merge order against
-// Taelin's rollback push, the check the gist itself reports (§3.2).
+// Taelin's rollback push, the check docs/optchat.md §3.2 itself reports.
 import { expect, spyOn, test } from "bun:test";
 import kernel, { type List, type Part } from "../kernel/kernel.mjs";
 import * as K from "../src/kernel.ts";
@@ -14,7 +14,7 @@ const encoder = new TextEncoder();
 const utf8 = (s: string) => encoder.encode(s).length; // the model's own byte count
 const HOLE = utf8(PLACEHOLDER);
 
-// The model: plain arrays, every rule spelled out as the gist states it.
+// The model: plain arrays, every rule spelled out as the spec states it.
 class Model {
   T = 0;
   view: Coord[] = [];
@@ -91,7 +91,7 @@ class Model {
     return found;
   }
 
-  // rule 3 (gist §4.1): unbuilt, its sources there, everything before its end summarized; a
+  // rule 3 (SPEC E25): unbuilt, its sources there, everything before its end summarized; a
   // message's own summary waits for the lines before it, a merge for all it covers
   offers() {
     const head = this.first();
@@ -100,7 +100,7 @@ class Model {
 }
 
 // id+n names a node when n is a power of two, id is a multiple of n and the n messages from id
-// are all logged (gist §3, §7.1)
+// are all logged (docs/optchat.md §2, §6)
 function named(id: number, n: number, logged: number): Coord | null {
   const l = Math.log2(n);
   const fits = Number.isInteger(l) && id >= 0 && id % n === 0 && id + n <= logged;
@@ -152,7 +152,7 @@ function run(seed: number, marks: Marks, steps: number, appends: number) {
   return model;
 }
 
-test("the kernel's view, sawtooth, rebuild, first and rule-3 offers match the gist's literal model", () => {
+test("the kernel's view, sawtooth, rebuild, first and rule-3 offers match the spec's literal model", () => {
   const marks = [[200, 100], [450, 300], [1000, 500], [2500, 1200], [6000, 3000], [10_000, 2000]] as const;
   let merged = 0, owed = 0;
   for (const [k, [high, low]] of marks.entries())
@@ -165,7 +165,7 @@ test("the kernel's view, sawtooth, rebuild, first and rule-3 offers match the gi
   expect(owed).toBeGreaterThan(0); // and some ended owing one
 });
 
-test("id+n addressing matches the gist for every id, n and T under 70", () => {
+test("id+n addressing matches the spec for every id, n and T under 70", () => {
   for (let T = 0; T < 70; T++)
     for (let n = 0; n < 70; n++) for (let id = 0; id < 70; id++) expect(K.address(id, n, T)).toEqual(named(id, n, T));
   expect(K.address(1.5, 1, 4)).toBeNull();
@@ -207,7 +207,7 @@ function list<T>(xs: readonly T[]): List<T> {
 const at = (c: { readonly l: bigint | number; readonly i: bigint | number }): Coord => ({ i: Number(c.i), l: Number(c.l) });
 
 // a line as kernel.ts builds it: the tree's flag and size, and its parent's line when the parent
-// is built (gist §3.2: a pair merges only into a built parent). How many ancestors it carries.
+// is built (docs/optchat.md §3.2: a pair merges only into a built parent). How many ancestors it carries.
 function line(mem: Mem, p: Part): number {
   const c = at(p), ups = array(p.ups), up = { i: Math.floor(c.i / 2), l: c.l + 1 };
   expect(p.built).toBe(getNode(mem, c) !== undefined);
@@ -308,7 +308,7 @@ test("what kernel.ts hands the kernel is the tree it comes from", () => {
   }
 });
 
-// Taelin's push (rollback_state_list.js, 2022, as gist §3.1 quotes it), life = 0: a list of
+// Taelin's push (rollback_state_list.js, 2022, as docs/optchat.md §3.1 quotes it), life = 0: a list of
 // states, newest first, each with one bit
 type States = { readonly keep: 0 | 1; readonly life: number; readonly state: number; readonly older: States } | null;
 function push(fresh: number, states: States): States {
@@ -378,11 +378,11 @@ function matches(fit: (view: readonly Coord[], T: number, lines: number) => Coor
 }
 
 test("push's list as the view: with its length as the budget, the kernel makes exactly push's merges", () => {
-  // the gist's own example of the first ten pushes: at t=9 the lines 0+4, 4+4, 8+2
+  // docs/optchat.md's own example of the first ten pushes: at t=9 the lines 0+4, 4+4, 8+2
   let states: States = null;
   for (let t = 0; t <= 9; t++) states = push(t, states);
   expect(asView(states, 10)).toEqual([{ i: 0, l: 2 }, { i: 1, l: 2 }, { i: 4, l: 1 }]);
-  // gist §3.2: at T=10 with 0+4, 4+4, 8+1, 9+1, push merges 8-9; due from the first message merges 0-7
+  // docs/optchat.md §3.2: at T=10 with 0+4, 4+4, 8+1, 9+1, push merges 8-9; due from the first message merges 0-7
   const at10 = [{ i: 0, l: 2 }, { i: 1, l: 2 }, { i: 8, l: 0 }, { i: 9, l: 0 }];
   expect(kernelFit(at10, 10, 3)).toEqual([{ i: 0, l: 2 }, { i: 1, l: 2 }, { i: 4, l: 1 }]);
   expect(firstMessageFit(at10, 10, 3)).toEqual([{ i: 0, l: 3 }, { i: 8, l: 0 }, { i: 9, l: 0 }]);

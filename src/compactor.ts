@@ -1,4 +1,4 @@
-// The compactor's scheduler (gist §4.1). It starts what rule 3 allows, level by level, never
+// The compactor's scheduler (rule 3, SPEC E25). It starts what rule 3 allows, level by level, never
 // more than `jobs` at a time, each job a fiber in the pump's scope. A node that fails rests for
 // RETRY and is then offered again, without end; it gets a context taken afresh at that point,
 // since the view may have moved on while it rested.
@@ -10,7 +10,7 @@ import { newNode, type StoreError } from "./store.ts";
 import { built, children, type Coord, end, entry, type Entry, freeText, label, type Mem, node, nodes, ready } from "./tree.ts";
 import { context } from "./view.ts";
 
-// one compactor call: the context lines (bare, gist §4.2) and the message or the two children
+// one compactor call: the context lines (bare, SPEC E24) and the message or the two children
 export type Job = { readonly l: number; readonly i: number; readonly ctx: readonly string[] } & (
   | { readonly msg: Entry }
   | { readonly a: string; readonly b: string }
@@ -45,7 +45,7 @@ export const buildFree = (mem: Mem, commit: Commit) =>
     }
   });
 
-// gist §4.3: the reply, trimmed, is the summary; nothing left after trimming is a failed call
+// docs/optchat.md §4 "The size": the reply, trimmed, is the summary; nothing left after trimming is a failed call
 const summaryOf = (reply: string) => {
   const text = reply.trim();
   return text ? Effect.succeed(text) : Effect.fail(new CompactError({ message: "the compactor replied with nothing" }));

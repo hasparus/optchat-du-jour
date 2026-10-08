@@ -1,9 +1,9 @@
 // Anthropic's Messages API with an API key (SPEC "Engines", api-key: overflow only). One streamed
-// request per call, cached as gist §8 lays it out: a breakpoint at each of the view's cuts (the
+// request per call, cached as SPEC "Engines" lays it out (E26): a breakpoint at each of the view's cuts (the
 // pieces a user Item's `marks` counts; cutBlocks makes at most 3) and the top-level automatic
 // `cache_control` on every request, which Anthropic puts on its last block, so each step of a
 // turn (or each size retry of a compactor call) reads everything the step before it sent. That
-// makes 4, Anthropic's limit. Every entry is a 5-minute one, the API's default (gist §8, checklist
+// makes 4, Anthropic's limit. Every entry is a 5-minute one, the API's default (docs/optchat.md §3.3, checklist
 // item 10; E6's 1-hour entries are the Claude subscription's). Thinking blocks come back in the
 // next request exactly as they arrived, signature and all, as tool use with thinking requires.
 import { Effect, Option, Schema, Stream } from "effect";
@@ -22,7 +22,7 @@ const VERSION = "2023-06-01";
 export const MAX_TOKENS = 64_000; // streamed, so a long answer doesn't time out
 
 type Json = Schema.Json;
-// a 5-minute entry, the API's default and the only one gist §8 uses
+// a 5-minute entry, the API's default and the only one docs/optchat.md §3.3 uses
 const EPHEMERAL = { type: "ephemeral" } as const;
 
 export type MessagesAsk<E extends Tagged = never> = {
@@ -103,7 +103,7 @@ const Body = Schema.Struct({
   tools: Schema.optional(Schema.Array(Schema.Struct({ name: Schema.String, description: Schema.String, input_schema: Schema.Json }))),
   tool_choice: Schema.optional(Schema.Struct({ type: Schema.Literals(["auto", "none"]) })),
   output_config: Schema.optional(Schema.Struct({ effort: Schema.String })),
-  // automatic caching: a breakpoint on the request's last cacheable block (gist §8)
+  // automatic caching: a breakpoint on the request's last cacheable block (docs/optchat.md §3.3)
   cache_control: Schema.Struct({ type: Schema.Literal("ephemeral") }),
   stream: Schema.Literal(true),
 });

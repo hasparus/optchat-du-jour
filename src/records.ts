@@ -1,4 +1,4 @@
-// What the data dir holds (gist §2): one message per line of chat/main, one node per line of
+// What the data dir holds (docs/optchat.md §1): one message per line of chat/main, one node per line of
 // chat/tree. The reference reads and writes the same records, so either can open the other's
 // data dir.
 import { Schema } from "effect";

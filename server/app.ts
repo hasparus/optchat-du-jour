@@ -84,7 +84,7 @@ export const routes = (o: ServerOptions) =>
         : yield* makeSummarize({ ...needs, device: o.device, runner: local });
       const chat = yield* openChat(stream, { report, summarize: compactor.summarize });
 
-      const instructions = systemPrompt(o.home); // one text for every engine and device (gist §7.2)
+      const instructions = systemPrompt(o.home); // one text for every engine and device (docs/optchat.md §5)
       const { runnerFor, toolsFor, unreachable } = yield* makePlacements({ device: o.device, local, mem: chat.mem, port: o.port, report, secret, settings });
       // the master's chain as the session keeps it (src/master.ts), made here so each engine can
       // ask whether the warm processes follow it: the most recent turn's (E18)

@@ -398,7 +398,7 @@ test("both compactor engines send the same input: openai-plan's parts are claude
   expect(sent!.reasoning).toEqual({ context: "all_turns", effort: "low" });
 });
 
-// what gist §8 asks of a Responses request, read back from the wire
+// what E26 asks of a Responses request, read back from the wire
 const Cached = Schema.Struct({
   include: Schema.Array(Schema.String),
   reasoning: Schema.Struct({ context: Schema.String, effort: Schema.optional(Schema.String) }),

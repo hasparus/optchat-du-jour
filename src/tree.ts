@@ -1,4 +1,4 @@
-// What the chat holds in RAM (gist §1, §3): every logged message, the summaries built so far and
+// What the chat holds in RAM (docs/optchat.md §1, §2): every logged message, the summaries built so far and
 // the coordinates of the view. Pure data and lookups; store.ts fills it, view.ts keeps the view
 // current and the pump adds nodes
 import { NODE, VIEW_HIGH, VIEW_LOW } from "./config.ts";
@@ -7,12 +7,12 @@ import { span } from "./wire.ts";
 
 // node (l, i) stands for the 2^l messages that start at i·2^l
 export type Coord = { readonly l: number; readonly i: number };
-// a logged message; size = bytes of "kind: text" (gist §2)
+// a logged message; size = bytes of "kind: text" (docs/optchat.md §1)
 export type Entry = Msg & { readonly size: number };
 // a built node; size = bytes of its text
 export type Built = Node & { readonly size: number };
 
-// A sawtooth's marks (gist 2026-10-08 §3.2): past `high`, one batch merges down to `low`
+// A sawtooth's marks (docs/optchat.md §3.2): past `high`, one batch merges down to `low`
 export type Marks = { readonly high: number; readonly low: number };
 // A view and its sawtooth's state: whether a batch is still owed, because the last one stopped
 // over its low mark on parents not built yet
@@ -56,7 +56,7 @@ export function setNode(mem: Mem, record: Node) {
   mem.tree.set(key(record), { i: record.i, l: record.l, size: bytes(record.text), text: record.text });
 }
 
-// gist §3 "Addressing": a node is named by its first message and how many messages it spans
+// docs/optchat.md §2: a node is named by its first message and how many messages it spans
 // (src/wire.ts, which the web UI shares)
 export { span } from "./wire.ts";
 // its name in the view, "id+n"
@@ -101,7 +101,7 @@ export function ready(mem: Mem, c: Coord) {
   return children(c).every((k) => built(mem, k));
 }
 
-// gist §3 "Free nodes": a node needs no model call when what it would summarize (its message as
+// docs/optchat.md §2 (free nodes): a node needs no model call when what it would summarize (its message as
 // "kind: text", or its children's texts a line apart) is NODE bytes or less; that is its text
 export function freeText(mem: Mem, c: Coord): string | null {
   const source = c.l === 0 ? msgText(entry(mem, c.i)) : children(c).map((k) => node(mem, k).text).join("\n");
@@ -113,7 +113,7 @@ const two = (v: number) => (v < 10 ? `0${v}` : String(v));
 export function dayOf(d: Date) {
   return [String(d.getFullYear()), two(d.getMonth() + 1), two(d.getDate())].join("-");
 }
-// local "YYYY-MM-DD HH:MM" of an ISO time: what date(id) answers (gist §7.1)
+// local "YYYY-MM-DD HH:MM" of an ISO time: what date(id) answers (docs/optchat.md §6)
 export function localTime(iso: string) {
   const at = new Date(iso);
   const clock = [two(at.getHours()), two(at.getMinutes())].join(":");

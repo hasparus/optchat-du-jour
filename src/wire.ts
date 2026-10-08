@@ -103,7 +103,7 @@ export const logIndex = (id: string): number | null => {
   return digits === undefined ? null : Number(digits);
 };
 
-// gist §3 "Addressing": node (l, i) covers the messages [i·2^l, (i+1)·2^l), named `id+n`
+// docs/optchat.md §2: node (l, i) covers the messages [i·2^l, (i+1)·2^l), named `id+n`
 export const span = ({ l, i }: { readonly l: number; readonly i: number }) => {
   const n = 2 ** l;
   return { id: i * n, n };

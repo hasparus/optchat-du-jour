@@ -11,7 +11,7 @@ export type Chat = {
   readonly dir: string;
   readonly mem: Mem;
   readonly problems: readonly string[];
-  // gist §7: a message reaches the disk (written and synced) before anything else happens to it;
+  // docs/optchat.md §1: a message reaches the disk (written and synced) before anything else happens to it;
   // only then is the compactor given the chance to start on it
   readonly kick: Effect.Effect<void, StoreError>;
   readonly log: (kind: Kind, body: string, extra?: { readonly device?: string }) => Effect.Effect<Entry, StoreError>;

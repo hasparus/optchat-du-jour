@@ -1,10 +1,10 @@
-// A tool result as the log keeps it (gist §7, ref §5.3), whichever engine ran the tool: Claude
+// A tool result as the log keeps it (docs/optchat.md §1, ref §5.3), whichever engine ran the tool: Claude
 // Code's tools or our own tool loop's (M5).
 import { CAP } from "./config.ts";
 import { headOf, tailOf } from "./text.ts";
 
 // A tool result as the log keeps it: at most CAP characters, the head and the tail, with what
-// was cut in between (gist §7, ref §5.3). Characters are UTF-16 code units, as the reference
+// was cut in between (docs/optchat.md §1, ref §5.3). Characters are UTF-16 code units, as the reference
 // counts them, so a cut ASCII result is byte-identical to its; but neither cut splits a surrogate
 // pair, and N counts every unit left out. A lone surrogate the tool itself wrote becomes U+FFFD:
 // the log is sent to models again and again, and must stay well-formed text.

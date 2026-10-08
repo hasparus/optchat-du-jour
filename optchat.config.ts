@@ -20,7 +20,7 @@ export default defineConfig({
     ],
     effort: "medium",
   },
-  // 1-hour entries on the Claude subscription only (E6); an API key's requests are gist §8's
+  // 1-hour entries on the Claude subscription only (E6); an API key's requests are docs/optchat.md §3.3's
   // (a mark at each view cut plus the request end, all 5-minute), with nothing to set
   cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
   // The api-key engine's price table, $ per million tokens, and its monthly budget (SPEC "Usage and

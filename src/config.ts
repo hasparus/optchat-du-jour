@@ -1,4 +1,4 @@
-// The gist's constants (gist §1) and the reference's timings (ref §2, §7). Sizes are UTF-8
+// The constants of docs/optchat.md and of its earlier revision (SPEC "Constants and configuration") and the reference's timings (ref §2, §7). Sizes are UTF-8
 // bytes, cache marks are characters. Everything that may differ per machine is in
 // optchat.config.ts instead.
 import { Data, Effect, Result, Schema, SchemaIssue, SchemaTransformation } from "effect";
@@ -8,7 +8,7 @@ import { FollowUp } from "./wire.ts";
 
 // a summary line's target size, and the most a free node may hold
 export const NODE = 512;
-// The view's sawtooth (gist 2026-10-08 §3.2): each message appends its line, and once the view
+// The view's sawtooth (docs/optchat.md §3.2): each message appends its line, and once the view
 // passes VIEW_HIGH one batch of merges takes it down to VIEW_LOW
 export const VIEW_HIGH = 128_000;
 export const VIEW_LOW = 64_000;
@@ -113,7 +113,7 @@ export const Settings = Schema.Struct({
     byLevel: Schema.NonEmptyArray(Schema.Struct({ from: Schema.Int, chain: Chain })),
     effort: Effort,
   }),
-  // claude-code's own TTLs (E6). An API key's requests have no setting: gist §8's layout, 5-minute
+  // claude-code's own TTLs (E6). An API key's requests have no setting: docs/optchat.md §3.3's lifetime, 5-minute
   // only (src/apikey/anthropic.ts). An older config's `apiKeyTtls` is dropped like any unknown key.
   cache: Schema.Struct({ claudeCodeTtl: Ttl, primeTtl: Ttl }),
   devices: Schema.Record(Schema.String, Schema.Struct({ url: Schema.String, folders: Schema.Array(Schema.String) })),

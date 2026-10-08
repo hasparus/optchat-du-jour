@@ -1,5 +1,5 @@
 // The compactor on an API key (SPEC "Compactor calls", api-key; E5): the context pieces first, a
-// cache mark at each of their cuts, then the step; the request's end is cached too (gist §8), so a
+// cache mark at each of their cuts, then the step; the request's end is cached too (docs/optchat.md §3.3), so a
 // size retry reads the try before it. OpenAI gets what openai-plan gets. Size retries stay in the
 // same conversation, each try re-sent with the reply it got (thinking blocks included). Every try
 // is priced and counted against the monthly budget; the size retries are step.ts's.

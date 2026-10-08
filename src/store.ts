@@ -1,5 +1,5 @@
-// The data dir on disk (gist §2, ref §3): two append-only JSONL streams split by local day,
-// one write and one fsync per line; the view, replaced whole and atomically (gist 2026-10-08 §1,
+// The data dir on disk (docs/optchat.md §1, ref §3): two append-only JSONL streams split by local day,
+// one write and one fsync per line; the view, replaced whole and atomically (docs/optchat.md §1,
 // §3.2); and a unix-socket lock that keeps a second writer out.
 import { Data, Effect, Option, Schema } from "effect";
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, writeSync } from "node:fs";
@@ -89,7 +89,7 @@ export function appendNode(dir: string, record: Node, now = new Date()) {
   });
 }
 
-// The view (gist 2026-10-08 §1: "view.json, the view, as [l, i] pairs") beside the two streams,
+// The view (docs/optchat.md §1: "view.json, the view, as [l, i] pairs") beside the two streams,
 // with whether a batch is still owed. Written whole whenever the view changes, after the log line
 // that changed it: to a temp file, synced, renamed over the old one, the directory synced. A crash
 // leaves the old view or the new, never half of one; and the log is ahead of it, never behind.
@@ -227,7 +227,7 @@ const release = (server: Server) =>
     });
   });
 
-// gist §2 "One writer": hold `<dir>/lock` for the life of the scope. A socket that answers has
+// docs/optchat.md §1 "One process owns a chat": hold `<dir>/lock` for the life of the scope. A socket that answers has
 // a live owner; one that refuses connections is stale and is taken over.
 export const lock = (dir: string) =>
   Effect.gen(function* () {

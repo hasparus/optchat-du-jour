@@ -49,19 +49,19 @@ const msg = (mem: Mem, i: number, hole: number): Msg => {
   return { $: "Msg", built: p.built, size: p.size, ups: p.ups };
 };
 
-// One batch's merges (gist 2026-10-08 §3.2): as long as `view` is over `budget`, its most due
+// One batch's merges (docs/optchat.md §3.2): as long as `view` is over `budget`, its most due
 // built pair becomes its parent
 export const fit = (mem: Mem, view: readonly Coord[], budget: number, hole: number) =>
   coords(kernel.fit(mem.root.length, budget, parts(mem, view, hole)));
 
 // Message `i` (the newest, unless a saved view is catching up) arrives: its line goes at the end of
 // `at`'s view, then the sawtooth at `marks`. Only past `marks.high`, or with a batch owed, does
-// anything merge: in between the view only grows at its end (gist §3.3).
+// anything merge: in between the view only grows at its end (docs/optchat.md §3.3).
 export const append = (mem: Mem, at: Saw, marks: Marks, hole: number, i = mem.root.length - 1) =>
   sawOf(kernel.append(i, marks.high, marks.low, at.folding, parts(mem, at.view, hole), msg(mem, i, hole)));
 
 // the view rebuilt from message 0 with the tree as it is today: for a data dir with no saved
-// view, or a damaged one (gist §3.2: never otherwise, since a rebuilt view differs from the live one)
+// view, or a damaged one (docs/optchat.md §3.2: never otherwise, since a rebuilt view differs from the live one)
 export const refold = (mem: Mem, marks: Marks, hole: number) =>
   sawOf(kernel.refold(marks.high, marks.low, list(mem.root.map((m) => msg(mem, m.i, hole)))));
 
@@ -69,11 +69,11 @@ export const refold = (mem: Mem, marks: Marks, hole: number) =>
 // looks at a line's size or ancestors, so they stay empty instead of being looked up.
 const bare = (mem: Mem, c: Coord): Part => ({ $: "Part", built: built(mem, c), i: c.i, l: c.l, size: 0, ups: nil });
 
-// the first message whose view line is unbuilt, else T (gist §4.1)
+// the first message whose view line is unbuilt, else T (rule 3, SPEC E25)
 export const first = (mem: Mem): number =>
   Number(kernel.first(mem.root.length, list(mem.view.map((c) => bare(mem, c)))));
 
-// the nodes rule 3 lets the pump start, in its order: level by level, oldest first (gist §4.1)
+// the nodes rule 3 lets the pump start, in its order: level by level, oldest first (rule 3, SPEC E25)
 export function offers(mem: Mem): Coord[] {
   const levels: boolean[][] = [];
   for (const c of nodes(mem.root.length)) (levels[c.l] ??= []).push(built(mem, c));
@@ -81,7 +81,7 @@ export function offers(mem: Mem): Coord[] {
   return found.toReversed().map((c) => ({ i: Number(c.i), l: Number(c.l) }));
 }
 
-// the node named id+n in a chat of T messages, or null (gist §7.1); integers only. A node past
+// the node named id+n in a chat of T messages, or null (docs/optchat.md §2, §6); integers only. A node past
 // the end is no node, and is never handed to the kernel (its Nats stop at 2^48).
 export function address(id: number, n: number, count: number): Coord | null {
   const whole = [id, n].every((x) => Number.isSafeInteger(x));

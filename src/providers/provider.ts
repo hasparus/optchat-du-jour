@@ -9,7 +9,7 @@ import type { ToolDef } from "../tools/files.ts";
 import type { Tokens, UsageRecord } from "../usage.ts";
 
 // The conversation, provider-neutral. `marks` counts a user message's leading parts that each end
-// at one of the view's cache marks (gist §8: the view, or a compactor's context, cut at MARKS; the
+// at one of the view's cache marks (E26: the view, or a compactor's context, cut at MARKS; the
 // piece after the last cut ends where the view does and is not one of them): a provider puts its
 // cache breakpoint after each, the same ones in every request. A part is text or an image (SPEC
 // "Media"); images come only after the view.
@@ -19,7 +19,7 @@ export type Item =
   | { readonly type: "call"; readonly id: string; readonly name: string; readonly input: string }
   | { readonly type: "result"; readonly id: string; readonly output: string }
   // a provider's own block, sent back exactly as it came to the provider that sent it: Anthropic's
-  // thinking with its signature, a Responses reasoning item with its encrypted content (gist §8)
+  // thinking with its signature, a Responses reasoning item with its encrypted content (E26)
   | { readonly type: "kept"; readonly provider: "anthropic"; readonly block: Schema.Json }
   | { readonly type: "kept"; readonly provider: "openai"; readonly block: Readonly<Record<string, Schema.Json>> };
 
