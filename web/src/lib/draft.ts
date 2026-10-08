@@ -1,7 +1,7 @@
 // What the composer keeps across a reload, or a phone browser evicting the tab (SPEC "Web UI",
 // Chat): the draft (the text and the attachments already uploaded, as their asset descriptors),
-// the messages sent from here that no ack has answered yet, and this client's sent texts for Up
-// to recall. All of it lives in this browser's localStorage only; every access may throw (a
+// the messages sent from here that no ack has answered yet, this client's sent texts for Up to
+// recall, and the model its picker is on. All of it lives in this browser's localStorage only; every access may throw (a
 // private window, storage turned off or full), and then the page works as before, keeping nothing.
 import { Asset } from "@wire";
 import { Option, Schema } from "effect";
@@ -9,6 +9,7 @@ import { Option, Schema } from "effect";
 const DRAFT = "optchat:draft";
 const SENT = "optchat:sent";
 const HISTORY = "optchat:history";
+const MODEL = "optchat:model";
 // sent texts kept for recall, the newest last
 export const HISTORY_MAX = 50;
 
@@ -44,7 +45,7 @@ export const saveDraft = (d: Draft) => {
 // finds it in the log, in the server's queue, or neither ("it may not have reached the server").
 // Kept per tab (its id in sessionStorage, which a reload or a restored tab keeps), so two tabs
 // never overwrite each other's; a list a closed tab left is dropped after a week.
-export const Sent = Schema.Struct({ id: Schema.String, text: Schema.String, media: Schema.Array(Asset), from: Schema.Number });
+export const Sent = Schema.Struct({ id: Schema.String, text: Schema.String, media: Schema.Array(Asset), from: Schema.Number, engine: Schema.optional(Schema.String) });
 export type Sent = typeof Sent.Type;
 const Kept = Schema.Struct({ at: Schema.Number, sent: Schema.Array(Sent) });
 const WEEK = 7 * 24 * 3600 * 1000;
@@ -89,4 +90,11 @@ export const remember = (text: string) => {
   if (text.trim() === "") return;
   const kept = loadHistory().filter((t) => t !== text);
   write(HISTORY, JSON.stringify([...kept, text].slice(-HISTORY_MAX)));
+};
+
+// The model picker's engine (a ref of the master's chain): this client's own, never the server's.
+// Null when none was picked here; the composer then shows the chain's first.
+export const loadModel = (): string | null => read(MODEL);
+export const saveModel = (ref: string) => {
+  write(MODEL, ref);
 };

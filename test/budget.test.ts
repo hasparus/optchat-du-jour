@@ -216,9 +216,9 @@ test("a turn's pictures: two videos and a high-detail image in the opening, a th
       );
       const [v1, v2, v3] = videos;
       if (!v1 || !v2 || !v3) throw new Error("videos");
-      yield* session.input("look", undefined, "c1", [high, v1, v2]);
+      yield* session.input("look", { clientId: "c1", media: [high, v1, v2] });
       yield* until("the opening message", () => got.opening !== null);
-      yield* session.input("and one more", undefined, "c2", [v3]);
+      yield* session.input("and one more", { clientId: "c2", media: [v3] });
       yield* until("the run's end", () => events.some((e) => e.type === "run-finished"));
 
       const first = got.opening?.media ?? [];

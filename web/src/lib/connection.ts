@@ -4,17 +4,15 @@
 // socket only when this client sends, and gives up when it closes, so a phone that only watches
 // would never see a turn the laptop started (SPEC M2 open question).
 import { Option } from "effect";
-import type { FollowUp } from "@wire";
-import { ABORT, type AttachmentRef, type Inbound, parseFrame, runInput, type Settings, settingsFrame, takeBackFrame } from "./protocol.ts";
+import { ABORT, type AttachmentRef, type Forwarded, type Inbound, parseFrame, resumeFrame, runInput, type Settings, settingsFrame, takeBackFrame } from "./protocol.ts";
 
 export type LinkStatus = "connecting" | "open" | "closed";
 
 export type Link = {
-  // a message: it starts a turn, or joins the running one (device picks where a new turn runs).
-  // Sent while the link is down, it goes out on the next open: what the user wrote isn't lost.
-  // `id` names the message in the server's ack; `attachments` were uploaded first (PUT /api/assets);
-  // `followUp`, when this one asks for the other follow-up behavior than the session's.
-  readonly send: (text: string, device: string | null, id: string, attachments?: readonly AttachmentRef[], followUp?: FollowUp) => void;
+  // a message: it starts a turn, or joins the running one. Sent while the link is down, it goes out
+  // on the next open: what the user wrote isn't lost. `id` names the message in the server's ack;
+  // `attachments` were uploaded first (PUT /api/assets); the rest is its forwardedProps (protocol.ts).
+  readonly send: (text: string, id: string, o?: Forwarded & { readonly attachments?: readonly AttachmentRef[] }) => void;
   // the user's cancel, for whichever turn runs. Only while the link is open: kept for later, it
   // would cancel whatever turn runs after the reconnect. False when it wasn't sent.
   readonly abort: () => boolean;
@@ -22,9 +20,9 @@ export type Link = {
   readonly takeBack: (clientId: string) => boolean;
   // the follow-up setting; sent while the link is down, it goes out on the next open
   readonly configure: (change: Pick<Settings, "followUp">) => void;
-  // a model pick: like a cancel, only while the link is open (kept for later, it would settle
-  // whatever turn waits for a pick after the reconnect). False when it wasn't sent.
-  readonly pick: (lead: string) => boolean;
+  // a turn waiting for a model goes on, on this engine: like a cancel, only while the link is open
+  // (kept for later, it would settle whatever turn waits after the reconnect). False when it wasn't sent.
+  readonly resume: (engine: string) => boolean;
   readonly listen: (listener: (event: Inbound) => void) => () => void;
   readonly onStatus: (listener: (status: LinkStatus) => void) => () => void;
   readonly status: () => LinkStatus;
@@ -125,8 +123,8 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
         statusListeners.delete(listener);
       };
     },
-    send: (text, device, id, attachments = [], followUp) => {
-      deliver(runInput(text, device, id, attachments, followUp));
+    send: (text, id, o) => {
+      deliver(runInput(text, id, o));
     },
     takeBack: (clientId) => {
       if (!socket || status !== "open") return false;
@@ -136,9 +134,9 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
     configure: (change) => {
       deliver(settingsFrame(change));
     },
-    pick: (lead) => {
+    resume: (engine) => {
       if (!socket || status !== "open") return false;
-      socket.send(settingsFrame({ lead }));
+      socket.send(resumeFrame(engine));
       return true;
     },
     status: () => status,

@@ -256,7 +256,7 @@ type RigOptions = {
   readonly seed?: number;
   readonly commit?: Effect.Effect<string | null>;
   readonly warm?: WarmOptions; // the fake behind a pool of warm processes
-  readonly lead?: boolean; // the engine is the first of the master's chain (default)
+  readonly warms?: boolean; // the warm processes follow this engine: it heads the master's chain (default)
 };
 
 const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
@@ -274,7 +274,6 @@ const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
     const transports = mcpTransports("ws", report);
     const options = {
       effort: "high",
-      lead: () => o.lead ?? true,
       logUsage: (r: UsageRecord) => Effect.sync(() => usage.push(r)),
       model: "opus",
       permissionMode: "bypassPermissions",
@@ -290,6 +289,7 @@ const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
       instructions: "SYSTEM",
       tools: MASTER_TOOLS,
       ttl: "1h" as const,
+      warms: () => o.warms ?? true,
     };
     const engine = yield* claudeCodeTurn(options);
     const engines: TurnEngine[] = [o.prime ? engine : { ref: engine.ref, run: engine.run, vision: engine.vision, warm: engine.warm }];
@@ -933,17 +933,17 @@ test("a claude that rejects the ws config and ends before init moves its device 
   );
 });
 
-test("an engine that is not the chain's lead leaves the warm processes to the session's next warm after a transport move", async () => {
+test("an engine the warm processes don't follow leaves them to the session's next warm after a transport move", async () => {
   const f = scripted({}, { FAKE_CLAUDE_NO_WS: "1" });
   await run(
     f,
     Effect.gen(function* () {
-      const r = yield* rig(f, { lead: false, prime: true, seed: 3, warm: { retry: "1 hour" } });
+      const r = yield* rig(f, { prime: true, seed: 3, warms: false, warm: { retry: "1 hour" } });
       yield* r.session.primeSoon;
       yield* until("the fallback", () => r.reports.length === 2);
       yield* Effect.sleep("300 millis");
-      expect(f.of("turn").some(overHttp)).toBe(false); // its own spawns would have taken the lead's place
-      // the session warms its lead when it goes idle after the next turn
+      expect(f.of("turn").some(overHttp)).toBe(false); // its own spawns would have taken the followed engine's place
+      // the session warms the latest turn's engine when it goes idle after the next turn
       yield* r.session.input("hello");
       yield* r.finished(1);
       yield* until("a warm http process besides the turn's own", () => f.of("turn").some((t) => overHttp(t) && alive(t.pid)) && f.of("turn").filter(overHttp).length >= 2);

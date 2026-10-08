@@ -10,9 +10,9 @@ one endless chat whose history is its memory, kept as a binary summary tree.
   installable as a PWA), both clients of one server over a WebSocket speaking AG-UI.
 - Turns run where the files are: the server hands each `claude` call to a small runner on its
   machine. Your Tailscale login is the only identity.
-- You pick the chat model from the master chain (Claude Code, the ChatGPT plan, an API key with a
-  monthly budget). When it hits a limit, the message waits until you pick another. The compactor
-  has its own chain per tree level and fails over by itself.
+- You pick the model per message (Claude Code, the ChatGPT plan, an API key with a monthly
+  budget). When it hits a limit, the message waits until you pick another. The compactor has its
+  own chain per tree level and fails over by itself.
 - A message sent while a turn runs joins it or waits for the next turn (a setting, and a button
   for the other way); one still waiting can be taken back. Drafts survive a reload.
 - The view fold is a [Bend 2](https://github.com/bendlang/bend) kernel, with proofs of its tiling,
@@ -42,8 +42,9 @@ optchat device macbook    # a device runner, named as in optchat.config.ts
 ```
 
 The other engines are optional: `optchat login openai` for the ChatGPT plan,
-`optchat key anthropic|openai` for API keys. Pick the chat model in the web app's composer or
-with `/model` in the REPL; `/steer` and `/queue` set what a message sent mid-run does.
+`optchat key anthropic|openai` for API keys. Pick the model for your messages in the web app's
+composer or with `/model` in the REPL (`/resume` after a limit); `/steer` and `/queue` set what a
+message sent mid-run does.
 
 ## Develop
 

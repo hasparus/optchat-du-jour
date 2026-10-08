@@ -3,7 +3,7 @@
 // messages it holds unlogged), status markers from CUSTOM info and RUN_ERROR, whether the model is thinking,
 // and the messages sent from here that the log doesn't hold yet (kept across a reload, ./draft.ts).
 // Every AG-UI event and every page of /api/messages comes through here; the screens only draw it.
-import { type Asset, type FollowUp, type Kind, logIndex, SessionState, splitMarkers } from "@wire";
+import { type Asset, type Kind, logIndex, SessionState, splitMarkers } from "@wire";
 import { EventType } from "@ag-ui/core";
 import { Option, Schema } from "effect";
 import { api } from "./api.ts";
@@ -11,7 +11,7 @@ import { refOf } from "./attach.ts";
 import type { Link, LinkStatus } from "./connection.ts";
 import { loadSent, saveSent } from "./draft.ts";
 import { applyEvent, applyPage, dropBelow, emptyLog, hole, type Log, lowest, tip, trimHeld } from "./log.ts";
-import type { Inbound, Patch } from "./protocol.ts";
+import type { Forwarded, Inbound, Patch } from "./protocol.ts";
 
 export type Marker = {
   readonly key: number;
@@ -32,6 +32,7 @@ export type Pending = {
   readonly from: number;
   readonly conn: number;
   readonly error: string | null;
+  readonly engine?: string; // the engine of the master's chain it was sent for
 };
 
 // a message this client took back, for the composer to hold again; `key` tells one from the next
@@ -56,6 +57,7 @@ const MAX_ACKED = 1000; // log indexes of acked messages remembered
 export const UNSENT = "it may not have reached the server: send it again";
 const PAGE = 100; // older entries per page
 const MAX_FILL = 500; // a wider hole under the window is dropped, not fetched
+const PROBE = 500; // entries per /api/messages page when looking for messages sent before a reload
 
 const initial: Session = { asking: [], log: emptyLog, markers: [], pending: [], restored: null, state: null, status: "connecting", thinking: false };
 
@@ -72,6 +74,7 @@ export type Queued = {
   readonly error: string | null;
   readonly where: "queued" | "sent" | "sending" | "failed";
   readonly back: "server" | "local" | null;
+  readonly engine: string | null; // the engine of the master's chain it is for (null: not said)
 };
 
 // Is this user entry's text the message sent as `p`? The same text, or with attachments the typed
@@ -96,6 +99,7 @@ export function queued(s: Session): Queued[] {
     out.push({
       back: m.queued && m.clientId !== null ? "server" : null,
       clientId: m.clientId,
+      engine: m.engine,
       error,
       key: m.clientId ?? `server ${k}`,
       media: m.media ?? [],
@@ -105,7 +109,16 @@ export function queued(s: Session): Queued[] {
   }
   for (const p of s.pending)
     if (!held.has(p.id))
-      out.push({ back: p.error === null ? null : "local", clientId: p.id, error: p.error, key: p.id, media: p.media, text: p.text, where: p.error === null ? "sending" : "failed" });
+      out.push({
+        back: p.error === null ? null : "local",
+        clientId: p.id,
+        engine: p.engine ?? null,
+        error: p.error,
+        key: p.id,
+        media: p.media,
+        text: p.text,
+        where: p.error === null ? "sending" : "failed",
+      });
   return out;
 }
 
@@ -132,7 +145,7 @@ export type SessionOptions = {
   readonly messages?: (before: number, limit: number) => Promise<{ readonly entries: readonly { readonly i: number; readonly kind: Kind; readonly text: string }[] }>;
 };
 
-export function makeSession(link: Pick<Link, "listen" | "onStatus" | "pick" | "send" | "status" | "takeBack">, options: SessionOptions = {}) {
+export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | "send" | "status" | "takeBack">, options: SessionOptions = {}) {
   const messages = options.messages ?? api.messages;
   // what was sent before a reload and never acked: the snapshots tell below whether it got there
   const kept = loadSent().map((m): Pending => ({ ...m, conn: 0, error: null }));
@@ -149,7 +162,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "pick" | "s
   let restores = 0;
 
   const set = (next: Partial<Session>) => {
-    if (next.pending && next.pending !== s.pending) saveSent(next.pending.map(({ from, id, media, text }) => ({ from, id, media, text })));
+    if (next.pending && next.pending !== s.pending) saveSent(next.pending.map(({ engine, from, id, media, text }) => ({ engine, from, id, media, text })));
     s = { ...s, ...next };
     for (const f of subscribers) f();
   };
@@ -163,14 +176,17 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "pick" | "s
   };
   // The server's word on one of our messages: it is logged, and the user entry follows at once, or
   // it could not be (it stays queued there, and is logged with the next message, unannounced).
-  const acked = (id: string, error: string | null, index: number | null) => {
-    if (index !== null) {
-      ackedAt.add(index);
-      for (const old of ackedAt) {
-        if (ackedAt.size <= MAX_ACKED) break;
-        ackedAt.delete(old); // the oldest first
-      }
+  // a log index is a message's now (acked to some client, or matched to one of ours): no other
+  // message of ours is matched on it
+  const claim = (index: number) => {
+    ackedAt.add(index);
+    for (const old of ackedAt) {
+      if (ackedAt.size <= MAX_ACKED) break;
+      ackedAt.delete(old); // the oldest first
     }
+  };
+  const acked = (id: string, error: string | null, index: number | null) => {
+    if (index !== null) claim(index);
     const at = s.pending.findIndex((p) => p.id === id);
     const p = s.pending[at];
     if (p === undefined) return; // another client's message
@@ -192,23 +208,54 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "pick" | "s
   // A user entry was logged without an ack for us: one a failed ack told of earlier, or one sent on
   // a connection that has dropped since (its ack, told to nobody, is lost). Only these are matched
   // by their text, on the entry's index, as the oldest of them it can be, and never on an index
-  // whose ack named another message.
-  const logged = (i: number, text: string) => {
+  // whose ack named another message or that one of ours was matched on. `may`: which of ours may
+  // be matched now.
+  const logged = (i: number, text: string, may: (p: Pending) => boolean = () => true) => {
     if (ackedAt.has(i)) return;
-    const at = s.pending.findIndex((p) => (p.error !== null || p.conn < conns) && sameMessage(text, p) && i >= p.from);
-    if (at !== -1) set({ pending: s.pending.toSpliced(at, 1) });
+    const at = s.pending.findIndex((p) => may(p) && (p.error !== null || p.conn < conns) && sameMessage(text, p) && i >= p.from);
+    if (at === -1) return;
+    claim(i);
+    set({ pending: s.pending.toSpliced(at, 1) });
   };
   // After a reconnect: a message sent on a connection that dropped, which the log doesn't hold and
   // the server doesn't hold either (its id is not among the state's pending), may have been lost
   // with the socket. It is marked so, and stays in the queue; the log taking it later clears it as
-  // above.
-  // One sent before the window this page holds (the log grew past it meanwhile) can't be told
-  // from the entries it doesn't see: it is dropped, neither marked nor offered to send again.
+  // above. One sent before the window this page holds (the log grew past it meanwhile) is looked
+  // for in the entries from where it could be up to the window (`below`), and marked only if they
+  // don't have it either.
+  const unheard = (p: Pending, there: ReadonlySet<string | null>) => p.conn < conns && p.error === null && !there.has(p.id);
   const unsent = () => {
     const there = new Set((s.state?.pending ?? []).map((m) => m.clientId));
-    const known = s.pending.filter((p) => p.conn >= conns || p.error !== null || there.has(p.id) || p.from >= lowest(s.log));
-    const marked = known.map((p) => (p.conn >= conns || p.error !== null || there.has(p.id) ? p : { ...p, error: UNSENT }));
-    if (marked.length !== s.pending.length || marked.some((p, k) => p !== s.pending[k])) set({ pending: marked });
+    const low = lowest(s.log);
+    const marked = s.pending.map((p) => (unheard(p, there) && p.from >= low ? { ...p, error: UNSENT } : p));
+    if (marked.some((p, k) => p !== s.pending[k])) set({ pending: marked });
+    const older = s.pending.filter((p) => unheard(p, there) && p.from < low);
+    if (older.length > 0) void below(older, low);
+  };
+  // The log's entries from the oldest of `older` up to `low`, a page at a time, matched oldest
+  // first as the window's are; those still unheard of after that are marked. Offline again, they
+  // wait as they are, and the next snapshot looks again.
+  const below = async (older: readonly Pending[], low: number) => {
+    const from = Math.min(...older.map((p) => p.from));
+    const found: { readonly i: number; readonly kind: Kind; readonly text: string }[] = [];
+    try {
+      for (let before = low; before > from; ) {
+        const page = await messages(before, Math.min(PROBE, before - from));
+        const first = page.entries[0]?.i;
+        found.unshift(...page.entries);
+        if (first === undefined || first >= before) break;
+        before = first;
+      }
+    } catch {
+      return;
+    }
+    // in log order: those below the window, then the window's (one a newer message of ours took is claimed)
+    const ids = new Set(older.map((p) => p.id));
+    const window = [...s.log.items.values()].filter((e) => e.i >= low).toSorted((a, b) => a.i - b.i);
+    for (const e of [...found, ...window]) if (e.kind === "user") logged(e.i, e.text, (p) => ids.has(p.id));
+    const there = new Set((s.state?.pending ?? []).map((m) => m.clientId));
+    const marked = s.pending.map((p) => (ids.has(p.id) && unheard(p, there) ? { ...p, error: UNSENT } : p));
+    if (marked.some((p, k) => p !== s.pending[k])) set({ pending: marked });
   };
   const setLog = (log: Log) => {
     if (log !== s.log) set({ log });
@@ -249,7 +296,11 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "pick" | "s
         // the snapshot is the log: a marker placed after what it doesn't hold (a reply cut off by a
         // cancel, whose index goes to the next entry) goes after its last entry instead
         const { newest } = s.log;
-        if (s.pending.length > 0) for (const item of s.log.items.values()) if (item.kind === "user" && item.i >= s.log.base) logged(item.i, item.text);
+        // one of ours sent from below the window waits for `below`, which matches it in log order
+        // with the window's entries, so it never takes an entry that is a later one's
+        const low = lowest(s.log);
+        if (s.pending.length > 0)
+          for (const item of s.log.items.values()) if (item.kind === "user" && item.i >= s.log.base) logged(item.i, item.text, (p) => p.from >= low || p.error !== null);
         set({ markers: s.markers.some((m) => m.after > newest) ? s.markers.map((m) => (m.after > newest ? { ...m, after: newest } : m)) : s.markers, thinking: false });
         if (hole(s.log)) void fill();
         return;
@@ -277,7 +328,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "pick" | "s
         return;
       case EventType.RUN_ERROR:
         set({ thinking: false });
-        // a turn that stopped for a pick says why in its own prompt, not here as well
+        // a turn that stopped for a model says why in its own prompt, not here as well
         if (s.state?.phase !== "needs-model") mark(e.message, "error");
         return;
       case EventType.CUSTOM:
@@ -310,13 +361,14 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "pick" | "s
       };
     },
     // a message from the composer, with the attachments it uploaded: shown as queued until its
-    // ack. Sent while the link is down, it goes out on the next connection. `followUp`: when it
+    // ack. Sent while the link is down, it goes out on the next connection. The rest is its
+    // forwardedProps: the device and the composer's model when it was sent, and `followUp` when it
     // asks for the other behavior than the session's ("send now" or "queue")
-    send: (text: string, device: string | null, media: readonly Asset[] = [], followUp?: FollowUp) => {
+    send: (text: string, { media = [], ...forwarded }: Forwarded & { readonly media?: readonly Asset[] } = {}) => {
       const id = crypto.randomUUID();
       const conn = s.status === "open" ? conns : conns + 1;
-      set({ pending: [...s.pending, { conn, error: null, from: s.state?.messages ?? 0, id, media, text }] });
-      link.send(text, device, id, media.map(refOf), followUp);
+      set({ pending: [...s.pending, { conn, engine: forwarded.engine, error: null, from: s.state?.messages ?? 0, id, media, text }] });
+      link.send(text, id, { ...forwarded, attachments: media.map(refOf) });
     },
     // A waiting message back into the composer: one the server holds is asked for (it answers
     // with "taken-back"); one it doesn't hold is ours alone, and comes back at once. False when it
@@ -330,11 +382,12 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "pick" | "s
       set({ asking: [...s.asking, q.clientId] });
       return true;
     },
-    // A model pick: only while connected (a pick kept for later would settle whatever turn waits
-    // after the reconnect, which the user never chose); said when it wasn't sent.
-    pick: (lead: string) => {
-      if (link.pick(lead)) return true;
-      mark("not connected: the model was not changed", "error");
+    // A turn waiting for a model goes on, on `engine`: only while connected (a resume kept for
+    // later would settle whatever turn waits after the reconnect, which the user never chose);
+    // said when it wasn't sent.
+    resume: (engine: string) => {
+      if (link.resume(engine)) return true;
+      mark("not connected: the resume was not sent", "error");
       return false;
     },
     // the reader reached the chat's newest end, or left it: only there are the oldest entries dropped
