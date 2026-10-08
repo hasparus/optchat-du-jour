@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { type Inbound, parseInbound } from "../cli/repl.ts";
+import { OUT_OF_DATE } from "../server/routes/ws.ts";
 
 const ROOT = `${import.meta.dir}/../`;
 const FAKE = `${ROOT}test/fake-claude.ts`;
@@ -312,7 +313,16 @@ test("settings, resume and take-back frames over /ws: checked by their schema, s
   expect(followUps(web.events)).toEqual(["queue"]);
   const infos = web.events.flatMap((e) => (e.type === "CUSTOM" && e.name === "info" ? [e.value] : []));
   expect(infos).toContain("nope:x is not an engine of the master's chain (claude-code:opus)");
-  expect(infos).toContain("no turn waits for a model: nothing to resume");
+  expect(infos).toContain("not resumed on Claude Opus (Claude Code): no turn waits for a model (another client may have resumed it)");
+  // a client from before the per-message model still sends a pick: it alone is told to reload
+  const old = client();
+  await old.opened;
+  await old.until((es) => es.some((e) => e.type === "STATE_SNAPSHOT"));
+  old.ws.send(JSON.stringify({ lead: "claude-code:opus", type: "settings" }));
+  await old.until((es) => es.some((e) => e.type === "CUSTOM" && e.name === "info" && e.value === OUT_OF_DATE));
+  await Bun.sleep(50);
+  expect(web.events.some((e) => e.type === "CUSTOM" && e.name === "info" && e.value === OUT_OF_DATE)).toBe(false);
+  old.ws.close();
   const back = web.events.flatMap((e) => (e.type === "CUSTOM" && e.name === "taken-back" ? [e.value] : []));
   expect(back).toEqual([{ clientId: "never-sent", error: "the server holds no such message", text: null }]);
   expect(readFileSync(`${env.OPTCHAT_HOME}/session.json`, "utf8")).toBe('{"followUp":"queue"}\n');

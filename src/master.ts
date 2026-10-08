@@ -37,6 +37,7 @@ export const makeMaster = (refs: readonly string[]) =>
           );
           return Effect.asVoid(Effect.forkIn(lapse, scope));
         }),
+      isDown: (ref: string) => down.has(ref),
       // it answered: true when it was down
       cameBack: (ref: string) => down.delete(ref),
     };

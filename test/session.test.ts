@@ -812,7 +812,7 @@ test("a turn runs on its messages' engine; its usage limit waits for a resume (t
       const r = yield* rig([engine("a:x"), engine("b:x"), engine("c:x")]);
       expect(r.session.state().engines.map((e) => e.ref)).toEqual(["a:x", "b:x", "c:x"]);
       yield* r.session.resume("b:x");
-      yield* until("the refusal", () => r.said().includes("info: no turn waits for a model: nothing to resume"));
+      yield* until("the refusal", () => r.said().includes("info: not resumed on x (b): no turn waits for a model (another client may have resumed it)"));
       yield* r.session.input("go", { clientId: "c1", engine: "b:x" });
       yield* until("the stop", () => r.session.state().phase === "needs-model");
       // b is down now, with why, for the pickers
@@ -1232,6 +1232,52 @@ test("a cancel during a tool call: the not-run echo is logged under the run, bef
       yield* until("idle", r.idle);
       const order = r.events.flatMap((e) => (e.type === "logged" ? [`${e.entry.kind}: ${e.entry.text} (${e.runId ?? "no run"})`] : e.type === "run-finished" ? [`end: ${e.error}`] : []));
       expect(order).toEqual(["user: go (no run)", "tool: Glob {} (0)", "echo: not run: cancelled (0)", "end: cancelled", "user: later (no run)"]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+// SPEC "Engines": two clients resume one stop at once: the first goes on, the second is told
+test("two resumes of one stop: the first goes on, the second is told it came too late", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const spent: TurnEngine = { ref: "a:x", run: () => Effect.fail(new UsageLimit({ message: "spent" })), vision: false, warm: () => Effect.void };
+      const r = yield* rig([spent, answering("b:x"), answering("c:x")]);
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("the stop", () => r.session.state().phase === "needs-model");
+      yield* Effect.all([r.session.resume("b:x"), r.session.resume("c:x")]);
+      yield* until("idle", r.idle);
+      expect(r.log()).toEqual([
+        ["user", "go"],
+        ["talk", "b:x"],
+      ]);
+      expect(r.said()).toContain("info: not resumed on x (c): no turn waits for a model (another client may have resumed it)");
+    }).pipe(Effect.scoped),
+  );
+});
+
+// E17 and E4: after a cancel in "needs-model" the most recent turn's engine is the one that hit its
+// limit; it is marked down, so the idle priming leaves it alone
+test("an engine marked down is not primed: a cancel while waiting for a model leaves no priming on it", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      let primed = 0;
+      const spent: TurnEngine = {
+        prime: () => Effect.sync(() => void primed++),
+        ref: "a:x",
+        run: () => Effect.fail(new UsageLimit({ message: "spent" })),
+        vision: false,
+        warm: () => Effect.void,
+      };
+      const r = yield* rig([spent, answering("b:x")]);
+      yield* r.session.primeSoon;
+      yield* until("the first priming", () => primed === 1);
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("the stop", () => r.session.state().phase === "needs-model");
+      yield* r.session.cancel;
+      yield* until("idle", r.idle);
+      yield* r.session.primeSoon;
+      yield* Effect.sleep("50 millis");
+      expect(primed).toBe(1);
     }).pipe(Effect.scoped),
   );
 });

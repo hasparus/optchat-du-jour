@@ -1,6 +1,7 @@
 // GET /ws (SPEC "Protocol", E15): one WebSocket per client, AG-UI events out; RunAgentInput frames,
 // aborts, take-backs, settings and resumes in. Every client watches the same server-owned session.
 import { Effect, Option, Predicate, PubSub, Schema } from "effect";
+import { EventType } from "@ag-ui/core";
 import { type HttpRouter, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 import type { Session } from "../../src/session.ts";
@@ -26,7 +27,8 @@ type InboundMessage = typeof InboundMessage.Type;
 const Inbound = Schema.Union([
   Schema.Struct({ type: Schema.Literal("abort") }),
   Schema.Struct({ type: Schema.Literal("take-back"), clientId: Schema.String }),
-  Schema.Struct({ type: Schema.Literal("settings"), followUp: Schema.optional(FollowUp) }),
+  // `lead`: an out-of-date client's model pick (the server no longer has one): it is told to reload
+  Schema.Struct({ type: Schema.Literal("settings"), followUp: Schema.optional(FollowUp), lead: Schema.optional(Schema.Unknown) }),
   Schema.Struct({ type: Schema.Literal("resume"), engine: Schema.String }),
   Schema.Struct({
     forwardedProps: Schema.optional(Schema.Struct({ device: Schema.optional(Schema.String), followUp: Schema.optional(FollowUp), engine: Schema.optional(Schema.String) })),
@@ -47,6 +49,9 @@ const attachmentsOf = ({ content = "" }: InboundMessage) =>
         const sha = (p.type === "image" || p.type === "video") && p.source?.type === "url" ? ASSET.exec(p.source.value)?.[1] : undefined;
         return sha === undefined ? [] : [{ kind: p.type, sha }];
       });
+
+// what a client that still sends a model pick (`settings.lead`, before PR #21) is told, alone
+export const OUT_OF_DATE = "this client is out of date: reload it (the model is picked per message now)";
 
 // how many message ids a connection remembers
 const SEEN = 1000;
@@ -120,7 +125,9 @@ export const wsRoute = (
           case "take-back":
             return o.session.takeBack(m.clientId);
           case "settings":
-            return o.session.configure({ followUp: m.followUp });
+            return o.session
+              .configure({ followUp: m.followUp })
+              .pipe(Effect.andThen(m.lead === undefined ? Effect.void : send([{ name: "info", type: EventType.CUSTOM, value: OUT_OF_DATE }])));
           case "resume":
             return o.session.resume(m.engine);
         }

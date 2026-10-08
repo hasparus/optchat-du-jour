@@ -280,8 +280,11 @@ export const makeSession = (o: {
     // instead of waiting (E17): its own request writes the same prefix to the cache. Priming and
     // the warm process are the most recent turn's engine's, the chain's first before any (E18).
     const primes = yield* FiberSet.make();
+    // An engine marked down is not primed: after a cancel in "needs-model" the most recent turn's
+    // engine is the one that just hit its limit.
     const primeNow = Effect.suspend(() => {
-      const primer = latest()?.prime;
+      const e = latest();
+      const primer = e && !master.isDown(e.ref) ? e.prime : undefined;
       return !primer || running || !allBuilt(chat.mem) ? Effect.succeed(null) : FiberSet.run(primes, primer(render(chat.mem), o.defaultDevice));
     });
     // the next turn's and priming's claude, started ahead on the default device (E18)
@@ -587,12 +590,12 @@ export const makeSession = (o: {
         const media = attached.slice(0, MAX_ATTACHMENTS);
         if (attached.length > media.length) yield* info(`at most ${MAX_ATTACHMENTS} attachments per message: ${attached.length - media.length} left out`);
         if (text.trim() === "" && media.length === 0) return; // nothing to answer: no turn, no empty user entry
-        const head = master.refs[0] ?? "";
-        const known = asked === undefined || master.refs.includes(asked);
-        if (!known) yield* info(`${asked} is not an engine of the master's chain: the message is for ${engineLabel(head)}`);
+        const head = o.engines[0]?.ref ?? "";
+        const named = asked === undefined ? undefined : engineOf(asked);
+        if (asked !== undefined && !named) yield* info(`${asked} is not an engine of the master's chain: the message is for ${engineLabel(head)}`);
         const sentFor = on && o.devices.includes(on) ? on : deviceOf(text, o.devices);
         const steer = (how ?? followUp) === "steer";
-        inbox.push({ clientId: clientId ?? null, described: null, device: sentFor, engine: known && asked !== undefined ? asked : head, media, seq: ++seq, state: "held", steer, text });
+        inbox.push({ clientId: clientId ?? null, described: null, device: sentFor, engine: named?.ref ?? head, media, seq: ++seq, state: "held", steer, text });
         if (accepting) steerIn(accepting);
         yield* start; // nothing to do while the loop is on: it takes held messages as it goes
         yield* tell;
@@ -616,13 +619,14 @@ export const makeSession = (o: {
         yield* tell;
       });
 
-    // the turn waiting in "needs-model" goes on, on `ref` (`stall`); a second resume of the same
-    // stop finds it settled and does nothing
+    // the turn waiting in "needs-model" goes on, on `ref` (`stall`). A resume that finds none
+    // waiting, or the stop settled already (two clients at once), is told so: its picker has moved.
     const resume = (ref: string) =>
       Effect.suspend(() => {
-        if (!master.refs.includes(ref)) return info(`${ref} is not an engine of the master's chain (${master.refs.join(", ")})`);
-        if (stalled === null) return info("no turn waits for a model: nothing to resume");
-        return Deferred.succeed(stalled.resume, ref).pipe(Effect.asVoid);
+        if (!engineOf(ref)) return info(`${ref} is not an engine of the master's chain (${o.engines.map((e) => e.ref).join(", ")})`);
+        const late = info(`not resumed on ${engineLabel(ref)}: no turn waits for a model (another client may have resumed it)`);
+        if (stalled === null) return late;
+        return Deferred.succeed(stalled.resume, ref).pipe(Effect.flatMap((first) => (first ? Effect.void : late)));
       });
 
     const cancel = Effect.suspend(() => (loop ? Fiber.interrupt(loop) : Effect.void));
