@@ -43,7 +43,7 @@ export type CompactorNeeds = EngineNeeds & { readonly device?: string; readonly 
 // a turn engine's needs: the one system prompt (gist §7.2), where each device's claude runs (E7),
 // and the read-only tools of an engine with its own loop (M5)
 export type TurnNeeds = EngineNeeds & {
-  readonly lead: () => boolean; // it is the engine of the master's chain turns run on now: the user's pick (E4, E18)
+  readonly warms: () => boolean; // the warm processes follow it: it ran the most recent turn, or heads the chain before any (E18)
   readonly instructions: string;
   readonly runnerFor: (device: string) => Effect.Effect<Placement, DeviceOffline>;
   readonly toolsFor: (device: string) => ToolBox;
@@ -82,7 +82,6 @@ export const turnEngine = (ref: Ref, o: TurnNeeds): Effect.Effect<TurnEngine> =>
       return claudeCodeTurn({
         effort,
         instructions: o.instructions,
-        lead: o.lead,
         logUsage: o.log,
         model: ref.model,
         permissionMode,
@@ -91,6 +90,7 @@ export const turnEngine = (ref: Ref, o: TurnNeeds): Effect.Effect<TurnEngine> =>
         runnerFor: o.runnerFor,
         tools: tools ?? MASTER_TOOLS,
         ttl: o.settings.cache.claudeCodeTtl,
+        warms: o.warms,
       });
     case "openai-plan":
     case "api-key":

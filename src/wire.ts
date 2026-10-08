@@ -11,7 +11,7 @@ export { Kind, Msg } from "./records.ts";
 // the session's shared state (STATE_SNAPSHOT, STATE_DELTA)
 
 // "needs-model": a turn stopped on a usage limit or an offline device, waiting for a client to
-// pick an engine (`stopped` says which stopped it, and why)
+// resume it on an engine (`stopped` says which stopped it, and why)
 export const Phase = Schema.Literals(["idle", "running", "waiting", "needs-model"]);
 export type Phase = typeof Phase.Type;
 
@@ -63,17 +63,23 @@ export const SessionState = Schema.Struct({
   messages: Schema.Number,
   // Every message the server holds and has not logged: waiting for a turn or for summaries, or
   // offered to the running call and not taken yet. `clientId`: the id its client sent it with;
-  // `text`: as typed; `queued`: held for a later turn, so it can still be taken back; `media`: its
-  // attachments as stored, when it has any.
+  // `text`: as typed; `engine`: the engine of the master's chain it is for; `queued`: held for a
+  // later turn, so it can still be taken back; `media`: its attachments as stored, when it has any.
   pending: Schema.Array(
-    Schema.Struct({ clientId: Schema.NullOr(Schema.String), text: Schema.String, queued: Schema.Boolean, media: Schema.optional(Schema.Array(Schema.suspend(() => Asset))) }),
+    Schema.Struct({
+      clientId: Schema.NullOr(Schema.String),
+      text: Schema.String,
+      engine: Schema.String,
+      queued: Schema.Boolean,
+      media: Schema.optional(Schema.Array(Schema.suspend(() => Asset))),
+    }),
   ),
   down: Schema.Array(Down), // compactor engines down right now, with why (SPEC "Policy": never unseen)
   followUp: FollowUp, // what a message sent mid-run does, unless it asks otherwise
-  // the engines the master may run on, in the configured order, and `lead`, the one turns run on
-  // (the user's pick; the first unless picked). The master never fails over by itself (E4).
+  // the engines the master may run on, in the configured order, for the pickers (each message
+  // names its own; the first when it names none). The master never fails over by itself (E4):
+  // `stopped` is the engine that stopped a turn waiting in "needs-model", and why.
   engines: Schema.Array(MasterEngine),
-  lead: Schema.String,
   stopped: Schema.NullOr(Schema.Struct({ ref: Schema.String, label: Schema.String, why: Schema.String })),
 });
 export type SessionState = typeof SessionState.Type;

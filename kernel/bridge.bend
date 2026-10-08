@@ -8,6 +8,7 @@ import Base
 import ./kernel.bend as K
 import ./LAWS.bend as Laws
 import ./kspec.bend as KS
+import ./lemmas_a.bend as A
 import ./lemmas_fold.bend as F
 import ./proofs_addr.bend as PA
 import ./proofs_fold.bend as PF
@@ -47,6 +48,18 @@ def names_of(+m: Maybe<&2, K.Coord>, -id: Nat, -n: Nat, -T: Nat, h: KS.Names(m, 
 def Laws.coords_names(id, n, T):
   names_of(K.coords(id, n, T), id, n, T, PA.coords_names_k(id, n, T))
 
+def le_ks(+l: Nat, +i: Nat, -T: Nat, h: {Nat.is_le(Nat.add(Laws.Start(l, i), Laws.Width(l)), T) == True{} : Bool})
+  -> {Nat.is_le(Nat.add(K.start(l, i), K.pow2(l)), T) == True{} : Bool}:
+  %Equal.sym(Nat, K.start(l, i), Laws.Start(l, i), PA.span_start_k(l, i)) : {Nat.is_le(Nat.add(_, K.pow2(l)), T) == True{} : Bool}
+  %Equal.sym(Nat, K.pow2(l), Laws.Width(l), PA.span_size_k(l)) : {Nat.is_le(Nat.add(Laws.Start(l, i), _), T) == True{} : Bool}
+  h
+
+def Laws.coords_complete(l, i, T):
+  h =>
+    %PA.span_start_k(l, i) : {K.coords(_, Laws.Width(l), T) == Some{K.Coord{l, i}} : Maybe<&2, K.Coord>}
+    %PA.span_size_k(l) : {K.coords(K.start(l, i), _, T) == Some{K.Coord{l, i}} : Maybe<&2, K.Coord>}
+    PA.coords_complete_k(l, i, T, le_ks(l, i, T, h))
+
 # Tiling, in either vocabulary
 # ----------------------------
 
@@ -79,13 +92,6 @@ def tiles_ks(+ps: List<&2, K.Part>, +s: Nat, -e: Nat, t: Laws.Tiles(ps, s, e)) -
 # Siblings, both ways
 # -------------------
 
-def eq_refl(x: Nat) -> {Nat.is_eq(x, x) == True{} : Bool}:
-  match x:
-    case 0n:
-      {==}
-    case 1n+p:
-      eq_refl(p)
-
 # divmod by 2 counts the pairs
 def halve(+j: Nat, +d: Nat) -> {Nat.divmod.go(Nat.double(j), 1n, d, 0n) == (Nat.add(j, d), 0n) : Nat & Nat}:
   match j:
@@ -110,16 +116,16 @@ def and4_true(a: Bool, b: Bool, c: Bool, d: Bool,
 
 def same_level(+la: Nat, -lb: Nat, e: {la == lb : Nat}) -> {Nat.is_eq(la, lb) == True{} : Bool}:
   %e : {Nat.is_eq(la, _) == True{} : Bool}
-  eq_refl(la)
+  A.eq_refl(la)
 
 def even_check(+ia: Nat, +j: Nat, e: {ia == Nat.double(j) : Nat}) -> {Nat.is_eq(Nat.double(Nat.div(ia, 2n)), ia) == True{} : Bool}:
   %Equal.sym(Nat, ia, Nat.double(j), e) : {Nat.is_eq(Nat.double(Nat.div(_, 2n)), _) == True{} : Bool}
   %Equal.sym(Nat, Nat.div(Nat.double(j), 2n), j, div_double(j)) : {Nat.is_eq(Nat.double(_), Nat.double(j)) == True{} : Bool}
-  eq_refl(Nat.double(j))
+  A.eq_refl(Nat.double(j))
 
 def next_check(+ia: Nat, -ib: Nat, e: {ib == 1n+ia : Nat}) -> {Nat.is_eq(1n+ia, ib) == True{} : Bool}:
   %Equal.sym(Nat, ib, 1n+ia, e) : {Nat.is_eq(1n+ia, _) == True{} : Bool}
-  eq_refl(1n+ia)
+  A.eq_refl(1n+ia)
 
 def ups_check(ua: List<&2, Nat>, ne: Laws.NonEmpty(ua)) -> {K.built_up(ua) == True{} : Bool}:
   match ua:
@@ -709,3 +715,91 @@ def all_of(+levels: List<&2, List<&2, Bool>>, +ps: List<&2, K.Part>, +head: Nat,
 def Laws.offers_allowed(levels, T, ps):
   t => all_of(levels, ps, K.first(T, ps), K.offers(levels, K.first(T, ps)), PR.offers_allowed_k(levels, K.first(T, ps)),
     bb_bool(ps, K.first(T, ps), built_before_first(T, ps, first_ok(T, ps, t))))
+
+# Law 5, the other way: what is built before x, for an x within the chat,
+# lies before first's answer; so every node rule 3 allows ends at or
+# before the head offers is handed
+# ----------------------------------------------------------------------
+
+def lt_start_at(+l: Nat, +i: Nat, -f: Nat, -x: Nat, s: {Laws.Start(l, i) == f : Nat}, h: {Nat.is_lt(f, x) == True{} : Bool})
+  -> {Nat.is_lt(Laws.Start(l, i), x) == True{} : Bool}:
+  %Equal.sym(Nat, Laws.Start(l, i), f, s) : {Nat.is_lt(_, x) == True{} : Bool}
+  h
+
+# no unbuilt line starts before x when every line before x is built
+def unbuilt_before(ps: List<&2, K.Part>, -f: Nat, -x: Nat, u: Laws.UnbuiltAt(ps, f), bb: Laws.BuiltBefore(ps, x),
+  h: {Nat.is_lt(f, x) == True{} : Bool}) -> Empty:
+  match ps:
+    case Nil{}:
+      u
+    case Con{K.Part{+l, +i, sz, b, ups}, rest}:
+      match u:
+        case Inl{at}:
+          (s, nb) = at
+          (fb, _) = bb
+          F.false_true(Equal.trans(Bool, False{}, b, True{}, Equal.sym(Bool, b, False{}, nb), fb(lt_start_at(l, i, f, x, s, h))))
+        case Inr{u2}:
+          (_, bbr) = bb
+          unbuilt_before(rest, f, x, u2, bbr, h)
+
+def le_not_lt(x: Nat, f: Nat, n: {Nat.is_lt(f, x) == True{} : Bool} -> Empty) -> {Nat.is_le(x, f) == True{} : Bool}:
+  match x f:
+    case 0n f0:
+      le_zero(f0)
+    case 1n+p 0n:
+      Empty.absurd({Nat.is_le(1n+p, 0n) == True{} : Bool}, n({==}))
+    case 1n+p 1n+q:
+      le_not_lt(p, q, n)
+
+def le_alt(ps: List<&2, K.Part>, +x: Nat, +f: Nat, -T: Nat, hx: {Nat.is_le(x, T) == True{} : Bool}, bb: Laws.BuiltBefore(ps, x),
+  alt: {f == T : Nat} | Laws.UnbuiltAt(ps, f)) -> {Nat.is_le(x, f) == True{} : Bool}:
+  match alt:
+    case Inl{e}:
+      %Equal.sym(Nat, f, T, e) : {Nat.is_le(x, _) == True{} : Bool}
+      hx
+    case Inr{u}:
+      le_not_lt(x, f, h => unbuilt_before(ps, f, x, u, bb, h))
+
+def le_fo(ps: List<&2, K.Part>, +x: Nat, +f: Nat, -T: Nat, hx: {Nat.is_le(x, T) == True{} : Bool}, bb: Laws.BuiltBefore(ps, x),
+  fo: FirstOk(ps, f, T)) -> {Nat.is_le(x, f) == True{} : Bool}:
+  (_, alt) = fo
+  le_alt(ps, x, f, T, hx, bb, alt)
+
+def le_first(+T: Nat, +ps: List<&2, K.Part>, +x: Nat, t: Laws.Tiles(ps, 0n, T), hx: {Nat.is_le(x, T) == True{} : Bool},
+  bb: Laws.BuiltBefore(ps, x)) -> {Nat.is_le(x, K.first(T, ps)) == True{} : Bool}:
+  le_fo(ps, x, K.first(T, ps), T, hx, bb, first_ok(T, ps, t))
+
+def le_pred(i: Nat, T: Nat, h: {Nat.is_le(1n+i, T) == True{} : Bool}) -> {Nat.is_le(i, T) == True{} : Bool}:
+  match i T:
+    case 0n T0:
+      le_zero(T0)
+    case 1n+p 0n:
+      Empty.absurd({Nat.is_le(1n+p, 0n) == True{} : Bool}, F.false_true(h))
+    case 1n+p 1n+q:
+      le_pred(p, q, h)
+
+# a message within the chat comes before its end
+def leaf_end(+i: Nat, -T: Nat, w: {Nat.is_le(Laws.Start(0n, 1n+i), T) == True{} : Bool}) -> {Nat.is_le(1n+i, T) == True{} : Bool}:
+  %F.mul_one_r(i) : {Nat.is_le(1n+_, T) == True{} : Bool}
+  w
+
+def leaf_within(+i: Nat, +T: Nat, w: {Nat.is_le(Laws.Start(0n, 1n+i), T) == True{} : Bool}) -> {Nat.is_le(i, T) == True{} : Bool}:
+  le_pred(i, T, leaf_end(i, T, w))
+
+def end_ks(+m: Nat, +i: Nat, -head: Nat, h: {Nat.is_le(Laws.Start(1n+m, 1n+i), head) == True{} : Bool})
+  -> {Nat.is_le(K.start(1n+m, 1n+i), head) == True{} : Bool}:
+  %Equal.sym(Nat, K.start(1n+m, 1n+i), Laws.Start(1n+m, 1n+i), PA.span_start_k(1n+m, 1n+i)) : {Nat.is_le(_, head) == True{} : Bool}
+  h
+
+def allowed_ks(+levels: List<&2, List<&2, Bool>>, +T: Nat, +ps: List<&2, K.Part>, c: K.Coord, t: Laws.Tiles(ps, 0n, T),
+  w: Laws.Within(c, T), a: Laws.Allowed(levels, ps, c)) -> KS.Allowed(levels, K.first(T, ps), c):
+  match c:
+    case K.Coord{0n, +i}:
+      (pr, nb, bb) = a
+      (pr, nb, le_first(T, ps, i, t, leaf_within(i, T, w), bb))
+    case K.Coord{1n++m, +i}:
+      (pr, nb, k1, k2, bb) = a
+      (pr, nb, k1, k2, end_ks(m, i, K.first(T, ps), le_first(T, ps, Laws.Start(1n+m, 1n+i), t, w, bb)))
+
+def Laws.offers_complete(levels, T, ps, c):
+  t => w => a => PR.offers_complete_k(levels, K.first(T, ps), c, allowed_ks(levels, T, ps, c, t, w, a))

@@ -8,13 +8,16 @@ import type { Asset } from "./wire.ts";
 // A message from a client, the session's until it is logged: "held" for a turn, "picked" by the
 // turn that is logging it now, or "offered" to the running call, which may take it (it is logged
 // then) or leave it (it comes back "held" when the call ends). Only a held one can be taken back.
-// Each carries the id its client sent it with, so its ack names it. (The state clients see lists
-// all of them as `pending`.)
+// Each carries the id its client sent it with, so its ack names it, and the engine it was sent for.
+// (The state clients see lists all of them as `pending`.)
 export type Incoming = {
   readonly seq: number; // the order messages came in
   readonly text: string; // as typed; the log gets it with a marker line per attachment
   readonly media: readonly Asset[];
   device: string | null; // the device it was sent for; one a call left gets that call's device
+  // the engine of the master's chain it was sent for (the chain's first when it named none); one a
+  // stopped turn held goes to the engine a client resumes that turn with
+  engine: string;
   readonly clientId: string | null;
   state: "held" | "picked" | "offered";
   readonly steer: boolean; // sent mid-run, it joins the running call; else it waits for the next turn
@@ -29,31 +32,50 @@ export const offered = (inbox: readonly Incoming[]) => inbox.filter((m) => m.sta
 // another waits, and the turn after it runs there
 export const forThis = (sentFor: string | null, on: string) => sentFor === null || sentFor === on;
 
-// the held messages before the first one for another device than `on`: those that may run there
-// now, in the order sent; that one waits for the turn after, with all sent after it
-const runnable = (inbox: readonly Incoming[], on: string) => {
+// where a turn runs: its device, and the engine of the master's chain it runs on
+export type Where = { readonly on: string; readonly engine: string };
+
+// the held messages before the first one for another device or another engine than `at`: those
+// that may run there now, in the order sent; that one waits for the turn after, with all sent after it
+const runnable = (inbox: readonly Incoming[], at: Where) => {
   const waiting = held(inbox);
-  const other = waiting.findIndex((m) => !forThis(m.device, on));
+  const other = waiting.findIndex((m) => !forThis(m.device, at.on) || m.engine !== at.engine);
   return other === -1 ? waiting : waiting.slice(0, other);
 };
 
-// The next turn's device and messages: the device of the first held message that has one (sent
-// for it, or left by a call that ran there), else the default; and the held messages up to the
-// first one for another device.
+// The next turn's engine, device and messages: the engine of the first held message, and the held
+// messages from it up to the first one for another engine, or for another device than the first
+// of them that names one (sent for it, or left by a call that ran there). That device is the
+// turn's, else the default: a batch never runs on a device only a message outside it named.
 export const nextTurn = (inbox: readonly Incoming[], defaultDevice: string) => {
-  const on = held(inbox).find((m) => m.device)?.device ?? defaultDevice;
-  return { batch: runnable(inbox, on), on };
+  const waiting = held(inbox);
+  const engine = waiting[0]?.engine ?? "";
+  let on: string | null = null;
+  const batch: Incoming[] = [];
+  for (const m of waiting) {
+    if (m.engine !== engine || (m.device !== null && on !== null && m.device !== on)) break;
+    on ??= m.device;
+    batch.push(m);
+  }
+  return { batch, engine, on: on ?? defaultDevice };
 };
 
-// The held messages that join the call running on `on`, marked offered and returned for its
+// The held messages that join the call running at `at`, marked offered and returned for its
 // queue: of those that may run there, every one up to the last that was sent to steer, oldest
 // first. So a message that steers takes the ones queued before it along, none overtakes one sent
 // before it, and the inbox keeps its order.
-export const steerIn = (inbox: readonly Incoming[], on: string): Incoming[] => {
-  const may = runnable(inbox, on);
+export const steerIn = (inbox: readonly Incoming[], at: Where): Incoming[] => {
+  const may = runnable(inbox, at);
   const joining = may.slice(0, may.findLastIndex((m) => m.steer) + 1);
   for (const m of joining) m.state = "offered";
   return joining;
+};
+
+// A stopped turn resumed on `engine`: the held messages it stopped with (those that could run
+// where it ran: what its call never took, and what was sent for that engine since) go there too.
+// One for another engine or device waits behind them, as before.
+export const handOver = (inbox: readonly Incoming[], stopped: Where, engine: string) => {
+  for (const m of runnable(inbox, stopped)) m.engine = engine;
 };
 
 // The call is over, or its turn stopped: what it was offered and never took is held again, on its

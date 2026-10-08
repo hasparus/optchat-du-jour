@@ -61,7 +61,7 @@ const turn = async (url: string, text: string, device: string) => {
   return events;
 };
 
-test("a turn on another device runs there, and a turn on an offline device stops at once, waiting for a pick", async () => {
+test("a turn on another device runs there, and a turn on an offline device stops at once, waiting for a resume", async () => {
   const mini = `${home}/mini`, macbook = `${home}/macbook`, log = `${home}/fake.jsonl`;
   mkdirSync(mini);
   mkdirSync(macbook);

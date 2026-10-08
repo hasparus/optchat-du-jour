@@ -1,10 +1,11 @@
 // The composer (SPEC "Web UI", Chat; "Media"): the text, a tray of attachments, the device picker,
-// the session's settings (follow-ups, the lead engine), send and stop. A picked, pasted or dropped
+// the model picker (this client's own: each message names its engine), the session's follow-up
+// setting, send and stop. A picked, pasted or dropped
 // photo is downscaled here and uploaded at once, so it is usually stored (and being described) by
 // the time the text is typed; the message goes out over /ws naming each upload by its digest.
 // Send waits for every upload, says why while it does, and is on when there is text or a finished
 // attachment. The draft (the text and the finished uploads) survives a reload (lib/draft.ts).
-// While a turn runs (or waits for a model to be picked), send follows the session's follow-up
+// While a turn runs (or waits for a model), send follows the session's follow-up
 // setting and a second button (Mod+Enter on a keyboard) sends the other way for this one
 // message; stop is beside them, and with nothing to send, send is stop.
 import {
@@ -44,11 +45,13 @@ export type ComposerProps = {
   readonly device: string | null; // the device picked, or the state's
   readonly onDevice: (device: string) => void;
   readonly picked: string | null; // what the picker shows
+  readonly model: string | null; // the engine the next message is for (the model picker's)
+  readonly onModel: (ref: string) => void;
   readonly restored: Restored | null; // a message taken back, to hold again
   readonly uploader?: Uploader; // tests replace the upload
 };
 
-export function Composer({ link, session, state, busy, open, devices, device, onDevice, picked, restored, uploader }: ComposerProps) {
+export function Composer({ link, session, state, busy, open, devices, device, onDevice, picked, model, onModel, restored, uploader }: ComposerProps) {
   const saved = useMemo(loadDraft, []); // read once: the composer owns the draft from here
   const tray = useAttachments(uploader, saved?.media);
   const [text, setText] = useState(saved?.text ?? "");
@@ -59,9 +62,13 @@ export function Composer({ link, session, state, busy, open, devices, device, on
   const history = useRef<string[]>([...loadHistory()]);
   const [recalled, setRecalled] = useState<number | null>(null);
   const failed = tray.items.some((a) => a.error !== null);
-  // a message sent now meets a turn: one running, or one waiting for a pick, which it joins (if
-  // it steers) once the pick comes
+  // a message sent now meets a turn: one running, or one waiting for a model, which it joins (if
+  // it steers and is for the stopped engine) once the turn is resumed
   const running = state?.phase === "running" || state?.phase === "needs-model";
+  // the turn's engine (the stopped one while it waits): a message for another one waits for a
+  // turn of its own, whatever the follow-up setting, so there is no other way to send it
+  const turnEngine = state?.engine ?? state?.stopped?.ref ?? null;
+  const elsewhere = running && model !== null && turnEngine !== null && model !== turnEngine;
   const followUp = state?.followUp ?? "steer";
   const other: FollowUp = followUp === "steer" ? "queue" : "steer";
   const content = text.trim() !== "" || tray.items.length > 0;
@@ -90,7 +97,7 @@ export function Composer({ link, session, state, busy, open, devices, device, on
 
   const send = (how?: FollowUp) => {
     if (!sendable(text)) return;
-    session.send(text, device, tray.ready, running ? how : undefined);
+    session.send(text, { device: device ?? undefined, engine: model ?? undefined, followUp: running ? how : undefined, media: tray.ready });
     if (text.trim() !== "") {
       remember(text);
       history.current = [...history.current.filter((t) => t !== text), text];
@@ -129,14 +136,22 @@ export function Composer({ link, session, state, busy, open, devices, device, on
     }
   };
 
-  const placeholder = running
-    ? followUp === "queue"
-      ? "Queue a follow-up"
-      : state.phase === "needs-model"
-        ? "Add to the turn, once a model is picked"
-        : "Add to the running turn"
-    : "Message";
-  const sendLabel = running && followUp === "queue" ? "Send (queued for the next turn)" : running ? "Send (joins the running turn)" : "Send";
+  const placeholder = elsewhere
+    ? "For the next turn (another model)"
+    : running
+      ? followUp === "queue"
+        ? "Queue a follow-up"
+        : state.phase === "needs-model"
+          ? "Add to the turn, once it goes on"
+          : "Add to the running turn"
+      : "Message";
+  const sendLabel = elsewhere
+    ? "Send (waits for the next turn: another model)"
+    : running && followUp === "queue"
+      ? "Send (queued for the next turn)"
+      : running
+        ? "Send (joins the running turn)"
+        : "Send";
   const otherLabel = other === "steer" ? "Send now" : "Queue for the next turn";
   return (
     <PromptInput
@@ -211,11 +226,11 @@ export function Composer({ link, session, state, busy, open, devices, device, on
               ))}
             </CompactSelect>
           )}
-          {state && state.engines.length > 0 && <ModelPicker session={session} state={state} />}
+          {state && model !== null && <ModelPicker model={model} onModel={onModel} state={state} />}
           {state && <FollowUps followUp={state.followUp} link={link} />}
         </PromptInputTools>
         <div className="ml-auto flex items-center gap-1">
-          {running && content && (
+          {running && !elsewhere && content && (
             <InputGroupButton
               aria-label={otherLabel}
               disabled={blocked !== null}
@@ -237,7 +252,6 @@ export function Composer({ link, session, state, busy, open, devices, device, on
                 link.abort();
               }}
               title="Stop the turn"
-              variant={content ? "secondary" : "default"}
             />
           )}
           {(!busy || content) && <PromptInputSubmit aria-describedby={hint} disabled={blocked !== null || !content} title={blocked ?? sendLabel} />}
@@ -251,7 +265,7 @@ export function Composer({ link, session, state, busy, open, devices, device, on
           {blocked ??
             (touch
               ? null
-              : `Enter to send · Shift+Enter new line${running ? ` · Ctrl/⌘+Enter ${other === "steer" ? "sends now" : "queues"}` : ""}${history.current.length > 0 ? " · ↑ last message" : ""}`)}
+              : `Enter to send · Shift+Enter new line${running && !elsewhere ? ` · Ctrl/⌘+Enter ${other === "steer" ? "sends now" : "queues"}` : ""}${history.current.length > 0 ? " · ↑ last message" : ""}`)}
         </p>
       </PromptInputFooter>
     </PromptInput>

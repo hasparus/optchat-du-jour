@@ -193,6 +193,19 @@ def Allowed(levels: List<&2, List<&2, Bool>>, ps: List<&2, K.Part>, c: K.Coord) 
         & {Built(levels, m, 1n+Nat.double(i)) == True{} : Bool}
         & BuiltBefore(ps, Start(1n+m, 1n+i)))
 
+# node c ends by message T: it lies within a chat of T messages
+def Within(c: K.Coord, T: Nat) -> Type:
+  K.Coord{l, i} = c
+  {Nat.is_le(Start(l, 1n+i), T) == True{} : Bool}
+
+# c is one of cs
+def In(c: K.Coord, cs: List<&2, K.Coord>) -> Type:
+  match cs:
+    case Nil{}:
+      Empty
+    case Con{d, rest}:
+      ({d == c : K.Coord} | In(c, rest))
+
 def AllAllowed(levels: List<&2, List<&2, Bool>>, ps: List<&2, K.Part>, cs: List<&2, K.Coord>) -> Type:
   match cs:
     case Nil{}:
@@ -253,6 +266,16 @@ law coords_names:
   for +n: Nat
   for +T: Nat
   Names(K.coords(id, n, T), id, n, T)
+
+# and every node that ends within the chat has its name: coords answers
+# (l, i) for id = i * 2^l and n = 2^l, so zoom never answers "No line" for
+# a node's span
+law coords_complete:
+  for +l: Nat
+  for +i: Nat
+  for +T: Nat
+  {Nat.is_le(Nat.add(Start(l, i), Width(l)), T) == True{} : Bool}
+    -> {K.coords(Start(l, i), Width(l), T) == Some{K.Coord{l, i}} : Maybe<&2, K.Coord>}
 
 # 3. fit and the sawtooth merge only an adjacent sibling pair whose parent
 #    is built, and never split a part; they leave alone a view that needs
@@ -334,7 +357,7 @@ law saw_batch:
   {Bool.or(folding, Nat.is_gt(Total(ps), high)) == True{} : Bool} -> Batched(low, K.saw(T, high, low, folding, ps))
 
 # 5. Rule 3 never offers a node whose children are unbuilt, nor one beyond
-#    the first unbuilt view line
+#    the first unbuilt view line; and it offers every node it allows
 # ------------------------------------------------------------------------
 
 # first is the first unbuilt view line's start (or T when there is none):
@@ -349,3 +372,12 @@ law offers_allowed:
   for +T: Nat
   for +ps: List<&2, K.Part>
   Tiles(ps, 0n, T) -> AllAllowed(levels, ps, K.offers(levels, K.first(T, ps)))
+
+# every node of the chat that rule 3 allows is offered: the pump never
+# stalls while there is work it may start
+law offers_complete:
+  for +levels: List<&2, List<&2, Bool>>
+  for +T: Nat
+  for +ps: List<&2, K.Part>
+  for +c: K.Coord
+  Tiles(ps, 0n, T) -> Within(c, T) -> Allowed(levels, ps, c) -> In(c, K.offers(levels, K.first(T, ps)))

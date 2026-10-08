@@ -2,12 +2,12 @@
 // (gist §3 "Addressing", §4.1; the merge order and the sawtooth of the 2026-10-08 gist §3.2).
 // Seeded random chats, several pairs of marks; after every step the kernel and the model must
 // agree on the view, whether a batch is owed, `first` and rule 3's offers, and now and then on the
-// rebuild from message 0. Then the merge order against Taelin's rollback push, the check the gist
-// itself reports (§3.2).
-import { expect, test } from "bun:test";
+// rebuild from message 0. Then what kernel.ts hands the kernel, and the merge order against
+// Taelin's rollback push, the check the gist itself reports (§3.2).
+import { expect, spyOn, test } from "bun:test";
 import kernel, { type List, type Part } from "../kernel/kernel.mjs";
 import * as K from "../src/kernel.ts";
-import { type Coord, type Marks, newMem, setNode } from "../src/tree.ts";
+import { type Coord, getNode, type Marks, type Mem, newMem, setNode } from "../src/tree.ts";
 import { PLACEHOLDER } from "../src/view.ts";
 
 const encoder = new TextEncoder();
@@ -193,6 +193,121 @@ test("a 100k-line view rebuilds, appends, fits and offers without blowing the st
   expect(K.fit(mem, mem.view, mem.marks.low, HOLE)).toHaveLength(T + 1);
 });
 
+// What src/kernel.ts hands the kernel, against the tree it comes from. The laws take their
+// inputs at their word, and no proof covers the conversion: a line's `built` and size are the
+// tree's, its `ups` the sizes of its built ancestors up to the first unbuilt one (so non-empty
+// exactly when its parent is built, and the parent a merge makes is that parent's own line), the
+// view tiles [0, T), and `levels` holds one flag per node of a chat of T, the tree's.
+const array = <T>(xs: List<T>): T[] => (xs.$ === "Con" ? [xs.head, ...array(xs.tail)] : []);
+function list<T>(xs: readonly T[]): List<T> {
+  let out: List<T> = { $: "Nil" };
+  for (const head of xs.toReversed()) out = { $: "Con", head, tail: out };
+  return out;
+}
+const at = (c: { readonly l: bigint | number; readonly i: bigint | number }): Coord => ({ i: Number(c.i), l: Number(c.l) });
+
+// a line as kernel.ts builds it: the tree's flag and size, and its parent's line when the parent
+// is built (gist §3.2: a pair merges only into a built parent). How many ancestors it carries.
+function line(mem: Mem, p: Part): number {
+  const c = at(p), ups = array(p.ups), up = { i: Math.floor(c.i / 2), l: c.l + 1 };
+  expect(p.built).toBe(getNode(mem, c) !== undefined);
+  expect(Number(p.size)).toBe(getNode(mem, c)?.size ?? HOLE);
+  expect(ups.length > 0).toBe(getNode(mem, up) !== undefined);
+  const [size, ...rest] = ups;
+  if (size === undefined) return 0;
+  return 1 + line(mem, { $: "Part", built: true, ...up, size, ups: list(rest) });
+}
+
+// the view as kernel.ts hands it over: mem.view's lines in order, tiling [0, T)
+function view(mem: Mem, ps: List<Part>, T: number) {
+  const lines = array(ps);
+  expect(lines.map(at)).toEqual([...mem.view]);
+  let end = 0;
+  for (const p of lines) {
+    expect(at(p).i * 2 ** at(p).l).toBe(end);
+    end += 2 ** at(p).l;
+  }
+  expect(end).toBe(T);
+  return lines;
+}
+
+// a chat of T messages and a tree over it: mostly nodes whose sources are built, as the pump
+// builds them, and now and then any node at all, as an import may leave them
+function chat(r: () => number, T: number) {
+  const high = 200 + Math.floor(r() * 3000);
+  const mem = newMem({ high, low: Math.floor(high * r()) }), odd = r() < 0.2, p = r();
+  for (let i = 0; i < T; i++) mem.root.push(logged(i));
+  for (let l = 0; 2 ** l <= T; l++)
+    for (let i = 0; i < Math.floor(T / 2 ** l); i++) {
+      const ready = l === 0 || (getNode(mem, { i: 2 * i, l: l - 1 }) && getNode(mem, { i: 2 * i + 1, l: l - 1 }));
+      if ((ready || odd) && r() < p) setNode(mem, { i, l, text: "y".repeat(1 + Math.floor(r() * 600)) });
+    }
+  return mem;
+}
+
+// the arguments of the one call `act` makes through `spy`
+function handed<A extends unknown[]>(spy: { mock: { calls: A[] }; mockClear(): void }, act: () => void): A {
+  spy.mockClear();
+  act();
+  expect(spy.mock.calls).toHaveLength(1);
+  return spy.mock.calls[0]!;
+}
+
+test("what kernel.ts hands the kernel is the tree it comes from", () => {
+  const append = spyOn(kernel, "append"), first = spyOn(kernel, "first"), fit = spyOn(kernel, "fit");
+  const offers = spyOn(kernel, "offers"), refold = spyOn(kernel, "refold");
+  try {
+    const r = rng(7);
+    let deepest = 0;
+    for (let run = 0; run < 300; run++) {
+      const T = Math.floor(r() * 70), mem = chat(r, T);
+      // the refold of all but the newest message, then its append
+      const last = mem.root.pop();
+      const [high, low, ms] = handed(refold, () => {
+        ({ folding: mem.folding, view: mem.view } = K.refold(mem, mem.marks, HOLE));
+      });
+      expect([Number(high), Number(low)]).toEqual([mem.marks.high, mem.marks.low]);
+      expect(array(ms).map((m, i) => line(mem, { $: "Part", built: m.built, i, l: 0, size: m.size, ups: m.ups }))).toHaveLength(mem.root.length);
+      if (last) {
+        mem.root.push(last);
+        let next = { folding: mem.folding, view: mem.view };
+        const [t, high, low, folding, ps, m] = handed(append, () => {
+          next = K.append(mem, mem, mem.marks, HOLE);
+        });
+        expect([Number(t), Number(high), Number(low), folding]).toEqual([T - 1, mem.marks.high, mem.marks.low, mem.folding]);
+        for (const p of view(mem, ps, T - 1)) deepest = Math.max(deepest, line(mem, p));
+        line(mem, { $: "Part", built: m.built, i: T - 1, l: 0, size: m.size, ups: m.ups });
+        ({ folding: mem.folding, view: mem.view } = next);
+      }
+      const [t, b, ps] = handed(fit, () => {
+        K.fit(mem, mem.view, mem.marks.low, HOLE);
+      });
+      expect([Number(t), Number(b)]).toEqual([T, mem.marks.low]);
+      for (const p of view(mem, ps, T)) deepest = Math.max(deepest, line(mem, p));
+      // first reads only where a line is and whether it is built
+      const [tf, bare] = handed(first, () => {
+        K.first(mem);
+      });
+      expect(Number(tf)).toBe(T);
+      for (const p of view(mem, bare, T)) expect(p.built).toBe(getNode(mem, at(p)) !== undefined);
+      // one flag per node of a chat of T, level 0 first: levels[l][i] is node (l, i)'s
+      const [levels, head] = handed(offers, () => {
+        K.offers(mem);
+      });
+      expect(Number(head)).toBe(K.first(mem));
+      const flags = array(levels).map((level) => array(level));
+      expect(flags.length).toBe(T === 0 ? 0 : Math.floor(Math.log2(T)) + 1);
+      for (const [l, level] of flags.entries()) {
+        expect(level).toHaveLength(Math.floor(T / 2 ** l));
+        for (const [i, b] of level.entries()) expect(b).toBe(getNode(mem, { i, l }) !== undefined);
+      }
+    }
+    expect(deepest).toBeGreaterThan(2); // the runs did carry lines with built ancestors
+  } finally {
+    for (const spy of [append, first, fit, offers, refold]) spy.mockRestore();
+  }
+});
+
 // Taelin's push (rollback_state_list.js, 2022, as gist §3.1 quotes it), life = 0: a list of
 // states, newest first, each with one bit
 type States = { readonly keep: 0 | 1; readonly life: number; readonly state: number; readonly older: States } | null;
@@ -225,10 +340,10 @@ function toList<T>(xs: readonly T[]): List<T> {
   return out;
 }
 const ancestors = toList(Array.from({ length: 40 }, () => 1)); // more than any line here has
-const line = (c: Coord): Part => ({ $: "Part", built: true, i: c.i, l: c.l, size: 1, ups: ancestors });
+const unitLine = (c: Coord): Part => ({ $: "Part", built: true, i: c.i, l: c.l, size: 1, ups: ancestors });
 function kernelFit(view: readonly Coord[], T: number, lines: number): Coord[] {
   const out: Coord[] = [];
-  for (let at = kernel.fit(T, lines, toList(view.map(line))); at.$ === "Con"; at = at.tail) out.push({ i: Number(at.head.i), l: Number(at.head.l) });
+  for (let at = kernel.fit(T, lines, toList(view.map(unitLine))); at.$ === "Con"; at = at.tail) out.push({ i: Number(at.head.i), l: Number(at.head.l) });
   return out;
 }
 // the first version of the recipe: due from the pair's first message, (T - first) / 2^(l+2)
