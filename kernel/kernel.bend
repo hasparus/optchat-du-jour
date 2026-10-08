@@ -377,6 +377,22 @@ def refold.end(f: Fold) -> Saw:
 def refold(+high: Nat, +low: Nat, ms: List<&2, Msg>) -> Saw:
   refold.end(refold.go(ms, high, low, 0n, Fold{Nil{}, 0n, False{}}))
 
+def fold.of(r: Saw) -> Fold:
+  Saw{+ps, folding} = r
+  Fold{rev_onto(ps, Nil{}), size(ps), folding}
+
+# A saved view of T messages that the log has passed (a crash between
+# logging a message and saving the view): the messages from T on appended.
+# The first goes through append, so a batch the tree now allows runs; after
+# it, a view still owing a batch has no pair left (fit_fits), as the
+# rebuild's skip needs, and the rest go as the rebuild appends them.
+def extend(+T: Nat, +high: Nat, +low: Nat, r: Saw, ms: List<&2, Msg>) -> Saw:
+  match r ms:
+    case Saw{ps, folding} Nil{}:
+      Saw{ps, folding}
+    case Saw{ps, folding} Con{m, rest}:
+      refold.end(refold.go(rest, high, low, 1n+T, fold.of(append(T, high, low, folding, ps, m))))
+
 # Rule 3
 # ------
 

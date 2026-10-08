@@ -2,17 +2,20 @@
 // (docs/optchat.md §2, §3.2; rule 3 as SPEC E25 has it).
 // Seeded random chats, several pairs of marks; after every step the kernel and the model must
 // agree on the view, whether a batch is owed, `first` and rule 3's offers, and now and then on the
-// rebuild from message 0. Then what kernel.ts hands the kernel, and the merge order against
+// rebuild from message 0 and on the catch-up of a view saved earlier. Then what kernel.ts hands the kernel, and the merge order against
 // Taelin's rollback push, the check docs/optchat.md §3.2 itself reports.
 import { expect, spyOn, test } from "bun:test";
 import kernel, { type List, type Part } from "../kernel/kernel.mjs";
 import * as K from "../src/kernel.ts";
-import { type Coord, getNode, type Marks, type Mem, newMem, setNode } from "../src/tree.ts";
+import { type Coord, getNode, type Marks, type Mem, newMem, type Saw, setNode } from "../src/tree.ts";
 import { PLACEHOLDER } from "../src/view.ts";
 
 const encoder = new TextEncoder();
 const utf8 = (s: string) => encoder.encode(s).length; // the model's own byte count
 const HOLE = utf8(PLACEHOLDER);
+
+// a view and its debt, saved after T messages
+type SavedAt = Saw & { readonly T: number };
 
 // The model: plain arrays, every rule spelled out as the spec states it.
 class Model {
@@ -67,8 +70,14 @@ class Model {
 
   // the rebuild: the same appends for every message in order, against today's tree
   refold() {
+    return this.extend({ T: 0, folding: false, view: [] });
+  }
+
+  // a view saved after `from.T` messages, the rest of them appended against today's tree
+  extend(from: SavedAt) {
     const m = new Model(this.marks);
     for (const [k, v] of this.sizes) m.sizes.set(k, v);
+    [m.T, m.folding, m.view] = [from.T, from.folding, [...from.view]];
     while (m.T < this.T) m.append();
     return { folding: m.folding, view: m.view };
   }
@@ -127,7 +136,9 @@ function text(r: () => number, max: number) {
 // `appends`: the share of steps that log a message; low, the compactor keeps up, high, it lags
 function run(seed: number, marks: Marks, steps: number, appends: number) {
   const r = rng(seed), model = new Model(marks), mem = newMem(marks);
+  let saved: SavedAt = { T: 0, folding: false, view: [] };
   for (let step = 0; step < steps; step++) {
+    if (step % 25 === 10) saved = { T: model.T, folding: model.folding, view: [...model.view] };
     const offered = model.offers(), roll = r();
     // mostly the pump's order; sometimes any ready node (free nodes skip rule 3); and runs of
     // messages with nothing built, so the view sits over its marks with unbuilt lines
@@ -140,13 +151,17 @@ function run(seed: number, marks: Marks, steps: number, appends: number) {
     } else {
       const t = text(r, r() < 0.05 ? 3000 : 200);
       mem.root.push({ date: new Date(0).toISOString(), i: mem.root.length, kind: "user", size: utf8(`user: ${t}`), text: t });
-      ({ folding: mem.folding, view: mem.view } = K.append(mem, mem, marks, HOLE));
+      ({ folding: mem.folding, view: mem.view } = K.append(mem, { folding: mem.folding, view: mem.view }, marks, HOLE));
       model.append();
     }
     expect({ folding: mem.folding, view: mem.view }).toEqual({ folding: model.folding, view: model.view });
     expect(K.first(mem)).toBe(model.first());
     expect(K.offers(mem)).toEqual(model.offers());
-    if (step % 25 === 24) expect(K.refold(mem, marks, HOLE)).toEqual(model.refold());
+    if (step % 25 === 24) {
+      expect(K.refold(mem, marks, HOLE)).toEqual(model.refold());
+      // a view saved some steps ago, caught up with the tree built since
+      expect(K.extend(mem, saved, marks, HOLE, saved.T)).toEqual(model.extend(saved));
+    }
   }
   expect(K.refold(mem, marks, HOLE)).toEqual(model.refold());
   return model;
@@ -188,7 +203,7 @@ test("a 100k-line view rebuilds, appends, fits and offers without blowing the st
   expect(K.first(mem)).toBe(1);
   expect(K.offers(mem)).toEqual([{ i: 1, l: 0 }]);
   mem.root.push(logged(T));
-  ({ folding: mem.folding, view: mem.view } = K.append(mem, mem, mem.marks, HOLE));
+  ({ folding: mem.folding, view: mem.view } = K.append(mem, { folding: mem.folding, view: mem.view }, mem.marks, HOLE));
   expect(mem.view).toHaveLength(T + 1);
   expect(K.fit(mem, mem.view, mem.marks.low, HOLE)).toHaveLength(T + 1);
 });
@@ -272,7 +287,7 @@ test("what kernel.ts hands the kernel is the tree it comes from", () => {
         mem.root.push(last);
         let next = { folding: mem.folding, view: mem.view };
         const [t, high, low, folding, ps, m] = handed(append, () => {
-          next = K.append(mem, mem, mem.marks, HOLE);
+          next = K.append(mem, { folding: mem.folding, view: mem.view }, mem.marks, HOLE);
         });
         expect([Number(t), Number(high), Number(low), folding]).toEqual([T - 1, mem.marks.high, mem.marks.low, mem.folding]);
         for (const p of view(mem, ps, T - 1)) deepest = Math.max(deepest, line(mem, p));
