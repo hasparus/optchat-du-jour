@@ -1,12 +1,13 @@
 // The Stats screen (SPEC "Web UI", Stats; E11), from usage.jsonl: calls, tokens, cache hit rate and
-// cold versus warm turns per day or week, split by role or engine, and the failovers. This
+// cold versus warm turns per day or week, split by role or engine, calls per model and effort, and
+// the failovers. This
 // replaces `optchat stats`. Charts are shadcn's (recharts); every one has a legend or a title for
 // its one series, and the numbers are in the table below them too.
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { type ChartConfig, ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { api } from "@/lib/api";
-import { type Bucket, buckets, ENGINES, type Period, ROLES, type Split, total, totals } from "@/lib/stats";
+import { type Bucket, buckets, byModel, ENGINES, type Period, ranOn, ROLES, type Split, total, totals } from "@/lib/stats";
 import { useApi } from "@/lib/use-api";
 import { Bar, BarChart, CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 import { useState } from "react";
@@ -166,6 +167,27 @@ export function Stats() {
               ))}
             </tbody>
           </table>
+          <table className="w-full text-xs tabular-nums" data-testid="by-model">
+            <caption className="py-1 text-left text-muted-foreground">By model and effort</caption>
+            <thead>
+              <tr className="text-left text-muted-foreground">
+                <th className="font-normal">model</th>
+                <th className="text-right font-normal">calls</th>
+                <th className="text-right font-normal">tokens</th>
+                <th className="text-right font-normal">hit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {byModel(data).map((m) => (
+                <tr key={m.name}>
+                  <td className="break-all">{m.name}</td>
+                  <td className="text-right">{m.calls}</td>
+                  <td className="text-right">{compact.format(m.tokens)}</td>
+                  <td className="text-right">{pct(m.hitRate)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </>
       )}
       <section className="space-y-1">
@@ -177,8 +199,7 @@ export function Stats() {
           <ul className="text-xs">
             {all.failovers.map((r) => (
               <li key={`${r.date}:${r.role}:${r.engine}`}>
-                {r.date.slice(0, 16).replace("T", " ")} · {r.role}: {r.failoverFrom} → {r.engine}
-                {r.model === null ? "" : `:${r.model}`}
+                {r.date.slice(0, 16).replace("T", " ")} · {r.role}: {r.failoverFrom} → {ranOn(r)}
               </li>
             ))}
           </ul>

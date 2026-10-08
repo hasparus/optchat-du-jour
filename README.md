@@ -11,8 +11,8 @@ one endless chat whose history is its memory, kept as a binary summary tree.
 - Turns run where the files are: the server hands each `claude` call to a small runner on its
   machine. Your Tailscale login is the only identity.
 - You pick the model per message (Claude Code, the ChatGPT plan; an API key with a monthly
-  budget is optional). When it hits a limit, the message waits until you pick another. The compactor has its
-  own chain per tree level and fails over by itself.
+  budget is optional). When it hits a limit, the message waits until you pick another. The
+  compactor has its own chain per tree level and fails over by itself.
 - A message sent while a turn runs joins it or waits for the next turn (a setting, and a button
   for the other way); one still waiting can be taken back. Drafts survive a reload.
 - The view fold is a [Bend 2](https://github.com/bendlang/bend) kernel, with proofs of its tiling,

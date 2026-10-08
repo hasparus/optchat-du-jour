@@ -76,6 +76,7 @@ export const sizeRetries = (o: {
   readonly auth: UsageRecord["auth"];
   readonly device?: string | undefined; // where the call runs (the server's own machine)
   readonly failoverFrom: string | null;
+  readonly effort: string | undefined; // what the engine asks for, for the records
   readonly log: (record: UsageRecord) => Effect.Effect<void>;
   readonly ask: (t: Try) => Effect.Effect<Answer, EngineError>;
 }): Effect.Effect<string, EngineError> =>
@@ -94,6 +95,7 @@ export const sizeRetries = (o: {
             cold: isCold(usage),
             date: new Date(now).toISOString(),
             device: o.device ?? null,
+            effort: o.effort,
             engine: o.engine,
             failoverFrom: o.failoverFrom,
             level: o.job.l,

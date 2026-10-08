@@ -35,6 +35,7 @@ export const apiKeyProvider = (o: ApiKeyOptions): Provider => {
     return responsesProvider({ auth: "api-key", before, dollars: (u) => dollarsOf(price, u), effort: o.effort, engine: "api-key", model: o.ref.model, respond: o.clients.openai });
   return {
     auth: "api-key",
+    effort: o.effort,
     call: (c) =>
       Effect.gen(function* () {
         yield* before;

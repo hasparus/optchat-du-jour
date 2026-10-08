@@ -30,7 +30,7 @@ import type { Link } from "@/lib/connection";
 import { visible } from "@/lib/log";
 import { chatRows, entryRows, type Row, rowFor, rowIndexFor } from "@/lib/rows";
 import { type Marker as StatusMarker, type Queued, queued, type Session, type SessionStore } from "@/lib/session";
-import { type Device, engineLabel, type SessionState, shortSha } from "@wire";
+import { canonicalRef, type Device, engineLabel, type SessionState, shortSha } from "@wire";
 import { AlertCircleIcon, FilmIcon, InfoIcon, Undo2Icon } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Uploader } from "@/lib/attach";
@@ -192,15 +192,21 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
   const [loading, setLoading] = useState(false);
   const [device, setDevice] = useState<string | null>(null);
   // the model picker: this page's own, kept in localStorage. Before the first state it is sent as
-  // kept (a message sent then, or offline, still names it); once the state shows the chain, one
-  // the chain lacks (or none) is the chain's first.
+  // kept (a message sent then, or offline, still names it); once the state shows the chain, it is
+  // read as the chain's refs are (an effort equal to the master's is the bare ref, so a pick kept
+  // before that effort changed still finds its engine, and is kept so), and one the chain lacks
+  // (or none) is the chain's first.
   const [chosen, setChosen] = useState(loadModel);
   const engines = state.state?.engines;
-  const model = engines === undefined ? chosen : engines.some((e) => e.ref === chosen) ? chosen : (engines[0]?.ref ?? null);
+  const kept = chosen === null || state.state === null ? chosen : canonicalRef(chosen, state.state.effort);
+  const model = engines === undefined ? chosen : engines.some((e) => e.ref === kept) ? kept : (engines[0]?.ref ?? null);
   const onModel = useCallback((ref: string) => {
     setChosen(ref);
     saveModel(ref);
   }, []);
+  useEffect(() => {
+    if (kept !== null && kept !== chosen && engines?.some((e) => e.ref === kept)) onModel(kept);
+  }, [kept, chosen, engines, onModel]);
   const { scrollToMessage } = useMessageScroller();
   // at the newest end (nothing more to scroll to): the store may drop what is far out of sight
   const atEnd = !useMessageScrollerScrollable().end;

@@ -43,5 +43,6 @@ export type Call<E extends Tagged> = {
 export type Provider = {
   readonly engine: UsageRecord["engine"];
   readonly auth: UsageRecord["auth"];
+  readonly effort?: string | undefined; // what its requests ask for, for their usage records
   readonly call: <E extends Tagged = never>(c: Call<E>) => Effect.Effect<Step, EngineError | E>;
 };

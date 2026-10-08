@@ -22,7 +22,7 @@
 // model, a budget) and a stored key (`optchat key anthropic`); what it spends counts against the
 // month's budget.
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Console, Context, Duration, Effect, Layer, Option, Result, Schema } from "effect";
+import { Array as Arr, Console, Context, Duration, Effect, Layer, Option, Result, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,7 +32,7 @@ import { ApiKeys, apiKeysLayer } from "../src/apikey/clients.ts";
 import { openChat } from "../src/chat.ts";
 import { LocalRunner, Runner } from "../src/claude/process.ts";
 import type { Summarize } from "../src/compactor.ts";
-import { Effort, NODE, type Settings, WAIT_RETRY, effortProblem, isEffort, loadSettings, parseRef } from "../src/config.ts";
+import { Effort, NODE, type Settings, WAIT_RETRY, atRoleEffort, duplicateRefs, isEffort, loadSettings, parseRef } from "../src/config.ts";
 import { parseOptmem } from "../src/import.ts";
 import { zoom } from "../src/mcp.ts";
 import { OpenAiPlan, openAiPlanLayer } from "../src/openai/responses.ts";
@@ -370,15 +370,10 @@ const main = Effect.gen(function* () {
   const effort = values.effort ?? loaded.compactor.effort;
   if (!isEffort(effort)) return yield* Console.error(`--effort ${effort}: one of ${Effort.literals.join(", ")}\n${USAGE}`);
   const settings = { ...loaded, compactor: { ...loaded.compactor, effort } };
-  // a contender's efforts are checked as the config's are: a model that takes none is no contender at that effort
-  const refused = contenders.success.flatMap((c) =>
-    c.byLevel.flatMap((b) =>
-      b.chain.flatMap((r) => {
-        const problem = effortProblem(r, r.effort ?? effort);
-        return problem === undefined ? [] : [`${c.name}: ${r.ref} would run at ${r.effort ?? effort}, but ${problem}`];
-      }),
-    ),
-  );
+  // a contender's chains are read as the config's: an effort its model can't take was refused with
+  // the ref, an entry at --effort is its bare ref, and one engine named twice in a chain is refused
+  const canonical = contenders.success.map((c) => ({ ...c, byLevel: Arr.map(c.byLevel, (b) => ({ ...b, chain: atRoleEffort(b.chain, effort) })) }));
+  const refused = canonical.flatMap((c) => c.byLevel.flatMap((b) => duplicateRefs(`${c.name}, from level ${b.from}`, b.chain)));
   if (refused.length > 0) return yield* Console.error(`${refused.join("\n")}\n${USAGE}`);
   const messages = yield* readSource(values.from, n, skip);
   const kinds = values.kinds.split(",").map((k) => Schema.decodeUnknownSync(Schema.Literals(["user", "talk", "tool", "echo", "note"]))(k));
@@ -393,7 +388,7 @@ const main = Effect.gen(function* () {
   const budget = makeBudget({ monthly: settings.apiKey?.monthlyBudget ?? 0, report: (m) => Console.error(m), usagePath });
   const spend = (r: UsageRecord) => (r.auth === "api-key" ? logUsage(usagePath, r).pipe(Effect.flatMap((e) => (e ? Console.error(e) : Effect.void))) : Effect.void);
   const rows: Measured[] = [];
-  for (const contender of contenders.success) {
+  for (const contender of canonical) {
     yield* Console.error(`${contender.name}: replaying ${messages.length} messages`);
     const replayed = yield* replay({
       contender,

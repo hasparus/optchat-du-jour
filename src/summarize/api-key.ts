@@ -27,7 +27,7 @@ export const apiKeyCompactor = (o: {
   readonly tools: readonly ToolDef[]; // an api-key turn's, on the default device
   readonly gate: Gate; // waits on a call writing the same marked prefix (docs/optchat.md §3.3)
   readonly model: string; // for the in-flight key, with the effort
-  readonly effort: string;
+  readonly effort: string | undefined;
 }) => {
   const { instructions, provider, tools } = o;
   const timeout = o.timeout ?? CALL_TIMEOUT;
@@ -45,7 +45,7 @@ export const apiKeyCompactor = (o: {
           const text = reply.items.flatMap((i) => (i.type === "text" ? [i.text] : [])).join("");
           return { dollars: reply.dollars, model: reply.model, text, usage: reply.usage };
         });
-      return sizeRetries({ ask, auth: provider.auth, device: o.device, engine: provider.engine, failoverFrom, job, log: o.log });
+      return sizeRetries({ ask, auth: provider.auth, device: o.device, effort: o.effort, engine: provider.engine, failoverFrom, job, log: o.log });
     });
   };
 

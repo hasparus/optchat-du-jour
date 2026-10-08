@@ -47,15 +47,25 @@ export const effortSplit = (ref: string): readonly [string, string | undefined] 
   const at = ref.lastIndexOf("@");
   return at === -1 || /^\d{8}$/.test(ref.slice(at + 1)) ? [ref, undefined] : [ref.slice(0, at), ref.slice(at + 1)];
 };
+// A ref as its chain names it: an effort equal to the role's is left out ("claude-code:opus@high"
+// in a chain at high is "claude-code:opus"), as src/config.ts decodes it. The session reads a
+// message's engine this way, and a client its kept pick, so a pick made before the role's effort
+// changed still finds its engine.
+export const canonicalRef = (ref: string, roleEffort: string | null | undefined) => {
+  const [bare, effort] = effortSplit(ref);
+  return effort !== undefined && effort === roleEffort ? bare : ref;
+};
 
 // An engine ref ("engine:model", or "engine:model@effort", src/config.ts) as the picker shows it:
 // "Claude Opus (Claude Code)", "GPT-6.1 Sol (ChatGPT plan)", "Claude Opus 5.5 (Anthropic API key)".
-// An entry's effort is added only when it differs from `roleEffort`, the role's own ("Claude Haiku
-// (Claude Code, xhigh)"); with no `roleEffort` it is always added.
-export const engineLabel = (ref: string, roleEffort?: string) => {
-  const [bare, effort] = effortSplit(ref);
+// The effort a ref names is shown ("Claude Haiku (Claude Code, xhigh)"); a bare ref runs at its
+// role's, which is left out, unless `runs` says what it runs at instead: a lower one when its model
+// lacks the role's, or null for none (src/config.ts runEffort, entryLabel).
+export const engineLabel = (ref: string, runs?: string | null) => {
+  const [bare, own] = effortSplit(ref);
   const [engine = "", model = ""] = bare.split(/:(.*)/s);
-  const extra = effort === undefined || effort === roleEffort ? "" : `, ${effort}`;
+  const effort = own ?? (runs === null ? "no effort" : runs);
+  const extra = effort === undefined ? "" : `, ${effort}`;
   if (engine === "api-key") {
     const [, provider = "", id = model] = /^(anthropic|openai)\/(.+)$/.exec(model) ?? [];
     return `${modelName(id)} (${provider === "openai" ? "OpenAI" : "Anthropic"} API key${extra})`;
@@ -91,6 +101,8 @@ export const SessionState = Schema.Struct({
   // names its own; the first when it names none). The master never fails over by itself (E4):
   // `stopped` is the engine that stopped a turn waiting in "needs-model", and why.
   engines: Schema.Array(MasterEngine),
+  // the master's effort: an entry at it is its bare ref (`canonicalRef`); null when not known
+  effort: Schema.NullOr(Schema.String),
   stopped: Schema.NullOr(Schema.Struct({ ref: Schema.String, label: Schema.String, why: Schema.String })),
 });
 export type SessionState = typeof SessionState.Type;
@@ -203,6 +215,10 @@ export const UsageRecord = Schema.Struct({
   failoverFrom: Schema.NullOr(Schema.String),
   ms: Schema.Number,
   dollars: Schema.optional(Schema.Number),
+  // the effort the call asked for (its chain entry's, else its role's as the model takes it,
+  // src/config.ts runEffort), so one model at two efforts reads apart; left out when none was
+  // sent, and in records written before it was kept
+  effort: Schema.optional(Schema.String),
 });
 export type UsageRecord = typeof UsageRecord.Type;
 export const Usage = Schema.Array(UsageRecord);

@@ -1,5 +1,6 @@
 // usage.jsonl summed up for the Stats screen (SPEC "Web UI", Stats; E11): calls, tokens and cache
-// hit rate per local day or week, split by role or engine; cold versus warm turns; failovers.
+// hit rate per local day or week, split by role or engine; per model and effort; cold versus warm
+// turns; failovers.
 // Pure, so the screen only draws.
 import { Engine, Role, type UsageRecord } from "@wire";
 
@@ -90,4 +91,27 @@ export function totals(records: readonly UsageRecord[]): Totals {
     tokens: sum,
     turns,
   };
+}
+
+// what a call ran on, as its record says: the engine, the model and the effort it asked for
+// ("claude-code:claude-opus-5-5@xhigh"), so one model at two efforts reads apart
+export const ranOn = (r: UsageRecord) => `${r.engine}${r.model === null ? "" : `:${r.model}`}${r.effort === undefined ? "" : `@${r.effort}`}`;
+
+export type ModelRow = { readonly name: string; readonly calls: number; readonly tokens: number; readonly hitRate: number | null };
+
+// calls, tokens and the cache hit rate per model and effort (`ranOn`), the most called first
+export function byModel(records: readonly UsageRecord[]): ModelRow[] {
+  const acc = new Map<string, { calls: number; tokens: number; cacheRead: number; read: number }>();
+  for (const r of records) {
+    const name = ranOn(r);
+    const m = acc.get(name) ?? { cacheRead: 0, calls: 0, read: 0, tokens: 0 };
+    m.calls++;
+    m.tokens += tokens(r);
+    m.cacheRead += r.usage.cacheRead;
+    m.read += read(r);
+    acc.set(name, m);
+  }
+  return [...acc.entries()]
+    .map(([name, m]) => ({ calls: m.calls, hitRate: rate(m.cacheRead, m.read), name, tokens: m.tokens }))
+    .toSorted((a, b) => b.calls - a.calls || a.name.localeCompare(b.name));
 }

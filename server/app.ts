@@ -11,7 +11,7 @@ import { openChat } from "../src/chat.ts";
 import { Runner } from "../src/claude/process.ts";
 import { WarmLocalRunner } from "../src/claude/warm.ts";
 import type { Summarize } from "../src/compactor.ts";
-import { mediaSettings, type Settings } from "../src/config.ts";
+import { entryLabel, mediaSettings, type Settings } from "../src/config.ts";
 import type { DownList } from "../src/engines/chain.ts";
 import { makeGate } from "../src/engines/inflight.ts";
 import { turnEngine } from "../src/engines/registry.ts";
@@ -91,7 +91,7 @@ export const routes = (o: ServerOptions) =>
       const toolsFor = (device: string) => toolsWith(device, chat.mem);
       // the master's chain as the session keeps it (src/master.ts), made here so each engine can
       // ask whether the warm processes follow it: the most recent turn's (E18)
-      const master = yield* makeMaster(settings.master.chain.map((r) => r.ref), settings.master.effort);
+      const master = yield* makeMaster(settings.master.chain.map((r) => ({ label: entryLabel(r, settings.master.effort), ref: r.ref })), settings.master.effort);
       const choices = startingChoices({ followUp: settings.master.followUp }, yield* loadChoices(choicesPath, report));
       const engines = yield* Effect.forEach(settings.master.chain, (ref) =>
         turnEngine(ref, { ...needs, instructions, runnerFor, toolsFor, warms: () => master.latest() === ref.ref }),

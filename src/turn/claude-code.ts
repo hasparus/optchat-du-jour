@@ -35,7 +35,7 @@ export type Placement = {
 export type ClaudeCodeTurnOptions = {
   readonly ref: string; // the chain entry as the config names it (src/config.ts Ref), effort and all: the session's key for it
   readonly model: string;
-  readonly effort: string;
+  readonly effort: string | undefined; // none: its model takes none, so no --effort
   readonly tools: readonly string[];
   readonly permissionMode: string;
   readonly ttl: Ttl; // the TTL of Claude Code's own marks on a turn (E6)
@@ -201,6 +201,7 @@ const died = (claude: Claude) =>
 // only that request reads the view, the later steps of a turn read the turn's own tail
 const usageRecord = (o: {
   readonly role: "turn" | "prime";
+  readonly effort: string | undefined;
   readonly usage: Usage | undefined;
   readonly opening?: Usage | undefined;
   readonly model: string | undefined;
@@ -216,6 +217,7 @@ const usageRecord = (o: {
     cold: isCold(o.opening === undefined ? usage : tokensOf(o.opening)),
     date: new Date(o.now).toISOString(),
     device: o.device,
+    effort: o.effort,
     engine: "claude-code",
     failoverFrom: o.failoverFrom,
     level: null,
@@ -314,7 +316,7 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
         const found = yield* readUntil(claude, (e) => (e.type === "result" ? Option.some(e) : Option.none()), each);
         const r = yield* Option.match(found, { onNone: () => Effect.tapError(died(claude), mcp.ended), onSome: Effect.succeed });
         const now = yield* Clock.currentTimeMillis;
-        yield* out.usage(usageRecord({ device: input.device, failoverFrom, model: claude.model(), now, opening, role: "turn", started, usage: r.usage }));
+        yield* out.usage(usageRecord({ device: input.device, effort: o.effort, failoverFrom, model: claude.model(), now, opening, role: "turn", started, usage: r.usage }));
         yield* r.is_error || r.stop_reason === "refusal"
           ? Effect.fail(fromResult(failedWith(r, errors), r.stop_reason))
           : Effect.void;
@@ -353,7 +355,7 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
           return yield* new ModelError({ message: `it answered before the request was accepted${said}` });
         }
         const now = yield* Clock.currentTimeMillis;
-        yield* o.logUsage(usageRecord({ device, failoverFrom: null, model: start.model ?? claude.model(), now, role: "prime", started, usage: start.usage }));
+        yield* o.logUsage(usageRecord({ device, effort: o.effort, failoverFrom: null, model: start.model ?? claude.model(), now, role: "prime", started, usage: start.usage }));
         return start;
       }).pipe(Effect.scoped); // killed at message_start: the cache entry is written by then (ref §14 F2)
 

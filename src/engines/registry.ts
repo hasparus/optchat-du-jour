@@ -8,7 +8,7 @@ import type { Budget } from "../apikey/budget.ts";
 import type { ApiKeys } from "../apikey/clients.ts";
 import type { Job } from "../compactor.ts";
 import type { ToolBox } from "../tools/box.ts";
-import { MASTER_TOOLS, mediaSettings, type ProviderRef, type Ref, type Settings } from "../config.ts";
+import { MASTER_TOOLS, mediaSettings, type ProviderRef, type Ref, runEffort, type Settings } from "../config.ts";
 import { apiKeyProvider } from "../providers/api-key.ts";
 import type { Provider } from "../providers/provider.ts";
 import { responsesProvider } from "../providers/responses.ts";
@@ -63,8 +63,8 @@ export type TurnNeeds = EngineNeeds & {
 };
 
 export const compactorEngine = (ref: Ref, o: CompactorNeeds): Effect.Effect<Compact> => {
-  // the entry's own effort, else the compactor's (src/config.ts Ref)
-  const effort = ref.effort ?? o.settings.compactor.effort;
+  // the entry's own effort, else the compactor's as its model takes it, or none (src/config.ts runEffort)
+  const effort = runEffort(ref, o.settings.compactor.effort);
   const { gate, instructions, tools } = o;
   switch (ref.engine) {
     case "claude-code":
@@ -102,7 +102,7 @@ export const providerOf = (ref: ProviderRef, o: EngineNeeds, effort?: string): E
 
 export const turnEngine = (ref: Ref, o: TurnNeeds): Effect.Effect<TurnEngine> => {
   const { permissionMode, tools } = o.settings.master;
-  const effort = ref.effort ?? o.settings.master.effort; // the entry's own, else the master's
+  const effort = runEffort(ref, o.settings.master.effort); // the entry's own, else the master's as its model takes it, or none
   switch (ref.engine) {
     case "claude-code":
       return claudeCodeTurn({
