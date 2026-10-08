@@ -24,7 +24,7 @@ import { blocks, claudeCodeCompactor } from "../src/summarize/claude-code.ts";
 import { retryText } from "../src/summarize/step.ts";
 import { built, bytes, dayOf, getNode } from "../src/tree.ts";
 import { cap } from "../src/cap.ts";
-import { claudeCodeTurn, masterArgs } from "../src/turn/claude-code.ts";
+import { claudeCodeTurn, masterArgs, primeBlocks } from "../src/turn/claude-code.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
 import type { UsageRecord } from "../src/usage.ts";
 
@@ -141,9 +141,9 @@ const long = (n: number) => "w".repeat(n);
 
 // the compactor engine
 
-test("a compactor call: four marked context pieces at the marks, the unmarked step, its flags and env", async () => {
+test("a compactor call: context pieces of 4 lines, marks on the last whole one and the step, its flags and env", async () => {
   const f = scripted();
-  const ctx = Array.from({ length: 260 }, (_, k) => `${k} ${"c".repeat(395)}`); // ~104k chars: every mark is used
+  const ctx = Array.from({ length: 260 }, (_, k) => `${k} ${"c".repeat(395)}`); // <chat>, 260 lines, </chat>: 65 whole blocks and a partial one
   const job: Job = { ctx, i: 260, l: 0, msg: newMsg(260, "user", "line one\nline two") };
   const usage: UsageRecord[] = [];
   const line = await run(
@@ -161,19 +161,15 @@ test("a compactor call: four marked context pieces at the marks, the unmarked st
   expect(call?.ins).toEqual([blocks(job, "5m")]);
 
   const sent = call?.ins[0] ?? [];
-  expect(sent).toHaveLength(5);
-  const pieces = sent.slice(0, 4);
-  for (const p of pieces) expect(p.cache_control).toEqual({ ttl: "5m", type: "ephemeral" });
+  expect(sent).toHaveLength(67);
+  const pieces = sent.slice(0, 66);
   expect(pieces.map(textOf).join("")).toBe(["<chat>", ...ctx, "</chat>"].join("\n"));
-  let end = 0;
-  for (const [k, mark] of [50_000, 80_000, 100_000].entries()) {
-    end += textOf(pieces[k]).length;
-    expect(end).toBeLessThanOrEqual(mark);
-    expect(end).toBeGreaterThan(mark - 400); // the last line end before the mark, not an earlier one
-    expect(textOf(pieces[k]).endsWith("\n")).toBe(true);
-  }
-  const stepBlock = sent[4];
-  expect(stepBlock?.cache_control).toBeUndefined();
+  for (const p of pieces.slice(0, 65)) expect(textOf(p).match(/\n/g)).toHaveLength(4);
+  expect(textOf(pieces[65])).toBe(`${ctx.at(-1)}\n</chat>`); // 261 lines end in a line break: 65 blocks and one over
+  // two marks: the last whole piece, for the next call's lookback, and the request's end
+  const mark = { ttl: "5m", type: "ephemeral" } as const;
+  expect(sent.map((b) => b.cache_control ?? null)).toEqual(sent.map((_, k) => (k === 64 || k === 66 ? mark : null)));
+  const stepBlock = sent[66];
   expect(bytes(SCALE)).toBe(512);
   expect(textOf(stepBlock)).toBe(
     `For scale, this line is exactly 512 bytes:\n${SCALE}\n\nCompress this message into one line, in at most 512 bytes:\nuser: line one\nline two`,
@@ -578,8 +574,14 @@ test("priming sends the turn's argv and the turn's view blocks with marks, plus 
   expect(view.map(textOf).join("")).toStartWith("<chat>\n0+1|note: 0 ");
   expect(view.map(textOf).join("")).toEndWith("</chat>");
   expect(view.every((b) => b.cache_control === undefined)).toBe(true);
+  expect(view.slice(0, -1).every((b) => textOf(b).match(/\n/g)?.length === 4)).toBe(true); // blocks of 4 lines
   expect(sent.at(-1)).toEqual({ text: "hello", type: "text" });
-  expect(prime?.ins).toEqual([[...view.map((b) => ({ ...b, cache_control: { ttl: "1h" as const, type: "ephemeral" as const } })), { text: "ok", type: "text" }]]);
+  // the same blocks, marked on the last whole one and on the view's end, then ok
+  const primed = primeBlocks(view.map(textOf).join(""), "1h");
+  expect(prime?.ins).toEqual([[...primed, { text: "ok", type: "text" }]]);
+  const marked = primed.flatMap((b, k) => (b.cache_control ? [k] : []));
+  expect(marked).toEqual([view.length - 2, view.length - 1]); // the last block ends in </chat>: partial
+  expect(primed.map((b) => ({ ...b, cache_control: undefined }))).toEqual(view.map((b) => ({ ...b, cache_control: undefined })));
 });
 
 test("an idle view is primed once in the background, and not again while it is fresh", async () => {

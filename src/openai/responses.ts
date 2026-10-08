@@ -7,11 +7,11 @@
 // carries an OpenAI API key (api-key engine), and function tools for our own tool loop (M5):
 // function_call items out, function_call_output items back in the next request.
 //
-// Caching on the Responses API, as the gist's earlier revision had it (E26): `store: false`, every reasoning item asked for
+// Caching on the Responses API (E26): `store: false`, every reasoning item asked for
 // with its encrypted content and sent back verbatim in the next request (a tool round, a size
 // retry), `reasoning.context: "all_turns"` so a message sent mid-run doesn't drop the earlier
-// reasoning from the prompt, and the same `prompt_cache_breakpoint` on the view's pieces in every
-// request; the request end is cached implicitly (`prompt_cache_options` left at its default). A
+// reasoning from the prompt, and one `prompt_cache_breakpoint` on the view's last whole block, as
+// docs/optchat.md §3.3 marks Anthropic's; the request end is cached implicitly (`prompt_cache_options` left at its default). A
 // model that refuses the breakpoint field (the reference measured that on the Codex route) gets
 // the request again without it, and is sent none from then on, said once.
 import { Context, Data, Effect, Layer, Option, Schema, Stream } from "effect";
@@ -27,7 +27,7 @@ import type { Endpoints } from "./endpoints.ts";
 // The conversation as sent. A user message is a list of parts, so stable context blocks stay
 // byte-stable on the wire; an image part goes as `input_image` with a data URL (SPEC "Media"); a
 // function call and its output are items of their own (our tool loop).
-// `marks`: how many leading parts end at one of the view's cuts and carry a cache breakpoint.
+// `marks`: how many leading parts are whole view blocks; the last of them carries the breakpoint.
 // A reasoning item is the API's own, sent back exactly as it came.
 export type Reasoning = Readonly<Record<string, Schema.Json>>;
 export type Turn =
@@ -97,12 +97,12 @@ const BREAKPOINT = { mode: "explicit" } as const;
 const item = (t: Turn, breakpoints: boolean): (typeof Body.Type)["input"][number] => {
   switch (t.role) {
     case "user": {
-      const marks = breakpoints ? (t.marks ?? 0) : 0;
+      const last = breakpoints ? (t.marks ?? 0) - 1 : -1;
       return {
         content: t.parts.map((p, k) =>
           isPicture(p)
             ? { detail: "auto" as const, image_url: `data:${p.mime};base64,${p.data}`, type: "input_image" as const }
-            : k < marks
+            : k === last
               ? { prompt_cache_breakpoint: BREAKPOINT, text: p, type: "input_text" as const }
               : { text: p, type: "input_text" as const },
         ),

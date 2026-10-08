@@ -379,7 +379,7 @@ test("not signed in, the compactor runs on the next engine and says so; a token 
   expect(down.reports).toHaveLength(0);
 });
 
-test("both compactor engines send the same input: openai-plan's parts are claude-code's blocks, cut at 50k / 80k / 100k", async () => {
+test("both compactor engines send the same input: openai-plan's parts are claude-code's blocks of 4 lines", async () => {
   const secrets = memorySecrets();
   const e = await signedIn(secrets);
   const compact = await Effect.runPromise(
@@ -393,7 +393,7 @@ test("both compactor engines send the same input: openai-plan's parts are claude
   const [sent] = bodies();
   const parts = sent!.input[0]!.content;
   const texts = blocks(job, "1h").map((b) => b.text);
-  expect(texts).toHaveLength(5); // four context pieces, then the step
+  expect(texts).toHaveLength(752); // <chat>, 3000 lines, </chat>: 750 whole pieces and a partial one, then the step
   expect(Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ text: Schema.String })))(parts).map((p) => p.text)).toEqual(texts);
   expect(sent!.reasoning).toEqual({ context: "all_turns", effort: "low" });
 });
@@ -410,10 +410,12 @@ const Content = Schema.Array(Schema.Struct({ type: Schema.String, prompt_cache_b
 // each part of a user message: its breakpoint's mode, or null
 const breakpointsOf = (item: Readonly<Record<string, Schema.Json>> | undefined) =>
   Schema.decodeUnknownSync(Content)(item?.content).map((p) => p.prompt_cache_breakpoint?.mode ?? null);
+// `length` parts with an explicit breakpoint on part `at` only
+const only = (length: number, at: number) => Array.from({ length }, (_, k) => (k === at ? "explicit" : null));
 const Kind = Schema.Struct({ type: Schema.optional(Schema.String), role: Schema.optional(Schema.String) });
 const encryptedOf = (i: Readonly<Record<string, Schema.Json>> | undefined) => Schema.decodeUnknownSync(Schema.Struct({ encrypted_content: Schema.String }))(i).encrypted_content;
 const kindsOf = (input: readonly Readonly<Record<string, Schema.Json>>[]) => input.map((i) => Schema.decodeUnknownSync(Kind)(i)).map((k) => k.type ?? k.role);
-// a view long enough for all four pieces, cut at 50k, 80k and 100k characters
+// <chat>, 110 lines, </chat>: 27 whole blocks of 4 lines, then the partial one with </chat>
 const LONG_VIEW = `<chat>\n${Array.from({ length: 110 }, (_, k) => `${k}+1|user: line ${k} ${"v".repeat(1000)}`).join("\n")}\n</chat>`;
 
 test("a tool loop on the Responses API keeps its reasoning: sent back encrypted between rounds and after a mid-run message, the view's breakpoints the same in every request", async () => {
@@ -458,11 +460,11 @@ test("a tool loop on the Responses API keeps its reasoning: sent back encrypted 
     expect(b.store).toBe(false);
     expect(b.include).toEqual(["reasoning.encrypted_content"]);
     expect(b.reasoning).toEqual({ context: "all_turns", effort: "high" });
-    // a breakpoint at each of the view's three cuts, none on its last piece or the new text
-    expect(breakpointsOf(b.input[0])).toEqual(["explicit", "explicit", "explicit", null, null]);
+    // one breakpoint, on the view's last whole block; none on the partial one or the new text
+    expect(breakpointsOf(b.input[0])).toEqual(only(29, 26));
     expect(JSON.stringify(b.input[0])).toBe(JSON.stringify(sent[0]!.input[0]));
   }
-  expect(fake.state.seen.map((x) => x.body.split('"prompt_cache_breakpoint"').length - 1)).toEqual([3, 3, 3]);
+  expect(fake.state.seen.map((x) => x.body.split('"prompt_cache_breakpoint"').length - 1)).toEqual([1, 1, 1]);
   // each request is the one before plus what came since: the reasoning item, verbatim, ahead of its call
   const [, second, third] = sent;
   // the mid-run message joins after the first round's tool results; the reasoning before it stays
@@ -486,13 +488,13 @@ test("the compactor on the plan replays its reasoning on a size retry, and a mod
   );
   const job: Job = { ctx: Array.from({ length: 110 }, (_, k) => `user: line ${k} ${"z".repeat(1000)}`), i: 110, l: 0, msg: newMsg(110, "user", "squeeze me") };
 
-  // marks accepted: the context's cuts carry them, and the retry sends back the first try's reasoning
+  // marks accepted: the context's last whole block carries one, and the retry sends back the first try's reasoning
   fake.state.refuseBreakpoints = false;
   fake.state.seen.length = 0;
   fake.state.script = [{ reasoning: "too much detail", text: line(600) }, { text: line(500) }];
   expect(await Effect.runPromise(compact(job, null))).toBe(line(500));
   const [first, retry] = fake.state.seen.map((x) => decodeCached(x.body));
-  expect(breakpointsOf(first!.input[0])).toEqual(["explicit", "explicit", "explicit", null, null]); // four pieces, then the step
+  expect(breakpointsOf(first!.input[0])).toEqual(only(29, 26)); // 28 pieces, then the step
   expect(kindsOf(retry!.input)).toEqual(["user", "reasoning", "assistant", "user"]);
   expect([...fake.state.issued]).toContain(encryptedOf(retry!.input[1]));
 

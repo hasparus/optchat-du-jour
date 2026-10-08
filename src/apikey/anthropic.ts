@@ -1,10 +1,11 @@
 // Anthropic's Messages API with an API key (SPEC "Engines", api-key: overflow only). One streamed
-// request per call, cached as SPEC "Engines" lays it out (E26): a breakpoint at each of the view's cuts (the
-// pieces a user Item's `marks` counts; cutBlocks makes at most 3) and the top-level automatic
-// `cache_control` on every request, which Anthropic puts on its last block, so each step of a
-// turn (or each size retry of a compactor call) reads everything the step before it sent. That
-// makes 4, Anthropic's limit. Every entry is a 5-minute one, the API's default (docs/optchat.md §3.3, checklist
-// item 10; E6's 1-hour entries are the Claude subscription's). Thinking blocks come back in the
+// request per call, cached as docs/optchat.md §3.3 "How the cache is marked" has it: a breakpoint on
+// the view's last whole block (the last of the parts a user Item's `marks` counts), which the next
+// call finds by the 20-block lookback, and the top-level automatic `cache_control` on every
+// request, which Anthropic puts on its last block, so each step of a turn (or each size retry of a
+// compactor call) reads everything the step before it sent. At most BREAKPOINTS - 1 explicit
+// marks go out, so the automatic one never makes a fifth. Every entry is a 5-minute one, the API's
+// default (docs/optchat.md §3.3; E6's 1-hour entries are the Claude subscription's). Thinking blocks come back in the
 // next request exactly as they arrived, signature and all, as tool use with thinking requires.
 import { Effect, Option, Schema, Stream } from "effect";
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
@@ -24,6 +25,8 @@ export const MAX_TOKENS = 64_000; // streamed, so a long answer doesn't time out
 type Json = Schema.Json;
 // a 5-minute entry, the API's default and the only one docs/optchat.md §3.3 uses
 const EPHEMERAL = { type: "ephemeral" } as const;
+// Anthropic's limit of cache_control marks per request, the top-level automatic one included
+export const BREAKPOINTS = 4;
 
 export type MessagesAsk<E extends Tagged = never> = {
   readonly model: string;
@@ -53,9 +56,11 @@ const inputOf = (text: string): Json => Option.getOrElse(decodeObject(text), () 
 
 // The conversation as Messages: user parts and tool results on the user side, text, calls and
 // kept blocks on the assistant side, neighbours of one side merged into one message. A user
-// message's parts that end at a view cut (its `marks`) get a breakpoint each.
+// message's last whole view block (the last of its `marks` parts) gets a breakpoint, while fewer
+// than BREAKPOINTS - 1 are out: the request's end takes the last slot.
 export const messagesOf = (history: readonly Item[]) => {
   const out: { role: "user" | "assistant"; content: Json[] }[] = [];
+  let marked = 0;
   const push = (role: "user" | "assistant", blocks: readonly Json[]) => {
     if (blocks.length === 0) return;
     const last = out.at(-1);
@@ -65,7 +70,7 @@ export const messagesOf = (history: readonly Item[]) => {
   for (const item of history) {
     switch (item.type) {
       case "user": {
-        const marks = item.marks ?? 0;
+        const last = (item.marks ?? 0) - 1;
         const blocks: Json[] = [];
         for (const [k, part] of item.parts.entries()) {
           if (isPicture(part)) {
@@ -73,7 +78,9 @@ export const messagesOf = (history: readonly Item[]) => {
             continue;
           }
           if (!part) continue; // the API refuses empty text blocks
-          blocks.push(k < marks ? { cache_control: EPHEMERAL, text: part, type: "text" } : { text: part, type: "text" });
+          const mark = k === last && marked < BREAKPOINTS - 1;
+          if (mark) marked++;
+          blocks.push(mark ? { cache_control: EPHEMERAL, text: part, type: "text" } : { text: part, type: "text" });
         }
         push("user", blocks);
         break;

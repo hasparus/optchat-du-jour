@@ -9,7 +9,7 @@ import { CompactError, type Job, makePump } from "../src/compactor.ts";
 import { importOptmem, parseOptmem } from "../src/import.ts";
 import { loadChat, lock, Locked, newMsg } from "../src/store.ts";
 import { built, getNode, type Mem, newMem, nodes } from "../src/tree.ts";
-import { addMessage, addNode, cutBlocks, render, settle } from "../src/view.ts";
+import { addMessage, addNode, render, settle } from "../src/view.ts";
 import { cap } from "../src/cap.ts";
 import { CAP } from "../src/config.ts";
 import { requestBody } from "../src/apikey/anthropic.ts";
@@ -39,17 +39,6 @@ const first = { i: 0, l: 0 };
 const sink = (lines: string[]) => (line: string) => Effect.sync(() => lines.push(line));
 // a test-clock run: TestClock.adjust moves time, and nothing waits for real
 const virtual = async <A, E>(effect: Effect.Effect<A, E, Scope.Scope>) => runScoped(effect.pipe(Effect.provide(Layer.fresh(TestClock.layer()))));
-
-test("the view is cut after the last line end before each mark, and marks past its end are skipped", () => {
-  const rows = Array.from({ length: 40 }, (_, k) => `${k}+1|${"x".repeat(30)}`);
-  const view = `<chat>\n${rows.join("\n")}\n</chat>`;
-  const blocks = cutBlocks(view, [100, 500, 100_000]);
-  expect(blocks).toHaveLength(3);
-  expect(blocks.reduce((all, b) => all + b, "")).toBe(view);
-  expect(blocks.slice(0, -1).filter((b) => !b.endsWith("\n"))).toEqual([]);
-  expect(blocks[0]!.length).toBeLessThanOrEqual(100);
-  expect(cutBlocks("<chat>\n</chat>")).toEqual(["<chat>\n</chat>"]);
-});
 
 // A surrogate pair split by a cut leaves a lone half in the permanent log; the provider refuses
 // the compactor's input on every try, and rule 3 keeps every later summary waiting on that node.

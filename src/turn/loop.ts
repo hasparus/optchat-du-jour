@@ -1,6 +1,6 @@
 // Our own tool loop, for the turn engines that don't bring one (SPEC "Engines": openai-plan as
 // the master's fallback, api-key as overflow; M5). The request is what a claude-code turn sends:
-// the same system prompt, the view cut into the same blocks, then the new texts. Each reply's
+// the same system prompt, the view in the same blocks, then the new texts. Each reply's
 // text is logged as `talk` and each tool call as `tool` "name json" as it completes; the tools run
 // (read-only file tools on the turn's device, zoom and date from memory) and their output is
 // logged as `echo`, capped as Claude Code's is. A thought goes out only as its size. A message sent mid-run is taken after the current tool
@@ -15,7 +15,7 @@ import type { Item, Provider } from "../providers/provider.ts";
 import type { StoreError } from "../store.ts";
 import type { ToolBox } from "../tools/box.ts";
 import { isCold, type Tokens } from "../usage.ts";
-import { cutBlocks } from "../view.ts";
+import { viewBlocks } from "../view.ts";
 import { openingText, type TurnEngine, type TurnEvents, type TurnInput } from "./engine.ts";
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
@@ -88,10 +88,10 @@ export const toolLoop = (o: {
         : Effect.void;
     return Effect.gen(function* () {
       const box = o.toolsFor(input.device);
-      const view = cutBlocks(input.view);
-      // the view (byte-stable, a cache mark after each piece but its last), the new messages'
-      // pictures, then their texts
-      const history: Item[] = [{ marks: view.length - 1, parts: [...view, ...input.media, openingText(input)], type: "user" }];
+      const view = viewBlocks(input.view);
+      // the view (byte-stable blocks, the provider's one cache mark on the last whole one), the new
+      // messages' pictures, then their texts
+      const history: Item[] = [{ marks: view.whole, parts: [...view.blocks, ...input.media, openingText(input)], type: "user" }];
       for (let round = 1; ; round++) {
         history.push(...(yield* steered(input, out)));
         const started = yield* Clock.currentTimeMillis;

@@ -1,6 +1,5 @@
 // The constants of docs/optchat.md and of its earlier revision (SPEC "Constants and configuration") and the reference's timings (ref §2, §7). Sizes are UTF-8
-// bytes, cache marks are characters. Everything that may differ per machine is in
-// optchat.config.ts instead.
+// bytes. Everything that may differ per machine is in optchat.config.ts instead.
 import { Data, Effect, Result, Schema, SchemaIssue, SchemaTransformation } from "effect";
 import { Endpoints } from "./openai/endpoints.ts";
 import { Engine } from "./usage.ts";
@@ -20,8 +19,9 @@ export const TRIES = 5;
 export const RETRY = "10 seconds";
 // the most characters of one tool result that get logged
 export const CAP = 30_000;
-// cache breakpoints inside the view
-export const MARKS: readonly number[] = [50_000, 80_000, 100_000];
+// lines per content block of the view, or of a compactor's context (docs/optchat.md §3.3 "How the
+// cache is marked"): one cache mark on the last whole block
+export const BLOCK = 4;
 
 export const CALL_TIMEOUT = "5 minutes";
 export const KILL_GRACE = "5 seconds";
