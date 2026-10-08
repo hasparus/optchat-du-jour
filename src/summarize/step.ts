@@ -8,12 +8,12 @@ import { NODE, TRIES } from "../config.ts";
 import { type EngineError, ModelError } from "../engines/errors.ts";
 import { bytes, children, label, span } from "../tree.ts";
 import { type Tokens, type UsageRecord, isCold } from "../usage.ts";
-import { flat, viewBlocks } from "../view.ts";
+import { type Blocks, flat, viewBlocks } from "../view.ts";
 
-// The context pieces: <chat>, the compaction view's lines, </chat>, in blocks of BLOCK lines
-// (view.ts viewBlocks). Every piece but the last, which ends in </chat>, is whole: an engine marks
-// the one before it. Byte-stable from call to call.
-export const contextBlocks = (job: Job) => viewBlocks(["<chat>", ...job.ctx, "</chat>"].join("\n")).blocks;
+// The context pieces: <chat>, the compaction view's lines, </chat>, in blocks of BLOCK lines, and
+// the last whole one, where an engine puts its mark (view.ts viewBlocks). Byte-stable from call
+// to call.
+export const contextBlocks = (job: Job): Blocks => viewBlocks(["<chat>", ...job.ctx, "</chat>"].join("\n"));
 
 // Models can't count bytes, so the task shows the length: a ruler of NODE dashes (docs/optchat.md §4
 // "The size"; a real sample line as the ruler got its content copied)

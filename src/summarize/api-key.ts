@@ -1,7 +1,7 @@
 // The compactor on an API key (docs/optchat.md §4; E5): the turns' system prompt and tools (never
 // called: tool choice `none`), so its requests share the api-key turns' prefix (§7 mistake 6);
-// then the context pieces, a cache mark on the last whole one (the provider places it from
-// `marks`), and the task; the request's end is cached too (docs/optchat.md §3.3), so a size retry
+// then the context pieces, a cache mark on the last whole one (the provider places it at
+// `mark`), and the task; the request's end is cached too (docs/optchat.md §3.3), so a size retry
 // reads the try before it. Size retries stay in the same conversation, each try re-sent with the
 // reply it got (thinking blocks included). Every try is priced and counted against the monthly
 // budget; the size retries are step.ts's.
@@ -34,9 +34,8 @@ export const apiKeyCompactor = (o: {
   // the transport: one request per try, the whole conversation so far in each
   const call = (job: Job, failoverFrom: string | null) => {
     const context = contextBlocks(job);
-    const marks = context.length - 1, parts = [...context, task(job)];
-    const history: Item[] = [{ marks, parts, type: "user" }];
-    return o.gate.through(keyOf({ engine: `api-key:${provider.engine}`, instructions, model: o.model, tools }, context, marks), (started) => {
+    const history: Item[] = [{ mark: context.mark, parts: [...context.blocks, task(job)], type: "user" }];
+    return o.gate.through(keyOf({ engine: `api-key:${provider.engine}`, instructions, model: o.model, tools }, context), (started) => {
       const ask = (t: Try) =>
         Effect.gen(function* () {
           if (t.retry !== null) history.push({ parts: [t.retry.text], type: "user" });

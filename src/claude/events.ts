@@ -99,3 +99,8 @@ export type Block =
     }
   | { readonly type: "image"; readonly source: { readonly type: "base64"; readonly media_type: string; readonly data: string } };
 export type TextBlock = Extract<Block, { readonly type: "text" }>;
+
+// text blocks of a user message, a cache mark with `ttl` on each part whose index is in `marked`
+// (priming's view, a compactor's context and step; docs/optchat.md §3.3)
+export const markAt = (texts: readonly string[], marked: readonly (number | undefined)[], ttl: "1h" | "5m"): TextBlock[] =>
+  texts.map((text, k) => (marked.includes(k) ? { cache_control: { ttl, type: "ephemeral" }, text, type: "text" } : { text, type: "text" }));

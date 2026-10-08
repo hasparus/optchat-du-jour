@@ -4,7 +4,7 @@
 // Size retries stay in the same conversation: with `store: false` nothing is kept server-side, so
 // each try re-sends the whole input, the earlier tries (their reasoning items included, as E26 has
 // it) and the retry texts. The context blocks come first, a cache breakpoint on the last whole one
-// (src/openai/responses.ts places it from `marks`), the same in every try and every node's call;
+// (src/openai/responses.ts places it at `mark`), the same in every try and every node's call;
 // the request end is cached implicitly.
 import { Duration, Effect } from "effect";
 import type { Job } from "../compactor.ts";
@@ -15,6 +15,7 @@ import type { OpenAiPlan, Turn } from "../openai/responses.ts";
 import { turnsOf } from "../providers/responses.ts";
 import type { ToolDef } from "../tools/files.ts";
 import type { UsageRecord } from "../usage.ts";
+import type { Blocks } from "../view.ts";
 import { type Try, contextBlocks, sizeRetries, task } from "./step.ts";
 
 export type OpenAiPlanCompactorOptions = {
@@ -28,14 +29,14 @@ export type OpenAiPlanCompactorOptions = {
   readonly gate: Gate; // waits on a call writing the same marked prefix (docs/optchat.md §3.3)
 };
 
-// the context blocks, the whole ones marked (`marks`), then the task
-export const firstInput = (job: Job, context: readonly string[] = contextBlocks(job)): Turn => ({ marks: context.length - 1, parts: [...context, task(job)], role: "user" });
+// the context blocks, the last whole one marked (`mark`), then the task
+export const firstInput = (job: Job, context: Blocks = contextBlocks(job)): Turn => ({ mark: context.mark, parts: [...context.blocks, task(job)], role: "user" });
 
-// What a request sends up to its last mark: the model, the system prompt, the tools and the whole
-// context blocks; null when nothing before the request's end is marked. `marks` comes from the
-// marks helpers (step.ts contextBlocks, view.ts viewBlocks).
-export const keyOf = (o: { readonly engine: string; readonly model: string; readonly instructions: string; readonly tools: readonly ToolDef[] }, context: readonly string[], marks: number) =>
-  marks === 0 ? null : prefixKey([o.engine, o.model, o.instructions, JSON.stringify(o.tools), ...context.slice(0, marks)]);
+// What a request sends up to its mark: the model, the system prompt, the tools and the context
+// blocks up to the marked one; null when nothing before the request's end is marked. The mark is
+// the marks helpers' (step.ts contextBlocks, view.ts viewBlocks).
+export const keyOf = (o: { readonly engine: string; readonly model: string; readonly instructions: string; readonly tools: readonly ToolDef[] }, context: Blocks) =>
+  context.mark === undefined ? null : prefixKey([o.engine, o.model, o.instructions, JSON.stringify(o.tools), ...context.blocks.slice(0, context.mark + 1)]);
 
 export const openAiPlanCompactor = (o: OpenAiPlanCompactorOptions & { readonly plan: OpenAiPlan["Service"] }) => {
   const { instructions, tools } = o;
@@ -45,7 +46,7 @@ export const openAiPlanCompactor = (o: OpenAiPlanCompactorOptions & { readonly p
   const call = (job: Job, failoverFrom: string | null) => {
     const context = contextBlocks(job);
     const input: Turn[] = [firstInput(job, context)];
-    const key = keyOf({ ...o, engine: "openai-plan" }, context, context.length - 1);
+    const key = keyOf({ ...o, engine: "openai-plan" }, context);
     return o.gate.through(key, (started) => {
       const ask = (t: Try) =>
         Effect.gen(function* () {

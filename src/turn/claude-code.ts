@@ -7,7 +7,7 @@
 // optchat goes to the device's transport, which may fall back from ws to http (E8).
 import { Clock, Effect, Option, Semaphore } from "effect";
 import { baseArgs } from "../claude/args.ts";
-import { type Assistant, type Block, type Event, type Init, type Result, type StreamEvent, SYNTHETIC, type TextBlock as TextInput, type Usage, type User } from "../claude/events.ts";
+import { type Assistant, type Block, type Event, type Init, markAt, type Result, type StreamEvent, SYNTHETIC, type TextBlock as TextInput, type Usage, type User } from "../claude/events.ts";
 import type { Claude, Runner, Spawn } from "../claude/process.ts";
 import { cap } from "../cap.ts";
 import { isPicture, type Part } from "../media/part.ts";
@@ -238,9 +238,8 @@ const failedWith = (r: Result, errors: readonly string[]) => {
 // grown at its end, finds the whole-block mark by the lookback and writes only the lines after it.
 // The "ok" after them is priming's own and never read, so it gets none.
 export const primeBlocks = (view: string, ttl: Ttl): TextInput[] => {
-  const { blocks, whole } = viewBlocks(view);
-  const marked = new Set([whole - 1, blocks.length - 1]);
-  return blocks.map((piece, k): TextInput => (marked.has(k) ? { cache_control: { ttl, type: "ephemeral" }, text: piece, type: "text" } : { text: piece, type: "text" }));
+  const { blocks, mark } = viewBlocks(view);
+  return markAt(blocks, [mark, blocks.length - 1], ttl);
 };
 
 // a priming of this view older than this is redone: the TTL minus a margin (ref §2, E6)

@@ -4,7 +4,7 @@
 // context's last whole block, the task); and the size retries in the same conversation until the
 // line fits in NODE bytes or TRIES are spent.
 import { Duration, Effect, Option } from "effect";
-import type { TextBlock } from "../claude/events.ts";
+import { markAt, type TextBlock } from "../claude/events.ts";
 import type { Spawn } from "../claude/process.ts";
 import type { Job } from "../compactor.ts";
 import { CALL_TIMEOUT } from "../config.ts";
@@ -34,10 +34,8 @@ export type CompactorOptions = {
 // and the task, the request's end, which a size retry reads. The pieces stay byte-stable from one
 // call to the next.
 export function blocks(job: Job, ttl: "1h" | "5m"): TextBlock[] {
-  const mark = { ttl, type: "ephemeral" } as const;
-  const pieces = contextBlocks(job);
-  const context = pieces.map((text, k): TextBlock => (k === pieces.length - 2 ? { cache_control: mark, text, type: "text" } : { text, type: "text" }));
-  return [...context, { cache_control: mark, text: task(job), type: "text" }];
+  const context = contextBlocks(job);
+  return markAt([...context.blocks, task(job)], [context.mark, context.blocks.length], ttl);
 }
 
 // the blocks up to the last mark before the request's end: what another call may be writing
