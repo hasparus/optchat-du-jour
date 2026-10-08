@@ -147,16 +147,28 @@ def parent(a: Part) -> Part:
     case Con{u, us}:
       Part{1n+l, Nat.div(i, 2n), u, True{}, us}
 
-# The most due mergeable pair so far: its index k, the start and level of
-# its left line. due = (T - start) / 2^(l+2) (gist §5.2); one pair is more
-# due than another when (T - s1) * 2^l2 > (T - s2) * 2^l1, so no division.
+# The most due mergeable pair so far: its index k, the end e of the pair
+# (one past its last message) and the level l of its lines.
 type Best is Data:
-  Best{k: Nat, s: Nat, l: Nat}
+  Best{k: Nat, e: Nat, l: Nat}
 
+# Due is measured from the pair's LAST message (gist §3.2, §7 mistake 1):
+#
+#   due = (T - last) / 2^l,  last = e - 1,  so  due = (1 + T - e) / 2^l
+#
+# how long ago the pair ended, in its own line size. A pair lies inside the
+# view, which tiles [0, T), so e <= T and 1 + T - e >= 1: the Nat
+# subtraction never clips. (The gist's code writes it (T + 1)/2^l - i, the
+# same number shifted by 2: e = (i + 2) * 2^l.)
+#
+# a is more due than b when (1 + T - ea) / 2^la > (1 + T - eb) / 2^lb.
+# Multiplying both sides by 2^la * 2^lb > 0 keeps the order and clears both
+# divisions: (1 + T - ea) * 2^lb > (1 + T - eb) * 2^la. Equal pairs are not
+# more due than each other, so the scan below keeps the oldest.
 def more_due(+T: Nat, a: Best, b: Best) -> Bool:
-  Best{_, sa, +la} = a
-  Best{_, sb, +lb} = b
-  Nat.is_gt(Nat.mul(Nat.sub(T, sa), pow2(lb)), Nat.mul(Nat.sub(T, sb), pow2(la)))
+  Best{_, ea, +la} = a
+  Best{_, eb, +lb} = b
+  Nat.is_gt(Nat.mul(Nat.sub(1n+T, ea), pow2(lb)), Nat.mul(Nat.sub(1n+T, eb), pow2(la)))
 
 def choose.vs(win: Bool, cand: Best, cur: Best) -> Maybe<&2, Best>:
   match win:
@@ -178,7 +190,7 @@ def choose(+T: Nat, ok: Bool, +cand: Best, acc: Maybe<&2, Best>) -> Maybe<&2, Be
 
 def pick(+T: Nat, +a: Part, +b: Part, k: Nat, acc: Maybe<&2, Best>) -> Maybe<&2, Best>:
   Part{+l, i, _, _, _} = a
-  choose(T, mergeable(a, b), Best{k, start(l, i), l}, acc)
+  choose(T, mergeable(a, b), Best{k, start(l, 2n+i), l}, acc)
 
 # the most due mergeable pair, ties to the leftmost; k is the index of ps's
 # first line
@@ -259,7 +271,7 @@ def length(ps: List<&2, Part>, acc: Nat) -> Nat:
     case Con{_, rest}:
       length(rest, 1n+acc)
 
-# merge the most due built pair while over budget (gist §5.2). Every merge
+# merge the most due built pair while over budget (gist §3.2). Every merge
 # shortens the view by one, so its length plus one steps always suffice.
 def fit(+T: Nat, +budget: Nat, +ps: List<&2, Part>) -> List<&2, Part>:
   fit.go(1n+length(ps, 0n), More{ps}, T, budget)

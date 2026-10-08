@@ -321,15 +321,17 @@ function $parent$(_a_0) {
 }
 
 function $more_due$(_T_0, _a_0, _b_0) {
-  const _sa_0 = _a_0["s"];
+  const _ea_0 = _a_0["e"];
   const _la_0 = _a_0["l"];
-  const _sb_0 = _b_0["s"];
+  const _eb_0 = _b_0["e"];
   const _lb_0 = _b_0["l"];
-  const _x_0 = (_T_0 < _sa_0 ? 0 : _T_0 - _sa_0);
-  const _x_1 = ($pow2$(_lb_0));
-  const _x_2 = (_T_0 < _sb_0 ? 0 : _T_0 - _sb_0);
-  const _x_3 = ($pow2$(_la_0));
-  return $Nat$is_gt$(nat_chk(_x_0 * _x_1), nat_chk(_x_2 * _x_3));
+  const _x_0 = nat_chk(_T_0 + 1);
+  const _x_1 = (_x_0 < _ea_0 ? 0 : _x_0 - _ea_0);
+  const _x_2 = ($pow2$(_lb_0));
+  const _x_3 = nat_chk(_T_0 + 1);
+  const _x_4 = (_x_3 < _eb_0 ? 0 : _x_3 - _eb_0);
+  const _x_5 = ($pow2$(_la_0));
+  return $Nat$is_gt$(nat_chk(_x_1 * _x_2), nat_chk(_x_4 * _x_5));
 }
 
 function $choose$vs$(_win_0, _cand_0, _cur_0) {
@@ -359,7 +361,7 @@ function $pick$(_T_0, _a_0, _b_0, _k_0, _acc_0) {
   const __0 = _a_0["size"];
   const __1 = _a_0["built"];
   const __2 = _a_0["ups"];
-  return $choose$(_T_0, ($mergeable$({$: "Part", "l": _l_0, "i": _i_0, "size": __0, "built": __1, "ups": __2}, _b_0)), {$: "Best", "k": _k_0, "s": ($start$(_l_0, _i_0)), "l": _l_0}, _acc_0);
+  return $choose$(_T_0, ($mergeable$({$: "Part", "l": _l_0, "i": _i_0, "size": __0, "built": __1, "ups": __2}, _b_0)), {$: "Best", "k": _k_0, "e": ($start$(_l_0, nat_chk(_i_0 + 2))), "l": _l_0}, _acc_0);
 }
 
 function $best$go$($0, $1, $2, $3) {
@@ -979,7 +981,7 @@ function $0m12(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
-      case "Best": at = at[key] = {...v, "k": nat_host(v["k"]), "s": nat_host(v["s"]), "l": nat_host(v["l"])}; return top[0];
+      case "Best": at = at[key] = {...v, "k": nat_host(v["k"]), "e": nat_host(v["e"]), "l": nat_host(v["l"])}; return top[0];
       default: throw "bend: Best has no tag " + v?.$ + " (its tags: Best); a tag names its constructor as the"
       + " loading file sees it, which a later version will make the same"
       + " everywhere (#1105)";
@@ -991,7 +993,7 @@ function $0m13(v) {
   const top = [v];
   for (let at = top, key = 0;;) {
     switch (v.$) {
-      case "Best": at = at[key] = {...v, "k": BigInt(v["k"]), "s": BigInt(v["s"]), "l": BigInt(v["l"])}; return top[0];
+      case "Best": at = at[key] = {...v, "k": BigInt(v["k"]), "e": BigInt(v["e"]), "l": BigInt(v["l"])}; return top[0];
       default: throw "bend: Best has no tag " + v?.$ + " (its tags: Best); a tag names its constructor as the"
       + " loading file sees it, which a later version will make the same"
       + " everywhere (#1105)";

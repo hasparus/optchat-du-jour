@@ -43,7 +43,7 @@ Rules:
 4. After `fit`, the view's size is at most `VIEW`, or no pair can be merged.
 5. Rule 3 never offers a node whose children are unbuilt, nor one beyond the first unbuilt view line.
 
-Not proved, and said so: which pair `fit` merges. That it is the most due one, ties to the leftmost (gist §5.2), is checked by `test/kernel.test.ts` against a literal model of gist §4.1/§5.2 on seeded random runs, and by the parity test against the reference, not by a law: a proof needs the cross-multiplied due comparison to be transitive, i.e. Nat lemmas on multiplication (monotonicity, cancellation by a positive power of two) that the proofs don't have yet. Two laws are soundness only: `coords_names` (law 2; `span_start` and `span_size` are exact) would hold for a `coords` that answered "No line" to every address, and `offers_allowed` (law 5) for an `offers` that offered nothing. And no law says the refold equals appending and fitting the whole log (see the open questions).
+Not proved, and said so: which pair `fit` merges. That it is the most due one, ties to the leftmost (gist 2026-10-08 §3.2), is checked by `test/kernel.test.ts` against a literal model on seeded random runs and against Taelin's rollback push (every step t = 0..20,000 with push's list length as the budget, as the gist reports; the first-message rule matches at only 481), not by a law: a proof needs the cross-multiplied due comparison to be transitive, i.e. Nat lemmas on multiplication (monotonicity, cancellation by a positive power of two) that the proofs don't have yet. Two laws are soundness only: `coords_names` (law 2; `span_start` and `span_size` are exact) would hold for a `coords` that answered "No line" to every address, and `offers_allowed` (law 5) for an `offers` that offered nothing. And no law says the refold equals appending and fitting the whole log (see the open questions).
 
 The parity test runs the compiled kernel against the reference, which also guards against bugs in Bend's young compiler. If the M0 spike shows the JS output can't be called cleanly from TypeScript, the kernel is written in TypeScript and the laws become property tests.
 
@@ -186,7 +186,7 @@ Implement gist §2–§6 exactly as ref §3 does, including its "as built" decis
 - **Lock:** a unix socket per stream for the process lifetime; a refused connection means stale and taken over. Keep paths under ~107 characters.
 - **Free nodes:** level 0 is `kind + ": " + text` if it fits in `NODE`; higher levels are `childA + "\n" + childB` if that fits. Written to `tree` like any node; no model call.
 - **Pump:** gist rule 3, at most `JOBS` jobs, fixed 10 s retry, only the first failure of a node reported. The job's context is snapshotted when it starts.
-- **View:** append `(0, i)`, then `fit()` while over `VIEW`, merging the most-due built pair: `due = (T − start) / 2^(l+2)`, ties to the leftmost. Never split. Refold from message 0 on load. Size counts node text bytes only.
+- **View:** append `(0, i)`, then `fit()` while over `VIEW`, merging the most-due built pair: `due = (T − last) / 2^l`, measured from the pair's last message (gist 2026-10-08 §3.2; from the first message old lines churn, §7 mistake 1), ties to the leftmost. Never split. Refold from message 0 on load. Size counts node text bytes only.
 - **Render:** `<chat>\n` + `id+n|text` lines with newlines turned into spaces + `\n</chat>`. Unbuilt lines show `(not summarized yet: zoom it)`.
 - **`settle(signal)`:** resolves when every view line is built. A turn waits on it before rendering (gist §6).
 

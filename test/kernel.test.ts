@@ -1,8 +1,10 @@
 // The Bend kernel against a literal model of the view, written from the gist's prose alone
-// (gist §3 "Addressing", §4.1, §5.2). Seeded random chats, several budgets; after every step the
-// kernel and the model must agree on the view, `first` and rule 3's offers, and now and then on
-// the refold from message 0.
+// (gist §3 "Addressing", §4.1; the merge order of the 2026-10-08 gist §3.2). Seeded random chats,
+// several budgets; after every step the kernel and the model must agree on the view, `first` and
+// rule 3's offers, and now and then on the refold from message 0. Then the merge order against
+// Taelin's rollback push, the check the gist itself reports (§3.2).
 import { expect, test } from "bun:test";
+import kernel, { type List, type Part } from "../kernel/kernel.mjs";
 import * as K from "../src/kernel.ts";
 import { type Coord, newMem, setNode } from "../src/tree.ts";
 import { PLACEHOLDER } from "../src/view.ts";
@@ -22,7 +24,9 @@ class Model {
   size = (c: Coord) => this.sizes.get(`${c.l},${c.i}`) ?? HOLE; // an unbuilt part counts its placeholder
   start = (c: Coord) => c.i * 2 ** c.l;
 
-  // while over budget, replace the most due adjacent built pair by its parent; ties to the left
+  // while over budget, replace the most due adjacent built pair by its parent; ties to the left.
+  // due = (T - last) / 2^l, last being the pair's last message: how long ago it ended, in its own
+  // line size (exact in binary floating point)
   fit() {
     let total = this.view.reduce((sum, c) => sum + this.size(c), 0);
     while (total > this.budget) {
@@ -33,7 +37,7 @@ class Model {
         // siblings: one level, `left` at an even index, `right` just after it, their parent built
         const siblings = left.l === right.l && left.i % 2 === 0 && right.i === left.i + 1;
         if (!siblings || !this.has({ i: left.i / 2, l: left.l + 1 })) continue;
-        const due = (this.T - this.start(left)) / (4 * 2 ** left.l);
+        const due = (this.T - (this.start(left) + 2 * 2 ** left.l - 1)) / 2 ** left.l;
         if (due > most) [best, most] = [k, due];
       }
       if (best === -1) return; // no pair has its parent yet: over budget until one is built
@@ -179,3 +183,86 @@ test("a 100k-line view refolds, appends, fits and offers without blowing the sta
   expect(mem.view).toHaveLength(T + 1);
   expect(K.fit(mem, HOLE)).toHaveLength(T + 1);
 });
+
+// Taelin's push (rollback_state_list.js, 2022, as gist §3.1 quotes it), life = 0: a list of
+// states, newest first, each with one bit
+type States = { readonly keep: 0 | 1; readonly life: number; readonly state: number; readonly older: States } | null;
+function push(fresh: number, states: States): States {
+  if (states === null) return { keep: 0, life: 0, older: null, state: fresh };
+  const { keep, life, older, state } = states;
+  if (keep === 0) return { keep: 1, life, older, state };
+  if (life > 0) return { keep: 0, life: 0, older: { keep: 0, life: life - 1, older, state }, state: fresh };
+  return { keep: 0, life, older: push(state, older), state: fresh };
+}
+// the list read as a view of T messages, oldest line first: each state starts a line that runs
+// up to the next newer state, the newest up to T
+function asView(states: States, T: number): Coord[] {
+  const view: Coord[] = [];
+  let end = T;
+  for (let at = states; at; at = at.older) {
+    const width = end - at.state;
+    view.push({ i: at.state / width, l: Math.log2(width) });
+    end = at.state;
+  }
+  return view.toReversed();
+}
+
+// The merge order alone, by line count: every line 1 byte and every parent built, so a budget of
+// n bytes is n lines. One step appends message t's line and fits to the push list's length.
+const nil: List<never> = { $: "Nil" };
+function toList<T>(xs: readonly T[]): List<T> {
+  let out: List<T> = nil;
+  for (const head of xs.toReversed()) out = { $: "Con", head, tail: out };
+  return out;
+}
+const ancestors = toList(Array.from({ length: 40 }, () => 1)); // more than any line here has
+const line = (c: Coord): Part => ({ $: "Part", built: true, i: c.i, l: c.l, size: 1, ups: ancestors });
+function kernelFit(view: readonly Coord[], T: number, lines: number): Coord[] {
+  const out: Coord[] = [];
+  for (let at = kernel.fit(T, lines, toList(view.map(line))); at.$ === "Con"; at = at.tail) out.push({ i: Number(at.head.i), l: Number(at.head.l) });
+  return out;
+}
+// the first version of the recipe: due from the pair's first message, (T - first) / 2^(l+2)
+function firstMessageFit(view: readonly Coord[], T: number, lines: number): Coord[] {
+  const v = [...view];
+  while (v.length > lines) {
+    let best = -1, most = -1;
+    for (const [k, a] of v.entries()) {
+      const b = v[k + 1];
+      if (b === undefined) break;
+      if (a.l !== b.l || a.i % 2 !== 0 || b.i !== a.i + 1) continue;
+      const due = (T - a.i * 2 ** a.l) / 2 ** (a.l + 2);
+      if (due > most) [best, most] = [k, due];
+    }
+    const a = v[best];
+    if (a === undefined) break;
+    v.splice(best, 2, { i: a.i / 2, l: a.l + 1 });
+  }
+  return v;
+}
+// at how many steps t = 0..last a fit's view equals push's list, each step building on its own
+// view of the step before
+function matches(fit: (view: readonly Coord[], T: number, lines: number) => Coord[], last: number) {
+  let states: States = null, view: Coord[] = [], same = 0;
+  for (let t = 0; t <= last; t++) {
+    states = push(t, states);
+    const want = asView(states, t + 1);
+    view = fit([...view, { i: t, l: 0 }], t + 1, want.length);
+    if (JSON.stringify(view) === JSON.stringify(want)) same++;
+  }
+  return same;
+}
+
+test("push's list as the view: with its length as the budget, the kernel makes exactly push's merges", () => {
+  // the gist's own example of the first ten pushes: at t=9 the lines 0+4, 4+4, 8+2
+  let states: States = null;
+  for (let t = 0; t <= 9; t++) states = push(t, states);
+  expect(asView(states, 10)).toEqual([{ i: 0, l: 2 }, { i: 1, l: 2 }, { i: 4, l: 1 }]);
+  // gist §3.2: at T=10 with 0+4, 4+4, 8+1, 9+1, push merges 8-9; due from the first message merges 0-7
+  const at10 = [{ i: 0, l: 2 }, { i: 1, l: 2 }, { i: 8, l: 0 }, { i: 9, l: 0 }];
+  expect(kernelFit(at10, 10, 3)).toEqual([{ i: 0, l: 2 }, { i: 1, l: 2 }, { i: 4, l: 1 }]);
+  expect(firstMessageFit(at10, 10, 3)).toEqual([{ i: 0, l: 3 }, { i: 8, l: 0 }, { i: 9, l: 0 }]);
+  // every step t = 0..20,000; the first-message rule fails the same check
+  expect(matches(kernelFit, 20_000)).toBe(20_001);
+  expect(matches(firstMessageFit, 20_000)).toBe(481);
+}, 30_000);

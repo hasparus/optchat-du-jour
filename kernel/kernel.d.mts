@@ -1,6 +1,7 @@
 // Types of the module `bend kernel.bend -o kernel.mjs` writes. Bend passes
 // constructors as {$: "Name", ...fields} and returns every Nat as a bigint;
-// it takes numbers or bigints. src/kernel.ts is the only importer.
+// it takes numbers or bigints. src/kernel.ts is its only caller in the app (tests and dev scripts
+// call it directly).
 export type Nat = bigint | number;
 export type List<T> = { readonly $: "Con"; readonly head: T; readonly tail: List<T> } | { readonly $: "Nil" };
 export type Coord = { readonly $: "Coord"; readonly i: Nat; readonly l: Nat };

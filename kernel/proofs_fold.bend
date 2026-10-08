@@ -126,7 +126,7 @@ def pick_good(+T: Nat, +a: K.Part, +b: K.Part, +k: Nat, acc: Maybe<&2, K.Best>, 
   hp: {KS.PairAt(ps, k) == K.mergeable(a, b) : Bool}, g: Good(ps, acc)) -> Good(ps, K.pick(T, a, b, k, acc)):
   match a:
     case K.Part{l, i, sz, bt, u}:
-      choose_good(T, K.mergeable(K.Part{l, i, sz, bt, u}, b), K.Best{k, K.start(l, i), l}, acc, ps,
+      choose_good(T, K.mergeable(K.Part{l, i, sz, bt, u}, b), K.Best{k, K.start(l, 2n+i), l}, acc, ps,
         hm => Equal.trans(Bool, KS.PairAt(ps, k), K.mergeable(K.Part{l, i, sz, bt, u}, b), True{}, hp, hm), g)
 
 # best.go from index k of ps0 keeps Good
@@ -177,13 +177,13 @@ def pick_keep(+T: Nat, +a: K.Part, +b: K.Part, +k: Nat, acc: Maybe<&2, K.Best>, 
   -> {is_some(K.pick(T, a, b, k, acc)) == True{} : Bool}:
   match a:
     case K.Part{l, i, sz, bt, u}:
-      choose_keep(T, K.mergeable(K.Part{l, i, sz, bt, u}, b), K.Best{k, K.start(l, i), l}, acc, h)
+      choose_keep(T, K.mergeable(K.Part{l, i, sz, bt, u}, b), K.Best{k, K.start(l, 2n+i), l}, acc, h)
 
 def pick_some(+T: Nat, +a: K.Part, +b: K.Part, +k: Nat, acc: Maybe<&2, K.Best>, h: {K.mergeable(a, b) == True{} : Bool})
   -> {is_some(K.pick(T, a, b, k, acc)) == True{} : Bool}:
   match a:
     case K.Part{l, i, sz, bt, u}:
-      choose_some(T, K.mergeable(K.Part{l, i, sz, bt, u}, b), K.Best{k, K.start(l, i), l}, acc, h)
+      choose_some(T, K.mergeable(K.Part{l, i, sz, bt, u}, b), K.Best{k, K.start(l, 2n+i), l}, acc, h)
 
 def best_keep(ps: List<&2, K.Part>, +T: Nat, +k: Nat, +acc: Maybe<&2, K.Best>, h: {is_some(acc) == True{} : Bool})
   -> {is_some(K.best.go(ps, T, k, acc)) == True{} : Bool}:
