@@ -17,7 +17,7 @@ import { type Try, contextBlocks, sizeRetries, task } from "./step.ts";
 
 export type CompactorOptions = {
   readonly model: string;
-  readonly effort: string;
+  readonly effort: string | undefined; // none: its model takes none
   readonly ttl: "1h" | "5m";
   readonly log: (record: UsageRecord) => Effect.Effect<void>;
   readonly device?: string; // where the call runs, for its usage record: the server's own machine
@@ -77,7 +77,7 @@ export const claudeCodeCompactor = (o: CompactorOptions) => {
       const p = yield* o.placement;
       const first = blocks(job, o.ttl);
       const prefix = markedPrefix(first);
-      const key = prefix && prefixKey(["claude-code", o.model, o.instructions, o.tools.join(","), ...prefix]);
+      const key = prefix && prefixKey(["claude-code", o.model, o.effort ?? "", o.instructions, o.tools.join(","), ...prefix]);
       return yield* o.gate.through(key, (started) =>
         Effect.gen(function* () {
           const claude = yield* p.runner.spawn(compactSpawn(o, p)).pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(failed(e))));
@@ -103,7 +103,7 @@ export const claudeCodeCompactor = (o: CompactorOptions) => {
                 return yield* fromResult(result.result ?? `the call ended with ${result.subtype ?? "an error"}`, result.stop_reason, { model, usage });
               return { model, text: result.result ?? "", usage };
             });
-          return yield* sizeRetries({ ask, auth: "claude-max", device: o.device, engine: "claude-code", failoverFrom, job, log: o.log });
+          return yield* sizeRetries({ ask, auth: "claude-max", device: o.device, effort: o.effort, engine: "claude-code", failoverFrom, job, log: o.log });
         }).pipe(Effect.scoped), // the process ends with the node
       );
     }).pipe(

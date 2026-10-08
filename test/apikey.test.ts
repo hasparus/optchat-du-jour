@@ -70,7 +70,7 @@ const rig = (monthly: number, usagePath: string) => {
     );
   const needs: EngineNeeds = { apiKeys: Effect.succeed(clients), budget, log, plan: Effect.never, report: () => Effect.void, settings: settings(monthly) };
   const provider = Effect.runSync(providerOf(API_KEY, needs, "medium"));
-  const compact = apiKeyCompactor({ gate: makeGate(), instructions: "SYSTEM", log, model: API_KEY.model, provider, tools: [READ] });
+  const compact = apiKeyCompactor({ effort: "medium", gate: makeGate(), instructions: "SYSTEM", log, model: API_KEY.model, provider, tools: [READ] });
   return { budget, compact, records, reports };
 };
 

@@ -2,7 +2,7 @@
 // the input line, so the scrollback works. The screen is a state machine fed keys and AG-UI
 // events; `runRepl` wires it to the terminal and the socket.
 import { Data, Effect, Option, Schema } from "effect";
-import { FollowUp } from "../src/wire.ts";
+import { canonicalRef, FollowUp } from "../src/wire.ts";
 import { type Key, makeKeys } from "./keys.ts";
 
 const Phase = Schema.Literals(["idle", "running", "waiting", "needs-model"]);
@@ -20,6 +20,7 @@ const State = Schema.Struct({
   // turn waiting for a resume
   engines: Schema.optional(Schema.Array(Schema.Struct({ ref: Schema.String, label: Schema.String, down: Schema.NullOr(Schema.String) }))),
   stopped: Schema.optional(Schema.NullOr(Schema.Struct({ ref: Schema.String, label: Schema.String, why: Schema.String }))),
+  effort: Schema.optional(Schema.NullOr(Schema.String)), // the master's: "@" it is the bare ref
 });
 type State = typeof State.Type;
 
@@ -105,6 +106,7 @@ export function makeScreen(o: ScreenOptions) {
   const queued = new Set<string>(); // the ids of messages sent from here that the user was told wait for the next turn
   let followUp: string | null = null;
   let engines: NonNullable<State["engines"]> = [];
+  let effort: string | null = null; // the master's, for reading a ref as the chain spells it
   let model: string | null = null; // the engine `/model` chose for messages sent from here; null: none named
   let stopped: State["stopped"] = null; // the engine that stopped the turn waiting for a resume, and why
   let stuck = false; // a turn waits for a resume
@@ -156,6 +158,7 @@ export function makeScreen(o: ScreenOptions) {
     } else if (st.followUp && followUp !== null && st.followUp !== followUp) note(`follow-ups: ${st.followUp === "queue" ? "queued for the next turn" : "steer the running turn"}`);
     followUp = st.followUp ?? null;
     engines = st.engines ?? [];
+    effort = st.effort ?? null;
     stopped = st.stopped ?? null;
     // a turn stopped on a usage limit or an offline device waits for /resume: why, said once
     const nowStuck = st.phase === "needs-model";
@@ -202,7 +205,8 @@ export function makeScreen(o: ScreenOptions) {
     note(head);
     for (const [k, e] of engines.entries()) note(`  ${k + 1}. ${e.label}${e.ref === current() ? " (in use)" : ""}${e.down === null ? "" : ` (unavailable: ${clean(e.down)})`}`);
   };
-  const engineAt = (arg: string) => engines[Number(arg) - 1] ?? engines.find((e) => e.ref === arg);
+  // a ref is read as the chain spells it (an effort equal to the master's is the bare ref), as the server does
+  const engineAt = (arg: string) => engines[Number(arg) - 1] ?? engines.find((e) => e.ref === canonicalRef(arg, effort));
   // "/model" alone lists them; "/model 2" or "/model <ref>" picks the one this REPL's next
   // messages are for. It is this REPL's own choice: nothing is sent.
   const chooseModel = (arg: string) => {

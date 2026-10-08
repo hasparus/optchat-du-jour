@@ -1,9 +1,9 @@
 // The constants of docs/optchat.md and of its earlier revision (SPEC "Constants and configuration") and the reference's timings (ref §2, §7). Sizes are UTF-8
 // bytes. Everything that may differ per machine is in optchat.config.ts instead.
-import { Data, Effect, Result, Schema, SchemaIssue, SchemaTransformation } from "effect";
+import { Array as Arr, Data, Effect, Result, Schema, SchemaGetter, SchemaIssue, SchemaTransformation } from "effect";
 import { Endpoints } from "./openai/endpoints.ts";
 import { Engine } from "./usage.ts";
-import { FollowUp } from "./wire.ts";
+import { canonicalRef, effortSplit, engineLabel, FollowUp } from "./wire.ts";
 
 // a summary line's target size, and the most a free node may hold
 export const NODE = 512;
@@ -54,13 +54,19 @@ const Ttl = Schema.Literals(["1h", "5m"]);
 // document (probed on 2.1.289: it connects, with subprotocol "mcp" and no Origin); "http" is.
 export const McpTransport = Schema.Literals(["ws", "http"]);
 export type McpTransport = typeof McpTransport.Type;
-const Effort = Schema.Literals(["low", "medium", "high", "xhigh", "max"]);
+export const Effort = Schema.Literals(["low", "medium", "high", "xhigh", "max"]);
+export type Effort = typeof Effort.Type;
 
 // An engine of a chain (E4, E5), written "engine:model" ("claude-code:opus"), decoded once with the
-// settings: the engine, the model it is given, and `ref`, the text as written, which names the
-// engine in notices and usage.jsonl. An api-key ref names its provider too
-// ("api-key:anthropic/claude-opus-5-5"), and `model` is that provider's model id.
-const Model = { model: Schema.String, ref: Schema.String };
+// settings: the engine, the model it is given, and `ref`, which names the engine in notices, in the
+// picker and in usage.jsonl's `failoverFrom` (a record has its engine, model and effort apart). An
+// api-key ref names its provider too ("api-key:anthropic/claude-opus-5-5"), and `model` is that
+// provider's model id. An entry may carry its own effort, as "claude-code:haiku@xhigh" or
+// { ref: "claude-code:haiku", effort: "xhigh" }, where the role's `effort` is the default; `ref`
+// then ends in "@xhigh" either way, so the same model at two efforts is two engines, unless that
+// effort is the role's: then `ref` is the bare one (`atRoleEffort`), as the same engine. `model`
+// never has the suffix.
+const Model = { model: Schema.String, ref: Schema.String, effort: Schema.optional(Effort) };
 const RefValue = Schema.Union([
   Schema.Struct({ engine: Schema.Literal("claude-code"), ...Model }),
   Schema.Struct({ engine: Schema.Literal("openai-plan"), ...Model }),
@@ -71,30 +77,99 @@ export type Ref = typeof RefValue.Type;
 export type ProviderRef = Exclude<Ref, { readonly engine: "claude-code" }>;
 export type ApiKeyRef = Extract<Ref, { readonly engine: "api-key" }>;
 
+export const isEffort = Schema.is(Effort);
+
+// The efforts a Claude model takes. Claude Code (2.1.295's model catalog) leaves an effort it can't
+// use out of the request and the Messages API refuses it. Aliases (haiku, sonnet, opus) are the
+// latest models and take all of them (haiku is Haiku 5.5, low to max); Claude 3, Opus 4.0 and 4.1,
+// Sonnet 4.0 and 4.5 and Haiku 4.5 take none; Opus 4.6 and Sonnet 4.6 stop below xhigh, Opus 4.5
+// at high. A model is read as its family: any case, a dated snapshot ("-20250514", Vertex's
+// "@20250929"), a 1M-context variant ("[1m]"), a Bedrock id or inference profile
+// ("anthropic.claude-opus-4-6-v1", "us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0").
+const claudeEfforts = (model: string): readonly Effort[] => {
+  const id = model
+    .toLowerCase()
+    .replace(/\[1m\]$/, "")
+    .replace(/^(?:[a-z-]+\.)?anthropic\./, "")
+    .replace(/-v\d+(?::\d+)?$/, "")
+    .replace(/[-@]\d{8}$/, "");
+  if (/^claude-(3-|opus-4(-[01])?$|sonnet-4(-[05])?$|haiku-4-5$)/.test(id)) return [];
+  if (id === "claude-opus-4-5") return ["low", "medium", "high"];
+  if (/^claude-(opus-4-6|sonnet-4-6)$/.test(id)) return ["low", "medium", "high", "max"];
+  return Effort.literals;
+};
+// the efforts an entry's model takes: a Claude model's (claude-code, api-key on Anthropic) as known;
+// any other is given what it is configured with
+const effortsOf = (r: { readonly engine: string; readonly model: string; readonly provider?: string }) =>
+  r.engine === "claude-code" || (r.engine === "api-key" && r.provider === "anthropic") ? claudeEfforts(r.model) : Effort.literals;
+
+// The effort an entry runs at: its own (one its model can't take is refused when the ref is read),
+// else its role's when its model takes that, else the highest its model takes below the role's,
+// else none: a model that takes no effort is sent none. The captions have no role's effort.
+export const runEffort = (r: Ref, role: Effort | undefined): Effort | undefined => {
+  if (r.effort !== undefined || role === undefined) return r.effort ?? role;
+  const takes = effortsOf(r);
+  return Effort.literals.slice(0, Effort.literals.indexOf(role) + 1).findLast((e) => takes.includes(e));
+};
+
+// an entry's own effort, refused when its model can't take it, with the ref as written
+const withEffortTaken = (r: Ref): Result.Result<Ref, string> => {
+  const takes = effortsOf(r);
+  if (r.effort === undefined || takes.includes(r.effort)) return Result.succeed(r);
+  return Result.fail(`engine ${r.ref}: ${r.model} ${takes.length === 0 ? "takes no effort" : `has no ${r.effort} effort (it takes ${takes.join(", ")})`}`);
+};
+
+// "engine:model" or "engine:model@effort" (src/wire.ts effortSplit: the last "@" ends the model,
+// unless a date follows it, as in Vertex's "claude-sonnet-4-5@20250929"). One effort at most, and
+// one the model takes.
 export const parseRef = (ref: string): Result.Result<Ref, string> => {
-  const [engine = "", model = ""] = ref.split(/:(.*)/s);
+  const [bare, written] = effortSplit(ref);
+  const withEffort = written === undefined ? {} : isEffort(written) ? { effort: written } : null;
+  if (withEffort === null) return Result.fail(`engine ${ref}: ${written === "" ? "an empty effort" : `effort ${written}`} is not one of ${Effort.literals.join(", ")}`);
+  const [engine = "", model = ""] = bare.split(/:(.*)/s);
   if (model === "") return Result.fail(`engine ${ref}: expected engine:model`);
-  if (engine === "claude-code" || engine === "openai-plan") return Result.succeed({ engine, model, ref });
+  if (model.replace(/@\d{8}$/, "").includes("@")) return Result.fail(`engine ${ref}: one "@effort" at most, after the model`);
+  if (engine === "claude-code" || engine === "openai-plan") return withEffortTaken({ engine, model, ref, ...withEffort });
   if (engine !== "api-key") return Result.fail(`engine ${ref}: no such engine (${Engine.literals.join(", ")})`);
   const [, provider, id] = /^(anthropic|openai)\/(.+)$/.exec(model) ?? [];
   if ((provider !== "anthropic" && provider !== "openai") || id === undefined) return Result.fail(`${ref} must be api-key:anthropic/<model> or api-key:openai/<model>`);
-  return Result.succeed({ engine, model: id, provider, ref });
+  return withEffortTaken({ engine, model: id, provider, ref, ...withEffort });
 };
 
-const EngineRef = Schema.String.pipe(
-  Schema.decodeTo(
-    RefValue,
-    SchemaTransformation.transformEffect({
-      decode: (text, options) =>
-        Result.match(parseRef(text), {
-          onFailure: (message) => Effect.fail(new SchemaIssue.InvalidValue({ message }, text, options)),
-          onSuccess: Effect.succeed,
-        }),
-      encode: (r) => Effect.succeed(r.ref),
-    }),
-  ),
-);
+// the object form { ref, effort } is the same entry as "ref@effort"
+const parseObject = (entry: { readonly ref: string; readonly effort: Effort }): Result.Result<Ref, string> => {
+  const parsed = parseRef(entry.ref);
+  if (Result.isFailure(parsed)) return parsed;
+  if (parsed.success.effort !== undefined) return Result.fail(`engine ${entry.ref}: effort is given twice (in the ref and as ${entry.effort})`);
+  return withEffortTaken({ ...parsed.success, effort: entry.effort, ref: `${entry.ref}@${entry.effort}` });
+};
+
+const decodedAs = <I>(parse: (written: I) => Result.Result<Ref, string>, encode: (r: Ref) => Effect.Effect<I, SchemaIssue.Issue>) =>
+  SchemaTransformation.transformEffect<Ref, I>({
+    decode: (written, options) =>
+      Result.match(parse(written), {
+        onFailure: (message) => Effect.fail(new SchemaIssue.InvalidValue({ message }, written, options)),
+        onSuccess: Effect.succeed,
+      }),
+    encode,
+  });
+const EngineRef = Schema.Union([
+  Schema.String.pipe(Schema.decodeTo(RefValue, decodedAs(parseRef, (r) => Effect.succeed(r.ref)))),
+  // never encoded (the string form above encodes every Ref first), but decodeTo asks for an encoder
+  Schema.Struct({ ref: Schema.String, effort: Effort }).pipe(Schema.decodeTo(RefValue, decodedAs(parseObject, (r) => Effect.fail(new SchemaIssue.InvalidValue({ message: `${r.ref} is written as a string` }, r))))),
+]);
 const Chain = Schema.NonEmptyArray(EngineRef);
+// An entry at its role's effort is the bare ref: "claude-code:opus@high" in a chain at high is
+// "claude-code:opus" (src/wire.ts canonicalRef), one engine under one ref, so the session, the
+// picker and the duplicate check see them as one.
+export const atRoleEffort = (chain: Arr.NonEmptyReadonlyArray<Ref>, effort: Effort) =>
+  Arr.map(chain, (r): Ref => (r.effort === effort ? { ...r, effort: undefined, ref: canonicalRef(r.ref, effort) } : r));
+// what the picker shows for an entry of a role: its ref, and the effort it runs at when that is
+// not what the ref says (`runEffort`: a lower one, or none)
+export const entryLabel = (r: Ref, role: Effort) => {
+  const runs = runEffort(r, role);
+  return engineLabel(r.ref, r.effort !== undefined || runs === role ? undefined : (runs ?? null));
+};
 // dollars per million tokens (SPEC "Usage and cost tracking"); cache writes per TTL, Anthropic only
 const Price = Schema.Struct({
   input: Schema.Number,
@@ -104,6 +179,25 @@ const Price = Schema.Struct({
   cacheWrite1h: Schema.optional(Schema.Number),
 });
 export type Price = typeof Price.Type;
+
+// A chain names each engine once, known by what runs: its engine, its model and the effort it runs
+// at (`runEffort`; `role` is the role's effort, none for the captions). So "x@xhigh" and
+// { ref: "x", effort: "xhigh" } are one, so are "x@high" and "x" in a chain at high, and "x" and
+// "x@high" in a chain at xhigh when x stops at high: each later one is refused.
+export const duplicateRefs = (at: string, chain: readonly Ref[], role?: Effort) => {
+  const seen = new Map<string, string>();
+  return chain.flatMap((r) => {
+    const runs = runEffort(r, role);
+    const key = JSON.stringify([r.engine, r.engine === "api-key" ? r.provider : null, r.model, runs ?? null]);
+    const first = seen.get(key);
+    if (first === undefined) {
+      seen.set(key, r.ref);
+      return [];
+    }
+    const as = first === r.ref ? "" : `: it runs as ${first} does, at ${runs ?? "no effort"}`;
+    return [`${at}: ${r.ref} is in the chain more than once${as} (an entry at its role's effort is its bare ref)`];
+  });
+};
 
 export const Settings = Schema.Struct({
   master: Schema.Struct({
@@ -115,11 +209,16 @@ export const Settings = Schema.Struct({
     // priming"): "steer" (the default) offers it to the running call, "queue" holds it for the
     // next turn; a client's choice (`settings` over /ws) is kept in session.json and wins
     followUp: Schema.optional(FollowUp),
-  }),
+  }).pipe(Schema.decode({ decode: SchemaGetter.transform((m) => ({ ...m, chain: atRoleEffort(m.chain, m.effort) })), encode: SchemaGetter.passthrough() })),
   compactor: Schema.Struct({
     byLevel: Schema.NonEmptyArray(Schema.Struct({ from: Schema.Int, chain: Chain })),
     effort: Effort,
-  }),
+  }).pipe(
+    Schema.decode({
+      decode: SchemaGetter.transform((c) => ({ ...c, byLevel: Arr.map(c.byLevel, (b) => ({ ...b, chain: atRoleEffort(b.chain, c.effort) })) })),
+      encode: SchemaGetter.passthrough(),
+    }),
+  ),
   // claude-code's own TTLs (E6). An API key's requests have no setting: docs/optchat.md §3.3's lifetime, 5-minute
   // only (src/apikey/anthropic.ts). An older config's `apiKeyTtls` is dropped like any unknown key.
   cache: Schema.Struct({ claudeCodeTtl: Ttl, primeTtl: Ttl }),
@@ -165,7 +264,14 @@ export const Settings = Schema.Struct({
   ),
   // Sign in with ChatGPT endpoints (src/openai/endpoints.ts): each key left out, or the whole field, decodes to its default
   openai: Endpoints.pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
-});
+}).check(Schema.makeFilter((s) => {
+  const problems = [
+    ...duplicateRefs("master.chain", s.master.chain, s.master.effort),
+    ...s.compactor.byLevel.flatMap((b, i) => duplicateRefs(`compactor.byLevel[${i}].chain`, b.chain, s.compactor.effort)),
+    ...duplicateRefs("media.caption", s.media?.caption ?? []),
+  ];
+  return problems.length === 0 ? undefined : problems.join("; ");
+}));
 export type Settings = typeof Settings.Type;
 
 // typed authoring of optchat.config.ts

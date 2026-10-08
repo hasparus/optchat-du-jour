@@ -9,7 +9,7 @@ import { applyEvent, applyPage, emptyLog, hole, type Log, MAX_HELD, tip, trimHel
 import type { Inbound } from "./protocol";
 import { chatRows, entryRows, rowFor, rowIndexFor } from "./rows";
 import { makeSession, queued, type Session, UNSENT } from "./session";
-import { buckets, periodOf, totals } from "./stats";
+import { buckets, byModel, periodOf, totals } from "./stats";
 
 const tick = async (ms = 5) =>
   new Promise((resolve) => {
@@ -495,5 +495,20 @@ describe("stats", () => {
     expect(weeks.map((b) => b.calls)).toEqual([{ "claude-code": 2, "openai-plan": 1 }]);
     const all = totals(records);
     expect([all.calls, all.tokens, all.coldTurns, all.turns, all.failovers.length]).toEqual([3, 2020, 1, 2, 1]);
+  });
+
+  test("per model and effort: one model at two efforts is two rows, a record without an effort a third", () => {
+    const usage = { cacheRead: 50, cacheWrite: 0, input: 50, output: 10 };
+    const opus = [
+      rec("2026-10-05T10:00:00", { effort: "xhigh", model: "claude-opus-5-5", usage }),
+      rec("2026-10-05T11:00:00", { effort: "xhigh", model: "claude-opus-5-5", usage }),
+      rec("2026-10-05T12:00:00", { effort: "high", model: "claude-opus-5-5", usage }),
+      rec("2026-10-05T13:00:00", { model: "claude-opus-5-5", usage }),
+    ];
+    expect(byModel(opus).map((m) => [m.name, m.calls, m.tokens, m.hitRate])).toEqual([
+      ["claude-code:claude-opus-5-5@xhigh", 2, 220, 0.5],
+      ["claude-code:claude-opus-5-5", 1, 110, 0.5],
+      ["claude-code:claude-opus-5-5@high", 1, 110, 0.5],
+    ]);
   });
 });

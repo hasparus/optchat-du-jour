@@ -8,7 +8,7 @@ import type { Budget } from "../apikey/budget.ts";
 import type { ApiKeys } from "../apikey/clients.ts";
 import type { Job } from "../compactor.ts";
 import type { ToolBox } from "../tools/box.ts";
-import { MASTER_TOOLS, mediaSettings, type ProviderRef, type Ref, type Settings } from "../config.ts";
+import { MASTER_TOOLS, mediaSettings, type ProviderRef, type Ref, runEffort, type Settings } from "../config.ts";
 import { apiKeyProvider } from "../providers/api-key.ts";
 import type { Provider } from "../providers/provider.ts";
 import { responsesProvider } from "../providers/responses.ts";
@@ -41,9 +41,10 @@ export type EngineNeeds = {
 // A compactor engine's needs: compactor calls run on the server's own machine, named in their usage
 // records. They send what a turn sends before its view (docs/optchat.md §4, §5): the one system
 // prompt, and a turn's tools (the default device's for a provider; for claude-code, a turn's on
-// this machine, `placement`): the same bytes before the view. A cache entry is the model's own, so
-// they read a turn's entry only when they run on the turns' model, which the shipped chains don't
-// (E5, E26). They wait on a call writing the same marked prefix (`gate`, docs/optchat.md §3.3).
+// this machine, `placement`): the same bytes before the view. A cache entry is the model's own at
+// its effort, so they read a turn's entry only when they run on the turns' model and effort, which
+// the shipped chains don't (E5, E26). They wait on a call writing the same marked prefix, on the
+// same model and effort (`gate`, docs/optchat.md §3.3).
 export type CompactorNeeds = EngineNeeds & {
   readonly device?: string;
   readonly instructions: string;
@@ -62,7 +63,8 @@ export type TurnNeeds = EngineNeeds & {
 };
 
 export const compactorEngine = (ref: Ref, o: CompactorNeeds): Effect.Effect<Compact> => {
-  const { effort } = o.settings.compactor;
+  // the entry's own effort, else the compactor's as its model takes it, or none (src/config.ts runEffort)
+  const effort = runEffort(ref, o.settings.compactor.effort);
   const { gate, instructions, tools } = o;
   switch (ref.engine) {
     case "claude-code":
@@ -82,7 +84,7 @@ export const compactorEngine = (ref: Ref, o: CompactorNeeds): Effect.Effect<Comp
     case "openai-plan":
       return Effect.map(o.plan, (plan) => openAiPlanCompactor({ device: o.device, effort, gate, instructions, log: o.log, model: ref.model, plan, tools }));
     case "api-key":
-      return Effect.map(providerOf(ref, o, effort), (provider) => apiKeyCompactor({ device: o.device, gate, instructions, log: o.log, model: ref.model, provider, tools }));
+      return Effect.map(providerOf(ref, o, effort), (provider) => apiKeyCompactor({ device: o.device, effort, gate, instructions, log: o.log, model: ref.model, provider, tools }));
   }
 };
 
@@ -99,7 +101,8 @@ export const providerOf = (ref: ProviderRef, o: EngineNeeds, effort?: string): E
 };
 
 export const turnEngine = (ref: Ref, o: TurnNeeds): Effect.Effect<TurnEngine> => {
-  const { effort, permissionMode, tools } = o.settings.master;
+  const { permissionMode, tools } = o.settings.master;
+  const effort = runEffort(ref, o.settings.master.effort); // the entry's own, else the master's as its model takes it, or none
   switch (ref.engine) {
     case "claude-code":
       return claudeCodeTurn({
@@ -109,6 +112,7 @@ export const turnEngine = (ref: Ref, o: TurnNeeds): Effect.Effect<TurnEngine> =>
         model: ref.model,
         permissionMode,
         primeTtl: o.settings.cache.primeTtl,
+        ref: ref.ref,
         report: o.report,
         runnerFor: o.runnerFor,
         tools: tools ?? MASTER_TOOLS,

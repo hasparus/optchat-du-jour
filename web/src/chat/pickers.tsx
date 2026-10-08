@@ -47,9 +47,14 @@ export function FollowUps({ link, followUp }: { readonly link: Link; readonly fo
   );
 }
 
-// "Claude Opus (Claude Code)" → "Opus", "GPT-6.1 Sol (ChatGPT plan)" → "GPT-6.1 Sol": what the
-// closed picker shows on a phone's narrow footer, and a queued message names; the options say it all
-export const shortLabel = (label: string) => label.replace(/ \(.*\)$/, "").replace(/^Claude /, "");
+// "Claude Opus (Claude Code)" → "Opus", "GPT-6.1 Sol (ChatGPT plan)" → "GPT-6.1 Sol", "Claude Opus
+// (Claude Code, xhigh)" → "Opus · xhigh": what the closed picker shows on a phone's narrow footer,
+// and a queued message names; the options say it all. An effort stays, or one model at two
+// efforts would read the same.
+export const shortLabel = (label: string) => {
+  const [, name = label, effort] = /^(.*) \([^(),]*(?:, ([^(),]+))?\)$/.exec(label) ?? [];
+  return `${name.replace(/^Claude /, "")}${effort === undefined ? "" : ` · ${effort}`}`;
+};
 
 // A native select (the phone's own picker) laid over a compact label, so a picker in the footer
 // takes the width of its value, not of its longest option

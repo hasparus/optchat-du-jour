@@ -7,9 +7,11 @@ import { Effect, PubSub } from "effect";
 import { MASTER_DOWN_FOR } from "./config.ts";
 import { engineLabel, type MasterEngine } from "./wire.ts";
 
-// `refs`: the master's chain, by the refs its engines carry
-export const makeMaster = (refs: readonly string[]) =>
+// `chain`: the master's engines, by the refs they carry, with what the picker shows for each
+// (src/config.ts entryLabel); `effort`: the master's own, its entries' default (null: not known)
+export const makeMaster = (chain: readonly { readonly ref: string; readonly label: string }[], effort: string | null = null) =>
   Effect.gen(function* () {
+    const refs = chain.map((e) => e.ref);
     const scope = yield* Effect.scope;
     let latest = refs[0] ?? "";
     // engine ref → why it is down, and the mark that set it (a newer mark outlives an older timer)
@@ -21,7 +23,9 @@ export const makeMaster = (refs: readonly string[]) =>
     return {
       changes,
       refs,
-      engines: (): MasterEngine[] => refs.map((ref) => ({ down: down.get(ref)?.why ?? null, label: engineLabel(ref), ref })),
+      effort,
+      label: (ref: string) => chain.find((e) => e.ref === ref)?.label ?? engineLabel(ref),
+      engines: (): MasterEngine[] => chain.map(({ label, ref }) => ({ down: down.get(ref)?.why ?? null, label, ref })),
       // the engine the warm processes follow: the most recent turn's ("" for an empty chain)
       latest: () => latest,
       ran: (ref: string) => {

@@ -15,6 +15,7 @@ export const IDLE: SessionState = {
   budget: 128_000,
   device: "mini",
   down: [],
+  effort: "high",
   engine: null,
   engines: [
     { down: null, label: "Claude Opus (Claude Code)", ref: "claude-code:opus" },

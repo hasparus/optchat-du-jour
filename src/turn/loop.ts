@@ -113,6 +113,7 @@ export const toolLoop = (o: {
               role: "turn",
               usage: r.usage,
               dollars: r.dollars, // api-key only; JSON leaves it out when undefined
+              effort: o.provider.effort,
             });
           });
         const final = round >= rounds;

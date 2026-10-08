@@ -48,6 +48,7 @@ export const responsesProvider = (o: {
   readonly dollars?: (usage: Tokens) => number; // an API key's price; a failed call that cost something is priced too
 }): Provider => ({
   auth: o.auth,
+  effort: o.effort,
   call: (c) =>
     Effect.gen(function* () {
       if (o.before) yield* o.before;

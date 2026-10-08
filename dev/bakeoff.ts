@@ -7,8 +7,22 @@
 //   bun dev/bakeoff.ts --from ~/.optchat/streams/mini --n 500 \
 //     --chain "luna=openai-plan:gpt-6-luna" --chain "split=0:openai-plan:gpt-6-luna;3:openai-plan:gpt-6.1-sol" \
 //     --chain "sonnet=claude-code:sonnet" --out bakeoff.json
+//
+// An entry may carry its own effort ("ref@effort"; --effort sets the default of the rest, else the
+// config's compactor.effort). The spec's choice (docs/optchat.md §4), Haiku at xhigh, on the Claude
+// plan and over an API key, against Sonnet at medium and high:
+//
+//   bun dev/bakeoff.ts --from ~/.optchat/streams/mini --n 500 --effort medium \
+//     --chain "haiku-cc=claude-code:haiku@xhigh" \
+//     --chain "haiku-key=api-key:anthropic/claude-haiku-5-5@xhigh" \
+//     --chain "sonnet-med=claude-code:sonnet" --chain "sonnet-high=claude-code:sonnet@high" \
+//     --out bakeoff.json
+//
+// An api-key contender needs the `apiKey` block of optchat.config.ts uncommented (a price for the
+// model, a budget) and a stored key (`optchat key anthropic`); what it spends counts against the
+// month's budget.
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Console, Context, Duration, Effect, Layer, Option, Result, Schema } from "effect";
+import { Array as Arr, Console, Context, Duration, Effect, Layer, Option, Result, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,7 +32,7 @@ import { ApiKeys, apiKeysLayer } from "../src/apikey/clients.ts";
 import { openChat } from "../src/chat.ts";
 import { LocalRunner, Runner } from "../src/claude/process.ts";
 import type { Summarize } from "../src/compactor.ts";
-import { NODE, type Settings, WAIT_RETRY, loadSettings, parseRef } from "../src/config.ts";
+import { Effort, NODE, type Settings, WAIT_RETRY, atRoleEffort, duplicateRefs, isEffort, loadSettings, parseRef } from "../src/config.ts";
 import { parseOptmem } from "../src/import.ts";
 import { zoom } from "../src/mcp.ts";
 import { OpenAiPlan, openAiPlanLayer } from "../src/openai/responses.ts";
@@ -329,13 +343,14 @@ export const table = (rows: readonly Measured[]) =>
 // a whole number of at least `min`, or null
 const count = (raw: string, min: number) => (/^\d+$/.test(raw) && Number(raw) >= min ? Number(raw) : null);
 const USAGE =
-  "usage: bun dev/bakeoff.ts --from <data dir | LOG.txt> --chain name=chain [--chain …] [--n 500] [--skip 0] [--kinds user] [--questions 50] [--deadline 120 (minutes)] [--out file.json]";
+  "usage: bun dev/bakeoff.ts --from <data dir | LOG.txt> --chain name=chain [--chain …] [--effort medium] [--n 500] [--skip 0] [--kinds user] [--questions 50] [--deadline 120 (minutes)] [--out file.json]";
 
 const main = Effect.gen(function* () {
   const { values } = parseArgs({
     options: {
       chain: { multiple: true, type: "string" },
       deadline: { default: "120", type: "string" }, // minutes per contender
+      effort: { type: "string" }, // the default effort of entries without their own; else compactor.effort
       from: { type: "string" },
       kinds: { default: "user", type: "string" },
       n: { default: "500", type: "string" },
@@ -351,7 +366,15 @@ const main = Effect.gen(function* () {
   const contenders = Result.try({ catch: (e) => (e instanceof Error ? e.message : String(e)), try: () => chain.map(parseContender) });
   if (Result.isFailure(contenders)) return yield* Console.error(`${contenders.failure}\n${USAGE}`);
   const root = new URL("..", import.meta.url).pathname;
-  const settings = yield* loadSettings(Bun.env.OPTCHAT_CONFIG ?? `${root}optchat.config.ts`);
+  const loaded = yield* loadSettings(Bun.env.OPTCHAT_CONFIG ?? `${root}optchat.config.ts`);
+  const effort = values.effort ?? loaded.compactor.effort;
+  if (!isEffort(effort)) return yield* Console.error(`--effort ${effort}: one of ${Effort.literals.join(", ")}\n${USAGE}`);
+  const settings = { ...loaded, compactor: { ...loaded.compactor, effort } };
+  // a contender's chains are read as the config's: an effort its model can't take was refused with
+  // the ref, an entry at --effort is its bare ref, and one engine named twice in a chain is refused
+  const canonical = contenders.success.map((c) => ({ ...c, byLevel: Arr.map(c.byLevel, (b) => ({ ...b, chain: atRoleEffort(b.chain, effort) })) }));
+  const refused = canonical.flatMap((c) => c.byLevel.flatMap((b) => duplicateRefs(`${c.name}, from level ${b.from}`, b.chain, effort)));
+  if (refused.length > 0) return yield* Console.error(`${refused.join("\n")}\n${USAGE}`);
   const messages = yield* readSource(values.from, n, skip);
   const kinds = values.kinds.split(",").map((k) => Schema.decodeUnknownSync(Schema.Literals(["user", "talk", "tool", "echo", "note"]))(k));
   const outside = Layer.mergeAll(SecretsLive, FetchHttpClient.layer);
@@ -365,7 +388,7 @@ const main = Effect.gen(function* () {
   const budget = makeBudget({ monthly: settings.apiKey?.monthlyBudget ?? 0, report: (m) => Console.error(m), usagePath });
   const spend = (r: UsageRecord) => (r.auth === "api-key" ? logUsage(usagePath, r).pipe(Effect.flatMap((e) => (e ? Console.error(e) : Effect.void))) : Effect.void);
   const rows: Measured[] = [];
-  for (const contender of contenders.success) {
+  for (const contender of canonical) {
     yield* Console.error(`${contender.name}: replaying ${messages.length} messages`);
     const replayed = yield* replay({
       contender,

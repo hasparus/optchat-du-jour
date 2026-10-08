@@ -9,6 +9,7 @@ Everything is built and tested against fakes. Each check below needs a real logi
 - [ ] A view primed on the Mini, read by a turn on the MacBook: same cache key? (SPEC M1)
 - [ ] Does a priming request killed at `message_start` count against limits? (SPEC M1, ref §14 F6)
 - [ ] How a real Claude Code reports a spent plan mid-turn; we match `usage limit` in the result text (SPEC M5).
+- [ ] The `claudeEfforts` table (`src/config.ts`) against `claude --model <id> --effort <level>` on the installed CLI: which models take which efforts (SPEC Haiku and effort).
 - [ ] A `zoom` image seen by the model in the same turn, at image cost (SPEC Media).
 - [ ] Does `claude -p` take PDF `document` blocks in a stream-json user message? (SPEC Media)
 - [ ] Is Max 5× enough? Decide after two weeks of `usage.jsonl` (SPEC M2).
@@ -17,6 +18,7 @@ Everything is built and tested against fakes. Each check below needs a real logi
 
 - [ ] `optchat login openai` end to end: callback, refresh, Keychain (SPEC M3).
 - [ ] Model ids the token lists; are `gpt-6-luna` and `gpt-6.1-sol` right? Does the route take `reasoning.effort`? (SPEC M3)
+- [ ] Which `reasoning.effort` values the plan route accepts: `xhigh`, `max`? A chain entry may ask for any of `low` to `max`, and OpenAI refs are not checked at load (SPEC Compactor calls, Haiku and effort).
 - [ ] Function tools and `tool_choice` on the plan route (SPEC M5).
 - [ ] Our Responses cache fields (from the gist's earlier revision; docs/optchat.md has none): `prompt_cache_breakpoint`, `reasoning.encrypted_content`, `reasoning.context` (SPEC M5).
 - [ ] `input_image` and PDFs on the plan route, before `media.planImages` goes on (SPEC Media).
@@ -24,7 +26,7 @@ Everything is built and tested against fakes. Each check below needs a real logi
 - [ ] Does the compactor fit the ChatGPT Pro weekly limit alongside Codex work? (SPEC Usage and cost tracking)
 - [ ] One real compactor call on the plan route, with `instructions` seen on the wire (SPEC M3)
 - [ ] Luna's level-0 quality: retries per node, how much of the user's wording survives (SPEC M3)
-- [ ] The bake-off: `dev/bakeoff.ts` over ~500 real messages for Luna, Sol, Sonnet and a split; set the level cutoff (SPEC M3).
+- [ ] The bake-off: `dev/bakeoff.ts` over ~500 real messages for Luna, Sol, Haiku at xhigh, Sonnet and a split; set the level cutoff (SPEC M3).
 
 ## API keys
 

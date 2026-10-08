@@ -30,7 +30,7 @@ import type { Link } from "@/lib/connection";
 import { visible } from "@/lib/log";
 import { chatRows, entryRows, type Row, rowFor, rowIndexFor } from "@/lib/rows";
 import { type Marker as StatusMarker, type Queued, queued, type Session, type SessionStore } from "@/lib/session";
-import { type Device, engineLabel, type SessionState, shortSha } from "@wire";
+import { canonicalRef, type Device, engineLabel, type SessionState, shortSha } from "@wire";
 import { AlertCircleIcon, FilmIcon, InfoIcon, Undo2Icon } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Uploader } from "@/lib/attach";
@@ -39,13 +39,17 @@ import { Composer } from "./composer";
 import { shortLabel } from "./pickers";
 import { ChatRow } from "./row";
 
+// an engine of the master's chain by the label its picker shows (with its effort, src/wire.ts
+// engineLabel), else as its ref reads
+const labelOf = (state: SessionState | null, ref: string) => state?.engines.find((e) => e.ref === ref)?.label ?? engineLabel(ref);
+
 function status(s: Session): string | null {
   if (s.status !== "open") return s.status === "connecting" ? "connecting…" : "disconnected; reconnecting…";
   switch (s.state?.phase) {
     case "waiting":
       return `waiting for ${s.state.waiting} summaries…`;
     case "running":
-      return s.thinking ? "thinking…" : `running on ${s.state.device}${s.state.engine ? `, ${engineLabel(s.state.engine)}` : ""}`;
+      return s.thinking ? "thinking…" : `running on ${s.state.device}${s.state.engine ? `, ${labelOf(s.state, s.state.engine)}` : ""}`;
     case "needs-model": // said by its own banner
     case "idle":
     case undefined:
@@ -79,9 +83,9 @@ const placeMarkers = (markers: readonly StatusMarker[], rows: readonly Row[]) =>
 // chat shows a logged message's), where it stands, its engine when it is not the composer's
 // `model`, and a take-back while it is still held. `asking`: its take-back is asked for and not
 // answered yet (a reconnect forgets that)
-function Waiting({ q, asking, model, onTakeBack }: { readonly q: Queued; readonly asking: boolean; readonly model: string | null; readonly onTakeBack: () => void }) {
+function Waiting({ q, asking, model, state, onTakeBack }: { readonly q: Queued; readonly asking: boolean; readonly model: string | null; readonly state: SessionState | null; readonly onTakeBack: () => void }) {
   const queuedHere = q.where === "queued";
-  const other = q.engine !== null && q.engine !== model ? engineLabel(q.engine) : null;
+  const other = q.engine !== null && q.engine !== model ? labelOf(state, q.engine) : null;
   return (
     <QueueItem data-state={q.where} data-testid="queue-item">
       <QueueItemIndicator className={queuedHere ? "border-dashed" : q.where === "sent" ? "border-primary bg-primary/30" : undefined} />
@@ -188,15 +192,21 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
   const [loading, setLoading] = useState(false);
   const [device, setDevice] = useState<string | null>(null);
   // the model picker: this page's own, kept in localStorage. Before the first state it is sent as
-  // kept (a message sent then, or offline, still names it); once the state shows the chain, one
-  // the chain lacks (or none) is the chain's first.
+  // kept (a message sent then, or offline, still names it); once the state shows the chain, it is
+  // read as the chain's refs are (an effort equal to the master's is the bare ref, so a pick kept
+  // before that effort changed still finds its engine, and is kept so), and one the chain lacks
+  // (or none) is the chain's first.
   const [chosen, setChosen] = useState(loadModel);
   const engines = state.state?.engines;
-  const model = engines === undefined ? chosen : engines.some((e) => e.ref === chosen) ? chosen : (engines[0]?.ref ?? null);
+  const kept = chosen === null || state.state === null ? chosen : canonicalRef(chosen, state.state.effort);
+  const model = engines === undefined ? chosen : engines.some((e) => e.ref === kept) ? kept : (engines[0]?.ref ?? null);
   const onModel = useCallback((ref: string) => {
     setChosen(ref);
     saveModel(ref);
   }, []);
+  useEffect(() => {
+    if (kept !== null && kept !== chosen && engines?.some((e) => e.ref === kept)) onModel(kept);
+  }, [kept, chosen, engines, onModel]);
   const { scrollToMessage } = useMessageScroller();
   // at the newest end (nothing more to scroll to): the store may drop what is far out of sight
   const atEnd = !useMessageScrollerScrollable().end;
@@ -313,7 +323,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
                   {waiting.map((q) => (
                     <Waiting asking={q.clientId !== null && state.asking.includes(q.clientId)} key={q.key} model={model} onTakeBack={() => {
                         session.takeBack(q);
-                      }} q={q} />
+                      }} q={q} state={state.state} />
                   ))}
                 </QueueList>
               </QueueSectionContent>
