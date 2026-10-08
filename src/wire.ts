@@ -41,16 +41,21 @@ const modelName = (id: string) => {
   if (gpt) return [`GPT${gpt[1] ? `-${gpt[1]}` : ""}`, ...(gpt[2] ?? "").split("-").filter((w) => w !== "").map(capital)].join(" ");
   return id;
 };
-// an engine ref ("engine:model", src/config.ts) as the picker shows it: "Claude Opus (Claude Code)",
-// "GPT-6.1 Sol (ChatGPT plan)", "Claude Opus 5.5 (Anthropic API key)"
-export const engineLabel = (ref: string) => {
-  const [engine = "", model = ""] = ref.split(/:(.*)/s);
+// An engine ref ("engine:model", or "engine:model@effort", src/config.ts) as the picker shows it:
+// "Claude Opus (Claude Code)", "GPT-6.1 Sol (ChatGPT plan)", "Claude Opus 5.5 (Anthropic API key)".
+// An entry's effort is added only when it differs from `roleEffort`, the role's own ("Claude Haiku
+// (Claude Code, xhigh)"); with no `roleEffort` it is always added.
+export const engineLabel = (ref: string, roleEffort?: string) => {
+  const at = ref.lastIndexOf("@");
+  const effort = at === -1 ? undefined : ref.slice(at + 1);
+  const [engine = "", model = ""] = (at === -1 ? ref : ref.slice(0, at)).split(/:(.*)/s);
+  const extra = effort === undefined || effort === roleEffort ? "" : `, ${effort}`;
   if (engine === "api-key") {
     const [, provider = "", id = model] = /^(anthropic|openai)\/(.+)$/.exec(model) ?? [];
-    return `${modelName(id)} (${provider === "openai" ? "OpenAI" : "Anthropic"} API key)`;
+    return `${modelName(id)} (${provider === "openai" ? "OpenAI" : "Anthropic"} API key${extra})`;
   }
   const where = engine === "claude-code" ? "Claude Code" : engine === "openai-plan" ? "ChatGPT plan" : engine;
-  return `${modelName(model)} (${where})`;
+  return `${modelName(model)} (${where}${extra})`;
 };
 
 export const SessionState = Schema.Struct({

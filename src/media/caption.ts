@@ -47,8 +47,8 @@ export type CaptionNeeds = EngineNeeds & { readonly runner: Runner["Service"]; r
 
 // `claude -p` with no tools and no settings, its own system prompt, the image and the ask in one
 // stream-json message; the result's text is the caption
-const claudeCodeCaption = (model: string, o: CaptionNeeds): Describe => {
-  const args = [...baseArgs({ model, system: CAPTION, tools: "" }), "--safe-mode"];
+const claudeCodeCaption = (model: string, effort: string | undefined, o: CaptionNeeds): Describe => {
+  const args = [...baseArgs({ effort, model, system: CAPTION, tools: "" }), "--safe-mode"];
   return (input, failoverFrom) =>
     Effect.gen(function* () {
       const started = Date.now();
@@ -68,7 +68,7 @@ const claudeCodeCaption = (model: string, o: CaptionNeeds): Describe => {
 
 // an engine with a provider: one request with the image and the ask, no tools
 const providerCaption = (ref: ProviderRef, o: CaptionNeeds): Describe => {
-  const provider = providerOf(ref, o);
+  const provider = providerOf(ref, o, ref.effort);
   return (input, failoverFrom) =>
     Effect.gen(function* () {
       if (ref.engine === "openai-plan" && !o.planImages) return yield* new UsageLimit({ message: "openai-plan is not sent images (media.planImages is off)" });
@@ -83,7 +83,7 @@ const providerCaption = (ref: ProviderRef, o: CaptionNeeds): Describe => {
 // The chain: the first engine that answers describes it; a spent plan or an offline device moves
 // on, as for the compactor. Each engine going down and coming back is told once.
 export const makeCaptioner = (refs: readonly Ref[], o: CaptionNeeds) => {
-  const links = refs.map((ref) => ({ describe: ref.engine === "claude-code" ? claudeCodeCaption(ref.model, o) : providerCaption(ref, o), ref: ref.ref }));
+  const links = refs.map((ref) => ({ describe: ref.engine === "claude-code" ? claudeCodeCaption(ref.model, ref.effort, o) : providerCaption(ref, o), ref: ref.ref }));
   const watcher = watchChain(o.report, "captions");
   return (input: CaptionInput): Effect.Effect<string, EngineError> =>
     failover(

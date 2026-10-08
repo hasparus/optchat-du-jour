@@ -19,7 +19,7 @@ import type { Part } from "./media/part.ts";
 import { BLIND, type Mid, type TurnEngine, type TurnEvents } from "./turn/engine.ts";
 import type { UsageRecord } from "./usage.ts";
 import { allBuilt, render, settle, unbuilt, viewSize } from "./view.ts";
-import { type Asset, engineLabel, type FollowUp, MAX_ATTACHMENTS, markerOf, NOT_DESCRIBED, type Phase, type SessionState, withMarkers } from "./wire.ts";
+import { type Asset, type FollowUp, MAX_ATTACHMENTS, markerOf, NOT_DESCRIBED, type Phase, type SessionState, withMarkers } from "./wire.ts";
 
 // the state every client is shown (STATE_SNAPSHOT, STATE_DELTA, /api/state): src/wire.ts
 export type { FollowUp, Phase, SessionState } from "./wire.ts";
@@ -166,7 +166,7 @@ export const makeSession = (o: {
       waiting: unbuilt(chat.mem),
       followUp,
       engines: master.engines(),
-      stopped: stalled && { label: engineLabel(stalled.ref), ref: stalled.ref, why: stalled.why },
+      stopped: stalled && { label: master.label(stalled.ref), ref: stalled.ref, why: stalled.why },
     });
     const tell = Effect.suspend(() => publish({ state: state(), type: "state" }));
     const enter = (p: Phase) => Effect.suspend(() => ((phase = p), tell));
@@ -377,8 +377,8 @@ export const makeSession = (o: {
           steerIn(accepting);
         });
         yield* beginRun(resumed);
-        const goesOn = next === ref ? "tried again" : `${engineLabel(next)} carries on`;
-        yield* info(`${engineLabel(ref)} stopped (${why}); ${goesOn}${done > 0 ? ` from the ${done} logged entries` : ""}`);
+        const goesOn = next === ref ? "tried again" : `${master.label(next)} carries on`;
+        yield* info(`${master.label(ref)} stopped (${why}); ${goesOn}${done > 0 ? ` from the ${done} logged entries` : ""}`);
         return { next, runId: resumed };
       });
 
@@ -596,7 +596,7 @@ export const makeSession = (o: {
         if (text.trim() === "" && media.length === 0) return; // nothing to answer: no turn, no empty user entry
         const head = o.engines[0]?.ref ?? "";
         const named = asked === undefined ? undefined : engineOf(asked);
-        if (asked !== undefined && !named) yield* info(`${asked} is not an engine of the master's chain: the message is for ${engineLabel(head)}`);
+        if (asked !== undefined && !named) yield* info(`${asked} is not an engine of the master's chain: the message is for ${master.label(head)}`);
         const sentFor = on && o.devices.includes(on) ? on : deviceOf(text, o.devices);
         const steer = (how ?? followUp) === "steer";
         inbox.push({ clientId: clientId ?? null, described: null, device: sentFor, engine: named?.ref ?? head, media, seq: ++seq, state: "held", steer, text });
@@ -629,7 +629,7 @@ export const makeSession = (o: {
     const resume = (ref: string) =>
       Effect.suspend(() => {
         if (!engineOf(ref)) return info(`${ref} is not an engine of the master's chain (${o.engines.map((e) => e.ref).join(", ")})`);
-        const late = info(`not resumed on ${engineLabel(ref)}: no turn waits for a model (another client may have resumed it)`);
+        const late = info(`not resumed on ${master.label(ref)}: no turn waits for a model (another client may have resumed it)`);
         if (stalled === null) return late;
         return Deferred.succeed(stalled.resume, ref).pipe(Effect.flatMap((first) => (first ? Effect.void : late)));
       });

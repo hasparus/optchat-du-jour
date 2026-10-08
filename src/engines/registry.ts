@@ -62,7 +62,8 @@ export type TurnNeeds = EngineNeeds & {
 };
 
 export const compactorEngine = (ref: Ref, o: CompactorNeeds): Effect.Effect<Compact> => {
-  const { effort } = o.settings.compactor;
+  // the entry's own effort, else the compactor's (src/config.ts Ref)
+  const effort = ref.effort ?? o.settings.compactor.effort;
   const { gate, instructions, tools } = o;
   switch (ref.engine) {
     case "claude-code":
@@ -99,7 +100,8 @@ export const providerOf = (ref: ProviderRef, o: EngineNeeds, effort?: string): E
 };
 
 export const turnEngine = (ref: Ref, o: TurnNeeds): Effect.Effect<TurnEngine> => {
-  const { effort, permissionMode, tools } = o.settings.master;
+  const { permissionMode, tools } = o.settings.master;
+  const effort = ref.effort ?? o.settings.master.effort; // the entry's own, else the master's
   switch (ref.engine) {
     case "claude-code":
       return claudeCodeTurn({
