@@ -62,7 +62,7 @@ export function parseContender(spec: string): Contender {
 export const readSource = (path: string, n: number, skip = 0) =>
   Effect.gen(function* () {
     if (statSync(path).isDirectory()) {
-      const { mem } = yield* loadChat(path, { repair: false, view: false });
+      const { mem } = yield* loadChat(path, { view: false, writer: false });
       return mem.root.slice(skip, skip + n).map((m): Message => ({ kind: m.kind, text: m.text }));
     }
     return parseOptmem(readFileSync(path, "utf8"))

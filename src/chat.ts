@@ -42,7 +42,8 @@ export const openChat = Effect.fn("openChat")(function* (dir: string, o: PumpOpt
       const entry = { ...newMsg(id, kind, body), ...extra };
       // the log line first, then the view it changed (saved whole): a crash in between leaves a
       // view one message behind the log, which the next load catches up (view.ts restore). The
-      // message is logged either way, so a view that cannot be saved is reported, not returned.
+      // message is logged either way, so a view that cannot be saved is reported, not returned: the
+      // next save rewrites the whole file, and a load catches up one left behind (view.ts restore).
       return appendMessage(dir, entry).pipe(
         Effect.andThen(() => {
           addMessage(mem, entry);

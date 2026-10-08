@@ -4,13 +4,13 @@
 // a restart loads the view it saved instead of rebuilding it. No model calls.
 import { afterAll, expect, test } from "bun:test";
 import { Effect, type Scope } from "effect";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
 import * as K from "../src/kernel.ts";
 import { appendMessage, appendNode, loadChat, lock, newMsg, saveView } from "../src/store.ts";
 import { built, type Coord, getNode, type Marks, type Mem, newMem } from "../src/tree.ts";
-import { addMessage, addNode, PLACEHOLDER, render, viewSize } from "../src/view.ts";
+import { addMessage, addNode, render, UNBUILT, viewSize } from "../src/view.ts";
 
 const made: string[] = [];
 function scratchDir() {
@@ -33,7 +33,8 @@ function rng(seed: number) {
 }
 
 const MARKS: Marks = { high: 6000, low: 3000 };
-const HOLE = Buffer.byteLength(PLACEHOLDER);
+// what the sawtooth weighs: the lines' texts, an unbuilt one at the most its summary may take
+const weight = (mem: Mem) => mem.view.reduce((sum, c) => sum + (getNode(mem, c)?.size ?? UNBUILT), 0);
 const long = (n: number) => "w".repeat(n); // over NODE: never its own summary
 const summary = (c: Coord, n: number) => `${c.l}+${c.i} ${"s".repeat(n)}`;
 // what rendering puts before the closing tag: the view minus "</chat>"
@@ -63,10 +64,10 @@ function sawtooth(seed: number, keepUp: number, messages: number) {
   const r = rng(seed), mem = newMem(MARKS);
   let batches = 0, owed = 0, appends = 0;
   for (let t = 0; t < messages; t++) {
-    // the new line is a placeholder until its summary is built
-    const before = { folding: mem.folding, grown: viewSize(mem) + HOLE, text: opened(mem), view: mem.view };
+    // the new line weighs a whole summary until its own is built
+    const before = { folding: mem.folding, grown: weight(mem) + UNBUILT, text: opened(mem), view: mem.view };
     addMessage(mem, newMsg(t, "echo", long(600)));
-    const size = viewSize(mem);
+    const size = weight(mem);
     const appended = [...before.view, { i: t, l: 0 }];
     if (!before.folding && before.grown <= MARKS.high) {
       // between batches: the line goes at the end and nothing else changes, so the last call's
@@ -82,7 +83,11 @@ function sawtooth(seed: number, keepUp: number, messages: number) {
       expect(mem.folding).toBe(size > MARKS.low);
       if (mem.folding) owed++;
     }
-    for (const c of ready(mem)) if (r() < keepUp) addNode(mem, { ...c, text: summary(c, 150 + Math.floor(r() * 300)) });
+    // the compactor: everything ready, level by level (kept up), or a share of what is ready now
+    for (let more = ready(mem); more.length > 0; more = keepUp === 1 ? ready(mem) : [])
+      for (const c of more) if (r() < keepUp) addNode(mem, { ...c, text: summary(c, 150 + Math.floor(r() * 300)) });
+    // summaries built since the last message never take a view that owes no batch past its high mark
+    if (!mem.folding) expect(viewSize(mem)).toBeLessThanOrEqual(MARKS.high);
   }
   return { appends, batches, mem, owed };
 }
@@ -156,7 +161,7 @@ const buildOn = async (dir: string, mem: Mem, c: Coord, n: number) => {
   addNode(mem, node);
 };
 const load = async (dir: string, writer = true) =>
-  writer ? runScoped(Effect.andThen(lock(dir), loadChat(dir, { marks: MARKS }))) : run(loadChat(dir, { marks: MARKS, repair: false }));
+  writer ? runScoped(Effect.andThen(lock(dir), loadChat(dir, { marks: MARKS }))) : run(loadChat(dir, { marks: MARKS, writer: false }));
 const savedText = (dir: string) => readFileSync(`${dir}/chat/view.json`, "utf8");
 
 test("a restart loads the saved view byte for byte, owed batch and all, where a rebuild would differ", async () => {
@@ -170,7 +175,7 @@ test("a restart loads the saved view byte for byte, owed batch and all, where a 
   expect(mem.folding).toBe(true);
   // summaries built since: a rebuild would merge with them from the start, so it differs
   for (let i = 2; i < 8; i++) await buildOn(dir, mem, { i, l: 1 }, 400);
-  expect(K.refold(mem, MARKS, HOLE).view).not.toEqual(mem.view);
+  expect(K.refold(mem, MARKS, UNBUILT).view).not.toEqual(mem.view);
   for (const writer of [false, true]) {
     const { mem: again, problems } = await load(dir, writer);
     expect(problems).toEqual([]);
@@ -193,7 +198,7 @@ test("a missing, unreadable or illegal view.json is rebuilt from the log once, s
     await logOn(dir, mem, long(600));
     await buildOn(dir, mem, { i: t, l: 0 }, 400);
   }
-  const rebuilt = K.refold(mem, MARKS, HOLE);
+  const rebuilt = K.refold(mem, MARKS, UNBUILT);
   const cases: readonly (readonly [string | null, string])[] = [
     [null, "missing"],
     ['{"folding":false,"view":[[0,0],[0,1]', "unreadable"],
@@ -255,9 +260,69 @@ test("openChat saves the view with every message, and a reopened chat starts fro
   const again = await runScoped(
     Effect.gen(function* () {
       const chat = yield* openChat(dir, { marks: { high: 2000, low: 1000 }, report: () => Effect.void, summarize: () => Effect.never });
-      return { problems: chat.problems, view: chat.mem.view };
+      return { folding: chat.mem.folding, problems: chat.problems, view: chat.mem.view };
     }),
   );
   expect(again.problems).toEqual([]);
-  expect([`${JSON.stringify({ folding: false, view: again.view.map((c) => [c.l, c.i]) })}\n`]).toEqual(views.slice(-1));
+  expect([`${JSON.stringify({ folding: again.folding, view: again.view.map((c) => [c.l, c.i]) })}\n`]).toEqual(views.slice(-1));
+});
+
+test("a compactor outage: the lines it builds late never take an un-owed view past its high mark", () => {
+  // forty messages while the compactor is down: each line weighs a whole summary, so the view is
+  // known to be over its high mark although it shows forty placeholders, and a batch is owed
+  const mem = newMem(MARKS);
+  for (let t = 0; t < 40; t++) addMessage(mem, newMsg(t, "echo", long(600)));
+  expect(viewSize(mem)).toBeLessThan(MARKS.low);
+  expect(mem.folding).toBe(true);
+  // it comes back and builds every node, each the most a summary may be
+  for (let l = 0; l <= 5; l++) for (let i = 0; i < 40 / 2 ** l; i++) if ((i + 1) * 2 ** l <= 40) addNode(mem, { i, l, text: "x".repeat(UNBUILT) });
+  // the next message's batch takes it to low; from then on, built lines keep it within high
+  addMessage(mem, newMsg(40, "echo", long(600)));
+  expect(mem.folding).toBe(false);
+  addNode(mem, { i: 40, l: 0, text: "x".repeat(UNBUILT) });
+  expect(viewSize(mem)).toBeLessThanOrEqual(MARKS.low);
+  for (let t = 41; t < 60; t++) {
+    addMessage(mem, newMsg(t, "echo", long(600)));
+    if (!mem.folding) addNode(mem, { i: t, l: 0, text: "x".repeat(UNBUILT + 8) }); // a stubborn one, a few bytes over
+    expect(viewSize(mem)).toBeLessThanOrEqual(MARKS.high + UNBUILT);
+  }
+});
+
+// a data dir written in one go: `count` messages, every leaf summarized, no parent
+function bulkDir(count: number) {
+  const dir = scratchDir(), at = "2026-10-08T12:00:00.000Z";
+  mkdirSync(`${dir}/chat/main`, { recursive: true });
+  mkdirSync(`${dir}/chat/tree`, { recursive: true });
+  const msgs = Array.from({ length: count }, (_, i) => JSON.stringify(newMsg(i, "echo", long(600), new Date(at))));
+  const nodes = Array.from({ length: count }, (_, i) => JSON.stringify({ i, l: 0, size: 404, text: summary({ i, l: 0 }, 400) }));
+  writeFileSync(`${dir}/chat/main/2026-10-08.jsonl`, `${msgs.join("\n")}\n`);
+  writeFileSync(`${dir}/chat/tree/2026-10-08.jsonl`, `${nodes.join("\n")}\n`);
+  return dir;
+}
+
+test("a saved view far behind the log catches up as fast as a rebuild, to what appending gives", async () => {
+  const dir = bulkDir(3200);
+  // saved after message 199, owing nothing: two hundred lines, no parent to merge into
+  writeFileSync(`${dir}/chat/view.json`, JSON.stringify({ folding: false, view: Array.from({ length: 200 }, (_, i) => [0, i]) }));
+  const t0 = performance.now();
+  const { mem, problems } = await load(dir);
+  expect(performance.now() - t0).toBeLessThan(2000);
+  expect(problems).toEqual(["chat/view.json: 3000 messages behind the log; appended them"]);
+  // with nothing to merge, appending from message 0 gives the same view
+  expect({ folding: mem.folding, view: mem.view }).toEqual(K.refold(mem, MARKS, UNBUILT));
+  expect(mem.folding).toBe(true);
+});
+
+test("something other than a file where view.json goes is rebuilt around, and moved aside by the writer", async () => {
+  const dir = bulkDir(30);
+  mkdirSync(`${dir}/chat/view.json`);
+  const read = await load(dir, false);
+  expect(read.problems).toEqual(["chat/view.json: not a file; the view was rebuilt from the log"]);
+  const first = await load(dir);
+  expect(first.problems[0]).toBe("chat/view.json: not a file; the view was rebuilt from the log");
+  expect(first.problems[1]).toStartWith(`chat/view.json: moved aside to ${dir}/chat/view.json.broken-`);
+  expect(readdirSync(`${dir}/chat`).filter((n) => n.startsWith("view.json.broken-"))).toHaveLength(1);
+  const next = await load(dir);
+  expect(next.problems).toEqual([]);
+  expect(next.mem.view).toEqual(first.mem.view);
 });

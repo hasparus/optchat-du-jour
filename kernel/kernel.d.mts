@@ -22,6 +22,7 @@ declare const kernel: {
   readonly append: (T: Nat, high: Nat, low: Nat, folding: boolean, ps: List<Part>, m: Msg) => Saw;
   readonly coords: (id: Nat, n: Nat, T: Nat) => Maybe<Coord>;
   readonly first: (T: Nat, ps: List<Part>) => bigint;
+  readonly extend: (T: Nat, high: Nat, low: Nat, r: Saw, ms: List<Msg>) => Saw;
   readonly fit: (T: Nat, budget: Nat, ps: List<Part>) => List<Part>;
   readonly offers: (levels: List<List<boolean>>, head: Nat) => List<Coord>;
   readonly refold: (high: Nat, low: Nat, ms: List<Msg>) => Saw;

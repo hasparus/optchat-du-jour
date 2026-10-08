@@ -23,7 +23,7 @@ const [cmd, arg] = [process.argv[2], process.argv[3]];
 const dir = streamDir("mini");
 
 const view = Effect.gen(function* () {
-  const { mem, problems } = yield* loadChat(dir, { repair: false });
+  const { mem, problems } = yield* loadChat(dir, { writer: false });
   for (const p of problems) yield* Console.error(p);
   // a dim header for a person at a terminal; piped, stdout is the view and nothing else
   if (process.stdout.isTTY) yield* Effect.sync(() => process.stderr.write(`\u001B[2m${stats(mem).join("\n")}\u001B[0m\n`));

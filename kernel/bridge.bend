@@ -462,6 +462,30 @@ def refold_ks(+high: Nat, +low: Nat, +ms: List<&2, K.Msg>) -> KS.Tiles(Laws.View
   end_tiles(K.refold.go(ms, high, low, 0n, K.Fold{Nil{}, 0n, False{}}), Nat.add(Laws.Len(K.Msg, ms), 0n),
     refold_tiles(ms, high, low, 0n, K.Fold{Nil{}, 0n, False{}}, {==}))
 
+# a saved view's tiling carries over: its first new message as append,
+# the rest as the rebuild
+def of_tiles(+ps: List<&2, K.Part>, -folding: Bool, -T: Nat, t: KS.Tiles(ps, 0n, T)) -> FoldTiles(K.fold.of(K.Saw{ps, folding}), T):
+  %Equal.sym(List<&2, K.Part>, K.rev_onto(K.rev_onto(ps, Nil{}), Nil{}), ps, reverse_twice(ps)) : KS.Tiles(_, 0n, T)
+  t
+
+def saw_tiles(+r: K.Saw, -T: Nat, t: KS.Tiles(Laws.ViewOf(r), 0n, T)) -> FoldTiles(K.fold.of(r), T):
+  match r:
+    case K.Saw{+ps, folding}:
+      of_tiles(ps, folding, T, t)
+
+def Laws.tiles_extend(T, high, low, ps, folding, ms):
+  match ms:
+    case Nil{}:
+      t => t
+    case Con{+m, +rest}:
+      t =>
+        %Equal.sym(Nat, 1n+Nat.add(Laws.Len(K.Msg, rest), T), Nat.add(Laws.Len(K.Msg, rest), 1n+T), F.add_succ_r(Laws.Len(K.Msg, rest), T))
+          : Laws.Tiles(Laws.ViewOf(K.extend(T, high, low, K.Saw{ps, folding}, m <> rest)), 0n, _)
+        tiles_laws(Laws.ViewOf(K.refold.end(K.refold.go(rest, high, low, 1n+T, K.fold.of(K.append(T, high, low, folding, ps, m))))), 0n, Nat.add(Laws.Len(K.Msg, rest), 1n+T),
+          end_tiles(K.refold.go(rest, high, low, 1n+T, K.fold.of(K.append(T, high, low, folding, ps, m))), Nat.add(Laws.Len(K.Msg, rest), 1n+T),
+            refold_tiles(rest, high, low, 1n+T, K.fold.of(K.append(T, high, low, folding, ps, m)),
+              saw_tiles(K.append(T, high, low, folding, ps, m), 1n+T, tiles_ks(Laws.ViewOf(K.append(T, high, low, folding, ps, m)), 0n, 1n+T, Laws.tiles_append(T, high, low, folding, ps, m)(t))))))
+
 def Laws.tiles_refold(high, low, ms):
   tiles_laws(Laws.ViewOf(K.refold(high, low, ms)), 0n, Laws.Len(K.Msg, ms), refold_ks(high, low, ms))
 

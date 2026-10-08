@@ -322,7 +322,7 @@ test("a stored message is logged even when the pump cannot start: that failure i
     }),
   );
   rmSync(`${dir}/chat/tree`);
-  const reread = await run(loadChat(dir, { repair: false }));
+  const reread = await run(loadChat(dir, { writer: false }));
   expect(reread.mem.root).toHaveLength(1);
   expect(said).toHaveLength(1);
   expect(said[0]).toStartWith("cannot save node 0+1: ");
@@ -336,7 +336,7 @@ test("a torn last line is skipped quietly by readers, and repaired by the lock h
   writeFileSync(jsonl, `${JSON.stringify(hi)}\n{"i":1,"kind":"us`);
   // a log written by hand has no saved view: each load says it rebuilt one, and only the writer saves it
   const rebuilt = "chat/view.json: missing; the view was rebuilt from the log";
-  const reader = await run(loadChat(dir, { repair: false }));
+  const reader = await run(loadChat(dir, { writer: false }));
   expect(reader.mem.root.map((m) => m.text)).toEqual(["hi"]);
   expect(reader.problems).toEqual([rebuilt]);
   expect(readFileSync(jsonl, "utf8").at(-1)).not.toBe("\n");
@@ -345,7 +345,7 @@ test("a torn last line is skipped quietly by readers, and repaired by the lock h
   expect(writer.problems).toEqual(["main/2026-09-30.jsonl line 2: unreadable, ignored", rebuilt]);
   const yo = { date: "2026-09-30T08:01:00.000Z", i: 1, kind: "talk", size: 8, text: "yo" };
   appendFileSync(jsonl, `${JSON.stringify(yo)}\n`);
-  const after = await run(loadChat(dir, { repair: false }));
+  const after = await run(loadChat(dir, { writer: false }));
   expect(after.mem.root.map((m) => m.text)).toEqual(["hi", "yo"]);
 });
 
@@ -372,7 +372,7 @@ test("an OptMem import folds the view once, to what the next start loads", async
   const lines = Array.from({ length: 40 }, (_, n) => `#${n} 2026-08-${augustDay(n)} ${"n".repeat(n % 3 === 0 ? 600 : 20)}`);
   writeFileSync(`${dir}/LOG.txt`, `${lines.join("\n")}\n`);
   const mem = await run(importOptmem(`${dir}/data`, `${dir}/LOG.txt`));
-  const next = await run(loadChat(`${dir}/data`, { repair: false }));
+  const next = await run(loadChat(`${dir}/data`, { writer: false }));
   expect(mem.root).toHaveLength(40);
   expect(mem.tree.size).toBeGreaterThan(0);
   expect(mem.view).toEqual(next.mem.view);

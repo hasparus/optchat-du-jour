@@ -234,6 +234,15 @@ law tiles_refold:
   for +ms: List<&2, K.Msg>
   Tiles(ViewOf(K.refold(high, low, ms)), 0n, Len(K.Msg, ms))
 
+law tiles_extend:
+  for +T: Nat
+  for +high: Nat
+  for +low: Nat
+  for +ps: List<&2, K.Part>
+  for +folding: Bool
+  for +ms: List<&2, K.Msg>
+  Tiles(ps, 0n, T) -> Tiles(ViewOf(K.extend(T, high, low, K.Saw{ps, folding}, ms)), 0n, Nat.add(Len(K.Msg, ms), T))
+
 law tiles_append:
   for +T: Nat
   for +high: Nat
