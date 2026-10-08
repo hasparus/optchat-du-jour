@@ -2,9 +2,10 @@
 // (gist §3 "Addressing", §4.1, §5.2). Seeded random chats, several budgets; after every step the
 // kernel and the model must agree on the view, `first` and rule 3's offers, and now and then on
 // the refold from message 0.
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import kernel, { type List, type Part } from "../kernel/kernel.mjs";
 import * as K from "../src/kernel.ts";
-import { type Coord, newMem, setNode } from "../src/tree.ts";
+import { type Coord, getNode, type Mem, newMem, setNode } from "../src/tree.ts";
 import { PLACEHOLDER } from "../src/view.ts";
 
 const encoder = new TextEncoder();
@@ -178,4 +179,118 @@ test("a 100k-line view refolds, appends, fits and offers without blowing the sta
   mem.view = K.append(mem, HOLE);
   expect(mem.view).toHaveLength(T + 1);
   expect(K.fit(mem, HOLE)).toHaveLength(T + 1);
+});
+
+// What src/kernel.ts hands the kernel, against the tree it comes from. The laws take their
+// inputs at their word, and no proof covers the conversion: a line's `built` and size are the
+// tree's, its `ups` the sizes of its built ancestors up to the first unbuilt one (so non-empty
+// exactly when its parent is built, and the parent a merge makes is that parent's own line), the
+// view tiles [0, T), and `levels` holds one flag per node of a chat of T, the tree's.
+const array = <T>(xs: List<T>): T[] => (xs.$ === "Con" ? [xs.head, ...array(xs.tail)] : []);
+function list<T>(xs: readonly T[]): List<T> {
+  let out: List<T> = { $: "Nil" };
+  for (const head of xs.toReversed()) out = { $: "Con", head, tail: out };
+  return out;
+}
+const at = (c: { readonly l: bigint | number; readonly i: bigint | number }): Coord => ({ i: Number(c.i), l: Number(c.l) });
+
+// a line as kernel.ts builds it: the tree's flag and size, and its parent's line when the parent
+// is built (gist §5.2: a pair merges only into a built parent). How many ancestors it carries.
+function line(mem: Mem, p: Part): number {
+  const c = at(p), ups = array(p.ups), up = { i: Math.floor(c.i / 2), l: c.l + 1 };
+  expect(p.built).toBe(getNode(mem, c) !== undefined);
+  expect(Number(p.size)).toBe(getNode(mem, c)?.size ?? HOLE);
+  expect(ups.length > 0).toBe(getNode(mem, up) !== undefined);
+  const [size, ...rest] = ups;
+  if (size === undefined) return 0;
+  return 1 + line(mem, { $: "Part", built: true, ...up, size, ups: list(rest) });
+}
+
+// the view as kernel.ts hands it over: mem.view's lines in order, tiling [0, T)
+function view(mem: Mem, ps: List<Part>, T: number) {
+  const lines = array(ps);
+  expect(lines.map(at)).toEqual([...mem.view]);
+  let end = 0;
+  for (const p of lines) {
+    expect(at(p).i * 2 ** at(p).l).toBe(end);
+    end += 2 ** at(p).l;
+  }
+  expect(end).toBe(T);
+  return lines;
+}
+
+// a chat of T messages and a tree over it: mostly nodes whose sources are built, as the pump
+// builds them, and now and then any node at all, as an import may leave them
+function chat(r: () => number, T: number) {
+  const mem = newMem(200 + Math.floor(r() * 3000)), odd = r() < 0.2, p = r();
+  for (let i = 0; i < T; i++) mem.root.push(logged(i));
+  for (let l = 0; 2 ** l <= T; l++)
+    for (let i = 0; i < Math.floor(T / 2 ** l); i++) {
+      const ready = l === 0 || (getNode(mem, { i: 2 * i, l: l - 1 }) && getNode(mem, { i: 2 * i + 1, l: l - 1 }));
+      if ((ready || odd) && r() < p) setNode(mem, { i, l, text: "y".repeat(1 + Math.floor(r() * 600)) });
+    }
+  return mem;
+}
+
+// the arguments of the one call `act` makes through `spy`
+function handed<A extends unknown[]>(spy: { mock: { calls: A[] }; mockClear(): void }, act: () => void): A {
+  spy.mockClear();
+  act();
+  expect(spy.mock.calls).toHaveLength(1);
+  return spy.mock.calls[0]!;
+}
+
+test("what kernel.ts hands the kernel is the tree it comes from", () => {
+  const append = spyOn(kernel, "append"), first = spyOn(kernel, "first"), fit = spyOn(kernel, "fit");
+  const offers = spyOn(kernel, "offers"), refold = spyOn(kernel, "refold");
+  try {
+    const r = rng(7);
+    let deepest = 0;
+    for (let run = 0; run < 300; run++) {
+      const T = Math.floor(r() * 70), mem = chat(r, T);
+      // the refold of all but the newest message, then its append
+      const last = mem.root.pop();
+      const [budget, ms] = handed(refold, () => {
+        mem.view = K.refold(mem, HOLE);
+      });
+      expect(Number(budget)).toBe(mem.budget);
+      expect(array(ms).map((m, i) => line(mem, { $: "Part", built: m.built, i, l: 0, size: m.size, ups: m.ups }))).toHaveLength(mem.root.length);
+      if (last) {
+        mem.root.push(last);
+        let next = mem.view;
+        const [t, b, ps, m] = handed(append, () => {
+          next = K.append(mem, HOLE);
+        });
+        expect([Number(t), Number(b)]).toEqual([T - 1, mem.budget]);
+        for (const p of view(mem, ps, T - 1)) deepest = Math.max(deepest, line(mem, p));
+        line(mem, { $: "Part", built: m.built, i: T - 1, l: 0, size: m.size, ups: m.ups });
+        mem.view = next;
+      }
+      const [t, b, ps] = handed(fit, () => {
+        K.fit(mem, HOLE);
+      });
+      expect([Number(t), Number(b)]).toEqual([T, mem.budget]);
+      for (const p of view(mem, ps, T)) deepest = Math.max(deepest, line(mem, p));
+      // first reads only where a line is and whether it is built
+      const [tf, bare] = handed(first, () => {
+        K.first(mem);
+      });
+      expect(Number(tf)).toBe(T);
+      for (const p of view(mem, bare, T)) expect(p.built).toBe(getNode(mem, at(p)) !== undefined);
+      // one flag per node of a chat of T, level 0 first: levels[l][i] is node (l, i)'s
+      const [levels, head] = handed(offers, () => {
+        K.offers(mem);
+      });
+      expect(Number(head)).toBe(K.first(mem));
+      const flags = array(levels).map((level) => array(level));
+      expect(flags.length).toBe(T === 0 ? 0 : Math.floor(Math.log2(T)) + 1);
+      for (const [l, level] of flags.entries()) {
+        expect(level).toHaveLength(Math.floor(T / 2 ** l));
+        for (const [i, b] of level.entries()) expect(b).toBe(getNode(mem, { i, l }) !== undefined);
+      }
+    }
+    expect(deepest).toBeGreaterThan(2); // the runs did carry lines with built ancestors
+  } finally {
+    for (const spy of [append, first, fit, offers, refold]) spy.mockRestore();
+  }
 });

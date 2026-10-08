@@ -90,6 +90,9 @@ def Allowed(levels: List<&2, List<&2, Bool>>, head: Nat, c: K.Coord) -> Type:
         & {Built(levels, m, 1n+Nat.double(i)) == True{} : Bool}
         & {Nat.is_le(K.start(1n+m, 1n+i), head) == True{} : Bool})
 
+def In(c: K.Coord, cs: List<&2, K.Coord>) -> Type:
+  Laws.In(c, cs)
+
 def AllAllowed(levels: List<&2, List<&2, Bool>>, head: Nat, cs: List<&2, K.Coord>) -> Type:
   match cs:
     case Nil{}:
