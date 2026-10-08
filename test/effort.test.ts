@@ -74,6 +74,11 @@ test("an entry at its role's effort is the bare ref, so a chain names each engin
   expect(() => settings({ master: ["claude-code:opus", "claude-code:opus@high"] })).toThrow("master.chain: claude-code:opus is in the chain more than once");
   expect(() => settings({ byLevel: ["openai-plan:gpt-6-luna", { effort: "medium", ref: "openai-plan:gpt-6-luna" }] })).toThrow("compactor.byLevel[0].chain: openai-plan:gpt-6-luna is in the chain more than once");
   expect(() => settings({ caption: ["claude-code:haiku", "claude-code:haiku"] })).toThrow("media.caption: claude-code:haiku is in the chain more than once");
+  // keyed on what runs: Opus 4.6 has no xhigh, so in a master at xhigh its bare ref runs at high too
+  expect(() => settings({ master: ["claude-code:claude-opus-4-6", "claude-code:claude-opus-4-6@high"], masterEffort: "xhigh" })).toThrow(
+    "master.chain: claude-code:claude-opus-4-6@high is in the chain more than once: it runs as claude-code:claude-opus-4-6 does, at high",
+  );
+  expect(() => settings({ master: ["claude-code:claude-opus-4-6", "claude-code:claude-opus-4-6@max"], masterEffort: "xhigh" })).not.toThrow();
   // one engine in two chains, or one model at two efforts, is no duplicate
   expect(() => settings({ byLevel: ["claude-code:opus"], master: ["claude-code:opus", "claude-code:opus@max"] })).not.toThrow();
 });
@@ -183,7 +188,10 @@ test("an effort a Claude model can't take is refused at load when the entry asks
   expect(() => settings({ master: ["claude-code:claude-opus-4-6[1m]@xhigh"] })).toThrow("claude-opus-4-6[1m] has no xhigh effort");
   expect(() => settings({ master: ["claude-code:Claude-Haiku-4-5@low"] })).toThrow("Claude-Haiku-4-5 takes no effort");
   expect(() => settings({ master: ["claude-code:us.anthropic.claude-haiku-4-5-20251001-v1:0@low"] })).toThrow("takes no effort");
-  expect(() => settings({ master: ["claude-code:anthropic.claude-opus-4-6-v1:0@xhigh"] })).toThrow("has no xhigh effort");
+  expect(() => settings({ master: ["claude-code:anthropic.claude-opus-4-6-v1@xhigh"] })).toThrow("anthropic.claude-opus-4-6-v1 has no xhigh effort");
+  expect(() => settings({ master: ["claude-code:us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0@low"] })).toThrow("us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0 takes no effort");
+  expect(() => settings({ master: ["claude-code:global.anthropic.claude-sonnet-4-5-20250929-v1:0[1m]@low"] })).toThrow("takes no effort");
+  expect(() => settings({ master: ["claude-code:us.anthropic.claude-opus-4-6-v1[1m]@max"] })).not.toThrow();
   expect(() => settings({ master: ["claude-code:opus[1m]@xhigh"] })).not.toThrow();
   // the media captions take an entry's own the same way
   expect(() => settings({ caption: ["claude-code:claude-haiku-4-5@low"] })).toThrow("takes no effort");

@@ -60,12 +60,12 @@ export type Effort = typeof Effort.Type;
 // An engine of a chain (E4, E5), written "engine:model" ("claude-code:opus"), decoded once with the
 // settings: the engine, the model it is given, and `ref`, which names the engine in notices, in the
 // picker and in usage.jsonl's `failoverFrom` (a record has its engine, model and effort apart). An
-// api-key ref names its provider too
-// ("api-key:anthropic/claude-opus-5-5"), and `model` is that provider's model id. An entry may
-// carry its own effort, as "claude-code:haiku@xhigh" or { ref: "claude-code:haiku", effort:
-// "xhigh" }, where the role's `effort` is the default; `ref` then ends in "@xhigh" either way, so
-// the same model at two efforts is two engines, unless that effort is the role's: then `ref` is
-// the bare one (`atRoleEffort`), as the same engine. `model` never has the suffix.
+// api-key ref names its provider too ("api-key:anthropic/claude-opus-5-5"), and `model` is that
+// provider's model id. An entry may carry its own effort, as "claude-code:haiku@xhigh" or
+// { ref: "claude-code:haiku", effort: "xhigh" }, where the role's `effort` is the default; `ref`
+// then ends in "@xhigh" either way, so the same model at two efforts is two engines, unless that
+// effort is the role's: then `ref` is the bare one (`atRoleEffort`), as the same engine. `model`
+// never has the suffix.
 const Model = { model: Schema.String, ref: Schema.String, effort: Schema.optional(Effort) };
 const RefValue = Schema.Union([
   Schema.Struct({ engine: Schema.Literal("claude-code"), ...Model }),
@@ -85,13 +85,13 @@ export const isEffort = Schema.is(Effort);
 // Sonnet 4.0 and 4.5 and Haiku 4.5 take none; Opus 4.6 and Sonnet 4.6 stop below xhigh, Opus 4.5
 // at high. A model is read as its family: any case, a dated snapshot ("-20250514", Vertex's
 // "@20250929"), a 1M-context variant ("[1m]"), a Bedrock id or inference profile
-// ("us.anthropic.claude-haiku-4-5-20251001-v1:0").
+// ("anthropic.claude-opus-4-6-v1", "us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0").
 const claudeEfforts = (model: string): readonly Effort[] => {
   const id = model
     .toLowerCase()
-    .replace(/^(?:[a-z]+\.)?anthropic\./, "")
-    .replace(/-v\d+:\d+$/, "")
     .replace(/\[1m\]$/, "")
+    .replace(/^(?:[a-z-]+\.)?anthropic\./, "")
+    .replace(/-v\d+(?::\d+)?$/, "")
     .replace(/[-@]\d{8}$/, "");
   if (/^claude-(3-|opus-4(-[01])?$|sonnet-4(-[05])?$|haiku-4-5$)/.test(id)) return [];
   if (id === "claude-opus-4-5") return ["low", "medium", "high"];
@@ -155,6 +155,7 @@ const decodedAs = <I>(parse: (written: I) => Result.Result<Ref, string>, encode:
   });
 const EngineRef = Schema.Union([
   Schema.String.pipe(Schema.decodeTo(RefValue, decodedAs(parseRef, (r) => Effect.succeed(r.ref)))),
+  // never encoded (the string form above encodes every Ref first), but decodeTo asks for an encoder
   Schema.Struct({ ref: Schema.String, effort: Effort }).pipe(Schema.decodeTo(RefValue, decodedAs(parseObject, (r) => Effect.fail(new SchemaIssue.InvalidValue({ message: `${r.ref} is written as a string` }, r))))),
 ]);
 const Chain = Schema.NonEmptyArray(EngineRef);
@@ -179,12 +180,23 @@ const Price = Schema.Struct({
 });
 export type Price = typeof Price.Type;
 
-// A chain names each engine once. "x@xhigh" and { ref: "x", effort: "xhigh" } are one entry, and
-// so are "x@high" and "x" in a chain at high (`atRoleEffort`), so either pair is refused too.
-export const duplicateRefs = (at: string, chain: readonly Ref[]) => {
-  const refs = chain.map((r) => r.ref);
-  const twice = new Set(refs.filter((ref, i) => refs.indexOf(ref) !== i));
-  return [...twice].map((ref) => `${at}: ${ref} is in the chain more than once (an entry at its role's effort is its bare ref)`);
+// A chain names each engine once, known by what runs: its engine, its model and the effort it runs
+// at (`runEffort`; `role` is the role's effort, none for the captions). So "x@xhigh" and
+// { ref: "x", effort: "xhigh" } are one, so are "x@high" and "x" in a chain at high, and "x" and
+// "x@high" in a chain at xhigh when x stops at high: each later one is refused.
+export const duplicateRefs = (at: string, chain: readonly Ref[], role?: Effort) => {
+  const seen = new Map<string, string>();
+  return chain.flatMap((r) => {
+    const runs = runEffort(r, role);
+    const key = JSON.stringify([r.engine, r.engine === "api-key" ? r.provider : null, r.model, runs ?? null]);
+    const first = seen.get(key);
+    if (first === undefined) {
+      seen.set(key, r.ref);
+      return [];
+    }
+    const as = first === r.ref ? "" : `: it runs as ${first} does, at ${runs ?? "no effort"}`;
+    return [`${at}: ${r.ref} is in the chain more than once${as} (an entry at its role's effort is its bare ref)`];
+  });
 };
 
 export const Settings = Schema.Struct({
@@ -254,8 +266,8 @@ export const Settings = Schema.Struct({
   openai: Endpoints.pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
 }).check(Schema.makeFilter((s) => {
   const problems = [
-    ...duplicateRefs("master.chain", s.master.chain),
-    ...s.compactor.byLevel.flatMap((b, i) => duplicateRefs(`compactor.byLevel[${i}].chain`, b.chain)),
+    ...duplicateRefs("master.chain", s.master.chain, s.master.effort),
+    ...s.compactor.byLevel.flatMap((b, i) => duplicateRefs(`compactor.byLevel[${i}].chain`, b.chain, s.compactor.effort)),
     ...duplicateRefs("media.caption", s.media?.caption ?? []),
   ];
   return problems.length === 0 ? undefined : problems.join("; ");

@@ -94,6 +94,20 @@ describe("repl screen", () => {
     expect(t.s.key({ type: "enter" })).toMatchObject({ engine: "openai-plan:gpt-6.1-sol", text: "second", type: "send" });
   });
 
+  test("/model <ref> reads a ref spelled with the master's own effort as the chain's bare one", () => {
+    const t = screen();
+    const engines = [
+      { down: null, label: "GPT-6.1 Sol (ChatGPT plan)", ref: "openai-plan:gpt-6.1-sol" },
+      { down: null, label: "Claude Opus (Claude Code)", ref: "claude-code:opus" },
+    ];
+    t.feed({ snapshot: { ...IDLE, effort: "xhigh", engines, stopped: null }, type: "STATE_SNAPSHOT" });
+    for (const ch of "/model claude-code:opus@xhigh") t.s.key({ text: ch, type: "text" });
+    expect(t.s.key({ type: "enter" })).toBeNull();
+    expect(t.out()).toContain("model: Claude Opus (Claude Code), for your next messages\n");
+    for (const ch of "hi") t.s.key({ text: ch, type: "text" });
+    expect(t.s.key({ type: "enter" })).toMatchObject({ engine: "claude-code:opus", type: "send" });
+  });
+
   test("a turn waiting for a model: the REPL lists the engines, and /resume retries the stopped one or goes on with another", () => {
     const t = screen();
     const engines = [

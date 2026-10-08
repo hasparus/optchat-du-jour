@@ -6,16 +6,18 @@
 //
 // A chain is tried in order; the master's is the per-message picker, and the compactor's moves on
 // by itself when an engine is out of usage. An entry is "engine:model" and runs at its role's
-// `effort`; "engine:model@effort" (or { ref, effort }) runs at its own, shown in the picker only
-// when it differs. Efforts: low, medium, high, xhigh, max.
+// `effort`, clamped down to what its model takes (none for a model that takes none);
+// "engine:model@effort" (or { ref, effort }) runs at its own, shown in the picker. Efforts: low,
+// medium, high, xhigh, max.
 //
 // The compactor runs on the ChatGPT plan once `optchat login openai` has been run, and falls over
 // to Claude Haiku at xhigh on the Claude plan, as docs/optchat.md §4 has it. OpenAI ids as its docs
 // name them in Oct 2026, not yet checked against the models this plan's token lists. The level
 // cutoff (3) waits for the bake-off too.
 //
-// An effort is checked at load: Haiku 5.5 (the `haiku` alias) takes all five, but claude-haiku-4-5
-// takes none and older Opus/Sonnet stop at high or max (src/config.ts, `claudeEffortProblem`).
+// An entry's own effort is checked at load against what its model takes (src/config.ts,
+// `claudeEfforts`): Haiku 5.5 (the `haiku` alias) takes all five; Haiku 4.5, Opus 4.0/4.1 and
+// Sonnet 4.0/4.5 take none; Opus 4.5 stops at high; Opus 4.6 and Sonnet 4.6 skip xhigh.
 import { defineConfig } from "./src/config.ts";
 
 export default defineConfig({

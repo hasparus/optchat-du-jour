@@ -9,6 +9,7 @@ Everything is built and tested against fakes. Each check below needs a real logi
 - [ ] A view primed on the Mini, read by a turn on the MacBook: same cache key? (SPEC M1)
 - [ ] Does a priming request killed at `message_start` count against limits? (SPEC M1, ref §14 F6)
 - [ ] How a real Claude Code reports a spent plan mid-turn; we match `usage limit` in the result text (SPEC M5).
+- [ ] The `claudeEfforts` table (`src/config.ts`) against `claude --model <id> --effort <level>` on the installed CLI: which models take which efforts (SPEC Haiku and effort).
 - [ ] A `zoom` image seen by the model in the same turn, at image cost (SPEC Media).
 - [ ] Does `claude -p` take PDF `document` blocks in a stream-json user message? (SPEC Media)
 - [ ] Is Max 5× enough? Decide after two weeks of `usage.jsonl` (SPEC M2).

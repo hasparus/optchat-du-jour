@@ -373,7 +373,7 @@ const main = Effect.gen(function* () {
   // a contender's chains are read as the config's: an effort its model can't take was refused with
   // the ref, an entry at --effort is its bare ref, and one engine named twice in a chain is refused
   const canonical = contenders.success.map((c) => ({ ...c, byLevel: Arr.map(c.byLevel, (b) => ({ ...b, chain: atRoleEffort(b.chain, effort) })) }));
-  const refused = canonical.flatMap((c) => c.byLevel.flatMap((b) => duplicateRefs(`${c.name}, from level ${b.from}`, b.chain)));
+  const refused = canonical.flatMap((c) => c.byLevel.flatMap((b) => duplicateRefs(`${c.name}, from level ${b.from}`, b.chain, effort)));
   if (refused.length > 0) return yield* Console.error(`${refused.join("\n")}\n${USAGE}`);
   const messages = yield* readSource(values.from, n, skip);
   const kinds = values.kinds.split(",").map((k) => Schema.decodeUnknownSync(Schema.Literals(["user", "talk", "tool", "echo", "note"]))(k));
