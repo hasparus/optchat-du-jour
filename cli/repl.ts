@@ -522,11 +522,12 @@ export function makeLink() {
   };
 }
 
-// a message, for `engine` of the master's chain when /model chose one (else the server's first)
-const runInput = (text: string, id: string, engine?: string) =>
+// a message with its forwardedProps: `engine` of the master's chain when /model chose one (else
+// the server's first); an unset one is left out of the JSON
+const runInput = (text: string, id: string, forwardedProps: { readonly engine?: string } = {}) =>
   JSON.stringify({
     context: [],
-    forwardedProps: engine === undefined ? {} : { engine },
+    forwardedProps,
     messages: [{ content: text, id, role: "user" }],
     runId: crypto.randomUUID(),
     state: {},
@@ -609,7 +610,7 @@ export const runRepl = (o: ReplOptions) =>
         if (!a) return;
         switch (a.type) {
           case "send":
-            link.send(runInput(a.text, a.id, a.engine));
+            link.send(runInput(a.text, a.id, { engine: a.engine }));
             return;
           case "abort":
             screen.cancel(link.abort());

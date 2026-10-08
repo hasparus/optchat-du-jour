@@ -110,7 +110,7 @@ export const wsRoute = (
       const handle = (m: Inbound) => {
         if ("messages" in m) {
           const { device, engine, followUp } = m.forwardedProps ?? {};
-          return Effect.forEach(fresh(m.messages), (x) => attached(x).pipe(Effect.flatMap((media) => o.session.input(textOf(x), device, x.id, media, followUp, engine))), {
+          return Effect.forEach(fresh(m.messages), (x) => attached(x).pipe(Effect.flatMap((media) => o.session.input(textOf(x), { clientId: x.id, device, engine, followUp, media }))), {
             discard: true,
           });
         }

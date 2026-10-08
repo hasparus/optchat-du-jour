@@ -92,14 +92,18 @@ const contentOf = (text: string, attachments: readonly AttachmentRef[]) =>
     ? text
     : [{ text, type: "text" }, ...attachments.map((a) => ({ source: { mimeType: a.mime, type: "url", value: `asset:${a.sha}` }, type: a.kind }))];
 
+// A message's forwardedProps: the `device` and the `engine` of the master's chain it is for, and
+// `followUp` when it asks for the other behavior than the session's. An unset one is left out.
+export type Forwarded = { readonly device?: string; readonly engine?: string; readonly followUp?: FollowUp };
+
 // What a client sends (server/routes/ws.ts Inbound): AG-UI's RunAgentInput, whose user message
-// (with its id, which the server acks) is the one to answer, with `followUp` when it asks for the
-// other behavior than the session's and `engine`, the engine of the master's chain it is for; an
-// abort; a take-back; a change to the session's settings; the resume of a turn waiting for a model.
-export const runInput = (text: string, device: string | null, id: string, attachments: readonly AttachmentRef[] = [], followUp?: FollowUp, engine?: string) =>
+// (with its id, which the server acks) is the one to answer, with its forwardedProps and its
+// uploaded `attachments`; an abort; a take-back; a change to the session's settings; the resume of
+// a turn waiting for a model.
+export const runInput = (text: string, id: string, { attachments = [], ...forwardedProps }: Forwarded & { readonly attachments?: readonly AttachmentRef[] } = {}) =>
   JSON.stringify({
     context: [],
-    forwardedProps: { device: device ?? undefined, engine, followUp }, // an unset one is left out of the JSON
+    forwardedProps,
     messages: [{ content: contentOf(text, attachments), id, role: "user" }],
     runId: crypto.randomUUID(),
     state: {},

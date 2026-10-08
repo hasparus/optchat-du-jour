@@ -52,12 +52,8 @@ export type SessionEvent =
   | { readonly type: "state"; readonly state: SessionState };
 
 export type Session = {
-  // a message from a client: it starts a turn, or joins the running one. With a `clientId` the
-  // client is told (an "ack") which log entry the message became, or that it could not be logged.
-  // `media`: its attachments, already in the asset store (SPEC "Media"); `followUp`: what it does
-  // if a turn runs, when not the session's setting; `engine`: the engine of the master's chain it
-  // is for (a ref of that chain), the chain's first when none
-  readonly input: (text: string, device?: string, clientId?: string, media?: readonly Asset[], followUp?: FollowUp, engine?: string) => Effect.Effect<void>;
+  // a message from a client: it starts a turn, or joins the running one (InputOptions say how)
+  readonly input: (text: string, o?: InputOptions) => Effect.Effect<void>;
   // a client wants a held message back: a "taken-back" event says whether it got it
   readonly takeBack: (clientId: string) => Effect.Effect<void>;
   // the session's settings, shared by every client: what a mid-run message does
@@ -73,6 +69,19 @@ export type Session = {
   readonly primeSoon: Effect.Effect<void>;
   // the run going on, and the reply it is streaming (not logged yet), for a client joining now
   readonly live: () => LiveRun | null;
+};
+
+// A message's options, shaped like the RunAgentInput's forwardedProps it came with: `device` and
+// `engine` (a ref of the master's chain; the chain's first when none) it is for, and `followUp`,
+// what it does if a turn runs, when not the session's setting. With a `clientId` the client is
+// told (an "ack") which log entry it became, or that it could not be logged. `media`: its
+// attachments, already in the asset store (SPEC "Media").
+export type InputOptions = {
+  readonly device?: string;
+  readonly engine?: string;
+  readonly followUp?: FollowUp;
+  readonly clientId?: string;
+  readonly media?: readonly Asset[];
 };
 
 export type LiveRun = { readonly runId: string; readonly reply: { readonly at: number; readonly text: string } | null };
@@ -573,7 +582,7 @@ export const makeSession = (o: {
     // A message is held; while a call accepts mid-run messages it joins that call if it steers
     // (`steerIn`), else it waits for the next turn, which the loop starts when the call ends.
     // A message for no engine, or for one the chain doesn't have (said), is for the chain's first.
-    const input = (text: string, on?: string, clientId?: string, attached: readonly Asset[] = [], how?: FollowUp, asked?: string) =>
+    const input = (text: string, { clientId, device: on, engine: asked, followUp: how, media: attached = [] }: InputOptions = {}) =>
       Effect.gen(function* () {
         const media = attached.slice(0, MAX_ATTACHMENTS);
         if (attached.length > media.length) yield* info(`at most ${MAX_ATTACHMENTS} attachments per message: ${attached.length - media.length} left out`);

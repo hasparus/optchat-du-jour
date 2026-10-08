@@ -93,7 +93,7 @@ export function Composer({ link, session, state, busy, open, devices, device, on
 
   const send = (how?: FollowUp) => {
     if (!sendable(text)) return;
-    session.send(text, device, tray.ready, running ? how : undefined, model ?? undefined);
+    session.send(text, { device: device ?? undefined, engine: model ?? undefined, followUp: running ? how : undefined, media: tray.ready });
     if (text.trim() !== "") {
       remember(text);
       history.current = [...history.current.filter((t) => t !== text), text];

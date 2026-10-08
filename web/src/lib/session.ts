@@ -3,7 +3,7 @@
 // messages it holds unlogged), status markers from CUSTOM info and RUN_ERROR, whether the model is thinking,
 // and the messages sent from here that the log doesn't hold yet (kept across a reload, ./draft.ts).
 // Every AG-UI event and every page of /api/messages comes through here; the screens only draw it.
-import { type Asset, type FollowUp, type Kind, logIndex, SessionState, splitMarkers } from "@wire";
+import { type Asset, type Kind, logIndex, SessionState, splitMarkers } from "@wire";
 import { EventType } from "@ag-ui/core";
 import { Option, Schema } from "effect";
 import { api } from "./api.ts";
@@ -11,7 +11,7 @@ import { refOf } from "./attach.ts";
 import type { Link, LinkStatus } from "./connection.ts";
 import { loadSent, saveSent } from "./draft.ts";
 import { applyEvent, applyPage, dropBelow, emptyLog, hole, type Log, lowest, tip, trimHeld } from "./log.ts";
-import type { Inbound, Patch } from "./protocol.ts";
+import type { Forwarded, Inbound, Patch } from "./protocol.ts";
 
 export type Marker = {
   readonly key: number;
@@ -349,14 +349,14 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
       };
     },
     // a message from the composer, with the attachments it uploaded: shown as queued until its
-    // ack. Sent while the link is down, it goes out on the next connection. `followUp`: when it
-    // asks for the other behavior than the session's ("send now" or "queue"); `engine`: the
-    // composer's model when it was sent
-    send: (text: string, device: string | null, media: readonly Asset[] = [], followUp?: FollowUp, engine?: string) => {
+    // ack. Sent while the link is down, it goes out on the next connection. The rest is its
+    // forwardedProps: the device and the composer's model when it was sent, and `followUp` when it
+    // asks for the other behavior than the session's ("send now" or "queue")
+    send: (text: string, { media = [], ...forwarded }: Forwarded & { readonly media?: readonly Asset[] } = {}) => {
       const id = crypto.randomUUID();
       const conn = s.status === "open" ? conns : conns + 1;
-      set({ pending: [...s.pending, { conn, engine, error: null, from: s.state?.messages ?? 0, id, media, text }] });
-      link.send(text, device, id, media.map(refOf), followUp, engine);
+      set({ pending: [...s.pending, { conn, engine: forwarded.engine, error: null, from: s.state?.messages ?? 0, id, media, text }] });
+      link.send(text, id, { ...forwarded, attachments: media.map(refOf) });
     },
     // A waiting message back into the composer: one the server holds is asked for (it answers
     // with "taken-back"); one it doesn't hold is ours alone, and comes back at once. False when it

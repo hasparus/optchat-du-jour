@@ -212,7 +212,7 @@ test("a message logs its marker with the caption once it comes; resumed on after
       const f = fakeMedia();
       const r = yield* rig([spent, blind], f.media);
       const photo = image(1), later = image(2);
-      yield* r.session.input("what is this?", undefined, "c1", [photo]);
+      yield* r.session.input("what is this?", { clientId: "c1", media: [photo] });
       // the turn waits for the caption before it logs the message
       yield* until("the caption asked for", () => f.waiting.has(photo.sha));
       expect(r.log()).toEqual([]);
@@ -223,7 +223,7 @@ test("a message logs its marker with the caption once it comes; resumed on after
       yield* until("the blind engine's call", () => seen.length === 2);
       // a picture sent mid-run for the blind engine, its caption already known
       f.describe(later, "a blue circle");
-      yield* r.session.input("", undefined, "c2", [later], undefined, "blind:x");
+      yield* r.session.input("", { clientId: "c2", engine: "blind:x", media: [later] });
       yield* until("the run's end", () => r.ended() === 2); // the stop's, then the resumed one's
 
       const first = `what is this?\n[image ${shortSha(photo.sha)} 1568x1176 195KB: a red (square)]`;
@@ -261,9 +261,9 @@ test("a picture sent mid-run reaches an engine that sees with the message that c
       const later = image(3);
       f.describe(later, "a green triangle");
       const r = yield* rig([seeing], f.media);
-      yield* r.session.input("go", undefined, "c1");
+      yield* r.session.input("go", { clientId: "c1" });
       yield* until("the call", () => r.session.state().engine === "seeing:x");
-      yield* r.session.input("and this", undefined, "c2", [later]);
+      yield* r.session.input("and this", { clientId: "c2", media: [later] });
       yield* until("the run's end", () => r.ended() === 1);
       const text = `and this\n[image ${shortSha(later.sha)} 1568x1176 195KB: a green triangle]`;
       expect(mids).toEqual([{ media: [PIC], seq: 2, text }]);
@@ -310,9 +310,9 @@ test("after a stop that followed a mid-run picture message, the engine it is res
       const star = image(4);
       f.describe(star, "a yellow star");
       const r = yield* rig([taker, blind, seeing], f.media);
-      yield* r.session.input("go", undefined, "c1");
+      yield* r.session.input("go", { clientId: "c1" });
       yield* until("the first call", () => seen.length === 1);
-      yield* r.session.input("what is it?", undefined, "c2", [star]);
+      yield* r.session.input("what is it?", { clientId: "c2", media: [star] });
       // each limit stops the turn (E4); the user resumes it on the blind engine, then the seeing one
       yield* until("the first stop", () => r.session.state().phase === "needs-model");
       yield* r.session.resume("blind:x");
@@ -343,7 +343,7 @@ test("a caption that never comes is logged as not described; more than four atta
       // the service's own wait ran out
       const media: SessionMedia = { caption: () => Effect.succeed(NOT_DESCRIBED), parts: () => [PIC] };
       const r = yield* rig([seeing], media);
-      yield* r.session.input("five", undefined, "c1", [1, 2, 3, 4, 5].map(image));
+      yield* r.session.input("five", { clientId: "c1", media: [1, 2, 3, 4, 5].map(image) });
       yield* until("the run's end", () => r.ended() === 1);
       const [[, text = ""] = []] = r.log();
       expect(text.split("\n")).toEqual(["five", ...[1, 2, 3, 4].map((n) => `[image ${shortSha(image(n).sha)} 1568x1176 195KB: (not described)]`)]);
@@ -379,10 +379,10 @@ test("a message that arrives while the turn waits for a caption waits for its ow
       const f = fakeMedia();
       const r = yield* rig([seeing], f.media);
       const a = image(1), b = image(2);
-      yield* r.session.input("first", undefined, "c1", [a]);
+      yield* r.session.input("first", { clientId: "c1", media: [a] });
       yield* until("a's caption asked for", () => f.waiting.has(a.sha));
       // b comes while the turn waits for a's caption: it is not in that turn's batch
-      yield* r.session.input("second", undefined, "c2", [b]);
+      yield* r.session.input("second", { clientId: "c2", media: [b] });
       f.describe(a, "caption A");
       yield* Effect.sleep("20 millis");
       f.describe(b, "caption B"); // well within captionWait
@@ -418,12 +418,12 @@ test("a message sent while the turn waits for a caption is logged before one sen
       const f = fakeMedia();
       const r = yield* rig([seeing], f.media);
       const a = image(1);
-      yield* r.session.input("A", undefined, "c1", [a]);
+      yield* r.session.input("A", { clientId: "c1", media: [a] });
       yield* until("a's caption asked for", () => f.waiting.has(a.sha));
-      yield* r.session.input("B, sent during the wait", undefined, "c2");
+      yield* r.session.input("B, sent during the wait", { clientId: "c2" });
       f.describe(a, "caption A");
       yield* until("the call", () => calls === 1);
-      yield* r.session.input("C, sent during the run", undefined, "c3");
+      yield* r.session.input("C, sent during the run", { clientId: "c3" });
       yield* until("both runs' ends", () => r.ended() === 2);
       expect(r.log()).toEqual([
         ["user", `A\n[image ${shortSha(a.sha)} 1568x1176 195KB: caption A]`],
@@ -454,9 +454,9 @@ test("a mid-run message is offered with the caption it is logged with, though th
       const f = fakeMedia();
       const r = yield* rig([seeing], f.media);
       const later = image(3);
-      yield* r.session.input("go", undefined, "c1");
+      yield* r.session.input("go", { clientId: "c1" });
       yield* until("the call", () => r.session.state().engine === "seeing:x");
-      yield* r.session.input("and this", undefined, "c2", [later]);
+      yield* r.session.input("and this", { clientId: "c2", media: [later] });
       yield* until("its caption asked for", () => f.waiting.has(later.sha));
       expect(mids).toEqual([]); // not offered before its caption is in
       f.describe(later, "a green triangle");
@@ -478,7 +478,7 @@ test("a cancel while a caption is awaited loses nothing: the message is logged, 
       const f = fakeMedia();
       const r = yield* rig([seeing], f.media);
       const a = image(1);
-      yield* r.session.input("look", undefined, "c1", [a]);
+      yield* r.session.input("look", { clientId: "c1", media: [a] });
       yield* until("the caption asked for", () => f.waiting.has(a.sha));
       yield* Effect.forkChild(r.session.cancel);
       f.describe(a, "late"); // the cancel's own wait ends with it

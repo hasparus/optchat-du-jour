@@ -4,18 +4,15 @@
 // socket only when this client sends, and gives up when it closes, so a phone that only watches
 // would never see a turn the laptop started (SPEC M2 open question).
 import { Option } from "effect";
-import type { FollowUp } from "@wire";
-import { ABORT, type AttachmentRef, type Inbound, parseFrame, resumeFrame, runInput, type Settings, settingsFrame, takeBackFrame } from "./protocol.ts";
+import { ABORT, type AttachmentRef, type Forwarded, type Inbound, parseFrame, resumeFrame, runInput, type Settings, settingsFrame, takeBackFrame } from "./protocol.ts";
 
 export type LinkStatus = "connecting" | "open" | "closed";
 
 export type Link = {
-  // a message: it starts a turn, or joins the running one (device picks where a new turn runs).
-  // Sent while the link is down, it goes out on the next open: what the user wrote isn't lost.
-  // `id` names the message in the server's ack; `attachments` were uploaded first (PUT /api/assets);
-  // `followUp`, when this one asks for the other follow-up behavior than the session's; `engine`,
-  // the engine of the master's chain it is for (the composer's picker when it was sent).
-  readonly send: (text: string, device: string | null, id: string, attachments?: readonly AttachmentRef[], followUp?: FollowUp, engine?: string) => void;
+  // a message: it starts a turn, or joins the running one. Sent while the link is down, it goes out
+  // on the next open: what the user wrote isn't lost. `id` names the message in the server's ack;
+  // `attachments` were uploaded first (PUT /api/assets); the rest is its forwardedProps (protocol.ts).
+  readonly send: (text: string, id: string, o?: Forwarded & { readonly attachments?: readonly AttachmentRef[] }) => void;
   // the user's cancel, for whichever turn runs. Only while the link is open: kept for later, it
   // would cancel whatever turn runs after the reconnect. False when it wasn't sent.
   readonly abort: () => boolean;
@@ -126,8 +123,8 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
         statusListeners.delete(listener);
       };
     },
-    send: (text, device, id, attachments = [], followUp, engine) => {
-      deliver(runInput(text, device, id, attachments, followUp, engine));
+    send: (text, id, o) => {
+      deliver(runInput(text, id, o));
     },
     takeBack: (clientId) => {
       if (!socket || status !== "open") return false;
