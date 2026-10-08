@@ -65,6 +65,10 @@ export function Composer({ link, session, state, busy, open, devices, device, on
   // a message sent now meets a turn: one running, or one waiting for a model, which it joins (if
   // it steers and is for the stopped engine) once the turn is resumed
   const running = state?.phase === "running" || state?.phase === "needs-model";
+  // the turn's engine (the stopped one while it waits): a message for another one waits for a
+  // turn of its own, whatever the follow-up setting, so there is no other way to send it
+  const turnEngine = state?.engine ?? state?.stopped?.ref ?? null;
+  const elsewhere = running && model !== null && turnEngine !== null && model !== turnEngine;
   const followUp = state?.followUp ?? "steer";
   const other: FollowUp = followUp === "steer" ? "queue" : "steer";
   const content = text.trim() !== "" || tray.items.length > 0;
@@ -132,14 +136,22 @@ export function Composer({ link, session, state, busy, open, devices, device, on
     }
   };
 
-  const placeholder = running
-    ? followUp === "queue"
-      ? "Queue a follow-up"
-      : state.phase === "needs-model"
-        ? "Add to the turn, once it goes on"
-        : "Add to the running turn"
-    : "Message";
-  const sendLabel = running && followUp === "queue" ? "Send (queued for the next turn)" : running ? "Send (joins the running turn)" : "Send";
+  const placeholder = elsewhere
+    ? "For the next turn (another model)"
+    : running
+      ? followUp === "queue"
+        ? "Queue a follow-up"
+        : state.phase === "needs-model"
+          ? "Add to the turn, once it goes on"
+          : "Add to the running turn"
+      : "Message";
+  const sendLabel = elsewhere
+    ? "Send (waits for the next turn: another model)"
+    : running && followUp === "queue"
+      ? "Send (queued for the next turn)"
+      : running
+        ? "Send (joins the running turn)"
+        : "Send";
   const otherLabel = other === "steer" ? "Send now" : "Queue for the next turn";
   return (
     <PromptInput
@@ -218,7 +230,7 @@ export function Composer({ link, session, state, busy, open, devices, device, on
           {state && <FollowUps followUp={state.followUp} link={link} />}
         </PromptInputTools>
         <div className="ml-auto flex items-center gap-1">
-          {running && content && (
+          {running && !elsewhere && content && (
             <InputGroupButton
               aria-label={otherLabel}
               disabled={blocked !== null}
@@ -253,7 +265,7 @@ export function Composer({ link, session, state, busy, open, devices, device, on
           {blocked ??
             (touch
               ? null
-              : `Enter to send · Shift+Enter new line${running ? ` · Ctrl/⌘+Enter ${other === "steer" ? "sends now" : "queues"}` : ""}${history.current.length > 0 ? " · ↑ last message" : ""}`)}
+              : `Enter to send · Shift+Enter new line${running && !elsewhere ? ` · Ctrl/⌘+Enter ${other === "steer" ? "sends now" : "queues"}` : ""}${history.current.length > 0 ? " · ↑ last message" : ""}`)}
         </p>
       </PromptInputFooter>
     </PromptInput>

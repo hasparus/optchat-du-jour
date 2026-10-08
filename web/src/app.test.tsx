@@ -94,7 +94,7 @@ test("a turn another client started streams in, with its status line", async () 
   await screen.findByText("what is in the repo?");
   play(...said(4, "user", "sent from the laptop"), { runId: "4", threadId: "mini", type: EventType.RUN_STARTED }, state({ engine: "claude-code:opus", phase: "running" }));
   expect(await screen.findByText("sent from the laptop")).toBeTruthy();
-  expect(screen.getByTestId("status").textContent).toContain("running on mini (claude-code:opus)");
+  expect(screen.getByTestId("status").textContent).toContain("running on mini, Claude Opus (Claude Code)");
   play({ name: "thinking", type: EventType.CUSTOM, value: { tokens: 12 } });
   expect(screen.getByTestId("status").textContent).toContain("thinking…");
   play({ messageId: "5", role: "assistant", type: EventType.TEXT_MESSAGE_START }, { delta: "Half a ", messageId: "5", type: EventType.TEXT_MESSAGE_CONTENT });
@@ -604,6 +604,16 @@ test("the model picker is this page's own: switching it sends nothing; each mess
   );
   const [down] = [...screen.getByLabelText<HTMLSelectElement>("Model").options];
   expect([down?.disabled, down?.textContent]).toEqual([true, "Claude Opus (Claude Code): unavailable, Claude AI usage limit reached"]);
+  // the closed picker marks its own engine when that one is down
+  expect(screen.queryByTestId("picker-down")).toBeNull();
+  fireEvent.change(screen.getByLabelText("Model"), { target: { value: "claude-code:opus" } });
+  expect(screen.getByTestId("picker-down")).toBeTruthy();
+  // while a turn runs on Sol, a message for Opus waits for a turn of its own: no "send now"
+  play(state({ engine: "openai-plan:gpt-6.1-sol", phase: "running" }));
+  type("for opus");
+  expect(box().getAttribute("placeholder")).toBe("For the next turn (another model)");
+  expect(screen.getByRole("button", { name: "Send" }).getAttribute("title")).toBe("Send (waits for the next turn: another model)");
+  expect(screen.queryByRole("button", { name: /^(Send now|Queue for the next turn)$/ })).toBeNull();
 });
 
 test("before the first state, a message names the model this page kept; once the state shows the chain lacks it, the chain's first", async () => {
@@ -636,7 +646,7 @@ test("a turn stopped on a usage limit: every client shows why and the engines to
   // the run's end that follows is not said again in the chat: the prompt says it, once
   play({ message: "usage limit: Claude AI usage limit reached", type: EventType.RUN_ERROR });
   const alert = await screen.findByTestId("needs-model");
-  expect(alert.textContent).toContain("Claude Opus (Claude Code): usage limit: Claude AI usage limit reached. Pick a model to go on.");
+  expect(alert.textContent).toContain("Claude Opus (Claude Code): usage limit: Claude AI usage limit reached. Choose how to go on:");
   expect(screen.queryByTestId("marker-error")).toBeNull();
   // a message sent while it waits meets the turn as a running one would: it joins once the turn
   // goes on, or (the other button) waits for the next turn

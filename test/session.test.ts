@@ -323,7 +323,7 @@ test("a usage limit mid-turn stops the turn and waits for a resume: no second en
   );
 });
 
-test("text an engine streamed and never logged is dropped at the stop, so the picked engine's reply is not glued to it", async () => {
+test("text an engine streamed and never logged is dropped at the stop, so the resumed engine's reply is not glued to it", async () => {
   await Effect.runPromise(
     Effect.gen(function* () {
       const spent: TurnEngine = {
@@ -687,7 +687,7 @@ test("take-back racing the run start: one the turn has picked is refused and log
   );
 });
 
-test("queue across a stop: the queued message stays held, is not handed to the picked engine's call, and is answered once by the next turn; a cancel while waiting logs what is held", async () => {
+test("queue across a stop: the queued message stays held, is not handed to the resumed engine's call, and is answered once by the next turn; a cancel while waiting logs what is held", async () => {
   await Effect.runPromise(
     Effect.gen(function* () {
       const gate = { open: false };
@@ -1130,11 +1130,11 @@ test("a message for another device sent while the turn waits for summaries gets 
   );
 });
 
-// SPEC "Engines", a turn stopped for a pick: clients get the state (phase needs-model, `stopped`)
-// before the run's end, nothing else says it, and the pick's notice is the record; while it waits
+// SPEC "Engines", a turn stopped for a resume: clients get the state (phase needs-model, `stopped`)
+// before the run's end, nothing else says it, and the resume's notice is the record; while it waits
 // no call runs, so a message sent meanwhile is held (it can be taken back) and joins the resumed
 // call in send order; the resumed run has a run id of its own
-test("a stop for a pick: the state comes before the run's end; messages sent while waiting are held, can be taken back, and join the resumed run in send order", async () => {
+test("a stop for a resume: the state comes before the run's end; messages sent while waiting are held, can be taken back, and join the resumed run in send order", async () => {
   await Effect.runPromise(
     Effect.gen(function* () {
       const took: string[] = [];

@@ -53,15 +53,17 @@ export const shortLabel = (label: string) => label.replace(/ \(.*\)$/, "").repla
 
 // A native select (the phone's own picker) laid over a compact label, so a picker in the footer
 // takes the width of its value, not of its longest option
-type CompactSelectProps = ComponentProps<"select"> & { readonly label: string; readonly shown: string; readonly testId?: string };
+// `down`: what is shown can't take a turn now: a small mark beside it (the title says why)
+type CompactSelectProps = ComponentProps<"select"> & { readonly label: string; readonly shown: string; readonly testId?: string; readonly down?: boolean };
 
-export function CompactSelect({ label, shown, title, testId, children, ...props }: CompactSelectProps) {
+export function CompactSelect({ label, shown, title, testId, down = false, children, ...props }: CompactSelectProps) {
   return (
     <span
       className="relative flex h-6 max-w-28 min-w-0 items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground has-[select:focus-visible]:ring-[3px] has-[select:focus-visible]:ring-ring/50"
       data-testid={testId}
       title={title}
     >
+      {down && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-destructive" data-testid="picker-down" />}
       <span className="truncate">{shown}</span>
       <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
       <select aria-label={label} className="absolute inset-0 cursor-pointer opacity-0" {...props}>
@@ -74,18 +76,19 @@ export function CompactSelect({ label, shown, title, testId, children, ...props 
 // The model picker: the engines of the master's chain, `model` the one this client's next messages
 // are for. It is this client's own (kept in localStorage): a change sends nothing, and a turn
 // waiting for a model is resumed from its alert, not from here. An engine that hit a usage limit
-// is disabled with why, unless it is the one picked.
+// is disabled with why, unless it is the one picked, which then shows a small down mark.
 export function ModelPicker({ model, onModel, state }: { readonly model: string; readonly onModel: (ref: string) => void; readonly state: SessionState }) {
   const current = state.engines.find((e) => e.ref === model);
   return (
     <CompactSelect
+      down={current !== undefined && current.down !== null}
       label="Model"
       onChange={(e) => {
         onModel(e.currentTarget.value);
       }}
       shown={shortLabel(current?.label ?? model)}
       testId="model-picker"
-      title={current ? `${current.label}: your next messages` : undefined}
+      title={current ? `${current.label}: your next messages${current.down === null ? "" : ` (unavailable: ${current.down})`}` : undefined}
       value={model}
     >
       {state.engines.map((e) => (

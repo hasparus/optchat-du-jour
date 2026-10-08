@@ -45,7 +45,7 @@ function status(s: Session): string | null {
     case "waiting":
       return `waiting for ${s.state.waiting} summaries…`;
     case "running":
-      return s.thinking ? "thinking…" : `running on ${s.state.device}${s.state.engine ? ` (${s.state.engine})` : ""}`;
+      return s.thinking ? "thinking…" : `running on ${s.state.device}${s.state.engine ? `, ${engineLabel(s.state.engine)}` : ""}`;
     case "needs-model": // said by its own banner
     case "idle":
     case undefined:
@@ -147,7 +147,7 @@ function NeedsModel({ session, state, onModel }: { readonly session: Pick<Sessio
   return (
     <div className="space-y-2 rounded-lg border border-destructive/50 bg-destructive/5 p-2.5 text-sm" data-testid="needs-model" role="alert">
       <p>
-        <span className="font-medium">{stopped.label}</span>: {stopped.why}. Pick a model to go on.
+        <span className="font-medium">{stopped.label}</span>: {stopped.why}. Choose how to go on:
       </p>
       <div className="flex flex-wrap gap-1.5">
         {state.engines.map((e) => {
