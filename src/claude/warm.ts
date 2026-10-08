@@ -93,6 +93,7 @@ export const warmRunner = (base: Runner["Service"], o: WarmOptions = {}): Effect
     // a fresh one, and if its keeper had given up, a new keeper: claude starts again.
     const spawn: Runner["Service"]["spawn"] = (spec) =>
       Effect.gen(function* () {
+        if (spec.pooled === false) return yield* base.spawn(spec);
         const key = spawnKey(spec);
         const w = yield* Effect.acquireRelease(take(key), (taken) => (taken ? Scope.close(taken.scope, Exit.void) : Effect.void));
         if (w) return w.claude;
@@ -104,7 +105,7 @@ export const warmRunner = (base: Runner["Service"], o: WarmOptions = {}): Effect
     // keep these warm from now on, and only these
     const warm = (expected: readonly Spawn[]) =>
       Effect.gen(function* () {
-        wanted = new Map(expected.slice(0, KEYS).map((s) => [spawnKey(s), s]));
+        wanted = new Map(expected.filter((s) => s.pooled !== false).slice(0, KEYS).map((s) => [spawnKey(s), s]));
         const stale = [...keepers].flatMap(([key]) => (wanted.has(key) ? [] : [key]));
         for (const key of stale) yield* FiberMap.remove(keepers, key);
         for (const key of wanted.keys()) yield* keepWarm(key);

@@ -109,7 +109,8 @@ export const sizeRetries = (o: {
       );
       yield* record(answer.usage, answer.model, answer.dollars);
       const line = answer.text.trim();
-      if (!line) return yield* new ModelError({ message: "the compactor answered with an empty line" });
+      // an empty answer ends the call: a line tried before it still stands, the shortest of them
+      if (!line) return tries.length > 0 ? shortest(tries) : yield* new ModelError({ message: "the compactor answered with an empty line" });
       tries.push(line);
       if (enough(tries)) return shortest(tries);
       retry = { line, text: retryText(line) };

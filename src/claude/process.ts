@@ -29,6 +29,8 @@ export type Spawn = {
   readonly args: readonly string[];
   readonly env: Readonly<Record<string, string>>;
   readonly cwd?: string;
+  // false: never kept warm, never handed a warm process (a compactor call, E18)
+  readonly pooled?: boolean;
 };
 
 // DeviceOffline: a device runner could not be reached or would not start claude (SPEC "Device offline").

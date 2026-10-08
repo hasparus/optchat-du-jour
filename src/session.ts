@@ -6,7 +6,7 @@
 // Priming runs only while idle, and a turn never waits for it (E17, SPEC "Turn and priming").
 import { Cause, Deferred, type Duration, Effect, Exit, Fiber, FiberSet, Option, PubSub, Queue, type Scope } from "effect";
 import type { Choices } from "./choices.ts";
-import { PRIME_IDLE } from "./config.ts";
+import { PRIME_IDLE, WAIT_RETRY } from "./config.ts";
 import type { Chat } from "./chat.ts";
 import type { DownList } from "./engines/chain.ts";
 import type { EngineError } from "./engines/errors.ts";
@@ -118,6 +118,7 @@ export const makeSession = (o: {
   readonly commit: Effect.Effect<string | null>; // commit the data dir (its push is not waited for); an error message or null
   readonly logUsage: (record: UsageRecord) => Effect.Effect<void>;
   readonly idle?: Duration.Input; // PRIME_IDLE
+  readonly waitRetry?: Duration.Input; // WAIT_RETRY
   readonly compactorDown?: DownList; // makeSummarize's `down`: shown in the state, published again as it changes
   readonly events?: PubSub.PubSub<SessionEvent>; // the server's, made first so it can report into it; else the session's own
 }): Effect.Effect<Session, never, Scope.Scope> =>
@@ -433,7 +434,10 @@ export const makeSession = (o: {
         if (unbuilt(chat.mem)) {
           device = nextTurn(inbox, o.defaultDevice).on; // shown while it waits; read again after, with what came in meanwhile
           yield* enter("waiting");
-          yield* settle(chat.mem);
+          // A failed call is tried again at the next message (docs/optchat.md §4); while the turn
+          // waits for one, none comes, so it is also tried every WAIT_RETRY, only while it waits (E24)
+          const retrying = chat.retry.pipe(Effect.delay(o.waitRetry ?? WAIT_RETRY), Effect.forever);
+          yield* Effect.raceFirst(settle(chat.mem), retrying);
         }
         // This turn's device, engine and messages are read once the summaries are in, and picked at
         // once, so none can be taken back any more; their captions are waited for together,

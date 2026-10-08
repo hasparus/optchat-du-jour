@@ -18,7 +18,7 @@ import { ApiKeys, apiKeysLayer } from "../src/apikey/clients.ts";
 import { openChat } from "../src/chat.ts";
 import { LocalRunner, Runner } from "../src/claude/process.ts";
 import type { Summarize } from "../src/compactor.ts";
-import { NODE, type Settings, loadSettings, parseRef } from "../src/config.ts";
+import { NODE, type Settings, WAIT_RETRY, loadSettings, parseRef } from "../src/config.ts";
 import { parseOptmem } from "../src/import.ts";
 import { zoom } from "../src/mcp.ts";
 import { OpenAiPlan, openAiPlanLayer } from "../src/openai/responses.ts";
@@ -103,7 +103,7 @@ export const replay = <R>(o: {
   readonly deadline?: Duration.Input; // 2 hours
   // how often a failed call is tried again: in a chat, at the next message (docs/optchat.md §4);
   // here, where no message comes while the replay waits, every `retry`
-  readonly retry?: Duration.Input; // 10 s
+  readonly retry?: Duration.Input; // WAIT_RETRY
 }) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -124,7 +124,9 @@ export const replay = <R>(o: {
       });
       let logged = 0;
       const deadline = o.deadline ?? "2 hours";
-      const retrying = chat.retry.pipe(Effect.delay(o.retry ?? "10 seconds"), Effect.forever);
+      // no session here, and the end waits on every node, not just the view's: tried again as a
+      // waiting turn does (src/session.ts), every WAIT_RETRY
+      const retrying = chat.retry.pipe(Effect.delay(o.retry ?? WAIT_RETRY), Effect.forever);
       const finished = yield* Effect.gen(function* () {
         for (const m of o.messages) {
           yield* chat.log(m.kind, m.text);

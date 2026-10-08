@@ -4,13 +4,14 @@
 // context's last whole block, the task); and the size retries in the same conversation until the
 // line fits in NODE bytes or TRIES are spent.
 import { Duration, Effect, Option } from "effect";
-import { markAt, type TextBlock } from "../claude/events.ts";
+import { baseArgs } from "../claude/args.ts";
+import { type Event, markAt, type TextBlock } from "../claude/events.ts";
 import type { Spawn } from "../claude/process.ts";
 import type { Job } from "../compactor.ts";
 import { CALL_TIMEOUT } from "../config.ts";
 import { type DeviceOffline, type EngineError, fromResult, ModelError } from "../engines/errors.ts";
 import { type Gate, prefixKey } from "../engines/inflight.ts";
-import { masterArgs, type Placement } from "../turn/claude-code.ts";
+import type { Placement } from "../turn/claude-code.ts";
 import { tokensOf, type UsageRecord } from "../usage.ts";
 import { type Try, contextBlocks, sizeRetries, task } from "./step.ts";
 
@@ -44,57 +45,68 @@ export const markedPrefix = (sent: readonly TextBlock[]): string[] | null => {
   return last === -1 ? null : sent.slice(0, last + 1).map((b) => b.text);
 };
 
-// The spawn of a compactor call: a turn's argv but for the model, its effort and the permission
-// mode (`default`, so a tool the model calls anyway is refused rather than run; nothing of these
-// reaches the request's prefix), and DISABLE_PROMPT_CACHING=1 for our own marks (D6), every one with
-// the same TTL (E6). OPTCHAT_CALL keeps it from ever taking a turn's or a priming's warm process
-// (E18: those go only to a byte-identical spawn); claude ignores it.
+// The spawn of a compactor call: a turn's flags (`baseArgs` with the one system prompt and the
+// master's tools, and its --mcp-config, so zoom and date are listed too) but for the model, its
+// effort and the permission mode, and without --replay-user-messages, which shapes claude's output,
+// not the request. `default` refuses what needs a permission, and with `-p` and `--setting-sources
+// ""` nothing is allowed ahead: Bash, the writing tools and the MCP ones. Read, Glob and Grep need
+// none and would run, so a try is killed as soon as a tool call starts streaming (`answer`).
+// DISABLE_PROMPT_CACHING=1 leaves our own marks only (D6), every one with the same TTL (E6). Never
+// pooled: no warm process is started for it or handed to it (E18).
 export const compactSpawn = (o: Pick<CompactorOptions, "effort" | "instructions" | "model" | "tools" | "ttl">, p: Placement): Spawn => ({
-  args: masterArgs({ effort: o.effort, instructions: o.instructions, mcpConfig: p.mcpConfig, model: o.model, permissionMode: "default", tools: o.tools }),
+  args: [...baseArgs({ effort: o.effort, model: o.model, system: o.instructions, tools: o.tools.join(",") }), "--mcp-config", p.mcpConfig, "--permission-mode", "default"],
   cwd: p.cwd,
-  env: { CLAUDE_CODE_PROMPT_CACHE_TTL: o.ttl, DISABLE_PROMPT_CACHING: "1", OPTCHAT_CALL: "compact" },
+  env: { CLAUDE_CODE_PROMPT_CACHE_TTL: o.ttl, DISABLE_PROMPT_CACHING: "1" },
+  pooled: false,
 });
 
 const failed = (e: { readonly message: string }) => new ModelError({ message: e.message });
 
+// a tool call begins: its block starts streaming, before claude can have run it
+const callsTool = (e: Event) =>
+  (e.type === "stream_event" && e.event.type === "content_block_start" && e.event.content_block.type === "tool_use") ||
+  (e.type === "assistant" && e.message.content.some((b) => b.type === "tool_use"));
+
 export const claudeCodeCompactor = (o: CompactorOptions) => {
   const timeout = o.timeout ?? CALL_TIMEOUT;
 
-  // the transport: one process per node, each try a message into it, its result the answer
+  // the transport: one process per node, each try a message into it, its result the answer. A call
+  // that waits on another writing its marked prefix waits before its process starts.
   const call = (job: Job, failoverFrom: string | null) =>
     Effect.gen(function* () {
       const p = yield* o.placement;
-      const claude = yield* p.runner.spawn(compactSpawn(o, p)).pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(failed(e))));
       const first = blocks(job, o.ttl);
       const prefix = markedPrefix(first);
       const key = prefix && prefixKey(["claude-code", o.model, o.instructions, o.tools.join(","), ...prefix]);
-      return yield* o.gate.through(key, (started) => {
-        // a try's events up to its result: the first stream event means the request was taken;
-        // a tool call ends the try, since the tools are there for the prefix only
-        const answer = Effect.gen(function* () {
-          for (;;) {
-            const next = yield* claude.next;
-            if (Option.isNone(next)) return yield* claude.result.pipe(Effect.mapError(failed));
-            const e = next.value;
-            if (e.type === "stream_event") yield* started;
-            if (e.type === "assistant" && e.message.content.some((b) => b.type === "tool_use"))
-              return yield* new ModelError({ message: "the compactor called a tool" });
-            if (e.type === "result") return e;
-          }
-        });
-        const ask = (t: Try) =>
-          Effect.gen(function* () {
-            yield* claude.send(t.retry === null ? first : [{ text: t.retry.text, type: "text" }]);
-            const result = yield* answer;
-            const usage = tokensOf(result.usage), model = claude.model() ?? null;
-            if (result.is_error || result.stop_reason === "refusal")
-              return yield* fromResult(result.result ?? `the call ended with ${result.subtype ?? "an error"}`, result.stop_reason, { model, usage });
-            return { model, text: result.result ?? "", usage };
+      return yield* o.gate.through(key, (started) =>
+        Effect.gen(function* () {
+          const claude = yield* p.runner.spawn(compactSpawn(o, p)).pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(failed(e))));
+          // a try's events up to its result: the first stream event means the request was taken;
+          // a tool call ends the try (the scope kills the process), since the tools are there for
+          // the prefix only
+          const answer = Effect.gen(function* () {
+            for (;;) {
+              const next = yield* claude.next;
+              if (Option.isNone(next)) return yield* claude.result.pipe(Effect.mapError(failed));
+              const e = next.value;
+              if (e.type === "stream_event") yield* started;
+              if (callsTool(e)) return yield* new ModelError({ message: "the compactor called a tool" });
+              if (e.type === "result") return e;
+            }
           });
-        return sizeRetries({ ask, auth: "claude-max", device: o.device, engine: "claude-code", failoverFrom, job, log: o.log });
-      });
+          const ask = (t: Try) =>
+            Effect.gen(function* () {
+              yield* claude.send(t.retry === null ? first : [{ text: t.retry.text, type: "text" }]);
+              const result = yield* answer;
+              const usage = tokensOf(result.usage), model = claude.model() ?? null;
+              if (result.is_error || result.stop_reason === "refusal")
+                return yield* fromResult(result.result ?? `the call ended with ${result.subtype ?? "an error"}`, result.stop_reason, { model, usage });
+              return { model, text: result.result ?? "", usage };
+            });
+          return yield* sizeRetries({ ask, auth: "claude-max", device: o.device, engine: "claude-code", failoverFrom, job, log: o.log });
+        }).pipe(Effect.scoped), // the process ends with the node
+      );
     }).pipe(
-      Effect.scoped, // the process ends with the node
       Effect.timeoutOrElse({
         duration: timeout,
         orElse: () => Effect.fail(new ModelError({ message: `no answer within ${Duration.format(Duration.fromInputUnsafe(timeout))}` })),

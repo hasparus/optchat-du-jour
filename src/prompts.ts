@@ -12,5 +12,6 @@ export const CAPTION = contents(shipped("caption.txt")); // the caption call's s
 
 // The one system prompt (docs/optchat.md §5): ours, then the user's own instructions.md, a blank
 // line between. Nothing in it changes from call to call or between devices (no date, no working
-// directory), so it is built once and every turn and compaction shares its cache entry.
+// directory), so it is built once and every turn and compaction sends the same bytes; calls on one
+// model can read one cache entry for it (E26 says where one ends).
 export const systemPrompt = (home: string) => [SYSTEM, contentsIfAny(`${home}/instructions.md`)].join("\n\n");

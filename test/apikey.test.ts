@@ -97,7 +97,7 @@ const decodeBody = Schema.decodeUnknownSync(Schema.fromJsonString(Body));
 // a block's mark as sent, "5m" for one with no TTL (the API's default), null for none
 const markOf = (b: typeof Block.Type) => (b.cache_control === undefined ? null : `${b.cache_control.type} ${b.cache_control.ttl ?? "5m"}`);
 
-test("Anthropic gets our cache layout: a 5-minute mark on the last whole block and the request end, the thinking back on a retry, and every call is priced", async () => {
+test("Anthropic gets our cache layout: 5-minute marks on the system prompt, the last whole block and the request end, the thinking back on a retry, and every call is priced", async () => {
   const r = rig(5, `${dir}/priced.jsonl`);
   fake.state.seen.length = 0;
   fake.state.script = [{ text: `user: ${"x".repeat(600)}`, thinking: "too long, but first" }, { text: "user: squeeze me" }];
@@ -105,7 +105,8 @@ test("Anthropic gets our cache layout: a 5-minute mark on the last whole block a
 
   const [first, retry] = fake.state.seen.map((b) => decodeBody(b));
   expect(fake.state.headers[0]?.get("anthropic-version")).toBe("2023-06-01");
-  expect(first?.system.every((b) => b.cache_control === undefined)).toBe(true);
+  // the system prompt's end, after the tools: an entry that outlives the view's batches
+  expect(first?.system.map(markOf)).toEqual(["ephemeral 5m"]);
   // 28 context pieces, a mark on the last whole one (the 27th); the partial piece and the step are
   // read through the request end's automatic mark, so the size retry reads the whole first try
   expect(first?.messages[0]?.content.map(markOf)).toEqual(Array.from({ length: 29 }, (_, k) => (k === 26 ? "ephemeral 5m" : null)));
@@ -136,6 +137,11 @@ test("Anthropic gets our cache layout: a 5-minute mark on the last whole block a
   expect(JSON.stringify(compaction?.tools)).toBe(JSON.stringify(asTurn?.tools));
   expect(first?.tool_choice?.type).toBe("none");
   expect(turn?.messages[0]?.content.map(markOf)).toEqual(["ephemeral 5m", null, null]);
+  // three breakpoints in all, of Anthropic's four, the same on a turn and a compaction: the system
+  // prompt's end, the view's last whole block, the request end
+  const count = (b: typeof first) => [...(b?.system ?? []), ...(b?.messages ?? []).flatMap((m) => m.content)].filter((x) => x.cache_control !== undefined).length + (b?.cache_control ? 1 : 0);
+  expect([first, retry, turn, last].map(count)).toEqual([3, 3, 3, 3]);
+  expect(turn?.system.map(markOf)).toEqual(["ephemeral 5m"]);
   expect([turn?.cache_control, last?.cache_control]).toEqual([{ type: "ephemeral" }, { type: "ephemeral" }]);
   expect(turn?.tools?.map((t) => t.name)).toEqual(["Read"]);
   expect([turn?.tool_choice?.type, last?.tool_choice?.type]).toEqual(["auto", "none"]);

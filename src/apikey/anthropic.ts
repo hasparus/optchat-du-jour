@@ -3,7 +3,10 @@
 // the view's last whole block (the part a user Item's `mark` names), which the next call finds by
 // the 20-block lookback, and the top-level automatic `cache_control` on every request, which
 // Anthropic puts on its last block, so each step of a turn (or each size retry of a compactor
-// call) reads everything the step before it sent: 2 of Anthropic's 4. Every entry is a 5-minute one, the API's
+// call) reads everything the step before it sent. And one on the system prompt, the same for turns
+// and compactions, so the tools and system prompt have an entry of their own: a compaction after
+// its view's batch, or a turn after the view's, rewrites only from the first changed line, and a
+// compaction on the turns' model reads the turns' (E26). 3 of Anthropic's 4. Every entry is a 5-minute one, the API's
 // default (docs/optchat.md §3.3; E6's 1-hour entries are the Claude subscription's). Thinking blocks come back in the
 // next request exactly as they arrived, signature and all, as tool use with thinking requires.
 import { Effect, Option, Schema, Stream } from "effect";
@@ -98,7 +101,7 @@ export const messagesOf = (history: readonly Item[]) => {
 const Body = Schema.Struct({
   model: Schema.String,
   max_tokens: Schema.Int,
-  system: Schema.Array(Schema.Struct({ type: Schema.Literal("text"), text: Schema.String })),
+  system: Schema.Array(Schema.Struct({ type: Schema.Literal("text"), text: Schema.String, cache_control: Schema.Struct({ type: Schema.Literal("ephemeral") }) })),
   messages: Schema.Array(Schema.Struct({ role: Schema.Literals(["user", "assistant"]), content: Schema.Array(Schema.Json) })),
   tools: Schema.optional(Schema.Array(Schema.Struct({ name: Schema.String, description: Schema.String, input_schema: Schema.Json }))),
   tool_choice: Schema.optional(Schema.Struct({ type: Schema.Literals(["auto", "none"]) })),
@@ -119,7 +122,7 @@ export const requestBody = (ask: MessagesAsk<Tagged>) => {
     model: ask.model,
     output_config: ask.effort === undefined ? undefined : { effort: ask.effort },
     stream: true,
-    system: [{ text: ask.system, type: "text" }],
+    system: [{ cache_control: EPHEMERAL, text: ask.system, type: "text" }], // the end of the tools and system prompt
     tool_choice: tools === undefined ? undefined : { type: ask.toolChoice ?? "auto" },
     tools: tools?.map((t) => ({ description: t.description, input_schema: t.parameters, name: t.name })),
   });

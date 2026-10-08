@@ -41,8 +41,9 @@ export type EngineNeeds = {
 // A compactor engine's needs: compactor calls run on the server's own machine, named in their usage
 // records. They send what a turn sends before its view (docs/optchat.md §4, §5): the one system
 // prompt, and a turn's tools (the default device's for a provider; for claude-code, a turn's on
-// this machine, `placement`), so they read the turns' cache entry; and they wait on a call
-// writing the same marked prefix (`gate`, docs/optchat.md §3.3).
+// this machine, `placement`): the same bytes before the view. A cache entry is the model's own, so
+// they read a turn's entry only when they run on the turns' model, which the shipped chains don't
+// (E5, E26). They wait on a call writing the same marked prefix (`gate`, docs/optchat.md §3.3).
 export type CompactorNeeds = EngineNeeds & {
   readonly device?: string;
   readonly instructions: string;

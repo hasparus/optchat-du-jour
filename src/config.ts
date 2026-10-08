@@ -21,6 +21,9 @@ export const JOBS = 8;
 export const AHEAD = 8;
 // tries per node to get a summary under NODE; a failed call is tried again at the next message
 export const TRIES = 5;
+// while a turn waits for summaries, a failed call is also tried again this often (E24): no message
+// comes to try it again then, and a fixed pause never delays the turn by more than itself
+export const WAIT_RETRY = "10 seconds";
 // the most characters of one tool result that get logged
 export const CAP = 30_000;
 // lines per content block of the view, or of a compactor's context (docs/optchat.md §3.3 "How the

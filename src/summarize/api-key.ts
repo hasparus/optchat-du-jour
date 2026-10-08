@@ -1,5 +1,5 @@
 // The compactor on an API key (docs/optchat.md §4; E5): the turns' system prompt and tools (never
-// called: tool choice `none`), so its requests share the api-key turns' prefix (§7 mistake 6);
+// called: tool choice `none`), the bytes an api-key turn sends before its view (§7 mistake 6);
 // then the context pieces, a cache mark on the last whole one (the provider places it at
 // `mark`), and the task; the request's end is cached too (docs/optchat.md §3.3), so a size retry
 // reads the try before it. Size retries stay in the same conversation, each try re-sent with the

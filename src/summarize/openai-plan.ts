@@ -1,6 +1,6 @@
 // The compactor on the ChatGPT plan (docs/optchat.md §4; E5): the turns' system prompt as
-// `instructions` and their function tools (never called: tool choice `none`), so its requests share
-// the turns' prefix (§7 mistake 6); then one user message of the context blocks and the task.
+// `instructions` and their function tools (never called: tool choice `none`), the bytes a turn sends
+// before its view (§7 mistake 6); then one user message of the context blocks and the task.
 // Size retries stay in the same conversation: with `store: false` nothing is kept server-side, so
 // each try re-sends the whole input, the earlier tries (their reasoning items included, as E26 has
 // it) and the retry texts. The context blocks come first, a cache breakpoint on the last whole one

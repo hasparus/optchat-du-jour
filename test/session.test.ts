@@ -4,10 +4,11 @@
 // lost or logged twice, and the loop never spins.
 import { afterAll, expect, test } from "bun:test";
 import { type AGUIEvent, EventType } from "@ag-ui/core";
-import { Effect, PubSub } from "effect";
+import { type Duration, Effect, PubSub } from "effect";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
+import { CompactError } from "../src/compactor.ts";
 import { openStream } from "../server/agui.ts";
 import { UsageLimit } from "../src/engines/errors.ts";
 import { type Choices, loadChoices, startingChoices } from "../src/choices.ts";
@@ -37,7 +38,12 @@ type Disk = { full: boolean; bugs: number; before: Hook | null; after: Hook | nu
 // a session over a fresh chat whose log can be made to fail; every event it publishes is kept
 const rig = (
   engine: TurnEngine | readonly TurnEngine[],
-  o: { readonly commit?: Effect.Effect<void>; readonly followUp?: FollowUp; readonly summarize?: Effect.Effect<void> } = {},
+  o: {
+    readonly commit?: Effect.Effect<void>;
+    readonly followUp?: FollowUp;
+    readonly summarize?: Effect.Effect<void, CompactError>;
+    readonly waitRetry?: Duration.Input;
+  } = {},
 ) =>
   Effect.gen(function* () {
     const dir = mkdtempSync(`${tmpdir()}/oc-`);
@@ -69,6 +75,7 @@ const rig = (
       idle: "1 hour",
       logUsage: () => Effect.void,
       media: noMedia,
+      waitRetry: o.waitRetry ?? "1 hour",
     });
     const events: SessionEvent[] = [];
     const sub = yield* PubSub.subscribe(session.events);
@@ -1126,6 +1133,36 @@ test("a message for another device sent while the turn waits for summaries gets 
       gate.open = true;
       yield* until("four turns", () => r.events.filter((e) => e.type === "run-finished").length === 4);
       expect(turns).toEqual(["A@mini", `${long}@mini`, "on mini@mini", "on mac@mac"]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("a turn waiting for a summary whose call keeps failing goes on once a retry gets through, with no new message (WAIT_RETRY)", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const turns: string[] = [];
+      const engine: TurnEngine = {
+        ref: "fake:x",
+        // a long reply: its summary needs a call, and the next turn waits for it
+        run: (input, out) => Effect.andThen(Effect.sync(() => void turns.push(input.texts.join("+"))), out.log("talk", "r".repeat(600))),
+        vision: false,
+        warm: () => Effect.void,
+      };
+      const calls = { failing: 0, made: 0 };
+      const summarize = Effect.suspend(() => {
+        calls.made++;
+        return calls.failing-- > 0 ? Effect.fail(new CompactError({ message: "overloaded" })) : Effect.void;
+      });
+      const r = yield* rig(engine, { summarize, waitRetry: "50 millis" });
+      // the reply's call fails; the next message tries it again, and it fails once more while the
+      // turn waits, which tries it again by itself
+      calls.failing = 3;
+      yield* r.session.input("A", { clientId: "c1" });
+      yield* until("the first turn", () => r.events.some((e) => e.type === "run-finished") && calls.made === 1);
+      yield* r.session.input("B", { clientId: "c2" });
+      yield* until("two turns", () => r.events.filter((e) => e.type === "run-finished").length === 2);
+      expect(turns).toEqual(["A", "B"]);
+      expect(calls.made).toBeGreaterThanOrEqual(4); // three failures, then the one that got through (and B's own reply)
     }).pipe(Effect.scoped),
   );
 });
