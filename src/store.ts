@@ -6,7 +6,7 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, rea
 import { createServer, type Server, connect } from "node:net";
 import { dirname, resolve } from "node:path";
 import { type Kind, Msg, Node } from "./records.ts";
-import { bytes, dayOf, type Entry, label, type Marks, type Mem, msgText, newMem, setNode } from "./tree.ts";
+import { bytes, dayOf, type Entry, label, type Marks, type Mem, msgText, newMem, type Saw, setNode } from "./tree.ts";
 import { type Found, restore } from "./view.ts";
 
 export class StoreError extends Data.TaggedError("StoreError")<{ readonly message: string }> {}
@@ -94,12 +94,17 @@ export function appendNode(dir: string, record: Node, now = new Date()) {
 // that changed it: to a temp file, synced, renamed over the old one, the directory synced. A crash
 // leaves the old view or the new, never half of one; and the log is ahead of it, never behind.
 const VIEW_FILE = "view.json";
-const ViewFile = Schema.Struct({ folding: Schema.Boolean, view: Schema.Array(Schema.Tuple([Schema.Int, Schema.Int])) });
+const SawFile = Schema.Struct({ folding: Schema.Boolean, view: Schema.Array(Schema.Tuple([Schema.Int, Schema.Int])) });
+// the compaction view beside it (docs/optchat.md §4 "Its view"), in the same file so the two are
+// always saved together; a file from before it existed has none
+const ViewFile = Schema.Struct({ ...SawFile.fields, compaction: Schema.optional(SawFile) });
 const decodeView = Schema.decodeUnknownOption(Schema.fromJsonString(ViewFile));
+
+const pairsOf = (s: Saw) => ({ folding: s.folding, view: s.view.map((c) => [c.l, c.i]) });
 
 export function saveView(dir: string, mem: Mem) {
   const folder = `${dir}/chat`, target = `${folder}/${VIEW_FILE}`, temp = `${target}.tmp`;
-  const text = `${JSON.stringify({ folding: mem.folding, view: mem.view.map((c) => [c.l, c.i]) })}\n`;
+  const text = `${JSON.stringify({ ...pairsOf(mem), compaction: pairsOf(mem.compaction) })}\n`;
   return io(`cannot save ${target}`, () => {
     const synced = makeDir(folder);
     withFd(temp, "w", (fd) => {
@@ -172,7 +177,7 @@ function moveAside(dir: string) {
 // had to rebuild; a reader only reads.
 export const loadChat = (
   dir: string,
-  o: { readonly marks?: Marks; readonly writer?: boolean; readonly view?: boolean } = {},
+  o: { readonly marks?: Marks; readonly compactionMarks?: Marks | undefined; readonly writer?: boolean; readonly view?: boolean } = {},
 ): Effect.Effect<Loaded, StoreError> =>
   Effect.gen(function* () {
     const { writer = true, view = true } = o;
@@ -182,7 +187,7 @@ export const loadChat = (
     const found = view ? yield* io(`cannot read ${dir}/chat/${VIEW_FILE}`, () => readView(dir)) : null;
     const msgs = yield* io(`cannot read ${dir}/chat/main`, () => readStream(dir, "main", decodeMsg, writer, skipped));
     const recs = yield* io(`cannot read ${dir}/chat/tree`, () => readStream(dir, "tree", decodeNode, writer, skipped));
-    const mem = newMem(o.marks);
+    const mem = newMem(o.marks, o.compactionMarks);
     const byId = msgs.toSorted((x, y) => x.i - y.i);
     for (const [expected, logged] of byId.entries()) {
       if (logged.i !== expected) {

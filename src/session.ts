@@ -596,6 +596,7 @@ export const makeSession = (o: {
         const sentFor = on && o.devices.includes(on) ? on : deviceOf(text, o.devices);
         const steer = (how ?? followUp) === "steer";
         inbox.push({ clientId: clientId ?? null, described: null, device: sentFor, engine: named?.ref ?? head, media, seq: ++seq, state: "held", steer, text });
+        yield* chat.retry; // the next message: failed summaries are tried again (docs/optchat.md §4)
         if (accepting) steerIn(accepting);
         yield* start; // nothing to do while the loop is on: it takes held messages as it goes
         yield* tell;

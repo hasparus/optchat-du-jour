@@ -4,11 +4,12 @@
 //
 // It tells the four kinds of call apart the way optchat starts them:
 //   caption   --system-prompt is the caption prompt (an attachment's caption, SPEC "Media")
-//   compact   --safe-mode in argv (the compactor)
-//   prime     DISABLE_PROMPT_CACHING=1 without --safe-mode (a priming call)
+//   compact   OPTCHAT_CALL=compact (the compactor, which otherwise starts as a turn does)
+//   prime     DISABLE_PROMPT_CACHING=1, not a compactor (a priming call)
 //   turn      anything else
 //
-// FAKE_CLAUDE_LOG: a JSONL file it appends to, one record per thing that happened:
+// FAKE_CLAUDE_LOG: a JSONL file it appends to, one record per thing that happened, each with its
+// time `t` (ms since the epoch):
 //   {type: "start", pid, role, call, argv, cwd, env}   call = how many of this role started before it
 //   {type: "in", pid, content}                          every user message read from stdin
 //   {type: "exit", pid, code}                           a normal end (not after SIGKILL)
@@ -104,7 +105,7 @@ const { env } = process;
 const system = argv[argv.indexOf("--system-prompt") + 1] ?? "";
 const role: Role = system === CAPTION
   ? "caption"
-  : argv.includes("--safe-mode")
+  : env.OPTCHAT_CALL === "compact"
     ? "compact"
     : env.DISABLE_PROMPT_CACHING === "1"
       ? "prime"
@@ -118,7 +119,7 @@ const replaying = argv.includes("--replay-user-messages");
 
 const logPath = env.FAKE_CLAUDE_LOG;
 const record = (r: LogRecord) => {
-  if (logPath) appendFileSync(logPath, `${JSON.stringify({ pid: process.pid, ...r })}\n`);
+  if (logPath) appendFileSync(logPath, `${JSON.stringify({ pid: process.pid, t: Date.now(), ...r })}\n`);
 };
 // how many calls of this role started before this one
 const earlier = () =>
@@ -140,7 +141,11 @@ const DEFAULTS = {
 
 const script = env.FAKE_CLAUDE_SCRIPT ? Schema.decodeUnknownSync(Schema.fromJsonString(Script))(readFileSync(env.FAKE_CLAUDE_SCRIPT, "utf8")) : {};
 const callIndex = earlier();
-const shown = { CLAUDE_CODE_PROMPT_CACHE_TTL: env.CLAUDE_CODE_PROMPT_CACHE_TTL ?? null, DISABLE_PROMPT_CACHING: env.DISABLE_PROMPT_CACHING ?? null };
+const shown = {
+  CLAUDE_CODE_PROMPT_CACHE_TTL: env.CLAUDE_CODE_PROMPT_CACHE_TTL ?? null,
+  DISABLE_PROMPT_CACHING: env.DISABLE_PROMPT_CACHING ?? null,
+  OPTCHAT_CALL: env.OPTCHAT_CALL ?? null,
+};
 record({ argv, call: callIndex, cwd: process.cwd(), env: shown, role, type: "start" });
 
 const servers = Object.entries(Schema.decodeUnknownSync(McpConfig)(flag("--mcp-config") ?? "{}").mcpServers ?? {});

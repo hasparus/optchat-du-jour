@@ -58,6 +58,7 @@ export const responsesProvider = (o: {
         instructions: c.instructions,
         model: o.model,
         onOut: onItem && ((out) => onItem(itemOf(out))),
+        onStart: c.onStart,
         onText: c.onText,
         onThinking: c.onThinking,
         toolChoice: c.final ? "none" : "auto",

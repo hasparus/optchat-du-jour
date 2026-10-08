@@ -39,6 +39,7 @@ export type MessagesAsk<E extends Tagged = never> = {
   readonly onText?: (delta: string) => Effect.Effect<void>;
   readonly onThinking?: (tokens: number) => Effect.Effect<void>; // the size of the thought so far
   readonly onItem?: (item: Item) => Effect.Effect<void, E>; // each block as it completes, in order
+  readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
 };
 // `writes` splits the cache writes by TTL when the API says how; `stop` is the API's stop_reason
 export type MessagesReply = {
@@ -303,7 +304,7 @@ const spentOf = (r: Read): Spent | undefined => (r.start === null && r.end === n
 export const readMessages = <E extends Tagged = never>(stream: Stream.Stream<Uint8Array, EngineError>, ask: MessagesAsk<E>) =>
   Effect.gen(function* () {
     const init: Read = { blocks: [], done: false, end: null, model: ask.model, start: null, stop: null };
-    const r = yield* sseFold<Read, E>("api-key: anthropic", stream, init, onEvent<E>(ask), (state) => state.done);
+    const r = yield* sseFold<Read, E>("api-key: anthropic", stream, init, onEvent<E>(ask), (state) => state.done, ask.onStart);
     if (r.stop === "refusal") return yield* new Refusal({ message: "api-key: anthropic refused this request (stop_reason: refusal)", spent: spentOf(r) });
     if (!r.done) return yield* new ModelError({ message: "api-key: anthropic: the stream ended without message_stop", spent: spentOf(r) });
     return { items: r.blocks.flatMap(itemOf), model: r.model, stop: r.stop, ...usageOf(r.start, r.end) } satisfies MessagesReply;

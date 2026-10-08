@@ -11,12 +11,16 @@ export const NODE = 512;
 // passes VIEW_HIGH one batch of merges takes it down to VIEW_LOW
 export const VIEW_HIGH = 128_000;
 export const VIEW_LOW = 64_000;
-// compactor calls at once
+// The compaction view's (docs/optchat.md §4 "Its view"): the chat's view merged further, on a
+// sawtooth of its own from COMPACTION_HIGH down to COMPACTION_LOW
+export const COMPACTION_HIGH = 32_000;
+export const COMPACTION_LOW = 16_000;
+// compactor calls at once (docs/optchat.md §4 "The order")
 export const JOBS = 8;
-// tries per node to get a summary under NODE
+// a message's node starts once fewer than AHEAD view lines before it are unbuilt (ibid.)
+export const AHEAD = 8;
+// tries per node to get a summary under NODE; a failed call is tried again at the next message
 export const TRIES = 5;
-// the wait before a failed node is tried again: fixed, forever
-export const RETRY = "10 seconds";
 // the most characters of one tool result that get logged
 export const CAP = 30_000;
 // lines per content block of the view, or of a compactor's context (docs/optchat.md §3.3 "How the

@@ -6,7 +6,6 @@
 import { Effect } from "effect";
 import type { Budget } from "../apikey/budget.ts";
 import type { ApiKeys } from "../apikey/clients.ts";
-import { Runner } from "../claude/process.ts";
 import type { Job } from "../compactor.ts";
 import type { ToolBox } from "../tools/box.ts";
 import { MASTER_TOOLS, mediaSettings, type ProviderRef, type Ref, type Settings } from "../config.ts";
@@ -20,8 +19,10 @@ import { openAiPlanCompactor } from "../summarize/openai-plan.ts";
 import { type Placement, claudeCodeTurn } from "../turn/claude-code.ts";
 import type { TurnEngine } from "../turn/engine.ts";
 import { toolLoop } from "../turn/loop.ts";
+import type { ToolDef } from "../tools/files.ts";
 import type { UsageRecord } from "../usage.ts";
 import type { DeviceOffline, EngineError } from "./errors.ts";
+import type { Gate } from "./inflight.ts";
 
 // one compactor engine: a node's summary, or why not; `failoverFrom` names the link before it
 export type Compact = (job: Job, failoverFrom: string | null) => Effect.Effect<string, EngineError>;
@@ -37,8 +38,18 @@ export type EngineNeeds = {
   readonly apiKeys: Effect.Effect<ApiKeys["Service"]>; // the API keys' clients, built on first use
 };
 
-// a compactor engine's needs: compactor calls run on the server's own machine, named in their usage records
-export type CompactorNeeds = EngineNeeds & { readonly device?: string; readonly runner: Runner["Service"] };
+// A compactor engine's needs: compactor calls run on the server's own machine, named in their usage
+// records. They send what a turn sends before its view (docs/optchat.md §4, §5): the one system
+// prompt, and a turn's tools (the default device's for a provider; for claude-code, a turn's on
+// this machine, `placement`), so they read the turns' cache entry; and they wait on a call
+// writing the same marked prefix (`gate`, docs/optchat.md §3.3).
+export type CompactorNeeds = EngineNeeds & {
+  readonly device?: string;
+  readonly instructions: string;
+  readonly tools: readonly ToolDef[];
+  readonly placement: Effect.Effect<Placement, DeviceOffline>;
+  readonly gate: Gate;
+};
 
 // a turn engine's needs: the one system prompt (docs/optchat.md §5), where each device's claude runs (E7),
 // and the read-only tools of an engine with its own loop (M5)
@@ -51,15 +62,26 @@ export type TurnNeeds = EngineNeeds & {
 
 export const compactorEngine = (ref: Ref, o: CompactorNeeds): Effect.Effect<Compact> => {
   const { effort } = o.settings.compactor;
+  const { gate, instructions, tools } = o;
   switch (ref.engine) {
     case "claude-code":
-      return claudeCodeCompactor({ device: o.device, effort, log: o.log, model: ref.model, ttl: o.settings.cache.claudeCodeTtl }).pipe(
-        Effect.provideService(Runner, o.runner),
+      return Effect.succeed(
+        claudeCodeCompactor({
+          device: o.device,
+          effort,
+          gate,
+          instructions,
+          log: o.log,
+          model: ref.model,
+          placement: o.placement,
+          tools: o.settings.master.tools ?? MASTER_TOOLS,
+          ttl: o.settings.cache.claudeCodeTtl,
+        }),
       );
     case "openai-plan":
-      return Effect.map(o.plan, (plan) => openAiPlanCompactor({ device: o.device, effort, log: o.log, model: ref.model, plan }));
+      return Effect.map(o.plan, (plan) => openAiPlanCompactor({ device: o.device, effort, gate, instructions, log: o.log, model: ref.model, plan, tools }));
     case "api-key":
-      return Effect.map(providerOf(ref, o, effort), (provider) => apiKeyCompactor({ device: o.device, log: o.log, provider }));
+      return Effect.map(providerOf(ref, o, effort), (provider) => apiKeyCompactor({ device: o.device, gate, instructions, log: o.log, model: ref.model, provider, tools }));
   }
 };
 

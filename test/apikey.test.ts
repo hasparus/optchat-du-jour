@@ -15,6 +15,7 @@ import { DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 import { memorySecrets } from "../src/secrets.ts";
 import { newMsg } from "../src/store.ts";
 import { type EngineNeeds, providerOf } from "../src/engines/registry.ts";
+import { makeGate } from "../src/engines/inflight.ts";
 import { apiKeyCompactor } from "../src/summarize/api-key.ts";
 import { apiKeyProvider } from "../src/providers/api-key.ts";
 import type { ToolBox } from "../src/tools/box.ts";
@@ -55,6 +56,9 @@ const clients = Effect.runSync(
   }).pipe(Effect.provide(apiKeysLayer({ anthropicUrl: fake.base }).pipe(Layer.provide([memorySecrets({ [KEY_SECRETS.anthropic]: "sk-test" }), FetchHttpClient.layer])))),
 );
 
+// what an api-key turn sends before its view, and so its compactions too (docs/optchat.md §4, §5)
+const READ = { description: "Read a file", name: "Read", parameters: { properties: { file_path: { type: "string" } }, type: "object" } };
+
 // a compactor engine whose records go through the budget into usage.jsonl, as the server's do
 const rig = (monthly: number, usagePath: string) => {
   const reports: string[] = [], records: UsageRecord[] = [];
@@ -65,7 +69,8 @@ const rig = (monthly: number, usagePath: string) => {
       Effect.andThen(Effect.sync(() => void records.push(r))),
     );
   const needs: EngineNeeds = { apiKeys: Effect.succeed(clients), budget, log, plan: Effect.never, report: () => Effect.void, settings: settings(monthly) };
-  const compact = apiKeyCompactor({ log, provider: Effect.runSync(providerOf(API_KEY, needs, "medium")) });
+  const provider = Effect.runSync(providerOf(API_KEY, needs, "medium"));
+  const compact = apiKeyCompactor({ gate: makeGate(), instructions: "SYSTEM", log, model: API_KEY.model, provider, tools: [READ] });
   return { budget, compact, records, reports };
 };
 
@@ -119,10 +124,17 @@ test("Anthropic gets our cache layout: a 5-minute mark on the last whole block a
   // as the master: the view's blocks marked, the read-only tools offered, the last round without tools
   const provider = apiKeyProvider({ budget: r.budget, clients, effort: "high", ref: API_KEY, settings: settings(5) });
   const history = [{ marks: 1, parts: ["<chat>\n0+1|user: hi\n", "1+1|talk: hello\n</chat>", "what now?"], type: "user" as const }];
-  const tools = [{ description: "Read a file", name: "Read", parameters: { properties: { file_path: { type: "string" } }, type: "object" } }];
-  await Effect.runPromise(provider.call({ final: false, history, instructions: "MASTER", onText: () => Effect.void, tools }));
-  await Effect.runPromise(provider.call({ final: true, history, instructions: "MASTER", onText: () => Effect.void, tools }));
+  const tools = [READ];
+  await Effect.runPromise(provider.call({ final: false, history, instructions: "SYSTEM", onText: () => Effect.void, tools }));
+  await Effect.runPromise(provider.call({ final: true, history, instructions: "SYSTEM", onText: () => Effect.void, tools }));
   const [turn, last] = fake.state.seen.slice(-2).map((b) => decodeBody(b));
+  // a compaction sends what a turn sends before its view: the system prompt and the tools, byte for
+  // byte (docs/optchat.md §4, §7 mistake 6), and may call none
+  const Raw = Schema.fromJsonString(Schema.Struct({ system: Schema.Json, tools: Schema.Json }));
+  const [compaction, asTurn] = [fake.state.seen[0], fake.state.seen.at(-2)].map((b) => Schema.decodeUnknownSync(Raw)(b));
+  expect(JSON.stringify(compaction?.system)).toBe(JSON.stringify(asTurn?.system));
+  expect(JSON.stringify(compaction?.tools)).toBe(JSON.stringify(asTurn?.tools));
+  expect(first?.tool_choice?.type).toBe("none");
   expect(turn?.messages[0]?.content.map(markOf)).toEqual(["ephemeral 5m", null, null]);
   expect([turn?.cache_control, last?.cache_control]).toEqual([{ type: "ephemeral" }, { type: "ephemeral" }]);
   expect(turn?.tools?.map((t) => t.name)).toEqual(["Read"]);

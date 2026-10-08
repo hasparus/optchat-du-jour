@@ -9,22 +9,21 @@ import { type Duration, Effect, Fiber, Layer, PubSub, Schema, type Scope } from 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
-import { baseArgs } from "../src/claude/args.ts";
 import type { Block } from "../src/claude/events.ts";
 import { ClaudeError, LocalRunner, Runner, type Spawn } from "../src/claude/process.ts";
 import { type WarmOptions, warmRunner } from "../src/claude/warm.ts";
 import { CompactError, type Job } from "../src/compactor.ts";
 import { MASTER_TOOLS } from "../src/config.ts";
 import { type McpSeen, mcpConfig, mcpTransports } from "../src/mcp.ts";
-import { COMPACT, SCALE } from "../src/prompts.ts";
 import { makeSession, noMedia, type SessionEvent } from "../src/session.ts";
 import { openStream } from "../server/agui.ts";
 import { newMsg } from "../src/store.ts";
-import { blocks, claudeCodeCompactor } from "../src/summarize/claude-code.ts";
-import { retryText } from "../src/summarize/step.ts";
-import { built, bytes, dayOf, getNode } from "../src/tree.ts";
+import { makeGate, type Gate } from "../src/engines/inflight.ts";
+import { blocks, claudeCodeCompactor, markedPrefix } from "../src/summarize/claude-code.ts";
+import { retryText, task } from "../src/summarize/step.ts";
+import { built, dayOf, getNode } from "../src/tree.ts";
 import { cap } from "../src/cap.ts";
-import { claudeCodeTurn, masterArgs, primeBlocks } from "../src/turn/claude-code.ts";
+import { claudeCodeTurn, masterArgs, type Placement, primeBlocks } from "../src/turn/claude-code.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
 import type { UsageRecord } from "../src/usage.ts";
 
@@ -56,6 +55,7 @@ const Rec = Schema.Struct({
   cwd: Schema.optional(Schema.String),
   env: Schema.optional(Schema.Record(Schema.String, Schema.NullOr(Schema.String))),
   pid: Schema.Number,
+  t: Schema.Number,
   role: Schema.optional(Schema.Literals(["compact", "prime", "turn"])),
   type: Schema.Literals(["start", "in", "exit"]),
 });
@@ -109,7 +109,7 @@ function scripted(script: Script = {}, extraEnv: Record<string, string> = {}) {
       return {
         // the variables optchat sets are passed even when empty, so this shell's own can't leak in
         spawn: (o: Parameters<typeof base.spawn>[0]) =>
-          base.spawn({ ...o, env: { CLAUDE_CODE_PROMPT_CACHE_TTL: "", DISABLE_PROMPT_CACHING: "", ...o.env, ...extraEnv, FAKE_CLAUDE_LOG: f.log, FAKE_CLAUDE_SCRIPT: f.script } }),
+          base.spawn({ ...o, env: { CLAUDE_CODE_PROMPT_CACHE_TTL: "", DISABLE_PROMPT_CACHING: "", OPTCHAT_CALL: "", ...o.env, ...extraEnv, FAKE_CLAUDE_LOG: f.log, FAKE_CLAUDE_SCRIPT: f.script } }),
         warm: () => Effect.void,
       };
     }),
@@ -118,7 +118,10 @@ function scripted(script: Script = {}, extraEnv: Record<string, string> = {}) {
     const all = records(f.log);
     return all
       .filter((r) => r.type === "start" && r.role === role)
-      .map((s) => ({ ...s, ins: all.filter((r) => r.type === "in" && r.pid === s.pid).map((r) => r.content ?? []) }));
+      .map((s) => {
+        const ins = all.filter((r) => r.type === "in" && r.pid === s.pid);
+        return { ...s, asked: ins[0]?.t, ins: ins.map((r) => r.content ?? []) };
+      });
   };
   return { ...f, layer, of };
 }
@@ -141,23 +144,53 @@ const long = (n: number) => "w".repeat(n);
 
 // the compactor engine
 
-test("a compactor call: context pieces of 4 lines, marks on the last whole one and the step, its flags and env", async () => {
+// the value after a flag in an argv
+const flag = (argv: readonly string[] | undefined, name: string) => argv?.[argv.indexOf(name) + 1];
+
+// the claude-code compactor: a turn's spawn, here on this machine
+const placement = (runner: Runner["Service"]): Effect.Effect<Placement> =>
+  Effect.succeed({ cwd: undefined, mcpConfig: mcpConfig("http://127.0.0.1:9/mcp?key=k", "http"), mcpSeen: () => Effect.succeed(false), runner });
+const compactor = (o: {
+  readonly ttl: "1h" | "5m";
+  readonly log?: (r: UsageRecord) => Effect.Effect<void>;
+  readonly timeout?: Duration.Input;
+  readonly gate?: Gate;
+  readonly placement?: Effect.Effect<Placement>;
+}) =>
+  Effect.gen(function* () {
+    const runner = yield* Runner;
+    return claudeCodeCompactor({
+      effort: "medium",
+      gate: o.gate ?? makeGate(),
+      instructions: "SYSTEM",
+      log: o.log ?? (() => Effect.void),
+      model: "sonnet",
+      placement: o.placement ?? placement(runner),
+      tools: MASTER_TOOLS,
+      ttl: o.ttl,
+      timeout: o.timeout ?? "5 minutes",
+    });
+  });
+
+test("a compactor call: a turn's argv but model, effort and permission mode; context pieces of 4 lines, marks on the last whole one and the task", async () => {
   const f = scripted();
-  const ctx = Array.from({ length: 260 }, (_, k) => `${k} ${"c".repeat(395)}`); // <chat>, 260 lines, </chat>: 65 whole blocks and a partial one
+  const ctx = Array.from({ length: 260 }, (_, k) => `${k}+1|${"c".repeat(395)}`); // <chat>, 260 lines, </chat>: 65 whole blocks and a partial one
   const job: Job = { ctx, i: 260, l: 0, msg: newMsg(260, "user", "line one\nline two") };
   const usage: UsageRecord[] = [];
   const line = await run(
     f,
     Effect.gen(function* () {
-      const summarize = yield* claudeCodeCompactor({ effort: "medium", log: (r) => Effect.sync(() => usage.push(r)), model: "sonnet", ttl: "5m" });
+      const summarize = yield* compactor({ log: (r) => Effect.sync(() => usage.push(r)), ttl: "5m" });
       return yield* summarize(job);
     }),
   );
   expect(line).toBe("talk: a short summary line");
 
   const [call] = f.of("compact");
-  expect(call?.argv).toEqual([...baseArgs({ effort: "medium", model: "sonnet", system: COMPACT, tools: "" }), "--safe-mode"]);
-  expect(call?.env).toEqual({ CLAUDE_CODE_PROMPT_CACHE_TTL: "5m", DISABLE_PROMPT_CACHING: "1" });
+  const mcp = mcpConfig("http://127.0.0.1:9/mcp?key=k", "http");
+  expect(call?.argv).toEqual(masterArgs({ effort: "medium", instructions: "SYSTEM", mcpConfig: mcp, model: "sonnet", permissionMode: "default", tools: MASTER_TOOLS }));
+  expect(call?.argv).not.toContain("--safe-mode"); // it would drop the MCP servers, and with them zoom and date
+  expect(call?.env).toEqual({ CLAUDE_CODE_PROMPT_CACHE_TTL: "5m", DISABLE_PROMPT_CACHING: "1", OPTCHAT_CALL: "compact" });
   expect(call?.ins).toEqual([blocks(job, "5m")]);
 
   const sent = call?.ins[0] ?? [];
@@ -169,28 +202,60 @@ test("a compactor call: context pieces of 4 lines, marks on the last whole one a
   // two marks: the last whole piece, for the next call's lookback, and the request's end
   const mark = { ttl: "5m", type: "ephemeral" } as const;
   expect(sent.map((b) => b.cache_control ?? null)).toEqual(sent.map((_, k) => (k === 64 || k === 66 ? mark : null)));
-  const stepBlock = sent[66];
-  expect(bytes(SCALE)).toBe(512);
-  expect(textOf(stepBlock)).toBe(
-    `For scale, this line is exactly 512 bytes:\n${SCALE}\n\nCompress this message into one line, in at most 512 bytes:\nuser: line one\nline two`,
-  );
-  const merge = blocks({ a: "user: a\nb", b: "talk: c", ctx: [], i: 0, l: 1 }, "1h");
-  expect(merge.map(textOf)).toEqual(["<chat>\n</chat>", `For scale, this line is exactly 512 bytes:\n${SCALE}\n\nMerge these two lines into one, in at most 512 bytes:\nuser: a b\ntalk: c`]);
+  expect(textOf(sent[66])).toBe(task(job));
+  expect(markedPrefix(sent)).toEqual(pieces.slice(0, 65).map(textOf));
 
   expect(usage).toHaveLength(1);
   expect(usage[0]).toMatchObject({ attempt: 1, engine: "claude-code", failoverFrom: null, level: 0, model: "sonnet", role: "compact" });
 });
 
-test("a line over 512 bytes is retried in the same call with the earlier gist's text, and the shortest try is kept", async () => {
+test("claude-code: a turn and a compaction send the same system prompt, tools and MCP servers, from the same folder, and never share a warm process", async () => {
+  const f = scripted();
+  await run(
+    f,
+    Effect.gen(function* () {
+      const r = yield* rig(f, { prime: true });
+      yield* r.session.input("hello");
+      yield* r.finished(1);
+      // the compactor runs where a turn on the server's own device runs (server/app.ts)
+      const summarize = yield* compactor({ placement: r.options.runnerFor("mini"), ttl: "1h" });
+      yield* summarize({ ctx: [], i: 0, l: 0, msg: newMsg(0, "user", "hello") });
+    }),
+  );
+  const [turn] = f.of("turn"), [call] = f.of("compact");
+  // what reaches the request before the view: the system prompt and the tools, built in and MCP
+  for (const name of ["--system-prompt", "--tools", "--mcp-config", "--setting-sources"]) expect(flag(call?.argv, name)).toBe(flag(turn?.argv, name) ?? "");
+  expect(call?.argv).toContain("--strict-mcp-config");
+  expect(call?.cwd).toBe(turn?.cwd ?? "");
+  // what differs: the model and its effort, and the permission mode (the compactor's runs nothing)
+  const differ = (turn?.argv ?? []).flatMap((a, k) => (call?.argv?.[k] === a ? [] : [a]));
+  expect(differ).toEqual(["opus", "high", "bypassPermissions"]);
+  // its spawn key is no turn's or priming's, so a warm process is never handed to it (E18)
+  expect(call?.env?.OPTCHAT_CALL).toBe("compact");
+});
+
+test("a compactor that calls a tool anyway has failed that call; the tool's result never comes", async () => {
+  const f = scripted({ compact: [[{ tool: { input: { command: "rm -rf /" }, name: "Bash" } }, { toolResult: "never" }, { text: "talk: too late" }]] });
+  const failed = await run(
+    f,
+    Effect.gen(function* () {
+      const summarize = yield* compactor({ ttl: "1h" });
+      return yield* Effect.flip(summarize({ ctx: [], i: 0, l: 0, msg: newMsg(0, "user", long(900)) }));
+    }),
+  );
+  expect(failed.message).toBe("the compactor called a tool");
+});
+
+test("a line over 512 bytes is retried in the same call with docs/optchat.md §4's text, and the shortest try is kept", async () => {
   const over = `${"x".repeat(511)}ä${"y".repeat(87)}`; // 600 bytes, with a character across the cut
   const tries = [over, "b".repeat(530), "c".repeat(700), "d".repeat(520), "e".repeat(560)];
   const f = scripted({ compact: [tries.map((t) => [{ text: t }]), [[{ text: over }], [{ text: "talk: short enough" }]]] });
   const usage: UsageRecord[] = [];
-  const job: Job = { ctx: ["user: earlier"], i: 3, l: 0, msg: newMsg(3, "echo", long(900)) };
+  const job: Job = { ctx: ["0+1|user: earlier"], i: 3, l: 0, msg: newMsg(3, "echo", long(900)) };
   const [stubborn, quick] = await run(
     f,
     Effect.gen(function* () {
-      const summarize = yield* claudeCodeCompactor({ effort: "medium", log: (r) => Effect.sync(() => usage.push(r)), model: "sonnet", ttl: "1h" });
+      const summarize = yield* compactor({ log: (r) => Effect.sync(() => usage.push(r)), ttl: "1h" });
       return [yield* summarize(job, "openai-plan:luna"), yield* summarize(job)];
     }),
   );
@@ -199,7 +264,12 @@ test("a line over 512 bytes is retried in the same call with the earlier gist's 
 
   const [first, second] = f.of("compact");
   expect(first?.ins).toHaveLength(5);
-  expect(first?.ins[1]).toEqual([{ text: `That line is 600 bytes; the limit is 512. It must end where it is cut here:\n${"x".repeat(511)}| ← LIMIT`, type: "text" }]);
+  expect(first?.ins[1]).toEqual([
+    {
+      text: `Too long: your line is 600 bytes, over the 512-byte limit. Write\nthe whole line again for the same <input>, cutting just enough of the\nleast valuable items to fit before this cut:\n${"x".repeat(511)}| ← LIMIT`,
+      type: "text",
+    },
+  ]);
   expect(first?.ins.slice(2).map((m) => textOf(m[0]))).toEqual(tries.slice(1, 4).map(retryText));
   expect(second?.ins).toHaveLength(2);
   expect(usage.map((u) => [u.attempt, u.failoverFrom])).toEqual([
@@ -213,20 +283,61 @@ test("a line over 512 bytes is retried in the same call with the earlier gist's 
   ]);
 });
 
-test("a hung compactor call times out and fails the node; the pump reports it once and builds it on the retry", async () => {
+test("compactions on one marked prefix: the first writes it, the rest wait for its response to start", async () => {
+  // every call takes 300 ms to start its response; all three ask with the same context
+  const slow = [{ sleep: 300 }, { text: "talk: done" }];
+  const f = scripted({ compact: [slow] });
+  const ctx = Array.from({ length: 8 }, (_, k) => `${k}+1|user: line ${k}`); // two whole blocks: the second carries the mark
+  const jobs: Job[] = [8, 9, 10].map((i) => ({ ctx, i, l: 0, msg: newMsg(i, "user", long(900)) }));
+  const gate = makeGate();
+  await run(
+    f,
+    Effect.gen(function* () {
+      const summarize = yield* compactor({ gate, ttl: "1h" });
+      yield* Effect.forEach(jobs, (j) => summarize(j), { concurrency: "unbounded", discard: true });
+    }),
+  );
+  const asked = f.of("compact").map((c) => c.asked ?? 0).toSorted((a, b) => a - b);
+  expect(asked).toHaveLength(3);
+  // one went at once; the two others only once its response had started, together
+  expect((asked[1] ?? 0) - (asked[0] ?? 0)).toBeGreaterThanOrEqual(250);
+  expect((asked[2] ?? 0) - (asked[1] ?? 0)).toBeLessThan(250);
+});
+
+test("compactions with no marked prefix in common, or with another context, never wait", async () => {
+  const f = scripted({ compact: [[{ sleep: 300 }, { text: "talk: done" }]] });
+  const jobs: Job[] = [
+    { ctx: [], i: 0, l: 0, msg: newMsg(0, "user", long(900)) }, // nothing marked but the task
+    { ctx: [], i: 1, l: 0, msg: newMsg(1, "user", long(900)) },
+    { ctx: Array.from({ length: 4 }, (_, k) => `${k}+1|a`), i: 4, l: 0, msg: newMsg(4, "user", long(900)) },
+    { ctx: Array.from({ length: 4 }, (_, k) => `${k}+1|b`), i: 4, l: 0, msg: newMsg(4, "user", long(900)) },
+  ];
+  await run(
+    f,
+    Effect.gen(function* () {
+      const summarize = yield* compactor({ gate: makeGate(), ttl: "1h" });
+      yield* Effect.forEach(jobs, (j) => summarize(j), { concurrency: "unbounded", discard: true });
+    }),
+  );
+  const asked = f.of("compact").map((c) => c.asked ?? 0);
+  expect(Math.max(...asked) - Math.min(...asked)).toBeLessThan(250);
+});
+
+test("a hung compactor call times out and fails the node; the pump reports it once and builds it at the next message", async () => {
   const f = scripted({ compact: [[{ hang: true }], [{ text: "echo: built on the second call" }]] });
   const reports: string[] = [];
   const dir = tmp();
   await run(
     f,
     Effect.gen(function* () {
-      const engine = yield* claudeCodeCompactor({ effort: "medium", log: () => Effect.void, model: "sonnet", timeout: "300 millis", ttl: "1h" });
+      const engine = yield* compactor({ timeout: "300 millis", ttl: "1h" });
       const chat = yield* openChat(dir, {
         report: (m) => Effect.sync(() => reports.push(m)),
-        retry: "50 millis",
         summarize: (job) => engine(job).pipe(Effect.mapError((e) => new CompactError({ message: e.message }))),
       });
       yield* chat.log("echo", long(900));
+      yield* until("the report", () => reports.length > 0);
+      yield* chat.log("user", "hi"); // the next message: the failed call is tried again
       yield* until("the node", () => built(chat.mem, { i: 0, l: 0 }));
       expect(getNode(chat.mem, { i: 0, l: 0 })?.text).toBe("echo: built on the second call");
     }),
@@ -566,8 +677,8 @@ test("priming sends the turn's argv and the turn's view blocks with marks, plus 
   expect(at).toBeGreaterThan(-1);
   expect(turn?.argv?.[at + 1]).toBe("SYSTEM");
   expect(turn?.argv).not.toContain("--system-prompt-file");
-  expect(prime?.env).toEqual({ CLAUDE_CODE_PROMPT_CACHE_TTL: "1h", DISABLE_PROMPT_CACHING: "1" });
-  expect(turn?.env).toEqual({ CLAUDE_CODE_PROMPT_CACHE_TTL: "1h", DISABLE_PROMPT_CACHING: "" });
+  expect(prime?.env).toEqual({ CLAUDE_CODE_PROMPT_CACHE_TTL: "1h", DISABLE_PROMPT_CACHING: "1", OPTCHAT_CALL: "" });
+  expect(turn?.env).toEqual({ CLAUDE_CODE_PROMPT_CACHE_TTL: "1h", DISABLE_PROMPT_CACHING: "", OPTCHAT_CALL: "" });
   const sent = turn?.ins[0] ?? [];
   const view = sent.slice(0, -1);
   expect(view.length).toBeGreaterThanOrEqual(2); // a view past the first mark

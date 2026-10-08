@@ -6,7 +6,7 @@ import { Effect } from "effect";
 import { openChat } from "../../src/chat.ts";
 import { CompactError } from "../../src/compactor.ts";
 import { built, type Mem, nodes } from "../../src/tree.ts";
-import { fakeSummary, fixture, type FixtureMsg, gate, replayLagging, type Report, RETRY_MS, type Split, watch } from "./fixture.ts";
+import { fakeSummary, fixture, type FixtureMsg, gate, replayLagging, type Report, type Split, watch } from "./fixture.ts";
 
 const [dir, mode] = [process.argv[2], process.argv[3]];
 if (!dir) throw new Error("usage: drive-ours.ts <data dir> [lag]");
@@ -24,10 +24,12 @@ if (mode === "lag") {
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const chat = yield* openChat(dir, { jobs: 1, report: () => Effect.void, retry: `${RETRY_MS} millis`, summarize });
+        const chat = yield* openChat(dir, { jobs: 1, report: () => Effect.void, summarize });
         const w = watching(chat.mem, g.calls);
         const log = async (m: FixtureMsg) => Effect.runPromise(chat.log(m.kind, m.text).pipe(Effect.asVoid));
-        yield* Effect.promise(async () => replayLagging({ caughtUp: () => caughtUp(chat.mem), gate: g, log, look: w.look }));
+        // a failed call waits for the next message; while the driver waits, none comes
+        const idle = async () => Effect.runPromise(chat.retry);
+        yield* Effect.promise(async () => replayLagging({ caughtUp: () => caughtUp(chat.mem), gate: g, idle, log, look: w.look }));
         print(g.calls, w.split());
       }),
     ),

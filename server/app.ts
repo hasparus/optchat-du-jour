@@ -13,6 +13,7 @@ import { WarmLocalRunner } from "../src/claude/warm.ts";
 import type { Summarize } from "../src/compactor.ts";
 import { mediaSettings, type Settings } from "../src/config.ts";
 import type { DownList } from "../src/engines/chain.ts";
+import { makeGate } from "../src/engines/inflight.ts";
 import { turnEngine } from "../src/engines/registry.ts";
 import { forbidden, mount } from "../src/http.ts";
 import { OpenAiPlan, openAiPlanLayer } from "../src/openai/responses.ts";
@@ -78,14 +79,16 @@ export const routes = (o: ServerOptions) =>
         Layer.buildWithScope(apiKeysLayer({ ...settings.apiKey, report }).pipe(Layer.provide(outside)), scope).pipe(Effect.map((c) => Context.get(c, ApiKeys))),
       );
       const needs = { apiKeys, budget, log: usage, plan, report, settings };
-      // the session shows the compactor's engines that are down, for clients that connect later
+      const instructions = systemPrompt(o.home); // one text for every engine, device, turn and compaction (docs/optchat.md §5)
+      const { defsFor, runnerFor, toolsFor: toolsWith, unreachable } = yield* makePlacements({ device: o.device, local, port: o.port, report, secret, settings });
+      // The session shows the compactor's engines that are down, for clients that connect later.
+      // Compactions send a turn's system prompt and tools (docs/optchat.md §4): the default device's
+      // on a provider, this machine's claude-code turn's on claude-code, which runs here.
       const compactor: { readonly down?: DownList; readonly summarize: Summarize } = o.summarize
         ? { summarize: o.summarize }
-        : yield* makeSummarize({ ...needs, device: o.device, runner: local });
+        : yield* makeSummarize({ ...needs, device: o.device, gate: makeGate(), instructions, placement: runnerFor(o.device), tools: defsFor(settings.defaultDevice) });
       const chat = yield* openChat(stream, { report, summarize: compactor.summarize });
-
-      const instructions = systemPrompt(o.home); // one text for every engine and device (docs/optchat.md §5)
-      const { runnerFor, toolsFor, unreachable } = yield* makePlacements({ device: o.device, local, mem: chat.mem, port: o.port, report, secret, settings });
+      const toolsFor = (device: string) => toolsWith(device, chat.mem);
       // the master's chain as the session keeps it (src/master.ts), made here so each engine can
       // ask whether the warm processes follow it: the most recent turn's (E18)
       const master = yield* makeMaster(settings.master.chain.map((r) => r.ref));

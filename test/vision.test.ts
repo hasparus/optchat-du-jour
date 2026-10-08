@@ -18,7 +18,7 @@ import { DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 import { apiKeyProvider } from "../src/providers/api-key.ts";
 import { memorySecrets } from "../src/secrets.ts";
 import { makeSession, type SessionEvent, type SessionMedia } from "../src/session.ts";
-import { step } from "../src/summarize/step.ts";
+import { task } from "../src/summarize/step.ts";
 import { BLIND, type Mid, type TurnEngine, type TurnEvents, type TurnInput } from "../src/turn/engine.ts";
 import { toolLoop } from "../src/turn/loop.ts";
 import { type Asset, type ImageAsset, markerOf, NOT_DESCRIBED, shortSha } from "../src/wire.ts";
@@ -366,7 +366,7 @@ test("the compactor's input for a message of markers only keeps every sha", asyn
       expect(Buffer.byteLength(`user: ${text}`)).toBeGreaterThan(512);
       yield* chat.log("user", text);
       yield* until("the summary", () => jobs.length > 0);
-      const input = step(jobs[0] ?? { ctx: [], i: 0, l: 0, msg: { date: "", i: 0, kind: "user", size: 0, text: "" } });
+      const input = task(jobs[0] ?? { ctx: [], i: 0, l: 0, msg: { date: "", i: 0, kind: "user", size: 0, text: "" } });
       for (const a of shas) expect(input).toContain(shortSha(a.sha));
     }).pipe(Effect.scoped),
   );

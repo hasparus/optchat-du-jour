@@ -1,7 +1,6 @@
 // Few tests, each a failure that has happened or plausibly will (ref §10). No model calls.
 import { afterAll, expect, test } from "bun:test";
-import { Deferred, Effect, Fiber, Layer, Queue, type Scope, Stream } from "effect";
-import { TestClock } from "effect/testing";
+import { Effect, Fiber, Queue, type Scope, Stream } from "effect";
 import { tmpdir } from "node:os";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { openChat } from "../src/chat.ts";
@@ -16,7 +15,7 @@ import { requestBody } from "../src/apikey/anthropic.ts";
 import { makeClaude } from "../src/claude/process.ts";
 import { handleMcp, noAttached } from "../src/mcp.ts";
 import { body as responsesBody } from "../src/openai/responses.ts";
-import { contextBlocks, step } from "../src/summarize/step.ts";
+import { contextBlocks, task } from "../src/summarize/step.ts";
 import { headOf, tailOf } from "../src/text.ts";
 
 const made: string[] = [];
@@ -37,11 +36,9 @@ const caughtUp = (mem: Mem) => nodes(mem.root.length).every((c) => built(mem, c)
 const first = { i: 0, l: 0 };
 // a report sink: the lines a pump reports, in order
 const sink = (lines: string[]) => (line: string) => Effect.sync(() => lines.push(line));
-// a test-clock run: TestClock.adjust moves time, and nothing waits for real
-const virtual = async <A, E>(effect: Effect.Effect<A, E, Scope.Scope>) => runScoped(effect.pipe(Effect.provide(Layer.fresh(TestClock.layer()))));
 
 // A surrogate pair split by a cut leaves a lone half in the permanent log; the provider refuses
-// the compactor's input on every try, and rule 3 keeps every later summary waiting on that node.
+// the compactor's input on every try, and every turn waited on that node.
 test("cap() never splits a surrogate pair, and says how much it left out", () => {
   const rocket = "\u{1F680}";
   // the cut after the head would fall between the rocket's halves: the head stops before it
@@ -76,7 +73,7 @@ test("a line logged with a lone surrogate reaches no model as one: every wire en
   const bad = "rocket \uD83D then text"; // what cap() wrote before it kept pairs whole
   const msg = newMsg(7, "echo", bad);
   const job = { ctx: ["older", `echo: ${bad}`], i: 7, l: 0, msg };
-  const asked = step(job);
+  const asked = task(job);
   // Anthropic's request body, as a compactor's or a turn's, a tool result included
   wellFormedOnWire(requestBody({ history: [{ marks: 0, parts: [...contextBlocks(job), asked], type: "user" }, { id: "t", output: bad, type: "result" }], model: "m", system: "s" }));
   // the Responses API's
@@ -154,50 +151,78 @@ test("the pump compresses messages one at a time, in order, merges alongside, an
   );
   // every message summarized once, in id order
   expect(seen.filter((j) => j.l === 0).map((j) => j.i)).toEqual([...Array.from({ length: 16 }).keys()]);
-  // rule 3: no context line is ever the placeholder
+  // a compaction view stops at the first unbuilt line: no context line is ever the placeholder
   expect(seen.flatMap((j) => j.ctx).some((line) => line.includes("not summarized yet"))).toBe(false);
   expect(widest).toBeLessThanOrEqual(3);
   expect(seen.some((j) => j.l > 0)).toBe(true);
 });
 
-test("a failing node is reported once, retried after RETRY, and built", async () => {
+test("a failing node is reported once, tried again at each next message, and built", async () => {
   const said: string[] = [];
   let calls = 0;
-  await virtual(
+  await runScoped(
     Effect.gen(function* () {
-      const done = yield* Deferred.make<true>();
       const chat = yield* openChat(scratchDir(), {
         report: sink(said),
         summarize: () =>
-          Effect.suspend(() => {
-            calls++;
-            if (calls <= 3) return Effect.fail(new CompactError({ message: "overloaded" }));
-            return Deferred.succeed(done, true).pipe(Effect.as(`line ${long(100)}`));
-          }),
+          Effect.sync(() => ++calls).pipe(
+            Effect.flatMap((n) => (n <= 3 ? Effect.fail(new CompactError({ message: "overloaded" })) : Effect.succeed(`line ${long(100)}`))),
+          ),
       });
-      yield* Fiber.join(yield* Effect.forkChild(chat.log("echo", long(900))));
-      for (let k = 0; k < 3 && calls < 4; k++) yield* TestClock.adjust("10 seconds");
-      yield* Deferred.await(done);
-      while (!built(chat.mem, first)) yield* Effect.yieldNow;
+      yield* chat.log("echo", long(900));
+      yield* awaitCalls(() => calls, 1);
+      // no message, no new try, however long it waits
+      yield* Effect.sleep("50 millis");
+      expect(calls).toBe(1);
+      for (let n = 2; n <= 4; n++) {
+        yield* chat.log("user", `next ${n}`); // a short message: its own free node, no call
+        yield* awaitCalls(() => calls, n);
+      }
+      yield* awaitFirst(chat);
     }),
   );
   expect(calls).toBe(4);
   expect(said).toEqual(["0+1: overloaded"]);
 });
 
-// let the pump's fibers run, and the test clock move by RETRY, until node 0+1 is built
-const awaitFirst = (mem: Mem) =>
+test("a message the session holds for its turn tries failed calls again too (chat.retry), so a turn waiting for summaries is not left waiting", async () => {
+  let calls = 0;
+  await runScoped(
+    Effect.gen(function* () {
+      const chat = yield* openChat(scratchDir(), {
+        report: () => Effect.void,
+        summarize: () => Effect.sync(() => ++calls).pipe(Effect.flatMap((n) => (n === 1 ? Effect.fail(new CompactError({ message: "no" })) : Effect.succeed("line")))),
+      });
+      yield* chat.log("echo", long(900));
+      yield* awaitCalls(() => calls, 1);
+      const waiting = yield* Effect.forkChild(settle(chat.mem));
+      yield* chat.retry;
+      yield* Fiber.join(waiting);
+      expect(calls).toBe(2);
+    }),
+  );
+});
+
+// the pump's fibers run until `count()` reaches n
+const awaitCalls = (count: () => number, n: number) =>
   Effect.gen(function* () {
-    for (let round = 0; round < 4 && !built(mem, first); round++) {
-      yield* TestClock.adjust("10 seconds");
-      for (let y = 0; y < 50 && !built(mem, first); y++) yield* Effect.yieldNow;
+    for (let k = 0; k < 2000 && count() < n; k++) yield* Effect.sleep(1);
+    expect(count()).toBe(n);
+  });
+
+// message 0's node, failed once or more: each round logs a short message, which tries it again
+const awaitFirst = (chat: { readonly mem: Mem; readonly log: (kind: "user", body: string) => Effect.Effect<unknown, unknown> }) =>
+  Effect.gen(function* () {
+    for (let round = 0; round < 4 && !built(chat.mem, first); round++) {
+      for (let y = 0; y < 200 && !built(chat.mem, first); y++) yield* Effect.sleep(1);
+      if (!built(chat.mem, first)) yield* Effect.orDie(chat.log("user", `again ${round}`));
     }
   });
 
 test("a compactor that throws or dies is a failure like any other: reported once, retried, built", async () => {
   const said: string[] = [];
   let calls = 0;
-  await virtual(
+  await runScoped(
     Effect.gen(function* () {
       const chat = yield* openChat(scratchDir(), {
         report: sink(said),
@@ -209,7 +234,7 @@ test("a compactor that throws or dies is a failure like any other: reported once
         },
       });
       yield* chat.log("echo", long(900));
-      yield* awaitFirst(chat.mem);
+      yield* awaitFirst(chat);
       expect(built(chat.mem, first)).toBe(true);
     }),
   );
@@ -220,7 +245,7 @@ test("a compactor that throws or dies is a failure like any other: reported once
 test("a call that comes back interrupted fails its node: the node is freed, reported, retried and built", async () => {
   const said: string[] = [];
   let calls = 0;
-  await virtual(
+  await runScoped(
     Effect.gen(function* () {
       const chat = yield* openChat(scratchDir(), {
         jobs: 1, // a node that never left its slot would leave none for the retry
@@ -231,7 +256,7 @@ test("a call that comes back interrupted fails its node: the node is freed, repo
         },
       });
       yield* chat.log("echo", long(900));
-      yield* awaitFirst(chat.mem);
+      yield* awaitFirst(chat);
       expect(built(chat.mem, first)).toBe(true);
     }),
   );
@@ -241,7 +266,7 @@ test("a call that comes back interrupted fails its node: the node is freed, repo
 
 test("a report that dies does not keep its node from the retry", async () => {
   let calls = 0;
-  await virtual(
+  await runScoped(
     Effect.gen(function* () {
       const chat = yield* openChat(scratchDir(), {
         jobs: 1,
@@ -252,7 +277,7 @@ test("a report that dies does not keep its node from the retry", async () => {
         },
       });
       yield* chat.log("echo", long(900));
-      yield* awaitFirst(chat.mem);
+      yield* awaitFirst(chat);
       expect(built(chat.mem, first)).toBe(true);
     }),
   );
@@ -262,14 +287,14 @@ test("a report that dies does not keep its node from the retry", async () => {
 test("a summary is trimmed, and one that is only whitespace fails the node like any error", async () => {
   const said: string[] = [];
   let calls = 0;
-  await virtual(
+  await runScoped(
     Effect.gen(function* () {
       const chat = yield* openChat(scratchDir(), {
         report: sink(said),
         summarize: () => Effect.sync(() => (++calls === 1 ? " \n\t " : "  the gist of it\n")),
       });
       yield* chat.log("echo", long(900));
-      yield* awaitFirst(chat.mem);
+      yield* awaitFirst(chat);
       expect(getNode(chat.mem, first)?.text).toBe("the gist of it");
     }),
   );
@@ -277,13 +302,13 @@ test("a summary is trimmed, and one that is only whitespace fails the node like 
   expect(said).toEqual(["0+1: the compactor replied with nothing"]);
 });
 
-test("a defect in the kick that follows a job is reported, and the pump goes on to build the node", async () => {
+test("a defect in the free merge that follows a job is reported, and the merge is built at the next message", async () => {
   const said: string[] = [], state = newMem();
   let broken = true;
-  await virtual(
+  await runScoped(
     Effect.gen(function* () {
       const pump = yield* makePump({
-        // the free merge of the two summaries, committed in the kick after the second job, dies once
+        // the free merge of the two summaries, committed after the second job, dies once
         commit: (n) =>
           Effect.sync(() => {
             if (n.l === 1 && broken) {
@@ -299,15 +324,17 @@ test("a defect in the kick that follows a job is reported, and the pump goes on 
       addMessage(state, newMsg(0, "echo", long(700)));
       addMessage(state, newMsg(1, "echo", long(700)));
       yield* pump.kick;
-      for (let round = 0; round < 4 && !built(state, { i: 0, l: 1 }); round++) {
-        for (let y = 0; y < 50 && !built(state, { i: 0, l: 1 }); y++) yield* Effect.yieldNow;
-        yield* TestClock.adjust("10 seconds");
-      }
+      for (let y = 0; y < 200 && broken; y++) yield* Effect.sleep(1);
+      expect(said).toEqual(["commit blew up"]);
+      expect(built(state, { i: 0, l: 1 })).toBe(false);
+      addMessage(state, newMsg(2, "user", "next"));
+      yield* pump.logged(2);
+      for (let y = 0; y < 200 && !built(state, { i: 0, l: 1 }); y++) yield* Effect.sleep(1);
     }),
   );
   expect(broken).toBe(false);
   expect(said).toEqual(["commit blew up"]);
-  expect(caughtUp(state)).toBe(true);
+  expect(built(state, { i: 0, l: 1 })).toBe(true);
 });
 
 test("a stored message is logged even when the pump cannot start: that failure is reported", async () => {

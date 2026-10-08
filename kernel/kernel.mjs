@@ -681,6 +681,42 @@ function $first$(_T_0, _ps_0) {
   return $first$go$(_ps_0, _T_0, {$: "None"});
 }
 
+function $window$($0, $1, $2) {
+  for (;;) {
+    {
+      const _T_0 = $0;
+      const _ps_0 = $1;
+      const _n_0 = $2;
+      if (_ps_0.$ === "Nil") {
+        return _T_0;
+      } else {
+        const _t_0 = _ps_0["head"];
+        const _l_0 = _t_0["l"];
+        const _i_0 = _t_0["i"];
+        const _t_1 = _t_0["built"];
+        if (_t_1) {
+          const _rest_0 = _ps_0["tail"];
+          $0 = _T_0;
+          $1 = _rest_0;
+          $2 = _n_0;
+          continue;
+        } else {
+          const _rest_1 = _ps_0["tail"];
+          if (_n_0 === 0) {
+            return $start$(_l_0, _i_0);
+          } else {
+            const _m_0 = (_n_0 - 1);
+            $0 = _T_0;
+            $1 = _rest_1;
+            $2 = _m_0;
+            continue;
+          }
+        }
+      }
+    }
+  }
+}
+
 function $offer$(_ok_0, _c_0, _acc_0) {
   if (_ok_0) {
     return {$: "Con", "head": _c_0, "tail": _acc_0};
@@ -711,7 +747,7 @@ function $offers$leaves$($0, $1, $2, $3) {
   }
 }
 
-function $offers$node$(_l_0, _head_0, _j_0, _b_0, _kids_0) {
+function $offers$node$(_b_0, _kids_0) {
   if (_kids_0.$ === "Nil") {
     return false;
   } else {
@@ -721,7 +757,7 @@ function $offers$node$(_l_0, _head_0, _j_0, _b_0, _kids_0) {
       return false;
     } else {
       const _y_0 = _t_0["head"];
-      return $Bool$and$(($Bool$and$(($Bool$and$(($Bool$not$(_b_0)), _x_0)), _y_0)), ($Nat$is_le$(($start$(_l_0, nat_chk(_j_0 + 1))), _head_0)));
+      return $Bool$and$(($Bool$and$(($Bool$not$(_b_0)), _x_0)), _y_0);
     }
   }
 }
@@ -740,15 +776,14 @@ function $offers$drop2$(_kids_0) {
   }
 }
 
-function $offers$level$($0, $1, $2, $3, $4, $5) {
+function $offers$level$($0, $1, $2, $3, $4) {
   for (;;) {
     {
       const _own_0 = $0;
       const _kids_0 = $1;
       const _l_0 = $2;
-      const _head_0 = $3;
-      const _j_0 = $4;
-      const _acc_0 = $5;
+      const _j_0 = $3;
+      const _acc_0 = $4;
       if (_own_0.$ === "Nil") {
         return _acc_0;
       } else {
@@ -757,23 +792,21 @@ function $offers$level$($0, $1, $2, $3, $4, $5) {
         $0 = _rest_0;
         $1 = ($offers$drop2$(_kids_0));
         $2 = _l_0;
-        $3 = _head_0;
-        $4 = nat_chk(_j_0 + 1);
-        $5 = ($offer$(($offers$node$(_l_0, _head_0, _j_0, _b_0, _kids_0)), {$: "Coord", "l": _l_0, "i": _j_0}, _acc_0));
+        $3 = nat_chk(_j_0 + 1);
+        $4 = ($offer$(($offers$node$(_b_0, _kids_0)), {$: "Coord", "l": _l_0, "i": _j_0}, _acc_0));
         continue;
       }
     }
   }
 }
 
-function $offers$up$($0, $1, $2, $3, $4) {
+function $offers$up$($0, $1, $2, $3) {
   for (;;) {
     {
       const _levels_0 = $0;
       const _below_0 = $1;
       const _l_0 = $2;
-      const _head_0 = $3;
-      const _acc_0 = $4;
+      const _acc_0 = $3;
       if (_levels_0.$ === "Nil") {
         return _acc_0;
       } else {
@@ -782,8 +815,7 @@ function $offers$up$($0, $1, $2, $3, $4) {
         $0 = _rest_0;
         $1 = _own_0;
         $2 = nat_chk(_l_0 + 1);
-        $3 = _head_0;
-        $4 = ($offers$level$(_own_0, _below_0, _l_0, _head_0, 0, _acc_0));
+        $3 = ($offers$level$(_own_0, _below_0, _l_0, 0, _acc_0));
         continue;
       }
     }
@@ -796,7 +828,7 @@ function $offers$(_levels_0, _head_0) {
   } else {
     const _leaves_0 = _levels_0["head"];
     const _rest_0 = _levels_0["tail"];
-    return $offers$up$(_rest_0, _leaves_0, 1, _head_0, ($offers$leaves$(_leaves_0, _head_0, 0, {$: "Nil"})));
+    return $offers$up$(_rest_0, _leaves_0, 1, ($offers$leaves$(_leaves_0, _head_0, 0, {$: "Nil"})));
   }
 }
 
@@ -1276,11 +1308,12 @@ export default {
   "first.keep": run_lib((a0, a1) => { const r = $0m2(run_loop($first$keep$($0m5(a0), $0m7(a1)))); $0m2(a0); $0m10(a1); return r; }, 2),
   "first.go": run_lib((a0, a1, a2) => { const r = BigInt(run_loop($first$go$($0m6(a0), nat_host(a1), $0m5(a2)))); $0m9(a0); BigInt(a1); $0m2(a2); return r; }, 3),
   "first": run_lib((a0, a1) => { const r = BigInt(run_loop($first$(nat_host(a0), $0m6(a1)))); BigInt(a0); $0m9(a1); return r; }, 2),
+  "window": run_lib((a0, a1, a2) => { const r = BigInt(run_loop($window$(nat_host(a0), $0m6(a1), nat_host(a2)))); BigInt(a0); $0m9(a1); BigInt(a2); return r; }, 3),
   "offer": run_lib((a0, a1, a2) => { const r = $0m28(run_loop($offer$((a0), $0m26(a1), $0m27(a2)))); (a0); $0m4(a1); $0m28(a2); return r; }, 3),
   "offers.leaves": run_lib((a0, a1, a2, a3) => { const r = $0m28(run_loop($offers$leaves$((a0), nat_host(a1), nat_host(a2), $0m27(a3)))); (a0); BigInt(a1); BigInt(a2); $0m28(a3); return r; }, 4),
-  "offers.node": run_lib((a0, a1, a2, a3, a4) => { const r = (run_loop($offers$node$(nat_host(a0), nat_host(a1), nat_host(a2), (a3), (a4)))); BigInt(a0); BigInt(a1); BigInt(a2); (a3); (a4); return r; }, 5),
+  "offers.node": run_lib((a0, a1) => { const r = (run_loop($offers$node$((a0), (a1)))); (a0); (a1); return r; }, 2),
   "offers.drop2": run_lib((a0) => { const r = (run_loop($offers$drop2$((a0)))); (a0); return r; }, 1),
-  "offers.level": run_lib((a0, a1, a2, a3, a4, a5) => { const r = $0m28(run_loop($offers$level$((a0), (a1), nat_host(a2), nat_host(a3), nat_host(a4), $0m27(a5)))); (a0); (a1); BigInt(a2); BigInt(a3); BigInt(a4); $0m28(a5); return r; }, 6),
-  "offers.up": run_lib((a0, a1, a2, a3, a4) => { const r = $0m28(run_loop($offers$up$((a0), (a1), nat_host(a2), nat_host(a3), $0m27(a4)))); (a0); (a1); BigInt(a2); BigInt(a3); $0m28(a4); return r; }, 5),
+  "offers.level": run_lib((a0, a1, a2, a3, a4) => { const r = $0m28(run_loop($offers$level$((a0), (a1), nat_host(a2), nat_host(a3), $0m27(a4)))); (a0); (a1); BigInt(a2); BigInt(a3); $0m28(a4); return r; }, 5),
+  "offers.up": run_lib((a0, a1, a2, a3) => { const r = $0m28(run_loop($offers$up$((a0), (a1), nat_host(a2), $0m27(a3)))); (a0); (a1); BigInt(a2); $0m28(a3); return r; }, 4),
   "offers": run_lib((a0, a1) => { const r = $0m28(run_loop($offers$((a0), nat_host(a1)))); (a0); BigInt(a1); return r; }, 2),
 };

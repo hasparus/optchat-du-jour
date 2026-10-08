@@ -53,6 +53,7 @@ export type Ask<E extends Tagged = never> = {
   readonly onText?: (delta: string) => Effect.Effect<void>; // live text as it streams
   readonly onThinking?: (tokens: number) => Effect.Effect<void>; // the size of the reasoning streamed so far
   readonly onOut?: (out: Out) => Effect.Effect<void, E>; // each item of `output` as it completes
+  readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
 };
 export type Reply = { readonly text: string; readonly usage: Usage; readonly model: string; readonly output: readonly Out[] };
 export type Respond = <E extends Tagged = never>(ask: Ask<E>) => Effect.Effect<Reply, EngineError | E>;
@@ -194,7 +195,7 @@ const isUnauthorized = (e: Tagged): e is Unauthorized => e._tag === "Unauthorize
 
 type Read = { readonly text: string; readonly reasoning: number; readonly refusal: string; readonly output: readonly Out[]; readonly done: Reply | null };
 
-type Hooks<E extends Tagged> = Pick<Ask<E>, "onOut" | "onText" | "onThinking">;
+type Hooks<E extends Tagged> = Pick<Ask<E>, "onOut" | "onStart" | "onText" | "onThinking">;
 
 const onEvent =
   <E extends Tagged>(o: { readonly model: string; readonly label: string } & Hooks<E>) =>
@@ -259,7 +260,7 @@ export const readStream = <E extends Tagged = never>(stream: Stream.Stream<Uint8
   Effect.gen(function* () {
     const label = o.label ?? "openai-plan";
     const init: Read = { done: null, output: [], reasoning: 0, refusal: "", text: "" };
-    const r = yield* sseFold(label, stream, init, onEvent({ ...o, label, model }), (state) => state.done !== null);
+    const r = yield* sseFold(label, stream, init, onEvent({ ...o, label, model }), (state) => state.done !== null, o.onStart);
     if (r.refusal) return yield* new Refusal({ message: `${label} refused: ${r.refusal.slice(0, 300)}`, spent: r.done ? { model: r.done.model, usage: r.done.usage } : undefined });
     if (r.done === null) return yield* new ModelError({ message: `${label}: the stream ended without response.completed` });
     return r.done;
@@ -315,7 +316,7 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
             : classify(res.status, null, text.slice(0, 300), o.label);
         }
         const stream = res.stream.pipe(Stream.mapError((err) => new ModelError({ message: `${o.label}: ${err.message}` })));
-        return yield* readStream(stream, ask.model, { label: o.label, onOut: ask.onOut, onText: ask.onText, onThinking: ask.onThinking });
+        return yield* readStream(stream, ask.model, { label: o.label, onOut: ask.onOut, onStart: ask.onStart, onText: ask.onText, onThinking: ask.onThinking });
       }).pipe(Effect.catchIf(HttpClientError.isHttpClientError, (err) => Effect.fail(new ModelError({ message: `${o.label}: ${err.message}` }))));
 
     // a 401 renews the token once, then counts as signed out

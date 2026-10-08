@@ -1,13 +1,14 @@
 #!/usr/bin/env bun
 // The parity test (SPEC "Parity test"): the fixture replayed through both implementations with the
-// same fake compactor must give the same log, byte for byte; and the same compactor calls, in
-// order, and the same tree records, in order, until the first merge in either view. From there
-// the views part by design (SPEC E22: the reference merges by the first message at every message,
-// we by the last message in batches, and the view's lines are the summaries' context), so every
-// `optchat view` is only checked to be a well-formed view of the whole log, whichever
-// implementation prints it of whichever data dir. Twice: caught up after every message, and
-// lagging, with the compactor behind the log and some of its calls failing and retried
-// (fixture.ts). REF is the reference checkout at the pinned commit.
+// same fake compactor must give the same log, byte for byte, and the same tree records, as a set.
+// The views part by design (SPEC E22: the reference merges by the first message at every
+// message, we by the last message in batches), and so do the compactions' contexts (E24: theirs
+// the bare view lines, ours the compaction view, docs/optchat.md §4), which the fake compactor
+// therefore ignores; every `optchat view` is only checked to be a well-formed view of the whole
+// log, whichever implementation prints it of whichever data dir. Twice: caught up after every
+// message, where the compactor calls match in order, and lagging, with the compactor behind the
+// log and some of its calls failing and retried (fixture.ts), where the start rules part (E25) and
+// the calls match as a multiset. REF is the reference checkout at the pinned commit.
 import { tmpdir } from "node:os";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
@@ -85,12 +86,20 @@ const replay = async (mode: "caught-up" | "lag") => {
   const [mine, refs] = [report(o.out), report(r.out)];
   const log = records(ours, "main", ["date"]);
   check(`${mode}: log (dates aside)`, log, records(theirs, "main", ["date"]));
-  // up to the first merge in either view, both saw the same views
-  const calls = Math.min(mine.split.calls, refs.split.calls), built = Math.min(mine.split.nodes, refs.split.nodes);
-  console.log(`${mode}: ${mine.calls.length} compactor calls (${mine.calls.filter((c) => !c.endsWith("/1")).length} retries); the views part after ${calls} calls and ${built} nodes`);
-  ok(`${mode}: the views part only after some work`, calls > 50 && built > 100, `${calls} calls, ${built} nodes`);
-  check(`${mode}: the compactor calls before the views part, in order`, mine.calls.slice(0, calls), refs.calls.slice(0, calls));
-  check(`${mode}: the tree records before the views part, in order`, records(ours, "tree").slice(0, built), records(theirs, "tree").slice(0, built));
+  // The tree: every node, whatever order it was built in. The fake compactor's line depends on
+  // the node and its source only, so the two trees are the same set of records.
+  const tree = (dir: string) => records(dir, "tree").toSorted();
+  check(`${mode}: the tree records, as a set`, tree(ours), tree(theirs));
+  console.log(`${mode}: ${mine.calls.length} compactor calls (${mine.calls.filter((c) => !c.endsWith("/1")).length} retries); the views part after ${Math.min(mine.split.calls, refs.split.calls)} calls`);
+  // The calls. Caught up, each message's node and then the merges it makes ready, level by level,
+  // in both: the same calls in the same order, all of them. Lagging, the order parts by design
+  // (docs/optchat.md §4 "The order", SPEC E25): we start a message's node once fewer than 8 view
+  // lines before it are unbuilt and a merge once both its halves are, and try a failed call again
+  // at the next message; the reference starts a node only when every view line before its end is
+  // built, level by level, and retries after a timer. Each node is still called the same number
+  // of times (the script fails its tries alike), so the calls agree as a multiset.
+  if (mode === "caught-up") check(`${mode}: the compactor calls, in order`, mine.calls, refs.calls);
+  else check(`${mode}: the compactor calls, as a multiset`, mine.calls.toSorted(), refs.calls.toSorted());
   // whichever CLI prints whichever dir: a well-formed view of the whole log
   const ourCli = `${root}cli/optchat.ts`, refCli = `${ref}/src/cli.ts`;
   const view = async (cli: string, dir: string) => run(["bun", cli, "view"], { OPTCHAT_DIR: dir });
