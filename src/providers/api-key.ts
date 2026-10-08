@@ -44,6 +44,7 @@ export const apiKeyProvider = (o: ApiKeyOptions): Provider => {
           maxTokens: apiKey.maxTokens,
           model: o.ref.model,
           onItem: c.onItem,
+          onStart: c.onStart,
           onText: c.onText,
           onThinking: c.onThinking,
           system: c.instructions,

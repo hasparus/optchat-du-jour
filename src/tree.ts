@@ -1,7 +1,7 @@
 // What the chat holds in RAM (docs/optchat.md §1, §2): every logged message, the summaries built so far and
 // the coordinates of the view. Pure data and lookups; store.ts fills it, view.ts keeps the view
 // current and the pump adds nodes
-import { NODE, VIEW_HIGH, VIEW_LOW } from "./config.ts";
+import { COMPACTION_HIGH, COMPACTION_LOW, NODE, VIEW_HIGH, VIEW_LOW } from "./config.ts";
 import type { Msg, Node } from "./records.ts";
 import { span } from "./wire.ts";
 
@@ -26,15 +26,21 @@ export type Mem = {
   view: readonly Coord[];
   folding: boolean;
   readonly marks: Marks;
+  // The compaction view (docs/optchat.md §4 "Its view"): the view merged further, on its own
+  // sawtooth at `compactionMarks`. Reassigned by view.ts with the view, saved beside it.
+  compaction: Saw;
+  readonly compactionMarks: Marks;
   // called after every change of the view or of what its lines show (settle, idle priming)
   readonly listeners: Set<() => void>;
 };
 
-// the turns' view: 128 KB down to 64 KB
+// the turns' view: 128 KB down to 64 KB; the compaction view: 32 KB down to 16 KB
 export const VIEW_MARKS: Marks = { high: VIEW_HIGH, low: VIEW_LOW };
+export const COMPACTION_MARKS: Marks = { high: COMPACTION_HIGH, low: COMPACTION_LOW };
 
-export function newMem(marks: Marks = VIEW_MARKS): Mem {
-  return { root: [], view: [], folding: false, tree: new Map(), listeners: new Set(), marks };
+export function newMem(marks: Marks = VIEW_MARKS, compactionMarks: Marks = COMPACTION_MARKS): Mem {
+  const compaction: Saw = { folding: false, view: [] };
+  return { root: [], view: [], folding: false, tree: new Map(), listeners: new Set(), marks, compaction, compactionMarks };
 }
 
 export const bytes = (text: string) => Buffer.byteLength(text);

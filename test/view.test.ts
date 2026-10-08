@@ -163,6 +163,9 @@ const buildOn = async (dir: string, mem: Mem, c: Coord, n: number) => {
 const load = async (dir: string, writer = true) =>
   writer ? runScoped(Effect.andThen(lock(dir), loadChat(dir, { marks: MARKS }))) : run(loadChat(dir, { marks: MARKS, writer: false }));
 const savedText = (dir: string) => readFileSync(`${dir}/chat/view.json`, "utf8");
+// what view.json holds for a memory: the view and whether a batch is owed, and the compaction view beside it
+const pairs = (s: { readonly folding: boolean; readonly view: readonly { readonly l: number; readonly i: number }[] }) => ({ folding: s.folding, view: s.view.map((c) => [c.l, c.i]) });
+const savedOf = (mem: Mem) => ({ ...pairs(mem), compaction: pairs(mem.compaction) });
 
 test("a restart loads the saved view byte for byte, owed batch and all, where a rebuild would differ", async () => {
   const dir = scratchDir(), mem = newMem(MARKS);
@@ -181,6 +184,7 @@ test("a restart loads the saved view byte for byte, owed batch and all, where a 
     expect(problems).toEqual([]);
     expect(again.view).toEqual(mem.view);
     expect(again.folding).toBe(true);
+    expect(again.compaction).toEqual(mem.compaction); // saved beside the view, never made again
     expect(render(again)).toBe(render(mem));
   }
   // the owed batch goes on at the next message, after the restart as before it
@@ -189,7 +193,8 @@ test("a restart loads the saved view byte for byte, owed batch and all, where a 
   addMessage(mem, newMsg(17, "echo", long(600)));
   expect(again.view).toEqual(mem.view);
   expect(again.view.filter((c) => c.l === 1).length).toBeGreaterThan(2);
-  expect(JSON.parse(savedText(dir))).toEqual({ folding: again.folding, view: again.view.map((c) => [c.l, c.i]) });
+  expect(again.compaction).toEqual(mem.compaction);
+  expect(JSON.parse(savedText(dir))).toEqual(savedOf(again));
 });
 
 test("a missing, unreadable or illegal view.json is rebuilt from the log once, said so, and saved", async () => {
@@ -251,7 +256,7 @@ test("openChat saves the view with every message, and a reopened chat starts fro
       for (let t = 0; t < 6; t++) {
         yield* chat.log("user", long(700));
         seen.push(savedText(dir));
-        expect(JSON.parse(savedText(dir))).toEqual({ folding: chat.mem.folding, view: chat.mem.view.map((c) => [c.l, c.i]) });
+        expect(JSON.parse(savedText(dir))).toEqual(savedOf(chat.mem));
       }
       return seen;
     }),
@@ -260,11 +265,11 @@ test("openChat saves the view with every message, and a reopened chat starts fro
   const again = await runScoped(
     Effect.gen(function* () {
       const chat = yield* openChat(dir, { marks: { high: 2000, low: 1000 }, report: () => Effect.void, summarize: () => Effect.never });
-      return { folding: chat.mem.folding, problems: chat.problems, view: chat.mem.view };
+      return { problems: chat.problems, saved: savedOf(chat.mem) };
     }),
   );
   expect(again.problems).toEqual([]);
-  expect([`${JSON.stringify({ folding: again.folding, view: again.view.map((c) => [c.l, c.i]) })}\n`]).toEqual(views.slice(-1));
+  expect([`${JSON.stringify(again.saved)}\n`]).toEqual(views.slice(-1));
 });
 
 test("a compactor outage: the lines it builds late never take an un-owed view past its high mark", () => {

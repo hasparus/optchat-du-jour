@@ -1,6 +1,8 @@
 // The parity fixture: a deterministic stream of messages shaped like a coding session, and a
-// deterministic fake compactor whose lines depend on everything a real one sees (the context,
-// the level, the source), so a difference anywhere upstream shows in the view.
+// deterministic fake compactor whose lines depend on the node and its source (the level, the
+// message or the two halves), so a difference in the log or the tree shows. Not on the context:
+// the reference sends the bare view lines up to the node (the earlier gist), we send the
+// compaction view's id+n|text lines (docs/optchat.md §4), so the contexts part by design.
 export type Kind = "echo" | "talk" | "tool" | "user";
 export type FixtureMsg = { readonly kind: Kind; readonly text: string };
 export type Job = { readonly ctx: readonly string[]; readonly i: number; readonly l: number } & (
@@ -43,7 +45,7 @@ const hex = (s: string) => Bun.hash(s).toString(16).padStart(16, "0");
 
 export function fakeSummary(job: Job): string {
   const source = "msg" in job ? `${job.msg.kind}: ${job.msg.text}` : `${job.a}\n${job.b}`;
-  const h = hex(`${job.l}|${job.i}|${job.ctx.join("\n")}|${source}`);
+  const h = hex(`${job.l}|${job.i}|${source}`);
   const r = rng(Number.parseInt(h.slice(0, 8), 16));
   const tag = "msg" in job ? job.msg.kind : "work";
   return `${tag}: ${job.l}+${job.i} ${h} ${words(r, 20 + Math.floor(r() * 50))}${r() < 0.2 ? "\nsecond line" : ""}`;
@@ -108,22 +110,25 @@ export function gate() {
 // from, whatever the machine's load. Never a fixed sleep: a pump that hasn't started its next call
 // yet, or a retry timer that hasn't fired, is simply waited for. A pump that does neither for a
 // minute is hung, and fails the replay.
-export async function settled(g: ReturnType<typeof gate>, caughtUp: () => boolean): Promise<void> {
+// `idle` is what an implementation without a retry timer is told meanwhile: ours tries a failed
+// call again at the next message (docs/optchat.md §4), and none comes while the driver waits.
+export async function settled(g: ReturnType<typeof gate>, caughtUp: () => boolean, idle?: () => Promise<void>): Promise<void> {
   const deadline = Date.now() + 60_000;
   while (g.waiting() === null && !caughtUp()) {
     if (Date.now() > deadline) throw new Error("the compactor neither called nor caught up for 60 s");
     await Bun.sleep(1);
+    if (idle && g.waiting() === null && !caughtUp()) await idle();
   }
 }
 
 // Let the call in flight finish (false when there is none: everything is built), then wait until
 // the next one is in flight or everything is built.
-export async function release(g: ReturnType<typeof gate>, caughtUp: () => boolean): Promise<boolean> {
-  await settled(g, caughtUp);
+export async function release(g: ReturnType<typeof gate>, caughtUp: () => boolean, idle?: () => Promise<void>): Promise<boolean> {
+  await settled(g, caughtUp, idle);
   const w = g.waiting();
   if (w === null) return false;
   w.go();
-  await settled(g, caughtUp);
+  await settled(g, caughtUp, idle);
   return true;
 }
 
@@ -153,19 +158,20 @@ export async function replayLagging(o: {
   readonly caughtUp: () => boolean;
   readonly gate: ReturnType<typeof gate>;
   readonly look: () => void;
+  readonly idle?: () => Promise<void>;
 }) {
   for (const step of lagging()) {
-    await settled(o.gate, o.caughtUp);
+    await settled(o.gate, o.caughtUp, o.idle);
     o.look();
     for (const m of step.batch) {
       await o.log(m);
       o.look();
     }
     for (let c = 0; c < step.calls; c++) {
-      const more = await release(o.gate, o.caughtUp);
+      const more = await release(o.gate, o.caughtUp, o.idle);
       o.look();
       if (!more) break;
     }
   }
-  while (await release(o.gate, o.caughtUp)) o.look();
+  while (await release(o.gate, o.caughtUp, o.idle)) o.look();
 }

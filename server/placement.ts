@@ -11,7 +11,7 @@ import type { Settings } from "../src/config.ts";
 import { DeviceOffline } from "../src/engines/errors.ts";
 import { mcpConfig, mcpTransports } from "../src/mcp.ts";
 import { expandHome } from "../src/paths.ts";
-import { toolBox } from "../src/tools/box.ts";
+import { toolBox, toolDefs } from "../src/tools/box.ts";
 import { type FileTools, makeFileTools } from "../src/tools/files.ts";
 import type { Mem } from "../src/tree.ts";
 import type { Placement } from "../src/turn/claude-code.ts";
@@ -22,7 +22,6 @@ export const makePlacements = (o: {
   readonly port: number; // the server's, for this machine's claude to reach /mcp
   readonly secret: string; // /mcp's key
   readonly local: Runner["Service"];
-  readonly mem: Mem; // zoom and date for the tool loop
   readonly report: (message: string) => Effect.Effect<void>;
 }) =>
   Effect.gen(function* () {
@@ -54,12 +53,14 @@ export const makePlacements = (o: {
     // /tool, zoom and date from memory
     const localFiles = yield* makeFileTools(devices[o.device]?.folders ?? []);
     const files = new Map<string, FileTools>(Object.entries(devices).map(([name, d]) => [name, name === o.device ? localFiles : remoteTool(name, d.url)] as const));
-    const toolsFor = (device: string) =>
+    const toolsFor = (device: string, mem: Mem) =>
       toolBox({
         device,
         files: files.get(device) ?? ((name) => Effect.succeed(`Error: ${device} is not a configured device, so ${name} can't run`)),
         folders: devices[device]?.folders ?? [],
-        mem: o.mem,
+        mem,
       });
-    return { runnerFor, toolsFor, unreachable };
+    // what a turn on `device` is offered, which a compaction is offered too (docs/optchat.md §4)
+    const defsFor = (device: string) => toolDefs({ device, folders: devices[device]?.folders ?? [] });
+    return { defsFor, runnerFor, toolsFor, unreachable };
   });

@@ -4,11 +4,12 @@
 //
 // It tells the four kinds of call apart the way optchat starts them:
 //   caption   --system-prompt is the caption prompt (an attachment's caption, SPEC "Media")
-//   compact   --safe-mode in argv (the compactor)
-//   prime     DISABLE_PROMPT_CACHING=1 without --safe-mode (a priming call)
+//   compact   DISABLE_PROMPT_CACHING=1 without --replay-user-messages (the compactor)
+//   prime     DISABLE_PROMPT_CACHING=1 with --replay-user-messages (a priming call, the turn's argv)
 //   turn      anything else
 //
-// FAKE_CLAUDE_LOG: a JSONL file it appends to, one record per thing that happened:
+// FAKE_CLAUDE_LOG: a JSONL file it appends to, one record per thing that happened, each with its
+// time `t` (ms since the epoch):
 //   {type: "start", pid, role, call, argv, cwd, env}   call = how many of this role started before it
 //   {type: "in", pid, content}                          every user message read from stdin
 //   {type: "exit", pid, code}                           a normal end (not after SIGKILL)
@@ -21,7 +22,7 @@
 //   {synthetic: "..."}            an assistant text block of model "<synthetic>", unstreamed: how
 //                                 Claude Code reports an API error before its error result
 //   {thinking: N}                 a thinking delta of ~N tokens and an empty thinking block
-//   {tool: {name, input}}         an assistant tool_use block
+//   {tool: {name, input}}         a tool_use block: its content_block_start, then the assistant block
 //   {toolResult: "..."}           the user event carrying that tool's result
 //   {waitInput: true}             wait until a message arrives that no reply or take used yet
 //   {take: true}                  wait for such a message and take it now: its replay event
@@ -104,7 +105,7 @@ const { env } = process;
 const system = argv[argv.indexOf("--system-prompt") + 1] ?? "";
 const role: Role = system === CAPTION
   ? "caption"
-  : argv.includes("--safe-mode")
+  : env.DISABLE_PROMPT_CACHING === "1" && !argv.includes("--replay-user-messages")
     ? "compact"
     : env.DISABLE_PROMPT_CACHING === "1"
       ? "prime"
@@ -118,7 +119,7 @@ const replaying = argv.includes("--replay-user-messages");
 
 const logPath = env.FAKE_CLAUDE_LOG;
 const record = (r: LogRecord) => {
-  if (logPath) appendFileSync(logPath, `${JSON.stringify({ pid: process.pid, ...r })}\n`);
+  if (logPath) appendFileSync(logPath, `${JSON.stringify({ pid: process.pid, t: Date.now(), ...r })}\n`);
 };
 // how many calls of this role started before this one
 const earlier = () =>
@@ -221,6 +222,7 @@ async function play(reply: Reply): Promise<boolean> {
       emit({ message: { content: [{ signature: "sig", thinking: "", type: "thinking" }], model, role: "assistant" }, type: "assistant" });
     } else if ("tool" in a) {
       start();
+      emit({ event: { content_block: { id: "toolu_1", input: {}, name: a.tool.name, type: "tool_use" }, index: 0, type: "content_block_start" }, type: "stream_event" });
       emit({ message: { content: [{ id: "toolu_1", input: a.tool.input, name: a.tool.name, type: "tool_use" }], model, role: "assistant" }, type: "assistant" });
     } else if ("toolResult" in a) {
       emit({ message: { content: [{ content: a.toolResult, tool_use_id: "toolu_1", type: "tool_result" }], role: "user" }, type: "user" });

@@ -2,6 +2,7 @@
 // this file turns the memory into its inputs and its answers back into coordinates. It holds no
 // text either: an unbuilt line's size (the placeholder's, which view.ts owns) is a parameter.
 import kernel, { type List, type Msg, type Part, type Saw as Sawed } from "../kernel/kernel.mjs";
+import { AHEAD } from "./config.ts";
 import { built, type Coord, getNode, type Marks, type Mem, nodes, type Saw } from "./tree.ts";
 
 const nil: List<never> = { $: "Nil" };
@@ -67,24 +68,39 @@ export const extend = (mem: Mem, at: Saw, marks: Marks, hole: number, from: numb
     kernel.extend(from, marks.high, marks.low, { $: "Saw", folding: at.folding, ps: parts(mem, at.view, hole) }, list(mem.root.slice(from).map((m) => msg(mem, m.i, hole)))),
   );
 
+// One batch at `marks` (docs/optchat.md §3.2): the most due built pairs of `view`, a view of T
+// messages, merge until it is at most marks.low; ending over it, it owes the rest. The compaction
+// view is made this way from the view (docs/optchat.md §4 "Its view").
+export const batch = (mem: Mem, view: readonly Coord[], marks: Marks, hole: number, T = mem.root.length) =>
+  sawOf(kernel.saw(T, marks.high, marks.low, true, parts(mem, view, hole)));
+
 // the view rebuilt from message 0 with the tree as it is today: for a data dir with no saved
 // view, or a damaged one (docs/optchat.md §3.2: never otherwise, since a rebuilt view differs from the live one)
 export const refold = (mem: Mem, marks: Marks, hole: number) =>
   sawOf(kernel.refold(marks.high, marks.low, list(mem.root.map((m) => msg(mem, m.i, hole)))));
 
-// a view line as kernel.first reads it: where it starts and whether it is built. first never
-// looks at a line's size or ancestors, so they stay empty instead of being looked up.
+// a view line as kernel.first and kernel.window read it: where it starts and whether it is
+// built. They never look at a line's size or ancestors, so those stay empty instead of looked up.
 const bare = (mem: Mem, c: Coord): Part => ({ $: "Part", built: built(mem, c), i: c.i, l: c.l, size: 0, ups: nil });
+const bares = (mem: Mem, view: readonly Coord[]) => list(view.map((c) => bare(mem, c)));
 
-// the first message whose view line is unbuilt, else T (rule 3, SPEC E25)
-export const first = (mem: Mem): number =>
-  Number(kernel.first(mem.root.length, list(mem.view.map((c) => bare(mem, c)))));
+// the first message whose line in `view` (the view, or the compaction view) is unbuilt, else T:
+// a compaction's view stops there (docs/optchat.md §4 "The order")
+export const first = (mem: Mem, view: readonly Coord[] = mem.view): number => Number(kernel.first(mem.root.length, bares(mem, view)));
 
-// the nodes rule 3 lets the pump start, in its order: level by level, oldest first (rule 3, SPEC E25)
-export function offers(mem: Mem): Coord[] {
+// the start of the view's AHEAD-th unbuilt line, else T: a message's node may start when it is at
+// or before it, i.e. fewer than AHEAD view lines before it are unbuilt (docs/optchat.md §4 "The
+// order"; law window_few, window_all)
+export const window = (mem: Mem, ahead = AHEAD): number => Number(kernel.window(mem.root.length, bares(mem, mem.view), ahead - 1));
+
+// Every node the start rule allows (docs/optchat.md §4 "The order"; law 5): a message's node when
+// fewer than AHEAD view lines before it are unbuilt, a merge when both its halves are built. Level
+// by level, oldest first. A scan of the whole tree, so the pump never calls it (§7 mistake 13: its
+// queues are kept as nodes are built); the tests hold the queues to it.
+export function offers(mem: Mem, ahead = AHEAD): Coord[] {
   const levels: boolean[][] = [];
   for (const c of nodes(mem.root.length)) (levels[c.l] ??= []).push(built(mem, c));
-  const found = array(kernel.offers(list(levels.map(list)), first(mem)));
+  const found = array(kernel.offers(list(levels.map(list)), window(mem, ahead)));
   return found.toReversed().map((c) => ({ i: Number(c.i), l: Number(c.l) }));
 }
 

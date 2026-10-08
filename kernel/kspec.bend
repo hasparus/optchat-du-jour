@@ -73,9 +73,9 @@ def Present(levels: List<&2, List<&2, Bool>>, l: Nat, i: Nat) -> Bool:
 def Built(levels: List<&2, List<&2, Bool>>, l: Nat, i: Nat) -> Bool:
   Laws.Built(levels, l, i)
 
-# an offer rule 3 allows: the node exists and is unbuilt; at level 0 every
-# view line before the message is built, above it both children are built
-# and every view line before the node's end is built
+# an offer the start rule allows: the node exists and is unbuilt; at level
+# 0 the message is at or before head (the window's end), above it both
+# children are built
 def Allowed(levels: List<&2, List<&2, Bool>>, head: Nat, c: K.Coord) -> Type:
   K.Coord{l, i} = c
   match l:
@@ -87,8 +87,7 @@ def Allowed(levels: List<&2, List<&2, Bool>>, head: Nat, c: K.Coord) -> Type:
       ({Present(levels, 1n+m, i) == True{} : Bool}
         & {Built(levels, 1n+m, i) == False{} : Bool}
         & {Built(levels, m, Nat.double(i)) == True{} : Bool}
-        & {Built(levels, m, 1n+Nat.double(i)) == True{} : Bool}
-        & {Nat.is_le(K.start(1n+m, 1n+i), head) == True{} : Bool})
+        & {Built(levels, m, 1n+Nat.double(i)) == True{} : Bool})
 
 def In(c: K.Coord, cs: List<&2, K.Coord>) -> Type:
   Laws.In(c, cs)

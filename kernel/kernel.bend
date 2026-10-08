@@ -1,6 +1,6 @@
 # The fold kernel (SPEC E14): id+n addressing, the view's merge order, its
-# sawtooth and the rebuild from the log, `first` and the pump's rule 3
-# (docs/optchat.md §2-§4). It never sees text, only sizes in bytes, as Nats. LAWS.bend
+# sawtooth and the rebuild from the log, `first`, `window` and the start
+# rule (docs/optchat.md §2-§4). It never sees text, only sizes in bytes, as Nats. LAWS.bend
 # states what must hold; PROOF.bend proves it. src/kernel.ts is the only
 # caller.
 #
@@ -393,8 +393,11 @@ def extend(+T: Nat, +high: Nat, +low: Nat, r: Saw, ms: List<&2, Msg>) -> Saw:
     case Saw{ps, folding} Con{m, rest}:
       refold.end(refold.go(rest, high, low, 1n+T, fold.of(append(T, high, low, folding, ps, m))))
 
-# Rule 3
-# ------
+# The start rule
+# --------------
+# docs/optchat.md §4 "The order": a message's node starts once fewer than
+# 8 view lines before it are unbuilt; a merge once both its halves are
+# built. A compaction's view stops at the first unbuilt line.
 
 def first.unbuilt(b: Bool, s: Nat) -> Maybe<&2, Nat>:
   match b:
@@ -426,9 +429,25 @@ def first.go(ps: List<&2, Part>, +T: Nat, found: Maybe<&2, Nat>) -> Nat:
     case Con{p, rest}:
       first.go(rest, T, first.keep(found, p))
 
-# the first message whose view line is unbuilt, else T (rule 3)
+# the first message whose view line is unbuilt, else T
 def first(+T: Nat, ps: List<&2, Part>) -> Nat:
   first.go(ps, T, None{})
+
+# the start of the view's (n + 1)-th unbuilt line, else T: the messages
+# at or before it have at most n unbuilt lines before them
+def window(+T: Nat, ps: List<&2, Part>, n: Nat) -> Nat:
+  match ps:
+    case Nil{}:
+      T
+    case Con{p, rest}:
+      Part{+l, i, _, b, _} = p
+      match b n:
+        case True{} m:
+          window(T, rest, m)
+        case False{} 0n:
+          start(l, i)
+        case False{} 1n+m:
+          window(T, rest, m)
 
 def offer(ok: Bool, c: Coord, acc: List<&2, Coord>) -> List<&2, Coord>:
   match ok:
@@ -437,8 +456,8 @@ def offer(ok: Bool, c: Coord, acc: List<&2, Coord>) -> List<&2, Coord>:
     case False{}:
       acc
 
-# level 0: message i is offered when its line is unbuilt and every view
-# line before it is built (i <= head)
+# level 0: message i is offered when its line is unbuilt and it is at or
+# before head, the window's end (i <= head)
 def offers.leaves(bs: List<&2, Bool>, +head: Nat, +i: Nat, acc: List<&2, Coord>) -> List<&2, Coord>:
   match bs:
     case Nil{}:
@@ -446,7 +465,7 @@ def offers.leaves(bs: List<&2, Bool>, +head: Nat, +i: Nat, acc: List<&2, Coord>)
     case Con{b, rest}:
       offers.leaves(rest, head, 1n+i, offer(Bool.not(b) && Nat.is_le(i, head), Coord{0n, i}, acc))
 
-def offers.node(+l: Nat, +head: Nat, +j: Nat, b: Bool, kids: List<&2, Bool>) -> Bool:
+def offers.node(b: Bool, kids: List<&2, Bool>) -> Bool:
   match kids:
     case Nil{}:
       False{}
@@ -455,7 +474,7 @@ def offers.node(+l: Nat, +head: Nat, +j: Nat, b: Bool, kids: List<&2, Bool>) -> 
         case Nil{}:
           False{}
         case Con{y, _}:
-          Bool.not(b) && x && y && Nat.is_le(start(l, 1n+j), head)
+          Bool.not(b) && x && y
 
 def offers.drop2(kids: List<&2, Bool>) -> List<&2, Bool>:
   match kids:
@@ -468,29 +487,30 @@ def offers.drop2(kids: List<&2, Bool>) -> List<&2, Bool>:
         case Con{_, rest}:
           rest
 
-# level l > 0: node j is offered when it is unbuilt, both its children
-# (the kids, two per node) are built, and every view line before its end
-# is built
-def offers.level(own: List<&2, Bool>, +kids: List<&2, Bool>, +l: Nat, +head: Nat, +j: Nat, acc: List<&2, Coord>) -> List<&2, Coord>:
+# level l > 0: node j is offered when it is unbuilt and both its children
+# (the kids, two per node) are built
+def offers.level(own: List<&2, Bool>, +kids: List<&2, Bool>, +l: Nat, +j: Nat, acc: List<&2, Coord>) -> List<&2, Coord>:
   match own:
     case Nil{}:
       acc
     case Con{b, rest}:
-      offers.level(rest, offers.drop2(kids), l, head, 1n+j, offer(offers.node(l, head, j, b, kids), Coord{l, j}, acc))
+      offers.level(rest, offers.drop2(kids), l, 1n+j, offer(offers.node(b, kids), Coord{l, j}, acc))
 
-def offers.up(levels: List<&2, List<&2, Bool>>, +below: List<&2, Bool>, +l: Nat, +head: Nat, acc: List<&2, Coord>) -> List<&2, Coord>:
+def offers.up(levels: List<&2, List<&2, Bool>>, +below: List<&2, Bool>, +l: Nat, acc: List<&2, Coord>) -> List<&2, Coord>:
   match levels:
     case Nil{}:
       acc
     case Con{+own, rest}:
-      offers.up(rest, own, 1n+l, head, offers.level(own, below, l, head, 0n, acc))
+      offers.up(rest, own, 1n+l, offers.level(own, below, l, 0n, acc))
 
-# The nodes rule 3 lets the pump start (SPEC E25): levels[l][i] says
-# whether node (l, i) is built, level 0 first, one entry per node that
-# exists; head is first(view). Most recent offer first: the caller reverses.
+# The nodes the start rule allows: levels[l][i] says whether node (l, i)
+# is built, level 0 first, one entry per node that exists; head is
+# window(T, view, 7). Most recent offer first: the caller reverses. A scan
+# of the whole tree: the pump keeps queues instead (docs/optchat.md §7
+# mistake 13), and the tests hold them to this.
 def offers(levels: List<&2, List<&2, Bool>>, +head: Nat) -> List<&2, Coord>:
   match levels:
     case Nil{}:
       Nil{}
     case Con{+leaves, rest}:
-      offers.up(rest, leaves, 1n, head, offers.leaves(leaves, head, 0n, Nil{}))
+      offers.up(rest, leaves, 1n, offers.leaves(leaves, head, 0n, Nil{}))

@@ -18,7 +18,7 @@ import { ApiKeys, apiKeysLayer } from "../src/apikey/clients.ts";
 import { openChat } from "../src/chat.ts";
 import { LocalRunner, Runner } from "../src/claude/process.ts";
 import type { Summarize } from "../src/compactor.ts";
-import { NODE, type Settings, loadSettings, parseRef } from "../src/config.ts";
+import { NODE, type Settings, WAIT_RETRY, loadSettings, parseRef } from "../src/config.ts";
 import { parseOptmem } from "../src/import.ts";
 import { zoom } from "../src/mcp.ts";
 import { OpenAiPlan, openAiPlanLayer } from "../src/openai/responses.ts";
@@ -26,7 +26,10 @@ import { HOME } from "../src/paths.ts";
 import type { Kind } from "../src/records.ts";
 import { SecretsLive } from "../src/secrets.ts";
 import { loadChat } from "../src/store.ts";
+import { makeGate } from "../src/engines/inflight.ts";
+import { systemPrompt } from "../src/prompts.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
+import { toolDefs } from "../src/tools/box.ts";
 import { built, getNode, type Mem, nodes } from "../src/tree.ts";
 import { type UsageRecord, logUsage } from "../src/usage.ts";
 import { render, settle } from "../src/view.ts";
@@ -90,7 +93,7 @@ const unbuiltOf = (mem: Mem) => [...nodes(mem.root.length)].filter((c) => !built
 
 // One contender: log each message as a live chat would, wait until the view is summarized (a
 // turn waits for that too, docs/optchat.md §6), then let the pump finish every node. At the deadline it
-// stops where it is and says what is left: a failing engine retries forever (rule 3, SPEC "Storage, tree, view and compactor ordering").
+// stops where it is and says what is left: a failing engine is tried again every `retry`, forever.
 export const replay = <R>(o: {
   readonly contender: Contender;
   readonly messages: readonly Message[];
@@ -98,7 +101,9 @@ export const replay = <R>(o: {
   readonly poll?: Duration.Input;
   readonly budget?: number; // a smaller view than VIEW_HIGH (folded to half of it), to make a short replay fold
   readonly deadline?: Duration.Input; // 2 hours
-  readonly retry?: Duration.Input; // the pump's, RETRY
+  // how often a failed call is tried again: in a chat, at the next message (docs/optchat.md §4);
+  // here, where no message comes while the replay waits, every `retry`
+  readonly retry?: Duration.Input; // WAIT_RETRY
 }) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -115,11 +120,13 @@ export const replay = <R>(o: {
       const chat = yield* openChat(dir, {
         marks: o.budget === undefined ? undefined : { high: o.budget, low: Math.floor(o.budget / 2) },
         report,
-        retry: o.retry,
         summarize: (job) => summarize(job).pipe(Effect.provideService(CurrentNode, `${job.l}.${job.i}`)),
       });
       let logged = 0;
       const deadline = o.deadline ?? "2 hours";
+      // no session here, and the end waits on every node, not just the view's: tried again as a
+      // waiting turn does (src/session.ts), every WAIT_RETRY
+      const retrying = chat.retry.pipe(Effect.delay(o.retry ?? WAIT_RETRY), Effect.forever);
       const finished = yield* Effect.gen(function* () {
         for (const m of o.messages) {
           yield* chat.log(m.kind, m.text);
@@ -127,7 +134,7 @@ export const replay = <R>(o: {
           yield* settle(chat.mem);
         }
         while (unbuiltOf(chat.mem).length > 0) yield* Effect.sleep(o.poll ?? "200 millis");
-      }).pipe(Effect.timeoutOption(deadline));
+      }).pipe(Effect.raceFirst(retrying), Effect.timeoutOption(deadline));
       const unbuilt = unbuiltOf(chat.mem);
       if (Option.isNone(finished))
         yield* report(`deadline (${Duration.format(Duration.fromInputUnsafe(deadline))}): ${logged} of ${o.messages.length} messages logged, ${unbuilt.length} nodes unbuilt`);
@@ -371,7 +378,12 @@ const main = Effect.gen(function* () {
           log: (r) => budget.note(r).pipe(Effect.andThen(log(r)), Effect.andThen(spend(r))),
           plan,
           report,
-          runner,
+          // what a turn sends before its view (docs/optchat.md §4): the system prompt and the
+          // default device's tools; claude-code's turn tools here, with no MCP server to reach
+          gate: makeGate(),
+          instructions: systemPrompt(HOME),
+          placement: Effect.succeed({ cwd: undefined, mcpConfig: JSON.stringify({ mcpServers: {} }), mcpSeen: () => Effect.succeed(false), runner }),
+          tools: toolDefs({ device: settings.defaultDevice, folders: settings.devices[settings.defaultDevice]?.folders ?? [] }),
           settings: { ...settings, compactor: { ...settings.compactor, byLevel: c.byLevel } },
         }).pipe(Effect.map((m) => m.summarize)),
     });

@@ -16,7 +16,7 @@ import { Credentials, SECRET, encodeCredentials, login } from "../src/openai/aut
 import { type Endpoints, DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 import { OpenAiPlan, openAiPlanLayer, readStream } from "../src/openai/responses.ts";
 import { responsesProvider } from "../src/providers/responses.ts";
-import { COMPACT } from "../src/prompts.ts";
+import { makeGate } from "../src/engines/inflight.ts";
 import { SECURITY_LINE_MAX, Secrets, SecretsError, keychainLine, memorySecrets } from "../src/secrets.ts";
 import { makeSession, noMedia } from "../src/session.ts";
 import { newMsg } from "../src/store.ts";
@@ -52,6 +52,9 @@ const signedIn = async (secrets: Layer.Layer<Secrets>) => {
 };
 const plan = (e: Endpoints, secrets: Layer.Layer<Secrets>) => openAiPlanLayer(e).pipe(Layer.provide([secrets, FetchHttpClient.layer]));
 
+// what a turn sends before its view, which compactions send too (docs/optchat.md §4, §5)
+const READ = { description: "Read a file", name: "Read", parameters: { properties: { file_path: { type: "string" } }, type: "object" } };
+const compactorBase = { gate: makeGate(), instructions: "SYSTEM", tools: [READ] };
 const leaf = (text: string): Job => ({ ctx: ["user: we are moving the blog to Bun", "talk: ok, starting with the build"], i: 2, l: 0, msg: newMsg(2, "user", text) });
 const line = (n: number) => `user: ${"x".repeat(n - 6)}`;
 // what reached the API, read back with the same shape the client wrote
@@ -135,7 +138,7 @@ test("a compactor call streams its line; a long one is retried in the same conve
   const records: UsageRecord[] = [];
   const compact = await Effect.runPromise(
     Effect.gen(function* () {
-      return openAiPlanCompactor({ effort: "medium", log: (r) => Effect.sync(() => void records.push(r)), model: "gpt-6-luna", plan: yield* OpenAiPlan });
+      return openAiPlanCompactor({ ...compactorBase, effort: "medium", log: (r) => Effect.sync(() => void records.push(r)), model: "gpt-6-luna", plan: yield* OpenAiPlan });
     }).pipe(Effect.provide(plan(e, secrets))),
   );
 
@@ -143,7 +146,7 @@ test("a compactor call streams its line; a long one is retried in the same conve
   fake.state.script = [{ cached: 900, text: "user: move the blog to Bun; talk: starting" }];
   expect(await Effect.runPromise(compact(leaf("move the blog to Bun"), null))).toBe("user: move the blog to Bun; talk: starting");
   const [one] = bodies();
-  expect(one).toMatchObject({ instructions: COMPACT, model: "gpt-6-luna", store: false, stream: true });
+  expect(one).toMatchObject({ instructions: "SYSTEM", model: "gpt-6-luna", store: false, stream: true });
   expect(one!.input.map((m) => m.role)).toEqual(["user"]); // the route rejects system messages
   expect(records[0]).toMatchObject({ attempt: 1, auth: "chatgpt-pro", cold: false, engine: "openai-plan", level: 0, role: "compact", usage: { cacheRead: 900, input: 100 } });
 
@@ -159,7 +162,7 @@ test("a compactor call streams its line; a long one is retried in the same conve
   expect(JSON.stringify(last.input[0])).toBe(JSON.stringify(bodies()[0]!.input[0]));
   expect(last.input.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant", "user", "assistant", "user", "assistant", "user"]);
   expect(last.input[1]!.content).toBe(line(600));
-  expect(JSON.stringify(last.input[2]!.content)).toContain(`That line is 600 bytes; the limit is ${NODE}. It must end where it is cut here:`);
+  expect(JSON.stringify(last.input[2]!.content)).toContain(`Too long: your line is 600 bytes, over the ${NODE}-byte limit. Write\\nthe whole line again`);
   expect(JSON.stringify(last.input[2]!.content)).toContain("| ← LIMIT");
   expect(records.map((r) => r.attempt)).toEqual([1, 2, 3, 4, 5]);
   expect(records.every((r) => r.cold)).toBe(true);
@@ -201,7 +204,10 @@ const compactors = async (secrets: Layer.Layer<Secrets>, e: Endpoints) => {
         log: (r) => Effect.sync(() => void records.push(r)),
         plan: Effect.succeed(client),
         report: (m) => Effect.sync(() => void reports.push(m)),
-        runner: yield* Runner,
+        gate: makeGate(),
+        instructions: "SYSTEM",
+        placement: Effect.succeed({ cwd: undefined, mcpConfig: "{}", mcpSeen: () => Effect.succeed(false), runner: yield* Runner }),
+        tools: [READ],
         settings: settings([
           { chain: ["openai-plan:gpt-6-luna", "claude-code:sonnet"], from: 0 },
           { chain: ["openai-plan:gpt-6.1-sol", "claude-code:sonnet"], from: 3 },
@@ -384,7 +390,7 @@ test("both compactor engines send the same input: openai-plan's parts are claude
   const e = await signedIn(secrets);
   const compact = await Effect.runPromise(
     Effect.gen(function* () {
-      return openAiPlanCompactor({ effort: "low", log: () => Effect.void, model: "gpt-6-luna", plan: yield* OpenAiPlan });
+      return openAiPlanCompactor({ ...compactorBase, effort: "low", log: () => Effect.void, model: "gpt-6-luna", plan: yield* OpenAiPlan });
     }).pipe(Effect.provide(plan(e, secrets))),
   );
   const job: Job = { ctx: Array.from({ length: 3000 }, (_, k) => `user: line ${k} ${"y".repeat(40)}`), i: 3000, l: 0, msg: newMsg(3000, "user", "hi\nthere") };
@@ -476,6 +482,29 @@ test("a tool loop on the Responses API keeps its reasoning: sent back encrypted 
   for (const i of replayed) expect([...fake.state.issued]).toContain(encryptedOf(i));
 });
 
+test("openai-plan: a turn of our tool loop and a compaction send the same instructions and tools, byte for byte; the compaction may call none", async () => {
+  const secrets = memorySecrets();
+  const e = await signedIn(secrets);
+  const respond = await Effect.runPromise(
+    Effect.gen(function* () {
+      return (yield* OpenAiPlan).respond;
+    }).pipe(Effect.provide(plan(e, secrets))),
+  );
+  const provider = responsesProvider({ auth: "chatgpt-pro", effort: "high", engine: "openai-plan", model: "gpt-6.1-sol", respond });
+  const engine = toolLoop({ instructions: "SYSTEM", provider, ref: "openai-plan:gpt-6.1-sol", toolsFor: () => ({ defs: [READ], run: () => Effect.succeed("") }), vision: false });
+  const compact = openAiPlanCompactor({ ...compactorBase, effort: "medium", log: () => Effect.void, model: "gpt-6.1-sol", plan: { respond } });
+  const out: TurnEvents = { info: () => Effect.void, log: () => Effect.void, text: () => Effect.void, thinking: () => Effect.void, took: () => Effect.void, usage: () => Effect.void };
+  fake.state.seen.length = 0;
+  fake.state.script = [{ text: "hi" }, { text: line(300) }];
+  await Effect.runPromise(engine.run({ device: "mini", earlier: [], media: [], mid: { next: Effect.never, ready: Effect.succeed([]) }, texts: ["hi"], view: LONG_VIEW }, out, null));
+  await Effect.runPromise(compact(leaf("hello"), null));
+  const Raw = Schema.fromJsonString(Schema.Struct({ instructions: Schema.Json, tool_choice: Schema.optional(Schema.String), tools: Schema.Json }));
+  const [turn, compaction] = fake.state.seen.map((x) => Schema.decodeUnknownSync(Raw)(x.body));
+  expect(JSON.stringify(compaction!.instructions)).toBe(JSON.stringify(turn!.instructions));
+  expect(JSON.stringify(compaction!.tools)).toBe(JSON.stringify(turn!.tools));
+  expect([turn!.tool_choice, compaction!.tool_choice]).toEqual(["auto", "none"]);
+});
+
 test("the compactor on the plan replays its reasoning on a size retry, and a model that refuses breakpoints is asked again without them, said once", async () => {
   const secrets = memorySecrets();
   const e = await signedIn(secrets);
@@ -483,7 +512,7 @@ test("the compactor on the plan replays its reasoning on a size retry, and a mod
   const layer = openAiPlanLayer(e, { report: (m) => Effect.sync(() => void reports.push(m)) }).pipe(Layer.provide([secrets, FetchHttpClient.layer]));
   const compact = await Effect.runPromise(
     Effect.gen(function* () {
-      return openAiPlanCompactor({ effort: "medium", log: () => Effect.void, model: "gpt-6.1-sol", plan: yield* OpenAiPlan });
+      return openAiPlanCompactor({ ...compactorBase, effort: "medium", log: () => Effect.void, model: "gpt-6.1-sol", plan: yield* OpenAiPlan });
     }).pipe(Effect.provide(layer)),
   );
   const job: Job = { ctx: Array.from({ length: 110 }, (_, k) => `user: line ${k} ${"z".repeat(1000)}`), i: 110, l: 0, msg: newMsg(110, "user", "squeeze me") };

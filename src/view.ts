@@ -1,13 +1,14 @@
 // The view's text (docs/optchat.md §3, §6; ref §5.1). Which nodes are in the view is the kernel's call
-// (kernel.ts); this file keeps mem.view up to date, checks a saved one, renders it and waits on it.
+// (kernel.ts); this file keeps mem.view and the compaction view up to date, checks saved ones,
+// renders them and waits on the view.
 import { Effect } from "effect";
 import { BLOCK, NODE } from "./config.ts";
 import * as K from "./kernel.ts";
 import type { Node } from "./records.ts";
-import { built, bytes, dayOf, end, type Entry, getNode, label, type Mem, nodes, type Saw, setNode } from "./tree.ts";
+import { built, bytes, type Coord, dayOf, end, type Entry, getNode, label, type Mem, nodes, type Saw, setNode } from "./tree.ts";
 
-// What a line shows until its summary exists (docs/optchat.md §3, §6). Only people read it: rule 3 keeps it out
-// of every compactor call, and a turn waits until no view line shows it.
+// What a line shows until its summary exists (docs/optchat.md §3, §6). Only people read it: no
+// compaction sees it (compactionContext), and a turn waits until no view line shows it.
 export const PLACEHOLDER = "(not summarized yet: zoom it)";
 const HOLE = bytes(PLACEHOLDER);
 // What an unbuilt line counts as when the sawtooth weighs the view: its summary's size to come,
@@ -19,11 +20,24 @@ export const UNBUILT = NODE;
 const tell = (mem: Mem) => {
   for (const listener of mem.listeners) listener();
 };
-function changed(mem: Mem, next: Saw) {
+function changed(mem: Mem, next: Saw, compaction: Saw) {
   mem.view = next.view;
   mem.folding = next.folding;
+  mem.compaction = compaction;
   tell(mem);
 }
+
+// The compaction view once message i has arrived and the view went from `before` to `after`
+// (docs/optchat.md §4 "Its view"): when the view merged, it is the view merged again, down to the
+// compaction view's low mark; otherwise it gets the same new line and runs its own sawtooth, so
+// between batches it too only grows at its end.
+function follow(mem: Mem, i: number, before: readonly Coord[], after: Saw, compaction: Saw): Saw {
+  const merged = after.view.length < before.length + 1;
+  return merged ? K.batch(mem, after.view, mem.compactionMarks, UNBUILT, i + 1) : K.append(mem, compaction, mem.compactionMarks, UNBUILT, i);
+}
+
+// message i arrives in the view `at`
+const arrive = (mem: Mem, i: number, at: Saw) => K.append(mem, { folding: at.folding, view: at.view }, mem.marks, UNBUILT, i);
 
 // Message i arrives: its line goes at the end, and only past the high mark, or with a batch still
 // owed, does anything merge (docs/optchat.md §3.2). The caller saves the view (store.saveView).
@@ -31,7 +45,8 @@ export function addMessage(mem: Mem, msg: Entry) {
   const next = mem.root.length;
   if (msg.i !== next) throw new Error(`addMessage: the next id is ${next}, ${msg.i} is out of turn`);
   mem.root.push(msg);
-  changed(mem, K.append(mem, { folding: mem.folding, view: mem.view }, mem.marks, UNBUILT));
+  const after = arrive(mem, msg.i, mem);
+  changed(mem, after, follow(mem, msg.i, mem.view, after, mem.compaction));
 }
 
 // A node was built: kept. The view's lines stay as they are until the next message (a batch owed
@@ -41,20 +56,24 @@ export function addNode(mem: Mem, record: Node): void {
   tell(mem);
 }
 
-// after a bulk import, or with no usable saved view: the view rebuilt from message 0, once
+// after a bulk import, or with no usable saved view: the view rebuilt from message 0, once, and
+// the compaction view merged down from it
 export const refold = (mem: Mem): void => {
-  changed(mem, K.refold(mem, mem.marks, UNBUILT));
+  const view = K.refold(mem, mem.marks, UNBUILT);
+  changed(mem, view, K.batch(mem, view.view, mem.compactionMarks, UNBUILT));
 };
 
-// A saved view (chat/view.json) as [l, i] pairs, and whether a batch is owed; or why there is none
-// to use ("missing", "unreadable")
-export type Saved = { readonly folding: boolean; readonly view: readonly (readonly [number, number])[] };
+// A saved view (chat/view.json) as [l, i] pairs, and whether a batch is owed; the compaction view
+// beside it (missing in a file written before it existed); or why there is none to use
+// ("missing", "unreadable")
+export type SavedSaw = { readonly folding: boolean; readonly view: readonly (readonly [number, number])[] };
+export type Saved = SavedSaw & { readonly compaction?: SavedSaw | undefined };
 export type Found = { readonly ok: true; readonly saved: Saved } | { readonly ok: false; readonly why: string };
 
 // Where the saved lines end, if they are legal: whole nodes, each starting where the one before
 // ended, the first at 0, the last at or before T, and every merged line built (a merge needs its
 // parent). A message's own line may still wait for its summary.
-function savedEnd(mem: Mem, saved: Saved): { readonly ok: true; readonly end: number } | { readonly ok: false; readonly why: string } {
+function savedEnd(mem: Mem, saved: SavedSaw): { readonly ok: true; readonly end: number } | { readonly ok: false; readonly why: string } {
   let at = 0;
   for (const [l, i] of saved.view) {
     const c = { i, l };
@@ -68,10 +87,15 @@ function savedEnd(mem: Mem, saved: Saved): { readonly ok: true; readonly end: nu
   return { end: at, ok: true };
 }
 
+const sawOf = (saved: SavedSaw): Saw => ({ folding: saved.folding, view: saved.view.map(([l, i]) => ({ i, l })) });
+
 // The view at load (docs/optchat.md §3.2 "Save the view to view.json and load it at start"): the saved one
 // when it fits the log and the tree. One that stops short of the log (a crash between logging a
 // message and saving the view) gets the missing messages appended, as they would have been.
-// Missing or damaged, it is rebuilt from the log; every cache entry dies then, so it is said.
+// Missing or damaged, it is rebuilt from the log; every cache entry dies then, so it is said. The
+// compaction view is saved with it and loaded the same way; one that is missing (a file from
+// before it existed), doesn't fit, or whose view had to catch up is merged down from the view
+// once: only compactions' cache entries die then.
 export function restore(mem: Mem, found: Found): string | null {
   const rebuilt = (why: string) => {
     refold(mem);
@@ -80,19 +104,29 @@ export function restore(mem: Mem, found: Found): string | null {
   if (!found.ok) return rebuilt(found.why);
   const ends = savedEnd(mem, found.saved);
   if (!ends.ok) return rebuilt(ends.why);
-  const at: Saw = { folding: found.saved.folding, view: found.saved.view.map(([l, i]) => ({ i, l })) };
-  changed(mem, ends.end === mem.root.length ? at : K.extend(mem, at, mem.marks, UNBUILT, ends.end));
-  const behind = mem.root.length - ends.end;
-  return behind === 0 ? null : `chat/view.json: ${behind} messages behind the log; appended them`;
+  const at = sawOf(found.saved), behind = mem.root.length - ends.end;
+  const view = behind === 0 ? at : K.extend(mem, at, mem.marks, UNBUILT, ends.end);
+  // the compaction view as saved, when it is whole and the view did not have to catch up
+  const { compaction } = found.saved;
+  const theirs = compaction === undefined ? null : savedEnd(mem, compaction);
+  const kept = compaction !== undefined && theirs?.ok === true && theirs.end === ends.end && behind === 0;
+  changed(mem, view, kept ? sawOf(compaction) : K.batch(mem, view.view, mem.compactionMarks, UNBUILT));
+  const notes = [
+    ...(behind === 0 ? [] : [`chat/view.json: ${behind} messages behind the log; appended them`]),
+    ...(theirs === null || theirs.ok ? [] : [`chat/view.json: the compaction view: ${theirs.why}; merged it again from the view`]),
+  ];
+  return notes.length === 0 ? null : notes.join("; ");
 }
 
 // one space for each line break, whether LF, CRLF or a CR on its own
 export const flat = (text: string) => text.split(/\r\n?|\n/).join(" ");
 
-// the view as every call sees it: one id+n|text line per part inside <chat> tags
+// a view line as every call sees it: id+n|text, newlines as spaces
+const lineOf = (mem: Mem, c: Coord) => `${label(c)}|${flat(getNode(mem, c)?.text ?? PLACEHOLDER)}`;
+
+// the view as every turn sees it: one id+n|text line per part inside <chat> tags
 export function render(mem: Mem): string {
-  const lines = mem.view.map((c) => `${label(c)}|${flat(getNode(mem, c)?.text ?? PLACEHOLDER)}`);
-  return `${["<chat>", ...lines].join("\n")}\n</chat>`;
+  return `${["<chat>", ...mem.view.map((c) => lineOf(mem, c))].join("\n")}\n</chat>`;
 }
 
 // The view, or a compactor's context, as content blocks (docs/optchat.md §3.3 "How the cache is
@@ -129,17 +163,19 @@ export function viewSize(mem: Mem) {
   return total;
 }
 
-// the bare text of the view lines that end at or before message `upTo`: a compactor call's
-// context (E24). Rule 3 keeps every one of them built; an unbuilt one is a bug.
-export function context(mem: Mem, upTo: number): string[] {
-  const texts: string[] = [];
-  for (const c of mem.view) {
-    if (end(c) > upTo) break;
-    const n = getNode(mem, c);
-    if (!n) throw new Error(`rule 3 broken: view line ${label(c)} is unbuilt in a context up to ${upTo}`);
-    texts.push(flat(n.text));
+// A compaction's view (docs/optchat.md §4): the compaction view's lines that end by message
+// `upTo` (for a message's node, the lines before it; for a merge, those up to its last message),
+// stopping at the first unbuilt one, so no call sees a placeholder or half a message. Each line as
+// the view shows it.
+export function compactionContext(mem: Mem, upTo: number): string[] {
+  const { view } = mem.compaction;
+  const stop = Math.min(upTo, K.first(mem, view)); // every line before it is built (law first_first)
+  const lines: string[] = [];
+  for (const c of view) {
+    if (end(c) > stop) break;
+    lines.push(lineOf(mem, c));
   }
-  return texts;
+  return lines;
 }
 
 // done once every view line is a summary (docs/optchat.md §6). Interrupting it is the user's cancel; it

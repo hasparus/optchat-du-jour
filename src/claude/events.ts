@@ -31,10 +31,12 @@ const MessageStart = Schema.Struct({
   message: Schema.Struct({ model: Schema.optional(Schema.String), usage: Schema.optional(Usage) }),
 });
 const BlockDelta = Schema.Struct({ type: Schema.Literal("content_block_delta"), delta: Schema.Union([TextDelta, ThinkingDelta]) });
+// a block begins: a tool call shows here before it is complete (the compactor stops at one)
+const BlockStart = Schema.Struct({ type: Schema.Literal("content_block_start"), content_block: Schema.Struct({ type: Schema.String }) });
 
 export const StreamEvent = Schema.Struct({
   type: Schema.Literal("stream_event"),
-  event: Schema.Union([MessageStart, BlockDelta]),
+  event: Schema.Union([MessageStart, BlockDelta, BlockStart]),
 });
 
 const TextBlock = Schema.Struct({ type: Schema.Literal("text"), text: Schema.String });

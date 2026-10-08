@@ -1,240 +1,30 @@
-// The claude-code engines against the fake `claude` (ref §10): the compactor's request and its
-// retries, the turn through the session, priming (E17), warm processes (E18) and the MCP
-// transport's fallback (E8). Every test runs the fake, never `claude`, and every fake a test
-// started must be gone when it ends.
-import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
+// The claude-code turn against the fake `claude` (ref §10): through the session, priming (E17), warm
+// processes (E18), the MCP transport's fallback (E8), and what a compaction shares with a turn
+// (the compactor's own tests are in claude-compactor.test.ts). Every test runs the fake, never
+// `claude`, and every fake a test started must be gone when it ends.
+import { expect, test } from "bun:test";
 import { type AGUIEvent, EventType } from "@ag-ui/core";
-import { BunServices } from "@effect/platform-bun";
-import { type Duration, Effect, Fiber, Layer, PubSub, Schema, type Scope } from "effect";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { type Duration, Effect, Fiber, PubSub } from "effect";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { openChat } from "../src/chat.ts";
-import { baseArgs } from "../src/claude/args.ts";
-import type { Block } from "../src/claude/events.ts";
-import { ClaudeError, LocalRunner, Runner, type Spawn } from "../src/claude/process.ts";
+import { ClaudeError, Runner, type Spawn } from "../src/claude/process.ts";
 import { type WarmOptions, warmRunner } from "../src/claude/warm.ts";
-import { CompactError, type Job } from "../src/compactor.ts";
 import { MASTER_TOOLS } from "../src/config.ts";
 import { type McpSeen, mcpConfig, mcpTransports } from "../src/mcp.ts";
-import { COMPACT, SCALE } from "../src/prompts.ts";
 import { makeSession, noMedia, type SessionEvent } from "../src/session.ts";
 import { openStream } from "../server/agui.ts";
 import { newMsg } from "../src/store.ts";
-import { blocks, claudeCodeCompactor } from "../src/summarize/claude-code.ts";
-import { retryText } from "../src/summarize/step.ts";
-import { built, bytes, dayOf, getNode } from "../src/tree.ts";
+import { makeGate, type Gate } from "../src/engines/inflight.ts";
+import { claudeCodeCompactor } from "../src/summarize/claude-code.ts";
+import { dayOf } from "../src/tree.ts";
 import { cap } from "../src/cap.ts";
-import { claudeCodeTurn, masterArgs, primeBlocks } from "../src/turn/claude-code.ts";
+import { claudeCodeTurn, masterArgs, type Placement, primeBlocks } from "../src/turn/claude-code.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
 import type { UsageRecord } from "../src/usage.ts";
+import { alive, run, scripted, textOf, tmp, until, withFakeClaude } from "./fake-claude-rig.ts";
 
-const FAKE_BIN = `${import.meta.dir}/fake-claude.ts`;
 
-const dirs: string[] = [];
-const tmp = () => {
-  const d = mkdtempSync(`${tmpdir()}/oc-`); // short: socket paths stop at ~107 characters
-  dirs.push(d);
-  return d;
-};
-
-// a test that could spawn `claude` spawns the fake; between tests a stray spawn runs /bin/false
-beforeEach(() => {
-  Bun.env.OPTCHAT_CLAUDE = FAKE_BIN;
-});
-
-// what the fake writes to its log (see its header)
-const SentBlock = Schema.Struct({
-  cache_control: Schema.optional(Schema.Struct({ ttl: Schema.optional(Schema.Literals(["1h", "5m"])), type: Schema.Literal("ephemeral") })),
-  text: Schema.String,
-  type: Schema.Literal("text"),
-});
-const Rec = Schema.Struct({
-  argv: Schema.optional(Schema.Array(Schema.String)),
-  call: Schema.optional(Schema.Number),
-  code: Schema.optional(Schema.Number),
-  content: Schema.optional(Schema.Array(SentBlock)),
-  cwd: Schema.optional(Schema.String),
-  env: Schema.optional(Schema.Record(Schema.String, Schema.NullOr(Schema.String))),
-  pid: Schema.Number,
-  role: Schema.optional(Schema.Literals(["compact", "prime", "turn"])),
-  type: Schema.Literals(["start", "in", "exit"]),
-});
-type Rec = typeof Rec.Type;
-const decodeRec = Schema.decodeUnknownSync(Schema.fromJsonString(Rec));
-
-const fakes: { log: string }[] = [];
-const records = (log: string): Rec[] => {
-  if (!existsSync(log)) return [];
-  const text = readFileSync(log, "utf8");
-  return text.split("\n").flatMap((line) => (line === "" ? [] : [decodeRec(line)]));
-};
-
-// a process is running: it exists, and it is not a zombie (/proc/PID/stat, state after the name)
-const alive = (pid: number) => {
-  const stat = `/proc/${pid}/stat`;
-  if (!existsSync(stat)) return false;
-  try {
-    return readFileSync(stat, "utf8").split(") ")[1]?.[0] !== "Z";
-  } catch {
-    return false; // gone between the two calls
-  }
-};
-
-// every fake a test started has exited; one still running is killed and fails the test
-afterEach(async () => {
-  Bun.env.OPTCHAT_CLAUDE = "/bin/false";
-  const pids = fakes.splice(0).flatMap((f) => records(f.log).filter((r) => r.type === "start").map((r) => r.pid));
-  const deadline = Date.now() + 3000;
-  while (pids.some(alive) && Date.now() < deadline) await Bun.sleep(10);
-  const left = pids.filter(alive);
-  for (const pid of left) process.kill(pid, "SIGKILL");
-  expect(left).toEqual([]);
-});
-afterAll(() => {
-  for (const d of dirs) rmSync(d, { force: true, recursive: true });
-});
-
-type Script = { turn?: unknown[]; prime?: unknown[]; compact?: unknown[] };
-
-// a fake with its script, and a Runner that starts it with that script and its own log
-function scripted(script: Script = {}, extraEnv: Record<string, string> = {}) {
-  const dir = tmp();
-  const f = { log: `${dir}/fake.jsonl`, script: `${dir}/plan.json` };
-  writeFileSync(f.script, JSON.stringify(script));
-  fakes.push(f);
-  const layer = Layer.effect(
-    Runner,
-    Effect.gen(function* () {
-      const base = yield* Runner;
-      return {
-        // the variables optchat sets are passed even when empty, so this shell's own can't leak in
-        spawn: (o: Parameters<typeof base.spawn>[0]) =>
-          base.spawn({ ...o, env: { CLAUDE_CODE_PROMPT_CACHE_TTL: "", DISABLE_PROMPT_CACHING: "", ...o.env, ...extraEnv, FAKE_CLAUDE_LOG: f.log, FAKE_CLAUDE_SCRIPT: f.script } }),
-        warm: () => Effect.void,
-      };
-    }),
-  ).pipe(Layer.provide(LocalRunner), Layer.provide(BunServices.layer));
-  const of = (role: "compact" | "prime" | "turn") => {
-    const all = records(f.log);
-    return all
-      .filter((r) => r.type === "start" && r.role === role)
-      .map((s) => ({ ...s, ins: all.filter((r) => r.type === "in" && r.pid === s.pid).map((r) => r.content ?? []) }));
-  };
-  return { ...f, layer, of };
-}
-
-const run = async <A, E>(f: { layer: Layer.Layer<Runner> }, effect: Effect.Effect<A, E, Runner | Scope.Scope>) =>
-  Effect.runPromise(effect.pipe(Effect.scoped, Effect.provide(f.layer)));
-
-// polls a condition on the real clock
-const until = (what: string, ok: () => boolean, ms = 4000) =>
-  Effect.gen(function* () {
-    const deadline = Date.now() + ms;
-    while (!ok()) {
-      if (Date.now() > deadline) return yield* Effect.die(new Error(`timed out waiting for ${what}`));
-      yield* Effect.sleep("5 millis");
-    }
-  });
-
-const textOf = (b: Block | undefined) => (b?.type === "text" ? b.text : "");
-const long = (n: number) => "w".repeat(n);
-
-// the compactor engine
-
-test("a compactor call: context pieces of 4 lines, marks on the last whole one and the step, its flags and env", async () => {
-  const f = scripted();
-  const ctx = Array.from({ length: 260 }, (_, k) => `${k} ${"c".repeat(395)}`); // <chat>, 260 lines, </chat>: 65 whole blocks and a partial one
-  const job: Job = { ctx, i: 260, l: 0, msg: newMsg(260, "user", "line one\nline two") };
-  const usage: UsageRecord[] = [];
-  const line = await run(
-    f,
-    Effect.gen(function* () {
-      const summarize = yield* claudeCodeCompactor({ effort: "medium", log: (r) => Effect.sync(() => usage.push(r)), model: "sonnet", ttl: "5m" });
-      return yield* summarize(job);
-    }),
-  );
-  expect(line).toBe("talk: a short summary line");
-
-  const [call] = f.of("compact");
-  expect(call?.argv).toEqual([...baseArgs({ effort: "medium", model: "sonnet", system: COMPACT, tools: "" }), "--safe-mode"]);
-  expect(call?.env).toEqual({ CLAUDE_CODE_PROMPT_CACHE_TTL: "5m", DISABLE_PROMPT_CACHING: "1" });
-  expect(call?.ins).toEqual([blocks(job, "5m")]);
-
-  const sent = call?.ins[0] ?? [];
-  expect(sent).toHaveLength(67);
-  const pieces = sent.slice(0, 66);
-  expect(pieces.map(textOf).join("")).toBe(["<chat>", ...ctx, "</chat>"].join("\n"));
-  for (const p of pieces.slice(0, 65)) expect(textOf(p).match(/\n/g)).toHaveLength(4);
-  expect(textOf(pieces[65])).toBe(`${ctx.at(-1)}\n</chat>`); // 261 lines end in a line break: 65 blocks and one over
-  // two marks: the last whole piece, for the next call's lookback, and the request's end
-  const mark = { ttl: "5m", type: "ephemeral" } as const;
-  expect(sent.map((b) => b.cache_control ?? null)).toEqual(sent.map((_, k) => (k === 64 || k === 66 ? mark : null)));
-  const stepBlock = sent[66];
-  expect(bytes(SCALE)).toBe(512);
-  expect(textOf(stepBlock)).toBe(
-    `For scale, this line is exactly 512 bytes:\n${SCALE}\n\nCompress this message into one line, in at most 512 bytes:\nuser: line one\nline two`,
-  );
-  const merge = blocks({ a: "user: a\nb", b: "talk: c", ctx: [], i: 0, l: 1 }, "1h");
-  expect(merge.map(textOf)).toEqual(["<chat>\n</chat>", `For scale, this line is exactly 512 bytes:\n${SCALE}\n\nMerge these two lines into one, in at most 512 bytes:\nuser: a b\ntalk: c`]);
-
-  expect(usage).toHaveLength(1);
-  expect(usage[0]).toMatchObject({ attempt: 1, engine: "claude-code", failoverFrom: null, level: 0, model: "sonnet", role: "compact" });
-});
-
-test("a line over 512 bytes is retried in the same call with the earlier gist's text, and the shortest try is kept", async () => {
-  const over = `${"x".repeat(511)}ä${"y".repeat(87)}`; // 600 bytes, with a character across the cut
-  const tries = [over, "b".repeat(530), "c".repeat(700), "d".repeat(520), "e".repeat(560)];
-  const f = scripted({ compact: [tries.map((t) => [{ text: t }]), [[{ text: over }], [{ text: "talk: short enough" }]]] });
-  const usage: UsageRecord[] = [];
-  const job: Job = { ctx: ["user: earlier"], i: 3, l: 0, msg: newMsg(3, "echo", long(900)) };
-  const [stubborn, quick] = await run(
-    f,
-    Effect.gen(function* () {
-      const summarize = yield* claudeCodeCompactor({ effort: "medium", log: (r) => Effect.sync(() => usage.push(r)), model: "sonnet", ttl: "1h" });
-      return [yield* summarize(job, "openai-plan:luna"), yield* summarize(job)];
-    }),
-  );
-  expect(stubborn).toBe("d".repeat(520)); // TRIES spent: the shortest, a few bytes over
-  expect(quick).toBe("talk: short enough"); // stops as soon as it fits
-
-  const [first, second] = f.of("compact");
-  expect(first?.ins).toHaveLength(5);
-  expect(first?.ins[1]).toEqual([{ text: `That line is 600 bytes; the limit is 512. It must end where it is cut here:\n${"x".repeat(511)}| ← LIMIT`, type: "text" }]);
-  expect(first?.ins.slice(2).map((m) => textOf(m[0]))).toEqual(tries.slice(1, 4).map(retryText));
-  expect(second?.ins).toHaveLength(2);
-  expect(usage.map((u) => [u.attempt, u.failoverFrom])).toEqual([
-    [1, "openai-plan:luna"],
-    [2, "openai-plan:luna"],
-    [3, "openai-plan:luna"],
-    [4, "openai-plan:luna"],
-    [5, "openai-plan:luna"],
-    [1, null],
-    [2, null],
-  ]);
-});
-
-test("a hung compactor call times out and fails the node; the pump reports it once and builds it on the retry", async () => {
-  const f = scripted({ compact: [[{ hang: true }], [{ text: "echo: built on the second call" }]] });
-  const reports: string[] = [];
-  const dir = tmp();
-  await run(
-    f,
-    Effect.gen(function* () {
-      const engine = yield* claudeCodeCompactor({ effort: "medium", log: () => Effect.void, model: "sonnet", timeout: "300 millis", ttl: "1h" });
-      const chat = yield* openChat(dir, {
-        report: (m) => Effect.sync(() => reports.push(m)),
-        retry: "50 millis",
-        summarize: (job) => engine(job).pipe(Effect.mapError((e) => new CompactError({ message: e.message }))),
-      });
-      yield* chat.log("echo", long(900));
-      yield* until("the node", () => built(chat.mem, { i: 0, l: 0 }));
-      expect(getNode(chat.mem, { i: 0, l: 0 })?.text).toBe("echo: built on the second call");
-    }),
-  );
-  expect(reports).toHaveLength(1);
-  expect(reports[0]).toMatch(/^0\+1: no answer within /);
-  expect(f.of("compact")).toHaveLength(2); // the hung one is gone: afterEach checks it
-});
+withFakeClaude();
 
 // the turn, driven through the session on a real chat. The compactor is a function here, so no
 // compactor call ever starts.
@@ -541,6 +331,60 @@ test("a blank message starts nothing; one sent while the loop winds down gets it
       expect(idleAt.every((n) => n > 0)).toBe(true);
     }),
   );
+});
+
+// a compaction sends what a turn sends before its view (docs/optchat.md §4, §5)
+
+// the value after a flag in an argv
+const flag = (argv: readonly string[] | undefined, name: string) => argv?.[argv.indexOf(name) + 1];
+
+// the claude-code compactor: a turn's spawn, here on this machine
+const placement = (runner: Runner["Service"]): Effect.Effect<Placement> =>
+  Effect.succeed({ cwd: undefined, mcpConfig: mcpConfig("http://127.0.0.1:9/mcp?key=k", "http"), mcpSeen: () => Effect.succeed(false), runner });
+const compactor = (o: {
+  readonly ttl: "1h" | "5m";
+  readonly log?: (r: UsageRecord) => Effect.Effect<void>;
+  readonly timeout?: Duration.Input;
+  readonly gate?: Gate;
+  readonly placement?: Effect.Effect<Placement>;
+}) =>
+  Effect.gen(function* () {
+    const runner = yield* Runner;
+    return claudeCodeCompactor({
+      effort: "medium",
+      gate: o.gate ?? makeGate(),
+      instructions: "SYSTEM",
+      log: o.log ?? (() => Effect.void),
+      model: "sonnet",
+      placement: o.placement ?? placement(runner),
+      tools: MASTER_TOOLS,
+      ttl: o.ttl,
+      timeout: o.timeout ?? "5 minutes",
+    });
+  });
+
+test("claude-code: a turn and a compaction send the same system prompt, tools and MCP servers, from the same folder, and never share a warm process", async () => {
+  const f = scripted();
+  await run(
+    f,
+    Effect.gen(function* () {
+      const r = yield* rig(f, { prime: true });
+      yield* r.session.input("hello");
+      yield* r.finished(1);
+      // the compactor runs where a turn on the server's own device runs (server/app.ts)
+      const summarize = yield* compactor({ placement: r.options.runnerFor("mini"), ttl: "1h" });
+      yield* summarize({ ctx: [], i: 0, l: 0, msg: newMsg(0, "user", "hello") });
+    }),
+  );
+  const [turn] = f.of("turn"), [call] = f.of("compact");
+  // what reaches the request before the view: the system prompt and the tools, built in and MCP
+  for (const name of ["--system-prompt", "--tools", "--mcp-config", "--setting-sources"]) expect(flag(call?.argv, name)).toBe(flag(turn?.argv, name) ?? "");
+  expect(call?.argv).toContain("--strict-mcp-config");
+  expect(call?.cwd).toBe(turn?.cwd ?? "");
+  // what differs: the model and its effort, the permission mode (refusing the tools that need one),
+  // and no replays, which shape claude's output, not the request
+  const differ = (turn?.argv ?? []).flatMap((a, k) => (call?.argv?.[k] === a ? [] : [a]));
+  expect(differ).toEqual(["opus", "high", "bypassPermissions", "--replay-user-messages"]);
 });
 
 // priming

@@ -27,6 +27,7 @@ declare const kernel: {
   readonly offers: (levels: List<List<boolean>>, head: Nat) => List<Coord>;
   readonly refold: (high: Nat, low: Nat, ms: List<Msg>) => Saw;
   readonly saw: (T: Nat, high: Nat, low: Nat, folding: boolean, ps: List<Part>) => Saw;
+  readonly window: (T: Nat, ps: List<Part>, n: Nat) => bigint;
 };
 // oxlint-disable-next-line import/no-default-export -- the shape bend gives the module
 export default kernel;

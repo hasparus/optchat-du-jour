@@ -1,11 +1,12 @@
 // The Bend kernel against a literal model of the view, written from the spec's prose alone
-// (docs/optchat.md §2, §3.2; rule 3 as SPEC E25 has it).
+// (docs/optchat.md §2, §3.2, §4 "The order").
 // Seeded random chats, several pairs of marks; after every step the kernel and the model must
-// agree on the view, whether a batch is owed, `first` and rule 3's offers, and now and then on the
+// agree on the view, whether a batch is owed, `first`, `window` and the start rule's offers, and now and then on the
 // rebuild from message 0 and on the catch-up of a view saved earlier. Then what kernel.ts hands the kernel, and the merge order against
 // Taelin's rollback push, the check docs/optchat.md §3.2 itself reports.
 import { expect, spyOn, test } from "bun:test";
 import kernel, { type List, type Part } from "../kernel/kernel.mjs";
+import { AHEAD } from "../src/config.ts";
 import * as K from "../src/kernel.ts";
 import { type Coord, getNode, type Marks, type Mem, newMem, type Saw, setNode } from "../src/tree.ts";
 import { PLACEHOLDER } from "../src/view.ts";
@@ -87,12 +88,18 @@ class Model {
     return p ? this.start(p) : this.T;
   }
 
+  // where the AHEAD-th unbuilt line starts, else T
+  window() {
+    const p = this.view.filter((c) => !this.has(c))[AHEAD - 1];
+    return p ? this.start(p) : this.T;
+  }
+
   // its message is logged, or both its children are built
   ready = (c: Coord) =>
     c.l === 0 ? c.i < this.T : this.has({ i: 2 * c.i, l: c.l - 1 }) && this.has({ i: 2 * c.i + 1, l: c.l - 1 });
 
   // every node over whole messages, unbuilt and with its sources there: level 0 up, oldest first
-  // (what the free-node pass may build, rule 3 aside)
+  // (what the free-node pass may build, the start rule aside)
   candidates() {
     const found: Coord[] = [];
     for (let l = 0, width = 1; width <= this.T; l++, width *= 2)
@@ -100,11 +107,11 @@ class Model {
     return found;
   }
 
-  // rule 3 (SPEC E25): unbuilt, its sources there, everything before its end summarized; a
-  // message's own summary waits for the lines before it, a merge for all it covers
+  // the start rule (docs/optchat.md §4 "The order"): a message's node once fewer than AHEAD view
+  // lines before it are unbuilt, a merge once both its halves are built
   offers() {
-    const head = this.first();
-    return this.candidates().filter((c) => (c.l === 0 ? c.i : (c.i + 1) * 2 ** c.l) <= head);
+    const unbuiltBefore = (i: number) => this.view.filter((c) => this.start(c) < i && !this.has(c)).length;
+    return this.candidates().filter((c) => c.l > 0 || unbuiltBefore(c.i) < AHEAD);
   }
 }
 
@@ -140,7 +147,7 @@ function run(seed: number, marks: Marks, steps: number, appends: number) {
   for (let step = 0; step < steps; step++) {
     if (step % 25 === 10) saved = { T: model.T, folding: model.folding, view: [...model.view] };
     const offered = model.offers(), roll = r();
-    // mostly the pump's order; sometimes any ready node (free nodes skip rule 3); and runs of
+    // mostly the pump's order; sometimes any ready node (free nodes skip the start rule); and runs of
     // messages with nothing built, so the view sits over its marks with unbuilt lines
     const pool = roll < appends ? [] : roll < 0.9 ? offered : model.candidates();
     const pick = pool[Math.floor(r() * pool.length)];
@@ -156,6 +163,7 @@ function run(seed: number, marks: Marks, steps: number, appends: number) {
     }
     expect({ folding: mem.folding, view: mem.view }).toEqual({ folding: model.folding, view: model.view });
     expect(K.first(mem)).toBe(model.first());
+    expect(K.window(mem)).toBe(model.window());
     expect(K.offers(mem)).toEqual(model.offers());
     if (step % 25 === 24) {
       expect(K.refold(mem, marks, HOLE)).toEqual(model.refold());
@@ -167,7 +175,7 @@ function run(seed: number, marks: Marks, steps: number, appends: number) {
   return model;
 }
 
-test("the kernel's view, sawtooth, rebuild, first and rule-3 offers match the spec's literal model", () => {
+test("the kernel's view, sawtooth, rebuild, first and the start rule's offers match the spec's literal model", () => {
   const marks = [[200, 100], [450, 300], [1000, 500], [2500, 1200], [6000, 3000], [10_000, 2000]] as const;
   let merged = 0, owed = 0;
   for (const [k, [high, low]] of marks.entries())
@@ -201,7 +209,8 @@ test("a 100k-line view rebuilds, appends, fits and offers without blowing the st
   expect(mem.folding).toBe(true); // far over its marks, with nothing it can merge
   expect(performance.now() - t0).toBeLessThan(5000);
   expect(K.first(mem)).toBe(1);
-  expect(K.offers(mem)).toEqual([{ i: 1, l: 0 }]);
+  expect(K.window(mem)).toBe(15); // the eighth unbuilt line
+  expect(K.offers(mem)).toEqual([1, 3, 5, 7, 9, 11, 13, 15].map((i) => ({ i, l: 0 })));
   mem.root.push(logged(T));
   ({ folding: mem.folding, view: mem.view } = K.append(mem, { folding: mem.folding, view: mem.view }, mem.marks, HOLE));
   expect(mem.view).toHaveLength(T + 1);
@@ -309,7 +318,7 @@ test("what kernel.ts hands the kernel is the tree it comes from", () => {
       const [levels, head] = handed(offers, () => {
         K.offers(mem);
       });
-      expect(Number(head)).toBe(K.first(mem));
+      expect(Number(head)).toBe(K.window(mem));
       const flags = array(levels).map((level) => array(level));
       expect(flags.length).toBe(T === 0 ? 0 : Math.floor(Math.log2(T)) + 1);
       for (const [l, level] of flags.entries()) {

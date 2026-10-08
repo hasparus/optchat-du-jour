@@ -1,4 +1,4 @@
-# Shared lemmas for the addressing and rule 3 proofs (proofs_addr.bend,
+# Shared lemmas for the addressing and start rule proofs (proofs_addr.bend,
 # proofs_rule3.bend, bridge.bend): Nat arithmetic, Bool reflection of the kernel's
 # computed checks (Nat.is_eq, Bool.and, Bool.not), and Drop, the suffix
 # of a list, with what it says about Nth and Len.

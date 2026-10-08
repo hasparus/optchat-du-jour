@@ -11,8 +11,15 @@ export type ToolBox = { readonly defs: readonly ToolDef[]; readonly run: (name: 
 
 const decodeInput = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
 
+// what a turn on `device` is offered: its file tools, then zoom and date. Compactions on the same
+// engine are offered these too, and call none (docs/optchat.md §4, §5).
+export const toolDefs = (o: { readonly device: string; readonly folders: readonly string[] }): ToolDef[] => [
+  ...fileToolDefs(o),
+  ...TOOLS.map((t) => ({ description: t.description, name: t.name, parameters: t.inputSchema })),
+];
+
 export const toolBox = (o: { readonly device: string; readonly folders: readonly string[]; readonly files: FileTools; readonly mem: Mem }): ToolBox => ({
-  defs: [...fileToolDefs(o), ...TOOLS.map((t) => ({ description: t.description, name: t.name, parameters: t.inputSchema }))],
+  defs: toolDefs(o),
   run: (name, input) => {
     const args = decodeInput(input);
     if (Option.isNone(args)) return Effect.succeed(`Error: the input of ${name} is not JSON`);

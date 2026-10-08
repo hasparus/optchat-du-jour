@@ -15,6 +15,7 @@ import { DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 import { memorySecrets } from "../src/secrets.ts";
 import { newMsg } from "../src/store.ts";
 import { type EngineNeeds, providerOf } from "../src/engines/registry.ts";
+import { makeGate } from "../src/engines/inflight.ts";
 import { apiKeyCompactor } from "../src/summarize/api-key.ts";
 import { apiKeyProvider } from "../src/providers/api-key.ts";
 import type { ToolBox } from "../src/tools/box.ts";
@@ -55,6 +56,9 @@ const clients = Effect.runSync(
   }).pipe(Effect.provide(apiKeysLayer({ anthropicUrl: fake.base }).pipe(Layer.provide([memorySecrets({ [KEY_SECRETS.anthropic]: "sk-test" }), FetchHttpClient.layer])))),
 );
 
+// what an api-key turn sends before its view, and so its compactions too (docs/optchat.md §4, §5)
+const READ = { description: "Read a file", name: "Read", parameters: { properties: { file_path: { type: "string" } }, type: "object" } };
+
 // a compactor engine whose records go through the budget into usage.jsonl, as the server's do
 const rig = (monthly: number, usagePath: string) => {
   const reports: string[] = [], records: UsageRecord[] = [];
@@ -65,7 +69,8 @@ const rig = (monthly: number, usagePath: string) => {
       Effect.andThen(Effect.sync(() => void records.push(r))),
     );
   const needs: EngineNeeds = { apiKeys: Effect.succeed(clients), budget, log, plan: Effect.never, report: () => Effect.void, settings: settings(monthly) };
-  const compact = apiKeyCompactor({ log, provider: Effect.runSync(providerOf(API_KEY, needs, "medium")) });
+  const provider = Effect.runSync(providerOf(API_KEY, needs, "medium"));
+  const compact = apiKeyCompactor({ gate: makeGate(), instructions: "SYSTEM", log, model: API_KEY.model, provider, tools: [READ] });
   return { budget, compact, records, reports };
 };
 
@@ -92,7 +97,7 @@ const decodeBody = Schema.decodeUnknownSync(Schema.fromJsonString(Body));
 // a block's mark as sent, "5m" for one with no TTL (the API's default), null for none
 const markOf = (b: typeof Block.Type) => (b.cache_control === undefined ? null : `${b.cache_control.type} ${b.cache_control.ttl ?? "5m"}`);
 
-test("Anthropic gets our cache layout: a 5-minute mark on the last whole block and the request end, the thinking back on a retry, and every call is priced", async () => {
+test("Anthropic gets our cache layout: 5-minute marks on the system prompt, the last whole block and the request end, the thinking back on a retry, and every call is priced", async () => {
   const r = rig(5, `${dir}/priced.jsonl`);
   fake.state.seen.length = 0;
   fake.state.script = [{ text: `user: ${"x".repeat(600)}`, thinking: "too long, but first" }, { text: "user: squeeze me" }];
@@ -100,7 +105,8 @@ test("Anthropic gets our cache layout: a 5-minute mark on the last whole block a
 
   const [first, retry] = fake.state.seen.map((b) => decodeBody(b));
   expect(fake.state.headers[0]?.get("anthropic-version")).toBe("2023-06-01");
-  expect(first?.system.every((b) => b.cache_control === undefined)).toBe(true);
+  // the system prompt's end, after the tools: an entry that outlives the view's batches
+  expect(first?.system.map(markOf)).toEqual(["ephemeral 5m"]);
   // 28 context pieces, a mark on the last whole one (the 27th); the partial piece and the step are
   // read through the request end's automatic mark, so the size retry reads the whole first try
   expect(first?.messages[0]?.content.map(markOf)).toEqual(Array.from({ length: 29 }, (_, k) => (k === 26 ? "ephemeral 5m" : null)));
@@ -119,11 +125,23 @@ test("Anthropic gets our cache layout: a 5-minute mark on the last whole block a
   // as the master: the view's blocks marked, the read-only tools offered, the last round without tools
   const provider = apiKeyProvider({ budget: r.budget, clients, effort: "high", ref: API_KEY, settings: settings(5) });
   const history = [{ mark: 0, parts: ["<chat>\n0+1|user: hi\n", "1+1|talk: hello\n</chat>", "what now?"], type: "user" as const }];
-  const tools = [{ description: "Read a file", name: "Read", parameters: { properties: { file_path: { type: "string" } }, type: "object" } }];
-  await Effect.runPromise(provider.call({ final: false, history, instructions: "MASTER", onText: () => Effect.void, tools }));
-  await Effect.runPromise(provider.call({ final: true, history, instructions: "MASTER", onText: () => Effect.void, tools }));
+  const tools = [READ];
+  await Effect.runPromise(provider.call({ final: false, history, instructions: "SYSTEM", onText: () => Effect.void, tools }));
+  await Effect.runPromise(provider.call({ final: true, history, instructions: "SYSTEM", onText: () => Effect.void, tools }));
   const [turn, last] = fake.state.seen.slice(-2).map((b) => decodeBody(b));
+  // a compaction sends what a turn sends before its view: the system prompt and the tools, byte for
+  // byte (docs/optchat.md §4, §7 mistake 6), and may call none
+  const Raw = Schema.fromJsonString(Schema.Struct({ system: Schema.Json, tools: Schema.Json }));
+  const [compaction, asTurn] = [fake.state.seen[0], fake.state.seen.at(-2)].map((b) => Schema.decodeUnknownSync(Raw)(b));
+  expect(JSON.stringify(compaction?.system)).toBe(JSON.stringify(asTurn?.system));
+  expect(JSON.stringify(compaction?.tools)).toBe(JSON.stringify(asTurn?.tools));
+  expect(first?.tool_choice?.type).toBe("none");
   expect(turn?.messages[0]?.content.map(markOf)).toEqual(["ephemeral 5m", null, null]);
+  // three breakpoints in all, of Anthropic's four, the same on a turn and a compaction: the system
+  // prompt's end, the view's last whole block, the request end
+  const count = (b: typeof first) => [...(b?.system ?? []), ...(b?.messages ?? []).flatMap((m) => m.content)].filter((x) => x.cache_control !== undefined).length + (b?.cache_control ? 1 : 0);
+  expect([first, retry, turn, last].map(count)).toEqual([3, 3, 3, 3]);
+  expect(turn?.system.map(markOf)).toEqual(["ephemeral 5m"]);
   expect([turn?.cache_control, last?.cache_control]).toEqual([{ type: "ephemeral" }, { type: "ephemeral" }]);
   expect(turn?.tools?.map((t) => t.name)).toEqual(["Read"]);
   expect([turn?.tool_choice?.type, last?.tool_choice?.type]).toEqual(["auto", "none"]);

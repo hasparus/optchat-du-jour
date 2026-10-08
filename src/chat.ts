@@ -14,6 +14,9 @@ export type Chat = {
   // docs/optchat.md §1: a message reaches the disk (written and synced) before anything else happens to it;
   // only then is the compactor given the chance to start on it
   readonly kick: Effect.Effect<void, StoreError>;
+  // a message is coming: failed compactor calls are tried again now (docs/optchat.md §4: "at the
+  // next message"), so a turn that waits for summaries is not left waiting on one
+  readonly retry: Effect.Effect<void>;
   readonly log: (kind: Kind, body: string, extra?: { readonly device?: string }) => Effect.Effect<Entry, StoreError>;
 };
 
@@ -28,9 +31,9 @@ export function committer(dir: string, mem: Mem): Commit {
     );
 }
 
-export const openChat = Effect.fn("openChat")(function* (dir: string, o: PumpOptions & { readonly marks?: Marks }) {
+export const openChat = Effect.fn("openChat")(function* (dir: string, o: PumpOptions & { readonly marks?: Marks; readonly compactionMarks?: Marks }) {
   yield* lock(dir);
-  const { mem, problems } = yield* loadChat(dir, { marks: o.marks });
+  const { mem, problems } = yield* loadChat(dir, { compactionMarks: o.compactionMarks, marks: o.marks });
   const report = o.report ?? ((line: string) => Console.error(line));
   const commit = committer(dir, mem);
   const pump = yield* makePump({ ...o, commit, mem });
@@ -54,8 +57,8 @@ export const openChat = Effect.fn("openChat")(function* (dir: string, o: PumpOpt
     });
   // once the message is stored, logging it has succeeded: a pump that cannot start is reported
   const log: Chat["log"] = (kind, body, extra = {}) =>
-    storing.withPermit(store(kind, body, extra)).pipe(Effect.tap(() => pump.nudge));
+    storing.withPermit(store(kind, body, extra)).pipe(Effect.tap((entry) => pump.logged(entry.i)));
   // at startup there may be work already: free nodes to build, nodes an earlier run never finished
   yield* pump.kick;
-  return { dir, kick: pump.kick, log, mem, problems } satisfies Chat;
+  return { dir, kick: pump.kick, log, mem, problems, retry: pump.retry } satisfies Chat;
 });

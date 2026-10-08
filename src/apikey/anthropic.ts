@@ -3,7 +3,10 @@
 // the view's last whole block (the part a user Item's `mark` names), which the next call finds by
 // the 20-block lookback, and the top-level automatic `cache_control` on every request, which
 // Anthropic puts on its last block, so each step of a turn (or each size retry of a compactor
-// call) reads everything the step before it sent: 2 of Anthropic's 4. Every entry is a 5-minute one, the API's
+// call) reads everything the step before it sent. And one on the system prompt, the same for turns
+// and compactions, so the tools and system prompt have an entry of their own: a compaction after
+// its view's batch, or a turn after the view's, rewrites only from the first changed line, and a
+// compaction on the turns' model reads the turns' (E26). 3 of Anthropic's 4. Every entry is a 5-minute one, the API's
 // default (docs/optchat.md §3.3; E6's 1-hour entries are the Claude subscription's). Thinking blocks come back in the
 // next request exactly as they arrived, signature and all, as tool use with thinking requires.
 import { Effect, Option, Schema, Stream } from "effect";
@@ -36,6 +39,7 @@ export type MessagesAsk<E extends Tagged = never> = {
   readonly onText?: (delta: string) => Effect.Effect<void>;
   readonly onThinking?: (tokens: number) => Effect.Effect<void>; // the size of the thought so far
   readonly onItem?: (item: Item) => Effect.Effect<void, E>; // each block as it completes, in order
+  readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
 };
 // `writes` splits the cache writes by TTL when the API says how; `stop` is the API's stop_reason
 export type MessagesReply = {
@@ -97,7 +101,7 @@ export const messagesOf = (history: readonly Item[]) => {
 const Body = Schema.Struct({
   model: Schema.String,
   max_tokens: Schema.Int,
-  system: Schema.Array(Schema.Struct({ type: Schema.Literal("text"), text: Schema.String })),
+  system: Schema.Array(Schema.Struct({ type: Schema.Literal("text"), text: Schema.String, cache_control: Schema.Struct({ type: Schema.Literal("ephemeral") }) })),
   messages: Schema.Array(Schema.Struct({ role: Schema.Literals(["user", "assistant"]), content: Schema.Array(Schema.Json) })),
   tools: Schema.optional(Schema.Array(Schema.Struct({ name: Schema.String, description: Schema.String, input_schema: Schema.Json }))),
   tool_choice: Schema.optional(Schema.Struct({ type: Schema.Literals(["auto", "none"]) })),
@@ -118,7 +122,7 @@ export const requestBody = (ask: MessagesAsk<Tagged>) => {
     model: ask.model,
     output_config: ask.effort === undefined ? undefined : { effort: ask.effort },
     stream: true,
-    system: [{ text: ask.system, type: "text" }],
+    system: [{ cache_control: EPHEMERAL, text: ask.system, type: "text" }], // the end of the tools and system prompt
     tool_choice: tools === undefined ? undefined : { type: ask.toolChoice ?? "auto" },
     tools: tools?.map((t) => ({ description: t.description, input_schema: t.parameters, name: t.name })),
   });
@@ -295,7 +299,7 @@ const spentOf = (r: Read): Spent | undefined => (r.start === null && r.end === n
 export const readMessages = <E extends Tagged = never>(stream: Stream.Stream<Uint8Array, EngineError>, ask: MessagesAsk<E>) =>
   Effect.gen(function* () {
     const init: Read = { blocks: [], done: false, end: null, model: ask.model, start: null, stop: null };
-    const r = yield* sseFold<Read, E>("api-key: anthropic", stream, init, onEvent<E>(ask), (state) => state.done);
+    const r = yield* sseFold<Read, E>("api-key: anthropic", stream, init, onEvent<E>(ask), (state) => state.done, ask.onStart);
     if (r.stop === "refusal") return yield* new Refusal({ message: "api-key: anthropic refused this request (stop_reason: refusal)", spent: spentOf(r) });
     if (!r.done) return yield* new ModelError({ message: "api-key: anthropic: the stream ended without message_stop", spent: spentOf(r) });
     return { items: r.blocks.flatMap(itemOf), model: r.model, stop: r.stop, ...usageOf(r.start, r.end) } satisfies MessagesReply;

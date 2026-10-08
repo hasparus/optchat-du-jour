@@ -489,7 +489,8 @@ def Laws.tiles_extend(T, high, low, ps, folding, ms):
 def Laws.tiles_refold(high, low, ms):
   tiles_laws(Laws.ViewOf(K.refold(high, low, ms)), 0n, Laws.Len(K.Msg, ms), refold_ks(high, low, ms))
 
-# first, structurally (law 5)
+# first, structurally (law 5: a compaction's view stops at the first
+# unbuilt line)
 # ---------------------------
 
 def first_some(ps: List<&2, K.Part>, +T: Nat, -x: Nat) -> {K.first.go(ps, T, Some{x}) == x : Nat}:
@@ -590,16 +591,6 @@ def bb_after(ps: List<&2, K.Part>, +s: Nat, -e: Nat, t: Laws.Tiles(ps, s, e), +x
       (hl => Empty.absurd({b == True{} : Bool}, lt_le_absurd(s, x, lt_start(l, i, s, x, t1, hl), h)),
         bb_after(rest, Nat.add(s, Laws.Width(l)), e, t2, x, le_add(x, s, Laws.Width(l), h)))
 
-# what is built before y is built before any x <= y
-def bb_mono(ps: List<&2, K.Part>, +x: Nat, +y: Nat, +h: {Nat.is_le(x, y) == True{} : Bool}, bb: Laws.BuiltBefore(ps, y))
-  -> Laws.BuiltBefore(ps, x):
-  match ps:
-    case Nil{}:
-      Unit{}
-    case Con{K.Part{+l, +i, sz, b, u}, rest}:
-      (f, r) = bb
-      (hl => f(lt_le_trans(Laws.Start(l, i), x, y, hl, h)), bb_mono(rest, x, y, h, r))
-
 # Law 5
 # -----
 
@@ -662,109 +653,136 @@ def first_ok(+T: Nat, +ps: List<&2, K.Part>, t: Laws.Tiles(ps, 0n, T)) -> FirstO
 def Laws.first_first(T, ps):
   t => first_ok(T, ps, t)
 
-def end_le(+m: Nat, +i: Nat, -head: Nat, h: {Nat.is_le(K.start(1n+m, 1n+i), head) == True{} : Bool})
-  -> {Nat.is_le(Laws.Start(1n+m, 1n+i), head) == True{} : Bool}:
-  %PA.span_start_k(1n+m, 1n+i) : {Nat.is_le(_, head) == True{} : Bool}
-  h
+# The window (law 5)
+# ------------------
+# window(e, ps, n), for a view ps tiling [s, e), is the start of its
+# (n + 1)-th unbuilt line, or e: a message x at or before it has at most n
+# unbuilt lines before it (window_few), and one with at most n unbuilt lines
+# before it is at or before it (window_all).
 
-def allowed_of(+levels: List<&2, List<&2, Bool>>, +ps: List<&2, K.Part>, +head: Nat, c: K.Coord,
-  a: KS.Allowed(levels, head, c), bb: Laws.BuiltBefore(ps, head)) -> Laws.Allowed(levels, ps, c):
-  match c:
-    case K.Coord{0n, +i}:
-      (pr, nb, le) = a
-      (pr, nb, bb_mono(ps, i, head, le, bb))
-    case K.Coord{1n++m, +i}:
-      (pr, nb, k1, k2, le) = a
-      (pr, nb, k1, k2, bb_mono(ps, Laws.Start(1n+m, 1n+i), head, end_le(m, i, head, le), bb))
-
-def built_before_first(+T: Nat, +ps: List<&2, K.Part>, fo: FirstOk(ps, K.first(T, ps), T)) -> Laws.BuiltBefore(ps, K.first(T, ps)):
-  (bb, _) = fo
-  bb
-
-# BuiltBefore as a Bool, so one proof of it serves every offer
-def BB(ps: List<&2, K.Part>, +x: Nat) -> Bool:
-  match ps:
-    case Nil{}:
-      True{}
-    case Con{p, rest}:
-      K.Part{+l, i, _, b, _} = p
-      Bool.and(Bool.or(Bool.not(Nat.is_lt(Laws.Start(l, i), x)), b), BB(rest, x))
-
-def or_from(c: Bool, b: Bool, e: {c == True{} : Bool} -> {b == True{} : Bool}) -> {Bool.or(Bool.not(c), b) == True{} : Bool}:
-  match c:
-    case True{}:
-      e({==})
-    case False{}:
+def lt_zero(x: Nat) -> {Nat.is_lt(x, 0n) == False{} : Bool}:
+  match x:
+    case 0n:
+      {==}
+    case 1n+p:
       {==}
 
-def implies_from(c: Bool, -b: Bool, h: {Bool.or(Bool.not(c), b) == True{} : Bool}, e: {c == True{} : Bool}) -> {b == True{} : Bool}:
+# x <= y: y is not before x
+def lt_false(x: Nat, y: Nat, h: {Nat.is_le(x, y) == True{} : Bool}) -> {Nat.is_lt(y, x) == False{} : Bool}:
+  match x y:
+    case 0n y0:
+      lt_zero(y0)
+    case 1n+p 0n:
+      Empty.absurd({Nat.is_lt(0n, 1n+p) == False{} : Bool}, F.false_true(h))
+    case 1n+p 1n+q:
+      lt_false(p, q, h)
+
+def le_trans(a: Nat, b: Nat, c: Nat, h1: {Nat.is_le(a, b) == True{} : Bool}, h2: {Nat.is_le(b, c) == True{} : Bool})
+  -> {Nat.is_le(a, c) == True{} : Bool}:
+  match a b c:
+    case 0n b0 c0:
+      le_zero(c0)
+    case 1n+p 0n c0:
+      Empty.absurd({Nat.is_le(1n+p, c0) == True{} : Bool}, F.false_true(h1))
+    case 1n+p 1n+q 0n:
+      Empty.absurd({Nat.is_le(1n+p, 0n) == True{} : Bool}, F.false_true(h2))
+    case 1n+p 1n+q 1n+r:
+      le_trans(p, q, r, h1, h2)
+
+def le_succ(a: Nat, b: Nat, h: {Nat.is_le(a, b) == True{} : Bool}) -> {Nat.is_le(a, 1n+b) == True{} : Bool}:
+  match a b:
+    case 0n b0:
+      {==}
+    case 1n+p 0n:
+      Empty.absurd({Nat.is_le(1n+p, 1n) == True{} : Bool}, F.false_true(h))
+    case 1n+p 1n+q:
+      le_succ(p, q, h)
+
+def le_laws(+l: Nat, +i: Nat, -x: Nat, h: {Nat.is_le(x, K.start(l, i)) == True{} : Bool}) -> {Nat.is_le(x, Laws.Start(l, i)) == True{} : Bool}:
+  %PA.span_start_k(l, i) : {Nat.is_le(x, _) == True{} : Bool}
+  h
+
+def le_kernel(+l: Nat, +i: Nat, -x: Nat, h: {Nat.is_le(x, Laws.Start(l, i)) == True{} : Bool}) -> {Nat.is_le(x, K.start(l, i)) == True{} : Bool}:
+  %Equal.sym(Nat, K.start(l, i), Laws.Start(l, i), PA.span_start_k(l, i)) : {Nat.is_le(x, _) == True{} : Bool}
+  h
+
+# a line's start, in the spec's words, at or after x: it is not before x
+def start_not_before(+l: Nat, +i: Nat, +x: Nat, h: {Nat.is_le(x, K.start(l, i)) == True{} : Bool})
+  -> {Nat.is_lt(Laws.Start(l, i), x) == False{} : Bool}:
+  lt_false(x, Laws.Start(l, i), le_laws(l, i, x, h))
+
+def le_at(-a: Nat, -b: Nat, -x: Nat, e: {a == b : Nat}, h: {Nat.is_le(x, a) == True{} : Bool}) -> {Nat.is_le(x, b) == True{} : Bool}:
+  %e : {Nat.is_le(x, _) == True{} : Bool}
+  h
+
+def line_zero(b: Bool, c: Bool, -r: Nat, hc: {c == False{} : Bool}, hr: {r == 0n : Nat}) -> {Laws.UnbuiltLine(b, c, r) == 0n : Nat}:
+  match b c:
+    case True{} c0:
+      hr
+    case False{} True{}:
+      A.true_false({Laws.UnbuiltLine(False{}, True{}, r) == 0n : Nat}, hc)
+    case False{} False{}:
+      hr
+
+# no line of a tiling that starts at or after x is before x
+def ub_after(ps: List<&2, K.Part>, +s: Nat, -e: Nat, t: Laws.Tiles(ps, s, e), +x: Nat, +h: {Nat.is_le(x, s) == True{} : Bool})
+  -> {Laws.UnbuiltBefore(ps, x) == 0n : Nat}:
+  match ps:
+    case Nil{}:
+      {==}
+    case Con{K.Part{+l, +i, sz, b, u}, rest}:
+      (t1, t2) = t
+      line_zero(b, Nat.is_lt(Laws.Start(l, i), x), Laws.UnbuiltBefore(rest, x),
+        lt_false(x, Laws.Start(l, i), le_at(s, Laws.Start(l, i), x, Equal.sym(Nat, Laws.Start(l, i), s, t1), h)),
+        ub_after(rest, Nat.add(s, Laws.Width(l)), e, t2, x, le_add(x, s, Laws.Width(l), h)))
+
+# the window is at or after the tiling's start
+def window_ge(ps: List<&2, K.Part>, +n: Nat, +s: Nat, +e: Nat, t: Laws.Tiles(ps, s, e)) -> {Nat.is_le(s, K.window(e, ps, n)) == True{} : Bool}:
+  match ps n:
+    case Nil{} n0:
+      le_at(s, e, s, t, le_refl(s))
+    case Con{K.Part{+l, +i, sz, True{}, u}, +rest} m:
+      (t1, t2) = t
+      le_trans(s, Nat.add(s, Laws.Width(l)), K.window(e, rest, m), le_add(s, s, Laws.Width(l), le_refl(s)),
+        window_ge(rest, m, Nat.add(s, Laws.Width(l)), e, t2))
+    case Con{K.Part{+l, +i, sz, False{}, u}, +rest} 0n:
+      (t1, t2) = t
+      le_kernel(l, i, s, le_at(s, Laws.Start(l, i), s, Equal.sym(Nat, Laws.Start(l, i), s, t1), le_refl(s)))
+    case Con{K.Part{+l, +i, sz, False{}, u}, +rest} 1n+m:
+      (t1, t2) = t
+      le_trans(s, Nat.add(s, Laws.Width(l)), K.window(e, rest, m), le_add(s, s, Laws.Width(l), le_refl(s)),
+        window_ge(rest, m, Nat.add(s, Laws.Width(l)), e, t2))
+
+# an unbuilt line's share, when it is the n-th: at most what is left
+
+def line_succ(c: Bool, +r: Nat, +m: Nat, h: {Nat.is_le(r, m) == True{} : Bool}) -> {Nat.is_le(Laws.UnbuiltLine(False{}, c, r), 1n+m) == True{} : Bool}:
   match c:
     case True{}:
       h
     case False{}:
-      Empty.absurd({b == True{} : Bool}, F.false_true(e))
+      le_succ(r, m, h)
 
-def and_true2(a: Bool, b: Bool, ha: {a == True{} : Bool}, hb: {b == True{} : Bool}) -> {Bool.and(a, b) == True{} : Bool}:
-  %Equal.sym(Bool, a, True{}, ha) : {Bool.and(_, b) == True{} : Bool}
-  %Equal.sym(Bool, b, True{}, hb) : {Bool.and(True{}, _) == True{} : Bool}
+def line_last(c: Bool, -r: Nat, hc: {c == False{} : Bool}, hr: {r == 0n : Nat}) -> {Nat.is_le(Laws.UnbuiltLine(False{}, c, r), 0n) == True{} : Bool}:
+  %Equal.sym(Nat, Laws.UnbuiltLine(False{}, c, r), 0n, line_zero(False{}, c, r, hc, hr)) : {Nat.is_le(_, 0n) == True{} : Bool}
   {==}
 
-def bb_bool(+ps: List<&2, K.Part>, +x: Nat, bb: Laws.BuiltBefore(ps, x)) -> {BB(ps, x) == True{} : Bool}:
-  match ps:
-    case Nil{}:
-      {==}
-    case Con{K.Part{+l, +i, sz, +b, u}, +rest}:
-      (f, r) = bb
-      and_true2(Bool.or(Bool.not(Nat.is_lt(Laws.Start(l, i), x)), b), BB(rest, x),
-        or_from(Nat.is_lt(Laws.Start(l, i), x), b, f), bb_bool(rest, x, r))
-
-def bool_bb(+ps: List<&2, K.Part>, +x: Nat, +h: {BB(ps, x) == True{} : Bool}) -> Laws.BuiltBefore(ps, x):
-  match ps:
-    case Nil{}:
-      Unit{}
-    case Con{K.Part{+l, +i, sz, +b, u}, +rest}:
-      (e => implies_from(Nat.is_lt(Laws.Start(l, i), x), b,
-          F.and_l(Bool.or(Bool.not(Nat.is_lt(Laws.Start(l, i), x)), b), BB(rest, x), h), e),
-        bool_bb(rest, x, F.and_r(Bool.or(Bool.not(Nat.is_lt(Laws.Start(l, i), x)), b), BB(rest, x), h)))
-
-def all_of(+levels: List<&2, List<&2, Bool>>, +ps: List<&2, K.Part>, +head: Nat, cs: List<&2, K.Coord>,
-  a: KS.AllAllowed(levels, head, cs), +bb: {BB(ps, head) == True{} : Bool}) -> Laws.AllAllowed(levels, ps, cs):
-  match cs:
-    case Nil{}:
-      Unit{}
-    case Con{c, rest}:
-      (ac, ar) = a
-      (allowed_of(levels, ps, head, c, ac, bool_bb(ps, head, bb)), all_of(levels, ps, head, rest, ar, bb))
-
-def Laws.offers_allowed(levels, T, ps):
-  t => all_of(levels, ps, K.first(T, ps), K.offers(levels, K.first(T, ps)), PR.offers_allowed_k(levels, K.first(T, ps)),
-    bb_bool(ps, K.first(T, ps), built_before_first(T, ps, first_ok(T, ps, t))))
-
-# Law 5, the other way: what is built before x, for an x within the chat,
-# lies before first's answer; so every node rule 3 allows ends at or
-# before the head offers is handed
-# ----------------------------------------------------------------------
-
-def lt_start_at(+l: Nat, +i: Nat, -f: Nat, -x: Nat, s: {Laws.Start(l, i) == f : Nat}, h: {Nat.is_lt(f, x) == True{} : Bool})
-  -> {Nat.is_lt(Laws.Start(l, i), x) == True{} : Bool}:
-  %Equal.sym(Nat, Laws.Start(l, i), f, s) : {Nat.is_lt(_, x) == True{} : Bool}
-  h
-
-# no unbuilt line starts before x when every line before x is built
-def unbuilt_before(ps: List<&2, K.Part>, -f: Nat, -x: Nat, u: Laws.UnbuiltAt(ps, f), bb: Laws.BuiltBefore(ps, x),
-  h: {Nat.is_lt(f, x) == True{} : Bool}) -> Empty:
-  match ps:
-    case Nil{}:
-      u
-    case Con{K.Part{+l, +i, sz, b, ups}, rest}:
-      match u:
-        case Inl{at}:
-          (s, nb) = at
-          (fb, _) = bb
-          F.false_true(Equal.trans(Bool, False{}, b, True{}, Equal.sym(Bool, b, False{}, nb), fb(lt_start_at(l, i, f, x, s, h))))
-        case Inr{u2}:
-          (_, bbr) = bb
-          unbuilt_before(rest, f, x, u2, bbr, h)
+# a message at or before the window has at most n unbuilt lines before it
+def window_few(ps: List<&2, K.Part>, +n: Nat, +s: Nat, +e: Nat, t: Laws.Tiles(ps, s, e), +x: Nat,
+  +h: {Nat.is_le(x, K.window(e, ps, n)) == True{} : Bool}) -> {Nat.is_le(Laws.UnbuiltBefore(ps, x), n) == True{} : Bool}:
+  match ps n:
+    case Nil{} n0:
+      le_zero(n0)
+    case Con{K.Part{+l, +i, sz, True{}, u}, +rest} m:
+      (t1, t2) = t
+      window_few(rest, m, Nat.add(s, Laws.Width(l)), e, t2, x, h)
+    case Con{K.Part{+l, +i, sz, False{}, u}, +rest} 0n:
+      (t1, t2) = t
+      line_last(Nat.is_lt(Laws.Start(l, i), x), Laws.UnbuiltBefore(rest, x), start_not_before(l, i, x, h),
+        ub_after(rest, Nat.add(s, Laws.Width(l)), e, t2, x,
+          le_add(x, s, Laws.Width(l), le_at(Laws.Start(l, i), s, x, t1, le_laws(l, i, x, h)))))
+    case Con{K.Part{+l, +i, sz, False{}, u}, +rest} 1n+m:
+      (t1, t2) = t
+      line_succ(Nat.is_lt(Laws.Start(l, i), x), Laws.UnbuiltBefore(rest, x), m, window_few(rest, m, Nat.add(s, Laws.Width(l)), e, t2, x, h))
 
 def le_not_lt(x: Nat, f: Nat, n: {Nat.is_lt(f, x) == True{} : Bool} -> Empty) -> {Nat.is_le(x, f) == True{} : Bool}:
   match x f:
@@ -775,23 +793,113 @@ def le_not_lt(x: Nat, f: Nat, n: {Nat.is_lt(f, x) == True{} : Bool} -> Empty) ->
     case 1n+p 1n+q:
       le_not_lt(p, q, n)
 
-def le_alt(ps: List<&2, K.Part>, +x: Nat, +f: Nat, -T: Nat, hx: {Nat.is_le(x, T) == True{} : Bool}, bb: Laws.BuiltBefore(ps, x),
-  alt: {f == T : Nat} | Laws.UnbuiltAt(ps, f)) -> {Nat.is_le(x, f) == True{} : Bool}:
-  match alt:
-    case Inl{e}:
-      %Equal.sym(Nat, f, T, e) : {Nat.is_le(x, _) == True{} : Bool}
+def not_lt_le(x: Nat, y: Nat, h: {Nat.is_lt(y, x) == False{} : Bool}) -> {Nat.is_le(x, y) == True{} : Bool}:
+  le_not_lt(x, y, g => F.false_true(Equal.trans(Bool, False{}, Nat.is_lt(y, x), True{}, Equal.sym(Bool, Nat.is_lt(y, x), False{}, h), g)))
+
+# its own start is the window when it is the (n + 1)-th unbuilt line: x is
+# at or before it unless the line is before x, and then it would be one too many
+def all_last(+l: Nat, +i: Nat, +x: Nat, c: Bool, -r: Nat, ec: {Nat.is_lt(Laws.Start(l, i), x) == c : Bool},
+  h: {Nat.is_le(Laws.UnbuiltLine(False{}, c, r), 0n) == True{} : Bool}) -> {Nat.is_le(x, K.start(l, i)) == True{} : Bool}:
+  match c:
+    case True{}:
+      Empty.absurd({Nat.is_le(x, K.start(l, i)) == True{} : Bool}, F.false_true(h))
+    case False{}:
+      le_kernel(l, i, x, not_lt_le(x, Laws.Start(l, i), ec))
+
+def all_more(+rest: List<&2, K.Part>, +l: Nat, +i: Nat, +s: Nat, +e: Nat, +x: Nat, +m: Nat, c: Bool,
+  ec: {Nat.is_lt(Laws.Start(l, i), x) == c : Bool}, t1: {Laws.Start(l, i) == s : Nat}, t2: Laws.Tiles(rest, Nat.add(s, Laws.Width(l)), e),
+  ih: Laws.Tiles(rest, Nat.add(s, Laws.Width(l)), e) -> {Nat.is_le(Laws.UnbuiltBefore(rest, x), m) == True{} : Bool} -> {Nat.is_le(x, K.window(e, rest, m)) == True{} : Bool},
+  h: {Nat.is_le(Laws.UnbuiltLine(False{}, c, Laws.UnbuiltBefore(rest, x)), 1n+m) == True{} : Bool})
+  -> {Nat.is_le(x, K.window(e, rest, m)) == True{} : Bool}:
+  match c:
+    case True{}:
+      ih(t2, h)
+    case False{}:
+      le_trans(x, Nat.add(s, Laws.Width(l)), K.window(e, rest, m),
+        le_add(x, s, Laws.Width(l), le_at(Laws.Start(l, i), s, x, t1, not_lt_le(x, Laws.Start(l, i), ec))),
+        window_ge(rest, m, Nat.add(s, Laws.Width(l)), e, t2))
+
+# a message within the tiling with at most n unbuilt lines before it is at
+# or before the window
+def window_all(ps: List<&2, K.Part>, +n: Nat, +s: Nat, +e: Nat, t: Laws.Tiles(ps, s, e), +x: Nat,
+  hx: {Nat.is_le(x, e) == True{} : Bool}, h: {Nat.is_le(Laws.UnbuiltBefore(ps, x), n) == True{} : Bool})
+  -> {Nat.is_le(x, K.window(e, ps, n)) == True{} : Bool}:
+  match ps n:
+    case Nil{} n0:
       hx
-    case Inr{u}:
-      le_not_lt(x, f, h => unbuilt_before(ps, f, x, u, bb, h))
+    case Con{K.Part{+l, +i, sz, True{}, u}, +rest} m:
+      (t1, t2) = t
+      window_all(rest, m, Nat.add(s, Laws.Width(l)), e, t2, x, hx, h)
+    case Con{K.Part{+l, +i, sz, False{}, u}, +rest} 0n:
+      (t1, t2) = t
+      all_last(l, i, x, Nat.is_lt(Laws.Start(l, i), x), Laws.UnbuiltBefore(rest, x), {==}, h)
+    case Con{K.Part{+l, +i, sz, False{}, u}, +rest} 1n+m:
+      (t1, t2) = t
+      all_more(rest, l, i, s, e, x, m, Nat.is_lt(Laws.Start(l, i), x), {==}, t1, t2, r => hu => window_all(rest, m, Nat.add(s, Laws.Width(l)), e, r, x, hx, hu), h)
 
-def le_fo(ps: List<&2, K.Part>, +x: Nat, +f: Nat, -T: Nat, hx: {Nat.is_le(x, T) == True{} : Bool}, bb: Laws.BuiltBefore(ps, x),
-  fo: FirstOk(ps, f, T)) -> {Nat.is_le(x, f) == True{} : Bool}:
-  (_, alt) = fo
-  le_alt(ps, x, f, T, hx, bb, alt)
+# Law 5
+# -----
 
-def le_first(+T: Nat, +ps: List<&2, K.Part>, +x: Nat, t: Laws.Tiles(ps, 0n, T), hx: {Nat.is_le(x, T) == True{} : Bool},
-  bb: Laws.BuiltBefore(ps, x)) -> {Nat.is_le(x, K.first(T, ps)) == True{} : Bool}:
-  le_fo(ps, x, K.first(T, ps), T, hx, bb, first_ok(T, ps, t))
+# Tiles as a Bool, so one proof of it serves every offer (a proof that
+# is a Type can be used once; an equation, any number of times)
+def TB(ps: List<&2, K.Part>, +s: Nat, +e: Nat) -> Bool:
+  match ps:
+    case Nil{}:
+      Nat.is_eq(s, e)
+    case Con{p, rest}:
+      K.Part{+l, i, _, _, _} = p
+      Bool.and(Nat.is_eq(Laws.Start(l, i), s), TB(rest, Nat.add(s, Laws.Width(l)), e))
+
+def eq_at(-s: Nat, -e: Nat, h: {s == e : Nat}, r: {Nat.is_eq(s, s) == True{} : Bool}) -> {Nat.is_eq(s, e) == True{} : Bool}:
+  %h : {Nat.is_eq(s, _) == True{} : Bool}
+  r
+
+def eq_start(+l: Nat, +i: Nat, -s: Nat, h: {Laws.Start(l, i) == s : Nat}) -> {Nat.is_eq(Laws.Start(l, i), s) == True{} : Bool}:
+  %h : {Nat.is_eq(Laws.Start(l, i), _) == True{} : Bool}
+  A.eq_refl(Laws.Start(l, i))
+
+def both(a: Bool, b: Bool, ha: {a == True{} : Bool}, hb: {b == True{} : Bool}) -> {Bool.and(a, b) == True{} : Bool}:
+  %Equal.sym(Bool, a, True{}, ha) : {Bool.and(_, b) == True{} : Bool}
+  %Equal.sym(Bool, b, True{}, hb) : {Bool.and(True{}, _) == True{} : Bool}
+  {==}
+
+def tb_of(ps: List<&2, K.Part>, +s: Nat, +e: Nat, t: Laws.Tiles(ps, s, e)) -> {TB(ps, s, e) == True{} : Bool}:
+  match ps:
+    case Nil{}:
+      eq_at(s, e, t, A.eq_refl(s))
+    case Con{K.Part{+l, +i, sz, b, u}, +rest}:
+      (t1, t2) = t
+      both(Nat.is_eq(Laws.Start(l, i), s), TB(rest, Nat.add(s, Laws.Width(l)), e), eq_start(l, i, s, t1), tb_of(rest, Nat.add(s, Laws.Width(l)), e, t2))
+
+def tiles_of(ps: List<&2, K.Part>, +s: Nat, +e: Nat, +h: {TB(ps, s, e) == True{} : Bool}) -> Laws.Tiles(ps, s, e):
+  match ps:
+    case Nil{}:
+      A.eq_sound(s, e, h)
+    case Con{K.Part{+l, +i, sz, b, u}, +rest}:
+      (A.eq_sound(Laws.Start(l, i), s, F.and_l(Nat.is_eq(Laws.Start(l, i), s), TB(rest, Nat.add(s, Laws.Width(l)), e), h)),
+        tiles_of(rest, Nat.add(s, Laws.Width(l)), e, F.and_r(Nat.is_eq(Laws.Start(l, i), s), TB(rest, Nat.add(s, Laws.Width(l)), e), h)))
+
+def allowed_of(+levels: List<&2, List<&2, Bool>>, +ps: List<&2, K.Part>, +n: Nat, +T: Nat, +tb: {TB(ps, 0n, T) == True{} : Bool}, c: K.Coord,
+  a: KS.Allowed(levels, K.window(T, ps, n), c)) -> Laws.Allowed(levels, ps, n, c):
+  match c:
+    case K.Coord{0n, +i}:
+      (pr, nb, le) = a
+      (pr, nb, window_few(ps, n, 0n, T, tiles_of(ps, 0n, T, tb), i, le))
+    case K.Coord{1n++m, +i}:
+      (pr, nb, k1, k2) = a
+      (pr, nb, k1, k2)
+
+def all_of(+levels: List<&2, List<&2, Bool>>, +ps: List<&2, K.Part>, +n: Nat, +T: Nat, +tb: {TB(ps, 0n, T) == True{} : Bool}, cs: List<&2, K.Coord>,
+  a: KS.AllAllowed(levels, K.window(T, ps, n), cs)) -> Laws.AllAllowed(levels, ps, n, cs):
+  match cs:
+    case Nil{}:
+      Unit{}
+    case Con{c, rest}:
+      (ac, ar) = a
+      (allowed_of(levels, ps, n, T, tb, c, ac), all_of(levels, ps, n, T, tb, rest, ar))
+
+def Laws.offers_allowed(levels, T, ps, n):
+  t => all_of(levels, ps, n, T, tb_of(ps, 0n, T, t), K.offers(levels, K.window(T, ps, n)), PR.offers_allowed_k(levels, K.window(T, ps, n)))
 
 def le_pred(i: Nat, T: Nat, h: {Nat.is_le(1n+i, T) == True{} : Bool}) -> {Nat.is_le(i, T) == True{} : Bool}:
   match i T:
@@ -810,20 +918,15 @@ def leaf_end(+i: Nat, -T: Nat, w: {Nat.is_le(Laws.Start(0n, 1n+i), T) == True{} 
 def leaf_within(+i: Nat, +T: Nat, w: {Nat.is_le(Laws.Start(0n, 1n+i), T) == True{} : Bool}) -> {Nat.is_le(i, T) == True{} : Bool}:
   le_pred(i, T, leaf_end(i, T, w))
 
-def end_ks(+m: Nat, +i: Nat, -head: Nat, h: {Nat.is_le(Laws.Start(1n+m, 1n+i), head) == True{} : Bool})
-  -> {Nat.is_le(K.start(1n+m, 1n+i), head) == True{} : Bool}:
-  %Equal.sym(Nat, K.start(1n+m, 1n+i), Laws.Start(1n+m, 1n+i), PA.span_start_k(1n+m, 1n+i)) : {Nat.is_le(_, head) == True{} : Bool}
-  h
-
-def allowed_ks(+levels: List<&2, List<&2, Bool>>, +T: Nat, +ps: List<&2, K.Part>, c: K.Coord, t: Laws.Tiles(ps, 0n, T),
-  w: Laws.Within(c, T), a: Laws.Allowed(levels, ps, c)) -> KS.Allowed(levels, K.first(T, ps), c):
+def allowed_ks(+levels: List<&2, List<&2, Bool>>, +T: Nat, +ps: List<&2, K.Part>, +n: Nat, c: K.Coord, t: Laws.Tiles(ps, 0n, T),
+  w: Laws.Within(c, T), a: Laws.Allowed(levels, ps, n, c)) -> KS.Allowed(levels, K.window(T, ps, n), c):
   match c:
     case K.Coord{0n, +i}:
-      (pr, nb, bb) = a
-      (pr, nb, le_first(T, ps, i, t, leaf_within(i, T, w), bb))
+      (pr, nb, le) = a
+      (pr, nb, window_all(ps, n, 0n, T, t, i, leaf_within(i, T, w), le))
     case K.Coord{1n++m, +i}:
-      (pr, nb, k1, k2, bb) = a
-      (pr, nb, k1, k2, end_ks(m, i, K.first(T, ps), le_first(T, ps, Laws.Start(1n+m, 1n+i), t, w, bb)))
+      (pr, nb, k1, k2) = a
+      (pr, nb, k1, k2)
 
-def Laws.offers_complete(levels, T, ps, c):
-  t => w => a => PR.offers_complete_k(levels, K.first(T, ps), c, allowed_ks(levels, T, ps, c, t, w, a))
+def Laws.offers_complete(levels, T, ps, n, c):
+  t => w => a => PR.offers_complete_k(levels, K.window(T, ps, n), c, allowed_ks(levels, T, ps, n, c, t, w, a))
