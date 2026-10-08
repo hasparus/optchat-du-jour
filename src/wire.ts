@@ -41,14 +41,20 @@ const modelName = (id: string) => {
   if (gpt) return [`GPT${gpt[1] ? `-${gpt[1]}` : ""}`, ...(gpt[2] ?? "").split("-").filter((w) => w !== "").map(capital)].join(" ");
   return id;
 };
+// A ref's effort: [the ref without it, the effort or undefined]. The last "@" starts it, unless a
+// date follows that "@": then it is the model id's own (Vertex's "claude-sonnet-4-5@20250929").
+export const effortSplit = (ref: string): readonly [string, string | undefined] => {
+  const at = ref.lastIndexOf("@");
+  return at === -1 || /^\d{8}$/.test(ref.slice(at + 1)) ? [ref, undefined] : [ref.slice(0, at), ref.slice(at + 1)];
+};
+
 // An engine ref ("engine:model", or "engine:model@effort", src/config.ts) as the picker shows it:
 // "Claude Opus (Claude Code)", "GPT-6.1 Sol (ChatGPT plan)", "Claude Opus 5.5 (Anthropic API key)".
 // An entry's effort is added only when it differs from `roleEffort`, the role's own ("Claude Haiku
 // (Claude Code, xhigh)"); with no `roleEffort` it is always added.
 export const engineLabel = (ref: string, roleEffort?: string) => {
-  const at = ref.lastIndexOf("@");
-  const effort = at === -1 ? undefined : ref.slice(at + 1);
-  const [engine = "", model = ""] = (at === -1 ? ref : ref.slice(0, at)).split(/:(.*)/s);
+  const [bare, effort] = effortSplit(ref);
+  const [engine = "", model = ""] = bare.split(/:(.*)/s);
   const extra = effort === undefined || effort === roleEffort ? "" : `, ${effort}`;
   if (engine === "api-key") {
     const [, provider = "", id = model] = /^(anthropic|openai)\/(.+)$/.exec(model) ?? [];

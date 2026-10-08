@@ -387,6 +387,7 @@ test("a connection lost mid-turn is a ModelError, so the chain doesn't run the t
           model: "opus",
           permissionMode: "bypassPermissions",
           primeTtl: "1h",
+          ref: "claude-code:opus",
           report: () => Effect.void,
           runnerFor: () => Effect.succeed({ cwd: undefined, mcpConfig: "{}", mcpSeen: () => Effect.succeed(false), runner: remoteRunner("macbook", url) }),
           instructions: "SYSTEM",

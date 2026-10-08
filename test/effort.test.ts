@@ -3,17 +3,21 @@
 // argv, and shown in the picker's label only when it differs from the master's.
 import { expect, test } from "bun:test";
 import { Effect, Queue, Result, Schema, Stream } from "effect";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { makeBudget } from "../src/apikey/budget.ts";
 import type { ApiKeys } from "../src/apikey/clients.ts";
 import { type Spawn, type Runner, makeClaude } from "../src/claude/process.ts";
+import { openChat } from "../src/chat.ts";
 import type { Job } from "../src/compactor.ts";
-import { loadSettings, parseRef, parseSettings, Settings } from "../src/config.ts";
+import { type Effort, loadSettings, parseRef, parseSettings, Settings } from "../src/config.ts";
 import { UsageLimit } from "../src/engines/errors.ts";
 import { makeGate } from "../src/engines/inflight.ts";
 import { type CompactorNeeds, compactorEngine, type TurnNeeds, turnEngine } from "../src/engines/registry.ts";
 import { DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 import { makeMaster } from "../src/master.ts";
 import type { OpenAiPlan } from "../src/openai/responses.ts";
+import { makeSession, noMedia } from "../src/session.ts";
 import { newMsg } from "../src/store.ts";
 import type { TurnEvents, TurnInput } from "../src/turn/engine.ts";
 import { engineLabel } from "../src/wire.ts";
@@ -21,20 +25,19 @@ import { engineLabel } from "../src/wire.ts";
 const price = { cacheRead: 0.01, cacheWrite5m: 0.125, input: 0.1, output: 0.5 };
 
 type Chain = (typeof Settings.Encoded)["master"]["chain"];
-type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 type Options = { master?: Chain; byLevel?: Chain; masterEffort?: Effort; compactorEffort?: Effort; caption?: Chain };
 // the config as written
 const written = (o: Options = {}): typeof Settings.Encoded => ({
-    allowedLogins: [],
-    apiKey: { monthlyBudget: 5, prices: { "anthropic/claude-haiku-5-5": price, "openai/gpt-6": price } },
-    cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
-    compactor: { byLevel: [{ chain: o.byLevel ?? ["claude-code:sonnet"], from: 0 }], effort: o.compactorEffort ?? "medium" },
-    defaultDevice: "mini",
-    devices: { mini: { folders: [], url: "http://x" } },
-    master: { chain: o.master ?? ["claude-code:opus"], effort: o.masterEffort ?? "high", permissionMode: "bypassPermissions" },
-    openai: DEFAULT_ENDPOINTS,
-    media: o.caption === undefined ? undefined : { caption: o.caption },
-  });
+  allowedLogins: [],
+  apiKey: { monthlyBudget: 5, prices: { "anthropic/claude-haiku-5-5": price, "openai/gpt-6": price } },
+  cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
+  compactor: { byLevel: [{ chain: o.byLevel ?? ["claude-code:sonnet"], from: 0 }], effort: o.compactorEffort ?? "medium" },
+  defaultDevice: "mini",
+  devices: { mini: { folders: [], url: "http://x" } },
+  master: { chain: o.master ?? ["claude-code:opus"], effort: o.masterEffort ?? "high", permissionMode: "bypassPermissions" },
+  openai: DEFAULT_ENDPOINTS,
+  media: o.caption === undefined ? undefined : { caption: o.caption },
+});
 const settings = (o: Options = {}) => parseSettings(written(o));
 
 test("a chain entry decodes from \"ref@effort\" and from { ref, effort } alike; a plain ref is as it was", () => {
@@ -47,8 +50,46 @@ test("a chain entry decodes from \"ref@effort\" and from { ref, effort } alike; 
     { effort: "xhigh", engine: "api-key", model: "gpt-6", provider: "openai", ref: "api-key:openai/gpt-6@xhigh" },
   ]);
   // the compactor's chains take them too, and the two spellings are one engine
-  const c = settings({ byLevel: ["claude-code:haiku@xhigh", { effort: "xhigh", ref: "claude-code:haiku" }] });
-  expect(c.compactor.byLevel[0].chain.map((r) => r.ref)).toEqual(["claude-code:haiku@xhigh", "claude-code:haiku@xhigh"]);
+  const c = settings({ byLevel: ["claude-code:haiku@xhigh", "openai-plan:gpt-6-luna"] });
+  const d = settings({ byLevel: [{ effort: "xhigh", ref: "claude-code:haiku" }, "openai-plan:gpt-6-luna"] });
+  expect(d.compactor.byLevel).toEqual(c.compactor.byLevel);
+});
+
+test("an entry at its role's effort is the bare ref, so a chain names each engine once, in any spelling", () => {
+  // "@high" in a master at high, { effort: "medium" } in a compactor at medium: the bare refs
+  const s = settings({ byLevel: [{ effort: "medium", ref: "claude-code:sonnet" }, "claude-code:haiku@xhigh"], master: ["claude-code:opus@high", "claude-code:opus@xhigh"] });
+  expect(s.master.chain).toEqual([
+    { engine: "claude-code", model: "opus", ref: "claude-code:opus" },
+    { effort: "xhigh", engine: "claude-code", model: "opus", ref: "claude-code:opus@xhigh" },
+  ]);
+  expect(s.compactor.byLevel[0].chain.map((r) => [r.ref, r.effort])).toEqual([["claude-code:sonnet", undefined], ["claude-code:haiku@xhigh", "xhigh"]]);
+  // the media captions have no role's effort: an entry keeps its own
+  expect(settings({ caption: ["claude-code:haiku@medium"] }).media?.caption?.map((r) => r.ref)).toEqual(["claude-code:haiku@medium"]);
+  // the same engine twice in a chain is refused, with where and which
+  const twice = "master.chain: claude-code:opus@xhigh is in the chain more than once";
+  expect(() => settings({ master: ["claude-code:opus@xhigh", { effort: "xhigh", ref: "claude-code:opus" }] })).toThrow(twice);
+  expect(() => settings({ master: ["claude-code:opus@xhigh", "claude-code:opus@xhigh"] })).toThrow(twice);
+  expect(() => settings({ master: ["claude-code:opus", "claude-code:opus@high"] })).toThrow("master.chain: claude-code:opus is in the chain more than once");
+  expect(() => settings({ byLevel: ["openai-plan:gpt-6-luna", { effort: "medium", ref: "openai-plan:gpt-6-luna" }] })).toThrow("compactor.byLevel[0].chain: openai-plan:gpt-6-luna is in the chain more than once");
+  expect(() => settings({ caption: ["claude-code:haiku", "claude-code:haiku"] })).toThrow("media.caption: claude-code:haiku is in the chain more than once");
+  // one engine in two chains, or one model at two efforts, is no duplicate
+  expect(() => settings({ byLevel: ["claude-code:opus"], master: ["claude-code:opus", "claude-code:opus@max"] })).not.toThrow();
+});
+
+test("a model id with a date after an \"@\" (Vertex's) keeps it: the effort is what follows the last \"@\" that isn't a date", () => {
+  const vertex = parseRef("claude-code:claude-sonnet-4-5@20250929");
+  expect(Result.isSuccess(vertex) && vertex.success).toEqual({ engine: "claude-code", model: "claude-sonnet-4-5@20250929", ref: "claude-code:claude-sonnet-4-5@20250929" });
+  const withEffort = parseRef("api-key:anthropic/claude-opus-5-5@20260101@xhigh");
+  expect(Result.isSuccess(withEffort) && withEffort.success).toEqual({ effort: "xhigh", engine: "api-key", model: "claude-opus-5-5@20260101", provider: "anthropic", ref: "api-key:anthropic/claude-opus-5-5@20260101@xhigh" });
+  const object = settings({ master: [{ effort: "xhigh", ref: "claude-code:claude-opus-5-5@20260101" }] });
+  expect(object.master.chain[0]).toEqual({ effort: "xhigh", engine: "claude-code", model: "claude-opus-5-5@20260101", ref: "claude-code:claude-opus-5-5@20260101@xhigh" });
+  // not a date: an effort, and a bad one
+  expect(Result.isFailure(parseRef("claude-code:claude-sonnet-4-5@2025"))).toBe(true);
+  // the picker reads them the same way
+  expect(engineLabel("claude-code:claude-sonnet-4-5@20250929", "high")).toBe("claude-sonnet-4-5@20250929 (Claude Code)");
+  expect(engineLabel("claude-code:claude-sonnet-4-5@20250929@xhigh", "high")).toBe("claude-sonnet-4-5@20250929 (Claude Code, xhigh)");
+  // and the effort check sees the model behind the date: Sonnet 4.5 takes none
+  expect(() => settings({ master: ["claude-code:claude-sonnet-4-5@20250929"] })).toThrow("claude-sonnet-4-5@20250929 takes no effort");
 });
 
 test("a bad effort is a configuration error, in either spelling, and so is one given twice", () => {
@@ -59,6 +100,8 @@ test("a bad effort is a configuration error, in either spelling, and so is one g
   expect(() => settings({ byLevel: ["openai-plan:gpt-6-luna@fast"] })).toThrow();
   const turbo = parseRef("claude-code:haiku@turbo");
   expect(Result.isFailure(turbo) && turbo.failure).toBe("engine claude-code:haiku@turbo: effort turbo is not one of low, medium, high, xhigh, max");
+  const empty = parseRef("claude-code:haiku@");
+  expect(Result.isFailure(empty) && empty.failure).toBe("engine claude-code:haiku@: an empty effort is not one of low, medium, high, xhigh, max");
   expect(Result.isFailure(parseRef("api-key:anthropic/@high"))).toBe(true);
   expect(Result.isSuccess(parseRef("claude-code:haiku"))).toBe(true);
 });
@@ -126,6 +169,12 @@ test("an effort a Claude model can't take is refused at load, in the entry's or 
   expect(() => settings({ byLevel: ["api-key:anthropic/claude-haiku-4-5@xhigh"] })).toThrow("api-key:anthropic/claude-haiku-4-5@xhigh would run at xhigh, but claude-haiku-4-5 takes no effort");
   expect(() => settings({ master: ["claude-code:claude-haiku-4-5-20251001@low"] })).toThrow("takes no effort"); // its dated snapshot too
   expect(() => settings({ master: ["claude-code:claude-opus-4-6@xhigh"] })).toThrow("claude-opus-4-6 has no xhigh effort");
+  // Opus 4.0 and Sonnet 4.0, named by their dated ids alone, take none; a 1M-context variant is its model
+  expect(() => settings({ master: ["claude-code:claude-opus-4-20250514"] })).toThrow("claude-opus-4-20250514 takes no effort");
+  expect(() => settings({ master: ["api-key:anthropic/claude-sonnet-4-20250514@low"] })).toThrow("claude-sonnet-4-20250514 takes no effort");
+  expect(() => settings({ master: ["claude-code:claude-sonnet-4-5[1m]"] })).toThrow("claude-sonnet-4-5[1m] takes no effort");
+  expect(() => settings({ master: ["claude-code:claude-opus-4-6[1m]@xhigh"] })).toThrow("claude-opus-4-6[1m] has no xhigh effort");
+  expect(() => settings({ master: ["claude-code:opus[1m]@xhigh"] })).not.toThrow();
   expect(() => settings({ master: ["api-key:anthropic/claude-opus-4-5@max"] })).toThrow("claude-opus-4-5 has no max effort");
   // the media captions have only their entry's own
   expect(() => settings({ caption: ["claude-code:claude-haiku-4-5@low"] })).toThrow("media.caption");
@@ -162,6 +211,36 @@ test("each turn engine gets its entry's effort, else the master's", async () => 
   expect(r.efforts.plan).toEqual(["low", "high"]);
   expect(r.efforts.anthropic).toEqual(["max", "high"]);
   expect(r.efforts.openai).toEqual(["medium"]);
+});
+
+test("through the session, a message for an entry with its own effort runs on that entry, and its limit marks that entry down, not the bare ref", async () => {
+  const r = rig();
+  const s = settings({ master: ["claude-code:opus", "claude-code:opus@xhigh"] });
+  const dir = mkdtempSync(`${tmpdir()}/oe-`);
+  try {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const master = yield* makeMaster(s.master.chain.map((ref) => ref.ref), s.master.effort);
+          const built = yield* Effect.forEach(s.master.chain, (ref) => turnEngine(ref, r.turn(s)));
+          // no priming: only turns spawn claude
+          const engines = built.map((e) => ({ ref: e.ref, run: e.run, vision: e.vision, warm: e.warm }));
+          const chat = yield* openChat(dir, { summarize: () => Effect.succeed("") });
+          const session = yield* makeSession({ chat, commit: Effect.succeed(null), defaultDevice: "mini", devices: ["mini"], engines, idle: "1 hour", logUsage: () => Effect.void, master, media: noMedia });
+          yield* session.input("hi", { engine: "claude-code:opus@xhigh" });
+          for (let k = 0; k < 500 && session.state().phase !== "needs-model"; k++) yield* Effect.sleep("10 millis");
+          expect(r.efforts.argv).toEqual(["xhigh"]);
+          expect(session.state().stopped).toMatchObject({ label: "Claude Opus (Claude Code, xhigh)", ref: "claude-code:opus@xhigh" });
+          expect(session.state().engines.map((e) => [e.ref, e.down !== null])).toEqual([
+            ["claude-code:opus", false],
+            ["claude-code:opus@xhigh", true],
+          ]);
+        }),
+      ),
+    );
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
 });
 
 test("the picker's label shows an effort only when it differs from the master's", async () => {

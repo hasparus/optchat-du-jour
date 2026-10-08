@@ -26,7 +26,8 @@ export const apiKeyCompactor = (o: {
   readonly instructions: string; // the one system prompt (docs/optchat.md §5)
   readonly tools: readonly ToolDef[]; // an api-key turn's, on the default device
   readonly gate: Gate; // waits on a call writing the same marked prefix (docs/optchat.md §3.3)
-  readonly model: string; // for the in-flight key
+  readonly model: string; // for the in-flight key, with the effort
+  readonly effort: string;
 }) => {
   const { instructions, provider, tools } = o;
   const timeout = o.timeout ?? CALL_TIMEOUT;
@@ -35,7 +36,7 @@ export const apiKeyCompactor = (o: {
   const call = (job: Job, failoverFrom: string | null) => {
     const context = contextBlocks(job);
     const history: Item[] = [{ mark: context.mark, parts: [...context.blocks, task(job)], type: "user" }];
-    return o.gate.through(keyOf({ engine: `api-key:${provider.engine}`, instructions, model: o.model, tools }, context), (started) => {
+    return o.gate.through(keyOf({ effort: o.effort, engine: `api-key:${provider.engine}`, instructions, model: o.model, tools }, context), (started) => {
       const ask = (t: Try) =>
         Effect.gen(function* () {
           if (t.retry !== null) history.push({ parts: [t.retry.text], type: "user" });

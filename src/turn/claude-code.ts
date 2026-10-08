@@ -33,6 +33,7 @@ export type Placement = {
 };
 
 export type ClaudeCodeTurnOptions = {
+  readonly ref: string; // the chain entry as the config names it (src/config.ts Ref), effort and all: the session's key for it
   readonly model: string;
   readonly effort: string;
   readonly tools: readonly string[];
@@ -374,5 +375,5 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
         }),
       );
 
-    return { prime, ref: `claude-code:${o.model}`, run, vision: true, warm } satisfies TurnEngine;
+    return { prime, ref: o.ref, run, vision: true, warm } satisfies TurnEngine;
   });

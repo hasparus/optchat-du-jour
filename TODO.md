@@ -17,6 +17,7 @@ Everything is built and tested against fakes. Each check below needs a real logi
 
 - [ ] `optchat login openai` end to end: callback, refresh, Keychain (SPEC M3).
 - [ ] Model ids the token lists; are `gpt-6-luna` and `gpt-6.1-sol` right? Does the route take `reasoning.effort`? (SPEC M3)
+- [ ] Which `reasoning.effort` values the plan route accepts: `xhigh`, `max`? A chain entry may ask for any of `low` to `max`, and OpenAI refs are not checked at load (SPEC Compactor calls, Haiku and effort).
 - [ ] Function tools and `tool_choice` on the plan route (SPEC M5).
 - [ ] Our Responses cache fields (from the gist's earlier revision; docs/optchat.md has none): `prompt_cache_breakpoint`, `reasoning.encrypted_content`, `reasoning.context` (SPEC M5).
 - [ ] `input_image` and PDFs on the plan route, before `media.planImages` goes on (SPEC Media).

@@ -32,11 +32,11 @@ export type OpenAiPlanCompactorOptions = {
 // the context blocks, the last whole one marked (`mark`), then the task
 export const firstInput = (job: Job, context: Blocks = contextBlocks(job)): Turn => ({ mark: context.mark, parts: [...context.blocks, task(job)], role: "user" });
 
-// What a request sends up to its mark: the model, the system prompt, the tools and the context
-// blocks up to the marked one; null when nothing before the request's end is marked. The mark is
-// the marks helpers' (step.ts contextBlocks, view.ts viewBlocks).
-export const keyOf = (o: { readonly engine: string; readonly model: string; readonly instructions: string; readonly tools: readonly ToolDef[] }, context: Blocks) =>
-  context.mark === undefined ? null : prefixKey([o.engine, o.model, o.instructions, JSON.stringify(o.tools), ...context.blocks.slice(0, context.mark + 1)]);
+// What a request sends up to its mark: the model and its effort, the system prompt, the tools and
+// the context blocks up to the marked one; null when nothing before the request's end is marked.
+// The mark is the marks helpers' (step.ts contextBlocks, view.ts viewBlocks).
+export const keyOf = (o: { readonly engine: string; readonly model: string; readonly effort: string; readonly instructions: string; readonly tools: readonly ToolDef[] }, context: Blocks) =>
+  context.mark === undefined ? null : prefixKey([o.engine, o.model, o.effort, o.instructions, JSON.stringify(o.tools), ...context.blocks.slice(0, context.mark + 1)]);
 
 export const openAiPlanCompactor = (o: OpenAiPlanCompactorOptions & { readonly plan: OpenAiPlan["Service"] }) => {
   const { instructions, tools } = o;

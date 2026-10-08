@@ -616,6 +616,26 @@ test("the model picker is this page's own: switching it sends nothing; each mess
   expect(screen.queryByRole("button", { name: /^(Send now|Queue for the next turn)$/ })).toBeNull();
 });
 
+test("one model at two efforts reads apart: the picker, a queued message and the status line show the effort as the picker's options do", async () => {
+  const { play } = start();
+  await screen.findByText("what is in the repo?");
+  const engines = [
+    { down: null, label: "Claude Opus (Claude Code)", ref: "claude-code:opus" },
+    { down: null, label: "Claude Opus (Claude Code, xhigh)", ref: "claude-code:opus@xhigh" },
+  ];
+  play(state({ engines }));
+  fireEvent.change(screen.getByLabelText("Model"), { target: { value: "claude-code:opus@xhigh" } });
+  expect(within(screen.getByTestId("model-picker")).getByText("Opus · xhigh")).toBeTruthy();
+  play(state({ engine: "claude-code:opus@xhigh", pending: [{ clientId: "a", engine: "claude-code:opus", queued: true, text: "for opus" }], phase: "running" }));
+  const opus = await screen.findByTestId("queue-engine");
+  expect(opus.textContent).toBe("Opus");
+  expect(screen.getByTestId("status").textContent).toContain("running on mini, Claude Opus (Claude Code, xhigh)");
+  fireEvent.change(screen.getByLabelText("Model"), { target: { value: "claude-code:opus" } });
+  play(state({ pending: [{ clientId: "b", engine: "claude-code:opus@xhigh", queued: true, text: "for opus at xhigh" }] }));
+  const other = await screen.findByTestId("queue-engine");
+  expect([other.textContent, other.getAttribute("title")]).toEqual(["Opus · xhigh", "for Claude Opus (Claude Code, xhigh)"]);
+});
+
 test("before the first state, a message names the model this page kept; once the state shows the chain lacks it, the chain's first", async () => {
   localStorage.setItem("optchat:model", "openai-plan:gpt-6.1-sol");
   const { play, server } = start(LOG, 0, undefined, true);

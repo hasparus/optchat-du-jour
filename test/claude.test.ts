@@ -64,6 +64,7 @@ const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
       model: "opus",
       permissionMode: "bypassPermissions",
       primeTtl: "1h" as const,
+      ref: "claude-code:opus",
       report,
       runnerFor: (device: string) =>
         Effect.sync(() => ({

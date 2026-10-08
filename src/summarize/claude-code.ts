@@ -77,7 +77,7 @@ export const claudeCodeCompactor = (o: CompactorOptions) => {
       const p = yield* o.placement;
       const first = blocks(job, o.ttl);
       const prefix = markedPrefix(first);
-      const key = prefix && prefixKey(["claude-code", o.model, o.instructions, o.tools.join(","), ...prefix]);
+      const key = prefix && prefixKey(["claude-code", o.model, o.effort, o.instructions, o.tools.join(","), ...prefix]);
       return yield* o.gate.through(key, (started) =>
         Effect.gen(function* () {
           const claude = yield* p.runner.spawn(compactSpawn(o, p)).pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(failed(e))));

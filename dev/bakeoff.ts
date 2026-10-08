@@ -32,7 +32,7 @@ import { ApiKeys, apiKeysLayer } from "../src/apikey/clients.ts";
 import { openChat } from "../src/chat.ts";
 import { LocalRunner, Runner } from "../src/claude/process.ts";
 import type { Summarize } from "../src/compactor.ts";
-import { Effort, NODE, type Settings, WAIT_RETRY, effortProblems, isEffort, loadSettings, parseRef } from "../src/config.ts";
+import { Effort, NODE, type Settings, WAIT_RETRY, effortProblem, isEffort, loadSettings, parseRef } from "../src/config.ts";
 import { parseOptmem } from "../src/import.ts";
 import { zoom } from "../src/mcp.ts";
 import { OpenAiPlan, openAiPlanLayer } from "../src/openai/responses.ts";
@@ -371,7 +371,14 @@ const main = Effect.gen(function* () {
   if (!isEffort(effort)) return yield* Console.error(`--effort ${effort}: one of ${Effort.literals.join(", ")}\n${USAGE}`);
   const settings = { ...loaded, compactor: { ...loaded.compactor, effort } };
   // a contender's efforts are checked as the config's are: a model that takes none is no contender at that effort
-  const refused = contenders.success.flatMap((c) => effortProblems({ compactor: { byLevel: c.byLevel, effort }, master: loaded.master }).filter((p) => p.startsWith("compactor")).map((p) => `${c.name}: ${p}`));
+  const refused = contenders.success.flatMap((c) =>
+    c.byLevel.flatMap((b) =>
+      b.chain.flatMap((r) => {
+        const problem = effortProblem(r, r.effort ?? effort);
+        return problem === undefined ? [] : [`${c.name}: ${r.ref} would run at ${r.effort ?? effort}, but ${problem}`];
+      }),
+    ),
+  );
   if (refused.length > 0) return yield* Console.error(`${refused.join("\n")}\n${USAGE}`);
   const messages = yield* readSource(values.from, n, skip);
   const kinds = values.kinds.split(",").map((k) => Schema.decodeUnknownSync(Schema.Literals(["user", "talk", "tool", "echo", "note"]))(k));

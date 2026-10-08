@@ -7,8 +7,6 @@ import { Effect, PubSub } from "effect";
 import { MASTER_DOWN_FOR } from "./config.ts";
 import { engineLabel, type MasterEngine } from "./wire.ts";
 
-const labelWith = (effort?: string) => (ref: string) => engineLabel(ref, effort);
-
 // `refs`: the master's chain, by the refs its engines carry; `effort`: the master's own, which a
 // label leaves out for an engine that runs at it
 export const makeMaster = (refs: readonly string[], effort?: string) =>
@@ -21,12 +19,11 @@ export const makeMaster = (refs: readonly string[], effort?: string) =>
     // a mark lapsed: what the pickers show changed by itself
     const changes = yield* PubSub.unbounded<true>();
 
-    const label = labelWith(effort);
     return {
       changes,
       refs,
-      label,
-      engines: (): MasterEngine[] => refs.map((ref) => ({ down: down.get(ref)?.why ?? null, label: label(ref), ref })),
+      label: (ref: string) => engineLabel(ref, effort),
+      engines: (): MasterEngine[] => refs.map((ref) => ({ down: down.get(ref)?.why ?? null, label: engineLabel(ref, effort), ref })),
       // the engine the warm processes follow: the most recent turn's ("" for an empty chain)
       latest: () => latest,
       ran: (ref: string) => {
