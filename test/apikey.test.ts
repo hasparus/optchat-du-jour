@@ -1,6 +1,6 @@
 // The api-key engine (SPEC "Engines", api-key; "Usage and cost tracking") against a fake Messages
-// API: our cache layout (E26: a 5-minute mark at each view cut and the top-level automatic
-// one), every call priced from the table, the thinking sent back on a retry, and a spent
+// API: our cache layout (docs/optchat.md §3.3: a 5-minute mark on the view's last whole block and
+// the top-level automatic one), every call priced from the table, the thinking sent back on a retry, and a spent
 // monthly budget that stops the key and says so once.
 import { afterAll, expect, test } from "bun:test";
 import { Effect, Layer, Option, Schema } from "effect";
@@ -69,7 +69,7 @@ const rig = (monthly: number, usagePath: string) => {
   return { budget, compact, records, reports };
 };
 
-// enough context for all four pieces (cut at 50k, 80k and 100k characters)
+// <chat>, 110 lines, </chat>: 27 whole blocks of 4 lines, then the partial one with </chat>
 const job: Job = { ctx: Array.from({ length: 110 }, (_, k) => `user: line ${k} ${"z".repeat(1000)}`), i: 110, l: 0, msg: newMsg(110, "user", "squeeze me") };
 
 const Block = Schema.Struct({
@@ -92,7 +92,7 @@ const decodeBody = Schema.decodeUnknownSync(Schema.fromJsonString(Body));
 // a block's mark as sent, "5m" for one with no TTL (the API's default), null for none
 const markOf = (b: typeof Block.Type) => (b.cache_control === undefined ? null : `${b.cache_control.type} ${b.cache_control.ttl ?? "5m"}`);
 
-test("Anthropic gets our cache layout: a 5-minute mark at each view cut and the request end, the thinking back on a retry, and every call is priced", async () => {
+test("Anthropic gets our cache layout: a 5-minute mark on the last whole block and the request end, the thinking back on a retry, and every call is priced", async () => {
   const r = rig(5, `${dir}/priced.jsonl`);
   fake.state.seen.length = 0;
   fake.state.script = [{ text: `user: ${"x".repeat(600)}`, thinking: "too long, but first" }, { text: "user: squeeze me" }];
@@ -101,9 +101,9 @@ test("Anthropic gets our cache layout: a 5-minute mark at each view cut and the 
   const [first, retry] = fake.state.seen.map((b) => decodeBody(b));
   expect(fake.state.headers[0]?.get("anthropic-version")).toBe("2023-06-01");
   expect(first?.system.every((b) => b.cache_control === undefined)).toBe(true);
-  // four context pieces, a mark at each of the three cuts; the last piece and the step are read
-  // through the request end's automatic mark, so the size retry reads the whole first try
-  expect(first?.messages[0]?.content.map(markOf)).toEqual(["ephemeral 5m", "ephemeral 5m", "ephemeral 5m", null, null]);
+  // 28 context pieces, a mark on the last whole one (the 27th); the partial piece and the step are
+  // read through the request end's automatic mark, so the size retry reads the whole first try
+  expect(first?.messages[0]?.content.map(markOf)).toEqual(Array.from({ length: 29 }, (_, k) => (k === 26 ? "ephemeral 5m" : null)));
   expect(first?.cache_control).toEqual({ type: "ephemeral" });
   expect(fake.state.seen.every((b) => !b.includes('"1h"'))).toBe(true);
   expect(first?.output_config?.effort).toBe("medium");
@@ -118,7 +118,7 @@ test("Anthropic gets our cache layout: a 5-minute mark at each view cut and the 
 
   // as the master: the view's blocks marked, the read-only tools offered, the last round without tools
   const provider = apiKeyProvider({ budget: r.budget, clients, effort: "high", ref: API_KEY, settings: settings(5) });
-  const history = [{ marks: 1, parts: ["<chat>\n0+1|user: hi\n", "1+1|talk: hello\n</chat>", "what now?"], type: "user" as const }];
+  const history = [{ mark: 0, parts: ["<chat>\n0+1|user: hi\n", "1+1|talk: hello\n</chat>", "what now?"], type: "user" as const }];
   const tools = [{ description: "Read a file", name: "Read", parameters: { properties: { file_path: { type: "string" } }, type: "object" } }];
   await Effect.runPromise(provider.call({ final: false, history, instructions: "MASTER", onText: () => Effect.void, tools }));
   await Effect.runPromise(provider.call({ final: true, history, instructions: "MASTER", onText: () => Effect.void, tools }));

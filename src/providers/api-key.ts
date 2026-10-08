@@ -1,6 +1,6 @@
 // The api-key engine as a provider (./provider.ts; SPEC "Engines", api-key: overflow only):
-// Anthropic with our cache layout (E26: a mark at each view cut and the request end, all
-// 5-minute) or OpenAI's Responses API, each call
+// Anthropic with our cache layout (docs/optchat.md §3.3: a mark on the view's last whole block
+// and the request end, both 5-minute) or OpenAI's Responses API, each call
 // first asking the monthly budget and then priced from the table in optchat.config.ts (SPEC
 // "Usage and cost tracking"). The master runs it in our tool loop with the read-only tools; the
 // compactor (src/summarize/api-key.ts) runs it with none.

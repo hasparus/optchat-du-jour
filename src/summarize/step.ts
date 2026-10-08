@@ -1,19 +1,19 @@
 // What every compactor engine sends (SPEC "Compactor calls", E24), whatever carries it:
-// the context as <chat> and bare view lines cut at MARKS, the step under it, the retry text for a
+// the context as <chat> and bare view lines in blocks of BLOCK lines, the step under it, the retry text for a
 // line over NODE, and the size retries themselves. The engines add only their transport and marks.
 import { Clock, Effect } from "effect";
 import type { Job } from "../compactor.ts";
-import { MARKS, NODE, TRIES } from "../config.ts";
+import { NODE, TRIES } from "../config.ts";
 import { type EngineError, ModelError } from "../engines/errors.ts";
 import { SCALE } from "../prompts.ts";
 import { bytes } from "../tree.ts";
 import { type Tokens, type UsageRecord, isCold } from "../usage.ts";
-import { cutBlocks, flat } from "../view.ts";
+import { type Blocks, flat, viewBlocks } from "../view.ts";
 
-// The context pieces: <chat>, the bare lines, </chat>, cut at the marks. No ids anywhere: shown
-// `id+n|text`, the model starts copying the format (E24). Byte-stable from call to call.
-export const contextBlocks = (job: Job, marks: readonly number[] = MARKS) =>
-  cutBlocks(["<chat>", ...job.ctx, "</chat>"].join("\n"), marks);
+// The context pieces: <chat>, the bare lines, </chat>, in blocks of BLOCK lines, and the last whole
+// one, where an engine puts its mark (view.ts viewBlocks). No ids anywhere: shown `id+n|text`, the
+// model starts copying the format (E24). Byte-stable from call to call.
+export const contextBlocks = (job: Job): Blocks => viewBlocks(["<chat>", ...job.ctx, "</chat>"].join("\n"));
 
 // what the earlier gist's step block says above the message or the two lines (E24): the message
 // whole with its newlines, the two lines written out again, flattened

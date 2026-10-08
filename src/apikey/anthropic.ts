@@ -1,10 +1,10 @@
 // Anthropic's Messages API with an API key (SPEC "Engines", api-key: overflow only). One streamed
-// request per call, cached as SPEC "Engines" lays it out (E26): a breakpoint at each of the view's cuts (the
-// pieces a user Item's `marks` counts; cutBlocks makes at most 3) and the top-level automatic
-// `cache_control` on every request, which Anthropic puts on its last block, so each step of a
-// turn (or each size retry of a compactor call) reads everything the step before it sent. That
-// makes 4, Anthropic's limit. Every entry is a 5-minute one, the API's default (docs/optchat.md §3.3, checklist
-// item 10; E6's 1-hour entries are the Claude subscription's). Thinking blocks come back in the
+// request per call, cached as docs/optchat.md §3.3 "How the cache is marked" has it: a breakpoint on
+// the view's last whole block (the part a user Item's `mark` names), which the next call finds by
+// the 20-block lookback, and the top-level automatic `cache_control` on every request, which
+// Anthropic puts on its last block, so each step of a turn (or each size retry of a compactor
+// call) reads everything the step before it sent: 2 of Anthropic's 4. Every entry is a 5-minute one, the API's
+// default (docs/optchat.md §3.3; E6's 1-hour entries are the Claude subscription's). Thinking blocks come back in the
 // next request exactly as they arrived, signature and all, as tool use with thinking requires.
 import { Effect, Option, Schema, Stream } from "effect";
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
@@ -53,7 +53,7 @@ const inputOf = (text: string): Json => Option.getOrElse(decodeObject(text), () 
 
 // The conversation as Messages: user parts and tool results on the user side, text, calls and
 // kept blocks on the assistant side, neighbours of one side merged into one message. A user
-// message's parts that end at a view cut (its `marks`) get a breakpoint each.
+// message's `mark` part, its last whole view block, gets a breakpoint.
 export const messagesOf = (history: readonly Item[]) => {
   const out: { role: "user" | "assistant"; content: Json[] }[] = [];
   const push = (role: "user" | "assistant", blocks: readonly Json[]) => {
@@ -65,7 +65,6 @@ export const messagesOf = (history: readonly Item[]) => {
   for (const item of history) {
     switch (item.type) {
       case "user": {
-        const marks = item.marks ?? 0;
         const blocks: Json[] = [];
         for (const [k, part] of item.parts.entries()) {
           if (isPicture(part)) {
@@ -73,7 +72,7 @@ export const messagesOf = (history: readonly Item[]) => {
             continue;
           }
           if (!part) continue; // the API refuses empty text blocks
-          blocks.push(k < marks ? { cache_control: EPHEMERAL, text: part, type: "text" } : { text: part, type: "text" });
+          blocks.push(k === item.mark ? { cache_control: EPHEMERAL, text: part, type: "text" } : { text: part, type: "text" });
         }
         push("user", blocks);
         break;

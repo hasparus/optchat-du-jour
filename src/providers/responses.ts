@@ -22,7 +22,7 @@ const itemOf = (out: Out): Item => {
 const turnOf = (item: Item): Turn[] => {
   switch (item.type) {
     case "user":
-      return [{ marks: item.marks, parts: item.parts, role: "user" }];
+      return [{ mark: item.mark, parts: item.parts, role: "user" }];
     case "text":
       return [{ role: "assistant", text: item.text }];
     case "call":

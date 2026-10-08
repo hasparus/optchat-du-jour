@@ -1,7 +1,7 @@
 // The view's text (docs/optchat.md §3, §6; ref §5.1). Which nodes are in the view is the kernel's call
 // (kernel.ts); this file keeps mem.view up to date, checks a saved one, renders it and waits on it.
 import { Effect } from "effect";
-import { MARKS, NODE } from "./config.ts";
+import { BLOCK, NODE } from "./config.ts";
 import * as K from "./kernel.ts";
 import type { Node } from "./records.ts";
 import { built, bytes, dayOf, end, type Entry, getNode, label, type Mem, nodes, type Saw, setNode } from "./tree.ts";
@@ -95,16 +95,24 @@ export function render(mem: Mem): string {
   return `${["<chat>", ...lines].join("\n")}\n</chat>`;
 }
 
-// The view in blocks (E26). Each mark inside the text moves back to just after the last
-// line end before it; the text is then sliced at those points. The marks from the first one
-// at or past the end are dropped, and a point that is no further on than the one before adds
-// no block.
-export function cutBlocks(text: string, at: readonly number[] = MARKS) {
-  const inside = at.findIndex((mark) => mark >= text.length);
-  const points = (inside === -1 ? at : at.slice(0, inside)).map((mark) => text.lastIndexOf("\n", mark - 1) + 1);
-  const starts = [0];
-  for (const p of points) if (p > (starts.at(-1) ?? 0)) starts.push(p);
-  return starts.map((start, k) => text.slice(start, starts[k + 1]));
+// The view, or a compactor's context, as content blocks (docs/optchat.md §3.3 "How the cache is
+// marked"): `size` lines each, counted from the start, so a text that only grows at its end keeps
+// every whole block byte for byte. A whole block is `size` lines each ending in a line break;
+// `mark` is the index of the last one, where the one cache mark goes (none while no block is
+// whole). What follows, the unterminated last line (`</chat>`) and the lines before it that fill
+// no block, is the partial block, never marked.
+export type Blocks = { readonly blocks: readonly string[]; readonly mark: number | undefined };
+export function viewBlocks(text: string, size: number = BLOCK): Blocks {
+  const blocks: string[] = [];
+  let start = 0, lines = 0;
+  for (let at = text.indexOf("\n"); at !== -1; at = text.indexOf("\n", at + 1))
+    if (++lines % size === 0) {
+      blocks.push(text.slice(start, at + 1));
+      start = at + 1;
+    }
+  const mark = blocks.length > 0 ? blocks.length - 1 : undefined;
+  if (start < text.length) blocks.push(text.slice(start));
+  return { blocks, mark };
 }
 
 export function unbuilt(mem: Mem) {

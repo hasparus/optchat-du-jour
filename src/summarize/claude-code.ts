@@ -1,9 +1,9 @@
 // The claude-code compactor engine (ref §7 layout A, E24, E5/E6/E11): one `claude -p`
-// per node, no tools, our own cache marks on the context, and the size retries in the same
+// per node, no tools, our own cache marks (the context's last whole block, the step), and the size retries in the same
 // conversation until the line fits in NODE bytes or TRIES are spent.
 import { Duration, Effect } from "effect";
 import { baseArgs } from "../claude/args.ts";
-import type { TextBlock } from "../claude/events.ts";
+import { markAt, type TextBlock } from "../claude/events.ts";
 import { Runner } from "../claude/process.ts";
 import type { Job } from "../compactor.ts";
 import { CALL_TIMEOUT } from "../config.ts";
@@ -21,12 +21,13 @@ export type CompactorOptions = {
   readonly timeout?: Duration.Input; // CALL_TIMEOUT
 };
 
-// The user message of a call (layout A): the context pieces (step.ts), each with our mark, then
-// the step, unmarked. The pieces stay byte-stable from one call to the next, so the next call
-// reads them from the cache.
+// The user message of a call (layout A): the context pieces (step.ts), then the step. Two marks
+// (docs/optchat.md §3.3): the last whole context piece, which the next call finds by the lookback,
+// and the step, the request's end, which a size retry reads. The pieces stay byte-stable from one
+// call to the next.
 export function blocks(job: Job, ttl: "1h" | "5m"): TextBlock[] {
-  const context = contextBlocks(job).map((text): TextBlock => ({ cache_control: { ttl, type: "ephemeral" }, text, type: "text" }));
-  return [...context, { text: step(job), type: "text" }];
+  const context = contextBlocks(job);
+  return markAt([...context.blocks, step(job)], [context.mark, context.blocks.length], ttl);
 }
 
 export const claudeCodeCompactor = (o: CompactorOptions) =>

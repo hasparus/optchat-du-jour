@@ -1,13 +1,13 @@
 // The claude-code turn engine (ref §4-§6, docs/optchat.md §6, E6/E7): one `claude -p` per turn on the
-// turn's device, the view without cache marks then the new texts, the stream mapped to the log,
-// and the process killed at the first result. Priming writes the same view blocks to the cache
-// while the session is idle, with our own marks; that call ends at message_start, once the API
-// has taken the request. A turn never waits for it (E17). `warm` tells a device's Runner which
+// turn's device, the view in blocks of BLOCK lines without cache marks then the new texts, the
+// stream mapped to the log, and the process killed at the first result. Priming writes the same
+// view blocks to the cache while the session is idle, with our own marks (see primeBlocks); that
+// call ends at message_start, once the API has taken the request. A turn never waits for it (E17). `warm` tells a device's Runner which
 // two spawns come next, so it can start them ahead (E18). What each claude shows of the MCP server
 // optchat goes to the device's transport, which may fall back from ws to http (E8).
 import { Clock, Effect, Option, Semaphore } from "effect";
 import { baseArgs } from "../claude/args.ts";
-import { type Assistant, type Block, type Event, type Init, type Result, type StreamEvent, SYNTHETIC, type Usage, type User } from "../claude/events.ts";
+import { type Assistant, type Block, type Event, type Init, markAt, type Result, type StreamEvent, SYNTHETIC, type TextBlock as TextInput, type Usage, type User } from "../claude/events.ts";
 import type { Claude, Runner, Spawn } from "../claude/process.ts";
 import { cap } from "../cap.ts";
 import { isPicture, type Part } from "../media/part.ts";
@@ -16,7 +16,7 @@ import { type DeviceOffline, fromResult, ModelError } from "../engines/errors.ts
 import type { McpSeen } from "../mcp.ts";
 import type { StoreError } from "../store.ts";
 import { isCold, tokensOf, type UsageRecord } from "../usage.ts";
-import { cutBlocks } from "../view.ts";
+import { viewBlocks } from "../view.ts";
 import { type Mid, openingText, type TurnEngine, type TurnEvents } from "./engine.ts";
 
 type Ttl = "1h" | "5m";
@@ -232,6 +232,16 @@ const failedWith = (r: Result, errors: readonly string[]) => {
   return said.length > 0 ? said.join(": ") : `the turn ended with ${r.subtype ?? "an error"}`;
 };
 
+// What priming sends of the view: the turn's blocks, marked on the last whole block and on the
+// view's end, the only marks in the request (DISABLE_PROMPT_CACHING=1). The turn right after reads
+// the whole view at the end mark (its own end mark looks back to it); a later priming, the view
+// grown at its end, finds the whole-block mark by the lookback and writes only the lines after it.
+// The "ok" after them is priming's own and never read, so it gets none.
+export const primeBlocks = (view: string, ttl: Ttl): TextInput[] => {
+  const { blocks, mark } = viewBlocks(view);
+  return markAt(blocks, [mark, blocks.length - 1], ttl);
+};
+
 // a priming of this view older than this is redone: the TTL minus a margin (ref §2, E6)
 export const primeMaxAge = (ttl: Ttl) => (ttl === "1h" ? 3_300_000 : 270_000);
 
@@ -277,10 +287,11 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
           .spawn(turnSpawn(placement))
           .pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(new ModelError({ message: e.message }))));
         const started = yield* Clock.currentTimeMillis;
-        // the view exactly as priming cut it, with no marks: Claude Code's own marks are on (D2);
+        // the view in the blocks priming sent, with no marks: Claude Code's own take all 4 slots
+        // (D2), and its mark at the request's end finds priming's within the 20-block lookback;
         // the new messages' pictures; the new messages, a blank line apart (ref §5.1), and after a
         // failover what came before
-        yield* claude.send([...cutBlocks(input.view).map(text), ...input.media.map(block), text(openingText(input))]);
+        yield* claude.send([...viewBlocks(input.view).blocks.map(text), ...input.media.map(block), text(openingText(input))]);
 
         // Mid-run messages go to stdin as they are offered (after a failover, first the ones the
         // engine before never took), each noted as passed before it is written, so its echo can
@@ -321,9 +332,7 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
           .spawn(primeSpawn(placement))
           .pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(new ModelError({ message: e.message })))); // DeviceOffline: priming skips quietly
         const started = yield* Clock.currentTimeMillis;
-        const mark = { ttl: o.primeTtl, type: "ephemeral" } as const;
-        const marked = cutBlocks(view).map((piece): Block => ({ cache_control: mark, text: piece, type: "text" }));
-        yield* claude.send([...marked, text("ok")]);
+        yield* claude.send([...primeBlocks(view, o.primeTtl), text("ok")]);
         // priming is often the first call after the server starts: a transport that fails shows here first
         const mcp = mcpWatch(device, placement);
         const first = yield* readUntil(
