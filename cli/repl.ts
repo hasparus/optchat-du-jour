@@ -423,9 +423,11 @@ export function makeScreen(o: ScreenOptions) {
       note(sent ? "cancel sent; a second Ctrl-C exits" : "not connected: the cancel was not sent");
     },
 
-    // the /resume went to the server (the state will say it), or was dropped: not connected
-    resumed(sent: boolean) {
-      if (!sent) note("not connected: the resume was not sent; /resume again once connected");
+    // the /resume went to the server (the state will say it), and the REPL's next messages are for
+    // that engine too, as the web app's picker follows its resume buttons; or it was dropped: not connected
+    resumed(sent: boolean, engine: string) {
+      if (sent) model = engine;
+      else note("not connected: the resume was not sent; /resume again once connected");
     },
 
     // back from Ctrl-Z
@@ -619,7 +621,7 @@ export const runRepl = (o: ReplOptions) =>
             link.send(JSON.stringify({ followUp: a.followUp, type: "settings" })); // a setting may wait for the connection, unlike an abort
             return;
           case "resume":
-            screen.resumed(link.now(JSON.stringify({ engine: a.engine, type: "resume" })));
+            screen.resumed(link.now(JSON.stringify({ engine: a.engine, type: "resume" })), a.engine);
             return;
           case "exit":
             done();

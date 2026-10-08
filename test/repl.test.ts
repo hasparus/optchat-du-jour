@@ -261,7 +261,7 @@ describe("repl link", () => {
     expect(link.now(resume)).toBe(true);
     expect(wire).toEqual([resume]);
     const t = screen();
-    t.s.resumed(false);
+    t.s.resumed(false, "openai-plan:gpt-6.1-sol");
     expect(t.out()).toContain("not connected: the resume was not sent; /resume again once connected\n");
   });
 });
@@ -346,6 +346,10 @@ describe("runRepl", () => {
       type("/resume\r");
       await until("the resume", () => conns[0]?.length === 2);
       expect(conns[0]?.[1]).toBe(JSON.stringify({ engine: "claude-code:opus", type: "resume" }));
+      // the REPL's model follows the resume, as the web app's picker follows its buttons
+      type("next\r");
+      await until("the next message", () => conns[0]?.length === 3);
+      expect(JSON.parse(conns[0]?.[2] ?? "{}")).toMatchObject({ forwardedProps: { engine: "claude-code:opus" } });
       // the server goes away: a resume is said and dropped, a message waits for the socket
       open[0]?.close();
       await until("the outage", () => out.includes("no connection to the server"));
