@@ -1,4 +1,4 @@
-// The claude-code compactor engine (ref §7 layout A, gist §4.2-§4.4, E5/E6/E11): one `claude -p`
+// The claude-code compactor engine (ref §7 layout A, E24, E5/E6/E11): one `claude -p`
 // per node, no tools, our own cache marks on the context, and the size retries in the same
 // conversation until the line fits in NODE bytes or TRIES are spent.
 import { Duration, Effect } from "effect";

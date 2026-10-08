@@ -1,4 +1,4 @@
-// The data dir is its own git repo, committed after every turn (gist §10, ref §10 "Git") and
+// The data dir is its own git repo, committed after every turn (ref §10 "Git") and
 // pushed when it has a remote (E10). Git is a backup here, never a reason to fail a turn: every
 // problem comes back as a message for the caller to show. The push runs in the background, so an
 // unreachable remote never holds up the end of a turn.

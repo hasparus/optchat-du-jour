@@ -1,8 +1,8 @@
 // The calls into the Bend fold kernel (kernel/kernel.bend, E14). The kernel sees sizes only:
 // this file turns the memory into its inputs and its answers back into coordinates. It holds no
 // text either: an unbuilt line's size (the placeholder's, which view.ts owns) is a parameter.
-import kernel, { type List, type Msg, type Part } from "../kernel/kernel.mjs";
-import { built, type Coord, getNode, type Mem, nodes } from "./tree.ts";
+import kernel, { type List, type Msg, type Part, type Saw as Sawed } from "../kernel/kernel.mjs";
+import { built, type Coord, getNode, type Marks, type Mem, nodes, type Saw } from "./tree.ts";
 
 const nil: List<never> = { $: "Nil" };
 function list<T>(xs: readonly T[]): List<T> {
@@ -41,35 +41,46 @@ const part = (mem: Mem, c: Coord, hole: number): Part => ({
   size: getNode(mem, c)?.size ?? hole,
   ups: list(ups(mem, c)),
 });
-const parts = (mem: Mem, hole: number) => list(mem.view.map((c) => part(mem, c, hole)));
+const parts = (mem: Mem, view: readonly Coord[], hole: number) => list(view.map((c) => part(mem, c, hole)));
 const coords = (ps: List<Part>): Coord[] => array(ps).map((p) => ({ i: Number(p.i), l: Number(p.l) }));
+const sawOf = (r: Sawed): Saw => ({ folding: r.folding, view: coords(r.ps) });
 const msg = (mem: Mem, i: number, hole: number): Msg => {
   const p = part(mem, { i, l: 0 }, hole);
   return { $: "Msg", built: p.built, size: p.size, ups: p.ups };
 };
 
-// gist §5.2's fit: as long as the view is over budget, the most due built pair becomes its parent
-export const fit = (mem: Mem, hole: number) => coords(kernel.fit(mem.root.length, mem.budget, parts(mem, hole)));
+// One batch's merges (docs/optchat.md §3.2): as long as `view` is over `budget`, its most due
+// built pair becomes its parent
+export const fit = (mem: Mem, view: readonly Coord[], budget: number, hole: number) =>
+  coords(kernel.fit(mem.root.length, budget, parts(mem, view, hole)));
 
-// message T - 1 just arrived: its line goes at the end, then fit
-export const append = (mem: Mem, hole: number) => {
-  const T = mem.root.length - 1;
-  return coords(kernel.append(T, mem.budget, parts(mem, hole), msg(mem, T, hole)));
-};
+// Message `i` (the newest, unless a saved view is catching up) arrives: its line goes at the end of
+// `at`'s view, then the sawtooth at `marks`. Only past `marks.high`, or with a batch owed, does
+// anything merge: in between the view only grows at its end (docs/optchat.md §3.3).
+export const append = (mem: Mem, at: Saw, marks: Marks, hole: number, i = mem.root.length - 1) =>
+  sawOf(kernel.append(i, marks.high, marks.low, at.folding, parts(mem, at.view, hole), msg(mem, i, hole)));
 
-// at load (gist §5.2): the view built up again from message 0, with the tree as it is today
-export const refold = (mem: Mem, hole: number) =>
-  coords(kernel.refold(mem.budget, list(mem.root.map((m) => msg(mem, m.i, hole)))));
+// A saved view of the messages before `from`, the rest of the log appended: the first message
+// as append does, the others as the rebuild does (fast while a batch is owed and stuck)
+export const extend = (mem: Mem, at: Saw, marks: Marks, hole: number, from: number) =>
+  sawOf(
+    kernel.extend(from, marks.high, marks.low, { $: "Saw", folding: at.folding, ps: parts(mem, at.view, hole) }, list(mem.root.slice(from).map((m) => msg(mem, m.i, hole)))),
+  );
+
+// the view rebuilt from message 0 with the tree as it is today: for a data dir with no saved
+// view, or a damaged one (docs/optchat.md §3.2: never otherwise, since a rebuilt view differs from the live one)
+export const refold = (mem: Mem, marks: Marks, hole: number) =>
+  sawOf(kernel.refold(marks.high, marks.low, list(mem.root.map((m) => msg(mem, m.i, hole)))));
 
 // a view line as kernel.first reads it: where it starts and whether it is built. first never
 // looks at a line's size or ancestors, so they stay empty instead of being looked up.
 const bare = (mem: Mem, c: Coord): Part => ({ $: "Part", built: built(mem, c), i: c.i, l: c.l, size: 0, ups: nil });
 
-// the first message whose view line is unbuilt, else T (gist §4.1)
+// the first message whose view line is unbuilt, else T (rule 3, SPEC E25)
 export const first = (mem: Mem): number =>
   Number(kernel.first(mem.root.length, list(mem.view.map((c) => bare(mem, c)))));
 
-// the nodes rule 3 lets the pump start, in its order: level by level, oldest first (gist §4.1)
+// the nodes rule 3 lets the pump start, in its order: level by level, oldest first (rule 3, SPEC E25)
 export function offers(mem: Mem): Coord[] {
   const levels: boolean[][] = [];
   for (const c of nodes(mem.root.length)) (levels[c.l] ??= []).push(built(mem, c));
@@ -77,7 +88,7 @@ export function offers(mem: Mem): Coord[] {
   return found.toReversed().map((c) => ({ i: Number(c.i), l: Number(c.l) }));
 }
 
-// the node named id+n in a chat of T messages, or null (gist §7.1); integers only. A node past
+// the node named id+n in a chat of T messages, or null (docs/optchat.md §2, §6); integers only. A node past
 // the end is no node, and is never handed to the kernel (its Nats stop at 2^48).
 export function address(id: number, n: number, count: number): Coord | null {
   const whole = [id, n].every((x) => Number.isSafeInteger(x));

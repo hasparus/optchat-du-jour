@@ -55,7 +55,7 @@ export const apiRoutes = (
       "/api/view",
       Effect.suspend(() =>
         HttpServerResponse.schemaJson(View)({
-          budget: mem.budget,
+          budget: mem.marks.high,
           lines: mem.view.map((c) => {
             const node = getNode(mem, c);
             const { n, id } = span(c);

@@ -1,8 +1,8 @@
 # The laws, in LAWS.bend's words, from the lemmas the other proof files
 # prove in the kernel's (kspec.bend): the kernel's start and pow2 are
 # Start and Width, its mergeable check is Siblings, its merge is Merged,
-# its size is Total, and its tail-recursive walks are their structural
-# forms.
+# its size is Total, its snoc is Snoc, and its tail-recursive walks are
+# their structural forms.
 
 import Base
 import ./kernel.bend as K
@@ -13,6 +13,7 @@ import ./lemmas_fold.bend as F
 import ./proofs_addr.bend as PA
 import ./proofs_fold.bend as PF
 import ./proofs_rule3.bend as PR
+import ./proofs_saw.bend as PS
 
 # Addressing (law 2)
 # ------------------
@@ -287,8 +288,8 @@ def Laws.fit_within(T, budget, ps):
 def Laws.tiles_fit(T, budget, ps):
   t => tiles_laws(K.fit(T, budget, ps), 0n, T, PF.tiles_fit_k(T, budget, ps)(tiles_ks(ps, 0n, T, t)))
 
-# Appends and the refold (law 1)
-# ------------------------------
+# Appends and the rebuild (law 1)
+# -------------------------------
 
 def AppS(xs: List<&2, K.Part>, ys: List<&2, K.Part>) -> List<&2, K.Part>:
   match xs:
@@ -347,65 +348,146 @@ def tiles_snoc_k(+ps: List<&2, K.Part>, +T: Nat, +s: Nat, +b: Bool, +ups: List<&
   %Equal.sym(List<&2, K.Part>, K.snoc(ps, K.Part{0n, T, s, b, ups}), KS.snoc_s(ps, K.Part{0n, T, s, b, ups}), snoc_eq(ps, K.Part{0n, T, s, b, ups})) : KS.Tiles(_, 0n, 1n+T)
   PF.tiles_snoc(ps, 0n, T, s, b, ups, t)
 
-def Laws.tiles_append(T, budget, ps, m):
+def snoc_s_laws(ps: List<&2, K.Part>, -p: K.Part) -> {KS.snoc_s(ps, p) == Laws.Snoc(ps, p) : List<&2, K.Part>}:
+  match ps:
+    case Nil{}:
+      {==}
+    case Con{+h, t}:
+      %snoc_s_laws(t, p) : {h <> KS.snoc_s(t, p) == h <> _ : List<&2, K.Part>}
+      {==}
+
+# the kernel's snoc is LAWS.bend's
+def snoc_laws(+ps: List<&2, K.Part>, +p: K.Part) -> {K.snoc(ps, p) == Laws.Snoc(ps, p) : List<&2, K.Part>}:
+  Equal.trans(List<&2, K.Part>, K.snoc(ps, p), KS.snoc_s(ps, p), Laws.Snoc(ps, p), snoc_eq(ps, p), snoc_s_laws(ps, p))
+
+def Laws.tiles_append(T, high, low, folding, ps, m):
   match m:
     case K.Msg{+s, +b, +ups}:
-      t => Laws.tiles_fit(1n+T, budget, K.snoc(ps, K.Part{0n, T, s, b, ups}))(tiles_laws(K.snoc(ps, K.Part{0n, T, s, b, ups}), 0n, 1n+T,
-        tiles_snoc_k(ps, T, s, b, ups, tiles_ks(ps, 0n, T, t))))
+      t => tiles_laws(Laws.ViewOf(K.saw(1n+T, high, low, folding, K.snoc(ps, K.Part{0n, T, s, b, ups}))), 0n, 1n+T,
+        PS.tiles_saw_k(1n+T, high, low, folding, K.snoc(ps, K.Part{0n, T, s, b, ups}))(tiles_snoc_k(ps, T, s, b, ups, tiles_ks(ps, 0n, T, t))))
+
+# The sawtooth (laws 3 and 4)
+# ---------------------------
+
+def Laws.saw_merges(T, high, low, folding, ps):
+  merges_of(ps, Laws.ViewOf(K.saw(T, high, low, folding, ps)), PS.saw_merges_k(T, high, low, folding, ps))
+
+def Laws.append_merges(T, high, low, folding, ps, m):
+  match m:
+    case K.Msg{+s, +b, +ups}:
+      %snoc_laws(ps, K.Part{0n, T, s, b, ups}) : (&n: Nat -> Laws.Merges(n, _, Laws.ViewOf(K.saw(1n+T, high, low, folding, K.snoc(ps, K.Part{0n, T, s, b, ups})))))
+      merges_of(K.snoc(ps, K.Part{0n, T, s, b, ups}), Laws.ViewOf(K.saw(1n+T, high, low, folding, K.snoc(ps, K.Part{0n, T, s, b, ups}))),
+        PS.saw_merges_k(1n+T, high, low, folding, K.snoc(ps, K.Part{0n, T, s, b, ups})))
+
+# within high and owing nothing, saw.go is asked False and answers the view
+def Laws.saw_within(T, high, low, ps):
+  h =>
+    %Equal.sym(Bool, Nat.is_gt(K.size(ps), high), False{}, within_k(ps, high, h)) : {K.saw.go(_, T, low, ps) == K.Saw{ps, False{}} : K.Saw}
+    {==}
+
+def Laws.append_grows(T, high, low, ps, m):
+  match m:
+    case K.Msg{+s, +b, +ups}:
+      h =>
+        %Equal.sym(List<&2, K.Part>, K.snoc(ps, K.Part{0n, T, s, b, ups}), Laws.Snoc(ps, K.Part{0n, T, s, b, ups}), snoc_laws(ps, K.Part{0n, T, s, b, ups}))
+          : {K.saw(1n+T, high, low, False{}, _) == K.Saw{Laws.Snoc(ps, K.Part{0n, T, s, b, ups}), False{}} : K.Saw}
+        Laws.saw_within(1n+T, high, low, Laws.Snoc(ps, K.Part{0n, T, s, b, ups}))(h)
+
+def folding_laws(+ps: List<&2, K.Part>, -low: Nat, -f: Bool, e: {f == Nat.is_gt(K.size(ps), low) : Bool})
+  -> {f == Nat.is_gt(Laws.Total(ps), low) : Bool}:
+  %size_total(ps) : {f == Nat.is_gt(_, low) : Bool}
+  e
+
+def batched_laws(-low: Nat, r: K.Saw, b: PS.Batched(low, r)) -> Laws.Batched(low, r):
+  match r:
+    case K.Saw{+ps, f}:
+      (fi, e) = b
+      (fits_laws(low, ps, fi), folding_laws(ps, low, f, e))
+
+def due_ks(+folding: Bool, +ps: List<&2, K.Part>, -high: Nat, h: {Bool.or(folding, Nat.is_gt(Laws.Total(ps), high)) == True{} : Bool})
+  -> {Bool.or(folding, Nat.is_gt(K.size(ps), high)) == True{} : Bool}:
+  %Equal.sym(Nat, K.size(ps), Laws.Total(ps), size_total(ps)) : {Bool.or(folding, Nat.is_gt(_, high)) == True{} : Bool}
+  h
+
+def Laws.saw_batch(T, high, low, folding, ps):
+  h => batched_laws(low, K.saw(T, high, low, folding, ps), PS.saw_batch_k(T, high, low, folding, ps, due_ks(folding, ps, high, h)))
 
 # what refold carries tiles [0, T) once turned the right way round
 def FoldTiles(f: K.Fold, T: Nat) -> Type:
   K.Fold{rev, _, _} = f
   KS.Tiles(K.rev_onto(rev, Nil{}), 0n, T)
 
-def fit_tiles(+T: Nat, +budget: Nat, +ps: List<&2, K.Part>, t: KS.Tiles(ps, 0n, T)) -> FoldTiles(K.fold.fit(T, budget, ps), T):
-  %Equal.sym(List<&2, K.Part>, K.rev_onto(K.rev_onto(K.fit(T, budget, ps), Nil{}), Nil{}), K.fit(T, budget, ps), reverse_twice(K.fit(T, budget, ps))) : KS.Tiles(_, 0n, T)
-  PF.tiles_fit_k(T, budget, ps)(t)
+def batch_tiles(+T: Nat, +low: Nat, +ps: List<&2, K.Part>, t: KS.Tiles(ps, 0n, T)) -> FoldTiles(K.fold.batch(T, low, ps), T):
+  %Equal.sym(List<&2, K.Part>, K.rev_onto(K.rev_onto(K.fit(T, low, ps), Nil{}), Nil{}), K.fit(T, low, ps), reverse_twice(K.fit(T, low, ps))) : KS.Tiles(_, 0n, T)
+  PF.tiles_fit_k(T, low, ps)(t)
 
-def decide_tiles(fits: Bool, +T: Nat, +budget: Nat, +rev: List<&2, K.Part>, -n: Nat, -stuck: Bool,
-  t: KS.Tiles(K.rev_onto(rev, Nil{}), 0n, T)) -> FoldTiles(K.fold.decide(fits, T, budget, rev, n, stuck), T):
-  match fits:
+def decide_tiles(skip: Bool, +T: Nat, +low: Nat, +rev: List<&2, K.Part>, -n: Nat, -folding: Bool,
+  t: KS.Tiles(K.rev_onto(rev, Nil{}), 0n, T)) -> FoldTiles(K.fold.decide(skip, T, low, rev, n, folding), T):
+  match skip:
     case True{}:
       t
     case False{}:
-      fit_tiles(T, budget, K.rev_onto(rev, Nil{}), t)
+      batch_tiles(T, low, K.rev_onto(rev, Nil{}), t)
 
 def pushed_tiles(+rev: List<&2, K.Part>, +T: Nat, +s: Nat, +b: Bool, +ups: List<&2, Nat>, t: KS.Tiles(K.rev_onto(rev, Nil{}), 0n, T))
   -> KS.Tiles(K.rev_onto(K.Part{0n, T, s, b, ups} <> rev, Nil{}), 0n, 1n+T):
   %Equal.sym(List<&2, K.Part>, K.rev_onto(K.Part{0n, T, s, b, ups} <> rev, Nil{}), KS.snoc_s(K.rev_onto(rev, Nil{}), K.Part{0n, T, s, b, ups}), push_end(rev, K.Part{0n, T, s, b, ups})) : KS.Tiles(_, 0n, 1n+T)
   PF.tiles_snoc(K.rev_onto(rev, Nil{}), 0n, T, s, b, ups, t)
 
-def push_tiles(+T: Nat, +budget: Nat, f: K.Fold, m: K.Msg, t: FoldTiles(f, T)) -> FoldTiles(K.fold.push(T, budget, f, m), 1n+T):
+def push_tiles(+T: Nat, +high: Nat, +low: Nat, f: K.Fold, m: K.Msg, t: FoldTiles(f, T)) -> FoldTiles(K.fold.push(T, high, low, f, m), 1n+T):
   match f m:
-    case K.Fold{+rev, n, stuck} K.Msg{+s, +b, +ups}:
+    case K.Fold{+rev, +n, +folding} K.Msg{+s, +b, +ups}:
       decide_tiles(
-        Bool.or(Nat.is_le(Nat.add(n, s), budget), Bool.and(stuck, Bool.not(K.pairs_with(rev, K.Part{0n, T, s, b, ups})))),
-        1n+T, budget, K.Part{0n, T, s, b, ups} <> rev, Nat.add(n, s),
-        Bool.and(stuck, Bool.not(K.pairs_with(rev, K.Part{0n, T, s, b, ups}))),
+        Bool.or(Bool.and(Bool.not(folding), Nat.is_le(Nat.add(n, s), high)), Bool.and(folding, Bool.not(K.pairs_with(rev, K.Part{0n, T, s, b, ups})))),
+        1n+T, low, K.Part{0n, T, s, b, ups} <> rev, Nat.add(n, s), folding,
         pushed_tiles(rev, T, s, b, ups, t))
 
-def refold_tiles(+ms: List<&2, K.Msg>, +budget: Nat, +T: Nat, +f: K.Fold, t: FoldTiles(f, T))
-  -> FoldTiles(K.refold.go(ms, budget, T, f), Nat.add(Laws.Len(K.Msg, ms), T)):
+def refold_tiles(+ms: List<&2, K.Msg>, +high: Nat, +low: Nat, +T: Nat, +f: K.Fold, t: FoldTiles(f, T))
+  -> FoldTiles(K.refold.go(ms, high, low, T, f), Nat.add(Laws.Len(K.Msg, ms), T)):
   match ms:
     case Nil{}:
       t
     case Con{+m, +rest}:
       %Equal.sym(Nat, 1n+Nat.add(Laws.Len(K.Msg, rest), T), Nat.add(Laws.Len(K.Msg, rest), 1n+T), F.add_succ_r(Laws.Len(K.Msg, rest), T))
-        : FoldTiles(K.refold.go(rest, budget, 1n+T, K.fold.push(T, budget, f, m)), _)
-      refold_tiles(rest, budget, 1n+T, K.fold.push(T, budget, f, m), push_tiles(T, budget, f, m, t))
+        : FoldTiles(K.refold.go(rest, high, low, 1n+T, K.fold.push(T, high, low, f, m)), _)
+      refold_tiles(rest, high, low, 1n+T, K.fold.push(T, high, low, f, m), push_tiles(T, high, low, f, m, t))
 
-def end_tiles(f: K.Fold, -T: Nat, t: FoldTiles(f, T)) -> KS.Tiles(K.refold.end(f), 0n, T):
+def end_tiles(f: K.Fold, -T: Nat, t: FoldTiles(f, T)) -> KS.Tiles(Laws.ViewOf(K.refold.end(f)), 0n, T):
   match f:
-    case K.Fold{rev, n, stuck}:
+    case K.Fold{rev, n, folding}:
       t
 
-def refold_ks(+budget: Nat, +ms: List<&2, K.Msg>) -> KS.Tiles(K.refold(budget, ms), 0n, Laws.Len(K.Msg, ms)):
-  %F.add_zero_r(Laws.Len(K.Msg, ms)) : KS.Tiles(K.refold(budget, ms), 0n, _)
-  end_tiles(K.refold.go(ms, budget, 0n, K.Fold{Nil{}, 0n, True{}}), Nat.add(Laws.Len(K.Msg, ms), 0n),
-    refold_tiles(ms, budget, 0n, K.Fold{Nil{}, 0n, True{}}, {==}))
+def refold_ks(+high: Nat, +low: Nat, +ms: List<&2, K.Msg>) -> KS.Tiles(Laws.ViewOf(K.refold(high, low, ms)), 0n, Laws.Len(K.Msg, ms)):
+  %F.add_zero_r(Laws.Len(K.Msg, ms)) : KS.Tiles(Laws.ViewOf(K.refold(high, low, ms)), 0n, _)
+  end_tiles(K.refold.go(ms, high, low, 0n, K.Fold{Nil{}, 0n, False{}}), Nat.add(Laws.Len(K.Msg, ms), 0n),
+    refold_tiles(ms, high, low, 0n, K.Fold{Nil{}, 0n, False{}}, {==}))
 
-def Laws.tiles_refold(budget, ms):
-  tiles_laws(K.refold(budget, ms), 0n, Laws.Len(K.Msg, ms), refold_ks(budget, ms))
+# a saved view's tiling carries over: its first new message as append,
+# the rest as the rebuild
+def of_tiles(+ps: List<&2, K.Part>, -folding: Bool, -T: Nat, t: KS.Tiles(ps, 0n, T)) -> FoldTiles(K.fold.of(K.Saw{ps, folding}), T):
+  %Equal.sym(List<&2, K.Part>, K.rev_onto(K.rev_onto(ps, Nil{}), Nil{}), ps, reverse_twice(ps)) : KS.Tiles(_, 0n, T)
+  t
+
+def saw_tiles(+r: K.Saw, -T: Nat, t: KS.Tiles(Laws.ViewOf(r), 0n, T)) -> FoldTiles(K.fold.of(r), T):
+  match r:
+    case K.Saw{+ps, folding}:
+      of_tiles(ps, folding, T, t)
+
+def Laws.tiles_extend(T, high, low, ps, folding, ms):
+  match ms:
+    case Nil{}:
+      t => t
+    case Con{+m, +rest}:
+      t =>
+        %Equal.sym(Nat, 1n+Nat.add(Laws.Len(K.Msg, rest), T), Nat.add(Laws.Len(K.Msg, rest), 1n+T), F.add_succ_r(Laws.Len(K.Msg, rest), T))
+          : Laws.Tiles(Laws.ViewOf(K.extend(T, high, low, K.Saw{ps, folding}, m <> rest)), 0n, _)
+        tiles_laws(Laws.ViewOf(K.refold.end(K.refold.go(rest, high, low, 1n+T, K.fold.of(K.append(T, high, low, folding, ps, m))))), 0n, Nat.add(Laws.Len(K.Msg, rest), 1n+T),
+          end_tiles(K.refold.go(rest, high, low, 1n+T, K.fold.of(K.append(T, high, low, folding, ps, m))), Nat.add(Laws.Len(K.Msg, rest), 1n+T),
+            refold_tiles(rest, high, low, 1n+T, K.fold.of(K.append(T, high, low, folding, ps, m)),
+              saw_tiles(K.append(T, high, low, folding, ps, m), 1n+T, tiles_ks(Laws.ViewOf(K.append(T, high, low, folding, ps, m)), 0n, 1n+T, Laws.tiles_append(T, high, low, folding, ps, m)(t))))))
+
+def Laws.tiles_refold(high, low, ms):
+  tiles_laws(Laws.ViewOf(K.refold(high, low, ms)), 0n, Laws.Len(K.Msg, ms), refold_ks(high, low, ms))
 
 # first, structurally (law 5)
 # ---------------------------

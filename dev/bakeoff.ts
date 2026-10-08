@@ -62,7 +62,7 @@ export function parseContender(spec: string): Contender {
 export const readSource = (path: string, n: number, skip = 0) =>
   Effect.gen(function* () {
     if (statSync(path).isDirectory()) {
-      const { mem } = yield* loadChat(path, { repair: false, view: false });
+      const { mem } = yield* loadChat(path, { view: false, writer: false });
       return mem.root.slice(skip, skip + n).map((m): Message => ({ kind: m.kind, text: m.text }));
     }
     return parseOptmem(readFileSync(path, "utf8"))
@@ -89,14 +89,14 @@ const CurrentNode = Context.Reference<string | null>("bakeoff/CurrentNode", { de
 const unbuiltOf = (mem: Mem) => [...nodes(mem.root.length)].filter((c) => !built(mem, c)).map((c) => `${c.l}.${c.i}`);
 
 // One contender: log each message as a live chat would, wait until the view is summarized (a
-// turn waits for that too, gist §6), then let the pump finish every node. At the deadline it
-// stops where it is and says what is left: a failing engine retries forever (gist rule 3).
+// turn waits for that too, docs/optchat.md §6), then let the pump finish every node. At the deadline it
+// stops where it is and says what is left: a failing engine retries forever (rule 3, SPEC "Storage, tree, view and compactor ordering").
 export const replay = <R>(o: {
   readonly contender: Contender;
   readonly messages: readonly Message[];
   readonly summarizeFor: (contender: Contender, log: (r: UsageRecord) => Effect.Effect<void>, report: (m: string) => Effect.Effect<void>) => Effect.Effect<Summarize, never, R>;
   readonly poll?: Duration.Input;
-  readonly budget?: number; // a smaller view than VIEW, to make a short replay fold
+  readonly budget?: number; // a smaller view than VIEW_HIGH (folded to half of it), to make a short replay fold
   readonly deadline?: Duration.Input; // 2 hours
   readonly retry?: Duration.Input; // the pump's, RETRY
 }) =>
@@ -113,7 +113,7 @@ export const replay = <R>(o: {
         });
       const summarize = yield* o.summarizeFor(o.contender, log, report);
       const chat = yield* openChat(dir, {
-        budget: o.budget,
+        marks: o.budget === undefined ? undefined : { high: o.budget, low: Math.floor(o.budget / 2) },
         report,
         retry: o.retry,
         summarize: (job) => summarize(job).pipe(Effect.provideService(CurrentNode, `${job.l}.${job.i}`)),
@@ -221,7 +221,7 @@ export function wordsKept(mem: Mem, levels: readonly number[] = [0, 2, 3], kinds
   });
 }
 
-// over NODE after every try: kept anyway (gist §4.3), but worth counting
+// over NODE after every try: kept anyway (docs/optchat.md §4 "The size"), but worth counting
 export const overLimit = (mem: Mem) => [...mem.tree.values()].filter((n) => n.size > NODE).length;
 
 // ---------------------------------------------------------------------------------------------

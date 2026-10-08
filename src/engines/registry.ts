@@ -40,7 +40,7 @@ export type EngineNeeds = {
 // a compactor engine's needs: compactor calls run on the server's own machine, named in their usage records
 export type CompactorNeeds = EngineNeeds & { readonly device?: string; readonly runner: Runner["Service"] };
 
-// a turn engine's needs: the one system prompt (gist §7.2), where each device's claude runs (E7),
+// a turn engine's needs: the one system prompt (docs/optchat.md §5), where each device's claude runs (E7),
 // and the read-only tools of an engine with its own loop (M5)
 export type TurnNeeds = EngineNeeds & {
   readonly warms: () => boolean; // the warm processes follow it: it ran the most recent turn, or heads the chain before any (E18)

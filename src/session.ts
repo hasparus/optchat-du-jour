@@ -150,7 +150,7 @@ export const makeSession = (o: {
 
 
     const state = (): SessionState => ({
-      budget: chat.mem.budget,
+      budget: chat.mem.marks.high,
       device,
       down: o.compactorDown?.now() ?? [],
       engine,
@@ -243,7 +243,7 @@ export const makeSession = (o: {
           }),
         ),
       );
-    // these messages, in order, logged unanswered (gist §7: nothing is lost)
+    // these messages, in order, logged unanswered (docs/optchat.md §6: nothing is lost)
     const logEach = (ms: readonly Incoming[]) => captioned(ms).pipe(Effect.andThen(Effect.forEach(ms, (m) => logMessage(m, null, null), { discard: true })));
 
     // live reply text: buffered for clients that join mid-reply, each delta with its place in it
@@ -444,7 +444,7 @@ export const makeSession = (o: {
         device = on;
         for (const m of batch) m.state = "picked";
         yield* captioned(batch);
-        const view = render(chat.mem); // BEFORE the new messages are logged (gist §7)
+        const view = render(chat.mem); // BEFORE the new messages are logged (docs/optchat.md §6)
         yield* enter("running");
         let runId = yield* logQueued(batch, on); // a resumed run gets one of its own (`stall`)
         const since = chat.mem.root.length; // what this turn's engines log starts here
@@ -546,7 +546,7 @@ export const makeSession = (o: {
     });
 
     // The loop ended early: a cancel (an interrupt only), a store error or a defect. Nothing sent
-    // is lost (gist §7). What the call never took goes back to the inbox; after a cancel or a
+    // is lost (docs/optchat.md §6). What the call never took goes back to the inbox; after a cancel or a
     // defect everything there is logged unanswered, and whatever the log refuses stays there.
     // After an error the loop waits for a newer message: a defect that comes before the messages
     // are logged would otherwise start it again at once, forever.

@@ -7,7 +7,7 @@
 // carries an OpenAI API key (api-key engine), and function tools for our own tool loop (M5):
 // function_call items out, function_call_output items back in the next request.
 //
-// Caching, as gist §8 has it for the Responses API: `store: false`, every reasoning item asked for
+// Caching on the Responses API, as the gist's earlier revision had it (E26): `store: false`, every reasoning item asked for
 // with its encrypted content and sent back verbatim in the next request (a tool round, a size
 // retry), `reasoning.context: "all_turns"` so a message sent mid-run doesn't drop the earlier
 // reasoning from the prompt, and the same `prompt_cache_breakpoint` on the view's pieces in every
@@ -289,7 +289,7 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
       );
     // A model that refuses the breakpoints (a 400 naming the field) gets the same request again
     // without them, and none from then on, which the user hears once, rather than failing every
-    // call; gist §8's marks are then off for it.
+    // call; our marks are then off for it.
     const once = <E extends Tagged>(ask: Ask<E>, token: string) =>
       Effect.gen(function* () {
         const marked = !unmarked.has(ask.model);

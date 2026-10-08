@@ -185,7 +185,7 @@ test("a compactor call: four marked context pieces at the marks, the unmarked st
   expect(usage[0]).toMatchObject({ attempt: 1, engine: "claude-code", failoverFrom: null, level: 0, model: "sonnet", role: "compact" });
 });
 
-test("a line over 512 bytes is retried in the same call with the gist's text, and the shortest try is kept", async () => {
+test("a line over 512 bytes is retried in the same call with the earlier gist's text, and the shortest try is kept", async () => {
   const over = `${"x".repeat(511)}ä${"y".repeat(87)}`; // 600 bytes, with a character across the cut
   const tries = [over, "b".repeat(530), "c".repeat(700), "d".repeat(520), "e".repeat(560)];
   const f = scripted({ compact: [tries.map((t) => [{ text: t }]), [[{ text: over }], [{ text: "talk: short enough" }]]] });

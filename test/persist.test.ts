@@ -1,4 +1,4 @@
-// The data dir as its own git repo (gist §10, ref §10, E10): committed after a turn, pushed in the
+// The data dir as its own git repo (ref §10, E10): committed after a turn, pushed in the
 // background when a remote is configured, and a failed push is a message, never a failure.
 import { afterAll, expect, test } from "bun:test";
 import { Effect, Exit, Scope } from "effect";

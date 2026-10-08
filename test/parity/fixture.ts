@@ -127,13 +127,45 @@ export async function release(g: ReturnType<typeof gate>, caughtUp: () => boolea
   return true;
 }
 
-// the lagging replay itself, for either implementation; it prints the calls it saw, in order
-export async function replayLagging(o: { readonly log: (m: FixtureMsg) => Promise<void>; readonly caughtUp: () => boolean; readonly gate: ReturnType<typeof gate> }) {
+// Where the two replays part (SPEC "Parity test"): the reference still merges by the first
+// message at every message and node (E22), we by the last message in batches, so the views, and
+// with them the compactor's contexts, summaries and rule 3's order, agree only until the first
+// merge in either view. Before it every view is all level-0 lines, the same in both. `look` is
+// called after each step a driver takes; `split` is how many calls had started and nodes been
+// built at the last look that saw no merge yet.
+export type Split = { readonly calls: number; readonly nodes: number };
+export function watch(o: { readonly view: () => readonly { readonly l: number }[]; readonly nodes: () => number; readonly calls: () => number }) {
+  let split: Split = { calls: 0, nodes: 0 }, merged = false;
+  const look = () => {
+    if (merged) return;
+    if (o.view().some((c) => c.l > 0)) merged = true;
+    else split = { calls: o.calls(), nodes: o.nodes() };
+  };
+  return { look, split: () => split };
+}
+
+// what a driver prints: every call in order ("l:i/attempt"), and where the views parted
+export type Report = { readonly calls: readonly string[]; readonly split: Split };
+
+// the lagging replay itself, for either implementation
+export async function replayLagging(o: {
+  readonly log: (m: FixtureMsg) => Promise<void>;
+  readonly caughtUp: () => boolean;
+  readonly gate: ReturnType<typeof gate>;
+  readonly look: () => void;
+}) {
   for (const step of lagging()) {
     await settled(o.gate, o.caughtUp);
-    for (const m of step.batch) await o.log(m);
-    for (let c = 0; c < step.calls; c++) if (!(await release(o.gate, o.caughtUp))) break;
+    o.look();
+    for (const m of step.batch) {
+      await o.log(m);
+      o.look();
+    }
+    for (let c = 0; c < step.calls; c++) {
+      const more = await release(o.gate, o.caughtUp);
+      o.look();
+      if (!more) break;
+    }
   }
-  while (await release(o.gate, o.caughtUp));
-  console.log(JSON.stringify(o.gate.calls));
+  while (await release(o.gate, o.caughtUp)) o.look();
 }

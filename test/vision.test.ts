@@ -129,7 +129,7 @@ test("api-key turns send the picture: an Anthropic image block after the cached 
   expect(parts.map((p) => p.type)).toEqual(["input_text", "input_text", "input_image", "input_text"]);
   expect(parts[1]?.text).toBe("image 111111111111:");
   expect(parts[2]).toEqual({ detail: "auto", image_url: `data:image/jpeg;base64,${PIC.data}`, type: "input_image" });
-  // an API key's Responses requests are cached as the plan's are (gist §8); a one-piece view has no cut to mark
+  // an API key's Responses requests are cached as the plan's are (E26); a one-piece view has no cut to mark
   expect([asked.include, asked.reasoning.context]).toEqual([["reasoning.encrypted_content"], "all_turns"]);
   expect(openai.state.seen.at(-1)?.body).not.toContain("prompt_cache_breakpoint");
 });

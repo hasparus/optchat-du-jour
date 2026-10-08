@@ -59,7 +59,7 @@ export const SessionState = Schema.Struct({
   engine: Schema.NullOr(Schema.String), // the engine of the current turn
   waiting: Schema.Number, // view lines not summarized yet
   viewBytes: Schema.Number,
-  budget: Schema.Number,
+  budget: Schema.Number, // the view's high mark (VIEW_HIGH): past it, a batch folds it to VIEW_LOW
   messages: Schema.Number,
   // Every message the server holds and has not logged: waiting for a turn or for summaries, or
   // offered to the running call and not taken yet. `clientId`: the id its client sent it with;
@@ -103,7 +103,7 @@ export const logIndex = (id: string): number | null => {
   return digits === undefined ? null : Number(digits);
 };
 
-// gist §3 "Addressing": node (l, i) covers the messages [i·2^l, (i+1)·2^l), named `id+n`
+// docs/optchat.md §2: node (l, i) covers the messages [i·2^l, (i+1)·2^l), named `id+n`
 export const span = ({ l, i }: { readonly l: number; readonly i: number }) => {
   const n = 2 ** l;
   return { id: i * n, n };
@@ -131,6 +131,7 @@ export const ViewLine = Schema.Struct({
 export type ViewLine = typeof ViewLine.Type;
 
 // `text`: the view rendered as the model gets it
+// `budget`: the high mark, as in SessionState
 export const View = Schema.Struct({ budget: Schema.Number, lines: Schema.Array(ViewLine), size: Schema.Number, text: Schema.String });
 export type View = typeof View.Type;
 

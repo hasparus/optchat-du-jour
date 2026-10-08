@@ -1,4 +1,4 @@
-// zoom and date as the model reaches them: JSON-RPC over the /mcp handler (gist §7.1, ref §9, E8).
+// zoom and date as the model reaches them: JSON-RPC over the /mcp handler (docs/optchat.md §6, ref §9, E8).
 import { expect, test } from "bun:test";
 import { Effect, Schema } from "effect";
 import { handleMcp, type McpSeen, mcpConfig, mcpTransports, noAttached } from "../src/mcp.ts";

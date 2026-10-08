@@ -1,7 +1,8 @@
-# The fold kernel (SPEC E14): id+n addressing, the view's append and fit,
-# the refold at load, `first` and the pump's rule 3 (gist §3-§5). It never
-# sees text, only sizes in bytes, as Nats. LAWS.bend states what must hold;
-# PROOF.bend proves it. src/kernel.ts is the only caller.
+# The fold kernel (SPEC E14): id+n addressing, the view's merge order, its
+# sawtooth and the rebuild from the log, `first` and the pump's rule 3
+# (docs/optchat.md §2-§4). It never sees text, only sizes in bytes, as Nats. LAWS.bend
+# states what must hold; PROOF.bend proves it. src/kernel.ts is the only
+# caller.
 #
 # Comparisons the proofs rely on are computed, then checked with is_eq:
 # a check that holds hands the proof an equation, and nothing here divides
@@ -82,7 +83,7 @@ def coords.at(+id: Nat, +n: Nat, +T: Nat, ml: Maybe<&2, Nat>) -> Maybe<&2, Coord
       coords.check(ok, l, i)
 
 # the node named id+n in a chat of T messages: n a power of two, id a
-# multiple of n, id + n <= T (gist §3 "Addressing"). log2 needs at most
+# multiple of n, id + n <= T (docs/optchat.md §2). log2 needs at most
 # n + 1 steps, since 2^n > n.
 def coords(+id: Nat, +n: Nat, +T: Nat) -> Maybe<&2, Coord>:
   coords.at(id, n, T, log2(1n+n, Below{0n}, n))
@@ -147,16 +148,28 @@ def parent(a: Part) -> Part:
     case Con{u, us}:
       Part{1n+l, Nat.div(i, 2n), u, True{}, us}
 
-# The most due mergeable pair so far: its index k, the start and level of
-# its left line. due = (T - start) / 2^(l+2) (gist §5.2); one pair is more
-# due than another when (T - s1) * 2^l2 > (T - s2) * 2^l1, so no division.
+# The most due mergeable pair so far: its index k, the end e of the pair
+# (one past its last message) and the level l of its lines.
 type Best is Data:
-  Best{k: Nat, s: Nat, l: Nat}
+  Best{k: Nat, e: Nat, l: Nat}
 
+# Due is measured from the pair's LAST message (docs/optchat.md §3.2, §7 mistake 1):
+#
+#   due = (T - last) / 2^l,  last = e - 1,  so  due = (1 + T - e) / 2^l
+#
+# how long ago the pair ended, in its own line size. A pair lies inside the
+# view, which tiles [0, T), so e <= T and 1 + T - e >= 1: the Nat
+# subtraction never clips. (docs/optchat.md's code writes it (T + 1)/2^l - i, the
+# same number shifted by 2: e = (i + 2) * 2^l.)
+#
+# a is more due than b when (1 + T - ea) / 2^la > (1 + T - eb) / 2^lb.
+# Multiplying both sides by 2^la * 2^lb > 0 keeps the order and clears both
+# divisions: (1 + T - ea) * 2^lb > (1 + T - eb) * 2^la. Equal pairs are not
+# more due than each other, so the scan below keeps the oldest.
 def more_due(+T: Nat, a: Best, b: Best) -> Bool:
-  Best{_, sa, +la} = a
-  Best{_, sb, +lb} = b
-  Nat.is_gt(Nat.mul(Nat.sub(T, sa), pow2(lb)), Nat.mul(Nat.sub(T, sb), pow2(la)))
+  Best{_, ea, +la} = a
+  Best{_, eb, +lb} = b
+  Nat.is_gt(Nat.mul(Nat.sub(1n+T, ea), pow2(lb)), Nat.mul(Nat.sub(1n+T, eb), pow2(la)))
 
 def choose.vs(win: Bool, cand: Best, cur: Best) -> Maybe<&2, Best>:
   match win:
@@ -178,7 +191,7 @@ def choose(+T: Nat, ok: Bool, +cand: Best, acc: Maybe<&2, Best>) -> Maybe<&2, Be
 
 def pick(+T: Nat, +a: Part, +b: Part, k: Nat, acc: Maybe<&2, Best>) -> Maybe<&2, Best>:
   Part{+l, i, _, _, _} = a
-  choose(T, mergeable(a, b), Best{k, start(l, i), l}, acc)
+  choose(T, mergeable(a, b), Best{k, start(l, 2n+i), l}, acc)
 
 # the most due mergeable pair, ties to the leftmost; k is the index of ps's
 # first line
@@ -259,7 +272,7 @@ def length(ps: List<&2, Part>, acc: Nat) -> Nat:
     case Con{_, rest}:
       length(rest, 1n+acc)
 
-# merge the most due built pair while over budget (gist §5.2). Every merge
+# merge the most due built pair while over budget (docs/optchat.md §3.2). Every merge
 # shortens the view by one, so its length plus one steps always suffice.
 def fit(+T: Nat, +budget: Nat, +ps: List<&2, Part>) -> List<&2, Part>:
   fit.go(1n+length(ps, 0n), More{ps}, T, budget)
@@ -267,20 +280,57 @@ def fit(+T: Nat, +budget: Nat, +ps: List<&2, Part>) -> List<&2, Part>:
 def snoc(ps: List<&2, Part>, p: Part) -> List<&2, Part>:
   rev_onto(rev_onto(ps, Nil{}), [p])
 
-# message T arrives: its line (0, T) goes at the end, then fit with T + 1
-# messages
-def append(+T: Nat, +budget: Nat, ps: List<&2, Part>, m: Msg) -> List<&2, Part>:
-  Msg{s, b, ups} = m
-  fit(1n+T, budget, snoc(ps, Part{0n, T, s, b, ups}))
+# The sawtooth (docs/optchat.md §3.2 "When", §7 mistake 2)
+# -------------------------------------------------------
+# The view, and whether a batch is still owed: the last one stopped over
+# low because the parents it needed were not built yet. high and low are
+# parameters: the turns' view runs 128 KB down to 64 KB, and a compaction
+# view can run its own sawtooth at other marks.
+type Saw is Data:
+  Saw{ps: List<&2, Part>, folding: Bool}
 
-# What refold carries from one message to the next: the view newest first
-# (so a new line costs nothing), its size, and whether no pair in it can
-# merge. A view within budget, or stuck with nothing to merge and no new
-# pair, is what fit would leave unchanged, so fit is skipped: after a big
-# import the view waits on a long backlog, and scanning it on every message
-# would make the refold quadratic.
+# one batch: the most due built pairs merge until the view is at most low
+# or nothing can merge; ending over low, it owes the rest
+def batch(+T: Nat, +low: Nat, +ps: List<&2, Part>) -> Saw:
+  +fitted = fit(T, low, ps)
+  Saw{fitted, Nat.is_gt(size(fitted), low)}
+
+def saw.go(due: Bool, +T: Nat, +low: Nat, +ps: List<&2, Part>) -> Saw:
+  match due:
+    case True{}:
+      batch(T, low, ps)
+    case False{}:
+      Saw{ps, False{}}
+
+# a view past high, or one a batch still owes, merges down to low; any
+# other view stays as it is, so between batches it only grows at its end
+# and the prompt cache keeps all of it (docs/optchat.md §3.3)
+def saw(+T: Nat, +high: Nat, +low: Nat, folding: Bool, +ps: List<&2, Part>) -> Saw:
+  saw.go(folding || Nat.is_gt(size(ps), high), T, low, ps)
+
+# message T arrives: its line (0, T) goes at the end, then the sawtooth
+# with T + 1 messages
+def append(+T: Nat, +high: Nat, +low: Nat, folding: Bool, ps: List<&2, Part>, m: Msg) -> Saw:
+  Msg{s, b, ups} = m
+  saw(1n+T, high, low, folding, snoc(ps, Part{0n, T, s, b, ups}))
+
+# The rebuild
+# -----------
+# The view is saved and loaded, never rebuilt (docs/optchat.md §3.2, §7 mistake 3);
+# this is for a data dir with no saved view, or a damaged one. It appends
+# every message as append does, against today's tree.
+#
+# What it carries from one message to the next: the view newest first (so
+# a new line costs nothing), its size, and whether a batch is owed. Two
+# kinds of message skip the batch, since it would leave the view as it is:
+# one that keeps an owing-nothing view within high, and one that comes
+# while a batch is owed and makes no new pair with the newest line. The
+# tree does not change during a rebuild, so a batch that ended over low
+# left no pair to merge (fit_fits), and only the new line can make one.
+# After a big import the view waits on a long backlog, and scanning it on
+# every message would make the rebuild quadratic.
 type Fold is Data:
-  Fold{rev: List<&2, Part>, size: Nat, stuck: Bool}
+  Fold{rev: List<&2, Part>, size: Nat, folding: Bool}
 
 # the newest line of the view and p are a pair that can merge
 def pairs_with(rev: List<&2, Part>, +p: Part) -> Bool:
@@ -290,41 +340,58 @@ def pairs_with(rev: List<&2, Part>, +p: Part) -> Bool:
     case Con{q, _}:
       mergeable(q, p)
 
-def fold.fit(+T: Nat, +budget: Nat, ps: List<&2, Part>) -> Fold:
-  +fitted = fit(T, budget, ps)
+def fold.batch(+T: Nat, +low: Nat, ps: List<&2, Part>) -> Fold:
+  +fitted = fit(T, low, ps)
   +n = size(fitted)
-  Fold{rev_onto(fitted, Nil{}), n, Nat.is_gt(n, budget)}
+  Fold{rev_onto(fitted, Nil{}), n, Nat.is_gt(n, low)}
 
-def fold.decide(fits: Bool, +T: Nat, +budget: Nat, rev: List<&2, Part>, n: Nat, stuck: Bool) -> Fold:
-  match fits:
+def fold.decide(skip: Bool, +T: Nat, +low: Nat, rev: List<&2, Part>, n: Nat, folding: Bool) -> Fold:
+  match skip:
     case True{}:
-      Fold{rev, n, stuck}
+      Fold{rev, n, folding}
     case False{}:
-      fold.fit(T, budget, rev_onto(rev, Nil{}))
+      fold.batch(T, low, rev_onto(rev, Nil{}))
 
 # message T arrives; T + 1 messages afterwards
-def fold.push(+T: Nat, +budget: Nat, f: Fold, m: Msg) -> Fold:
-  Fold{+rev, n, stuck} = f
+def fold.push(+T: Nat, +high: Nat, +low: Nat, f: Fold, m: Msg) -> Fold:
+  Fold{+rev, n, +folding} = f
   Msg{+s, b, ups} = m
   +p = {Part{0n, T, s, b, ups} : Part}
-  +stuck2 = stuck && Bool.not(pairs_with(rev, p))
   +n2 = Nat.add(n, s)
-  fold.decide(Nat.is_le(n2, budget) || stuck2, 1n+T, budget, p <> rev, n2, stuck2)
+  +calm = Bool.not(folding) && Nat.is_le(n2, high)
+  +stuck = folding && Bool.not(pairs_with(rev, p))
+  fold.decide(calm || stuck, 1n+T, low, p <> rev, n2, folding)
 
-def refold.go(ms: List<&2, Msg>, +budget: Nat, +T: Nat, f: Fold) -> Fold:
+def refold.go(ms: List<&2, Msg>, +high: Nat, +low: Nat, +T: Nat, f: Fold) -> Fold:
   match ms:
     case Nil{}:
       f
     case Con{m, rest}:
-      refold.go(rest, budget, 1n+T, fold.push(T, budget, f, m))
+      refold.go(rest, high, low, 1n+T, fold.push(T, high, low, f, m))
 
-def refold.end(f: Fold) -> List<&2, Part>:
-  Fold{rev, _, _} = f
-  rev_onto(rev, Nil{})
+def refold.end(f: Fold) -> Saw:
+  Fold{rev, _, folding} = f
+  Saw{rev_onto(rev, Nil{}), folding}
 
-# the view is not saved: fold it again from message 0 (gist §5.2 "At load")
-def refold(+budget: Nat, ms: List<&2, Msg>) -> List<&2, Part>:
-  refold.end(refold.go(ms, budget, 0n, Fold{Nil{}, 0n, True{}}))
+# the view rebuilt from message 0: what appending every message gives
+def refold(+high: Nat, +low: Nat, ms: List<&2, Msg>) -> Saw:
+  refold.end(refold.go(ms, high, low, 0n, Fold{Nil{}, 0n, False{}}))
+
+def fold.of(r: Saw) -> Fold:
+  Saw{+ps, folding} = r
+  Fold{rev_onto(ps, Nil{}), size(ps), folding}
+
+# A saved view of T messages that the log has passed (a crash between
+# logging a message and saving the view): the messages from T on appended.
+# The first goes through append, so a batch the tree now allows runs; after
+# it, a view still owing a batch has no pair left (fit_fits), as the
+# rebuild's skip needs, and the rest go as the rebuild appends them.
+def extend(+T: Nat, +high: Nat, +low: Nat, r: Saw, ms: List<&2, Msg>) -> Saw:
+  match r ms:
+    case Saw{ps, folding} Nil{}:
+      Saw{ps, folding}
+    case Saw{ps, folding} Con{m, rest}:
+      refold.end(refold.go(rest, high, low, 1n+T, fold.of(append(T, high, low, folding, ps, m))))
 
 # Rule 3
 # ------
@@ -359,7 +426,7 @@ def first.go(ps: List<&2, Part>, +T: Nat, found: Maybe<&2, Nat>) -> Nat:
     case Con{p, rest}:
       first.go(rest, T, first.keep(found, p))
 
-# the first message whose view line is unbuilt, else T (gist §4.1)
+# the first message whose view line is unbuilt, else T (rule 3)
 def first(+T: Nat, ps: List<&2, Part>) -> Nat:
   first.go(ps, T, None{})
 
@@ -418,7 +485,7 @@ def offers.up(levels: List<&2, List<&2, Bool>>, +below: List<&2, Bool>, +l: Nat,
     case Con{+own, rest}:
       offers.up(rest, own, 1n+l, head, offers.level(own, below, l, head, 0n, acc))
 
-# The nodes rule 3 lets the pump start (gist §4.1): levels[l][i] says
+# The nodes rule 3 lets the pump start (SPEC E25): levels[l][i] says
 # whether node (l, i) is built, level 0 first, one entry per node that
 # exists; head is first(view). Most recent offer first: the caller reverses.
 def offers(levels: List<&2, List<&2, Bool>>, +head: Nat) -> List<&2, Coord>:

@@ -1,7 +1,7 @@
 // The compactor on the ChatGPT plan (SPEC "Compactor calls", openai-plan; E5): compact.txt as
 // `instructions`, one user message of the context blocks and the step. Size retries stay in the
 // same conversation: with `store: false` nothing is kept server-side, so each try re-sends the
-// whole input, the earlier tries (their reasoning items included, as gist §8 asks) and the retry
+// whole input, the earlier tries (their reasoning items included, as E26 has it) and the retry
 // texts. The context blocks come first, with a cache breakpoint at each cut, the same in every try
 // and every node's call; the request end is cached implicitly.
 import { Duration, Effect } from "effect";

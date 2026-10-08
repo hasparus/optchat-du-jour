@@ -1,6 +1,6 @@
 // The Responses API as a provider (./provider.ts): the ChatGPT plan's for openai-plan, or an
 // OpenAI API key's for api-key. `stream: true` and `store: false`, so every request re-sends the
-// whole conversation, the reply's reasoning items included, with their encrypted content (gist
+// whole conversation, the reply's reasoning items included, with their encrypted content (E26
 // §8): the model keeps its reasoning across tool rounds, and the cached prefix stays the same.
 import { Effect } from "effect";
 import { type EngineError, isEngineError, priced } from "../engines/errors.ts";
