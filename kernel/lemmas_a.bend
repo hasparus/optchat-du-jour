@@ -1,5 +1,5 @@
 # Shared lemmas for the addressing and rule 3 proofs (proofs_addr.bend,
-# proofs_rule3.bend): Nat arithmetic, Bool reflection of the kernel's
+# proofs_rule3.bend, bridge.bend): Nat arithmetic, Bool reflection of the kernel's
 # computed checks (Nat.is_eq, Bool.and, Bool.not), and Drop, the suffix
 # of a list, with what it says about Nth and Len.
 
@@ -92,6 +92,14 @@ def not_true(a: Bool, e: {Bool.not(a) == True{} : Bool}) -> {a == False{} : Bool
       false_true({True{} == False{} : Bool}, e)
     case False{}:
       {==}
+
+# a number is equal to itself, by the kernel's check too
+def eq_refl(x: Nat) -> {Nat.is_eq(x, x) == True{} : Bool}:
+  match x:
+    case 0n:
+      {==}
+    case 1n+p:
+      eq_refl(p)
 
 # a check that holds hands over the equation
 def eq_sound(a: Nat, b: Nat, e: {Nat.is_eq(a, b) == True{} : Bool}) -> {a == b : Nat}:
