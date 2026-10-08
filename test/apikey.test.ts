@@ -118,7 +118,7 @@ test("Anthropic gets our cache layout: a 5-minute mark on the last whole block a
 
   // as the master: the view's blocks marked, the read-only tools offered, the last round without tools
   const provider = apiKeyProvider({ budget: r.budget, clients, effort: "high", ref: API_KEY, settings: settings(5) });
-  const history = [{ marks: 1, parts: ["<chat>\n0+1|user: hi\n", "1+1|talk: hello\n</chat>", "what now?"], type: "user" as const }];
+  const history = [{ mark: 0, parts: ["<chat>\n0+1|user: hi\n", "1+1|talk: hello\n</chat>", "what now?"], type: "user" as const }];
   const tools = [{ description: "Read a file", name: "Read", parameters: { properties: { file_path: { type: "string" } }, type: "object" } }];
   await Effect.runPromise(provider.call({ final: false, history, instructions: "MASTER", onText: () => Effect.void, tools }));
   await Effect.runPromise(provider.call({ final: true, history, instructions: "MASTER", onText: () => Effect.void, tools }));

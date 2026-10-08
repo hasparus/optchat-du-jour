@@ -8,13 +8,13 @@ import type { Part } from "../media/part.ts";
 import type { ToolDef } from "../tools/files.ts";
 import type { Tokens, UsageRecord } from "../usage.ts";
 
-// The conversation, provider-neutral. `marks` counts a user message's leading parts that are whole
-// blocks of the view, or of a compactor's context (src/view.ts viewBlocks; docs/optchat.md §3.3):
-// a provider puts its one cache breakpoint on the last of them, the same in every request, and
-// caches the request's end as its API does. A part is text or an image (SPEC "Media"); images
+// The conversation, provider-neutral. `mark` is the index of a user message's part that gets the
+// provider's one cache breakpoint: the last whole block of the view, or of a compactor's context
+// (src/view.ts viewBlocks; docs/optchat.md §3.3). Only the first user message carries one; the
+// provider caches the request's end as its API does. A part is text or an image (SPEC "Media"); images
 // come only after the view.
 export type Item =
-  | { readonly type: "user"; readonly parts: readonly Part[]; readonly marks?: number }
+  | { readonly type: "user"; readonly parts: readonly Part[]; readonly mark?: number | undefined }
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "call"; readonly id: string; readonly name: string; readonly input: string }
   | { readonly type: "result"; readonly id: string; readonly output: string }

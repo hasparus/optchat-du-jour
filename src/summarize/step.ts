@@ -8,13 +8,12 @@ import { type EngineError, ModelError } from "../engines/errors.ts";
 import { SCALE } from "../prompts.ts";
 import { bytes } from "../tree.ts";
 import { type Tokens, type UsageRecord, isCold } from "../usage.ts";
-import { flat, viewBlocks } from "../view.ts";
+import { type Blocks, flat, viewBlocks } from "../view.ts";
 
-// The context pieces: <chat>, the bare lines, </chat>, in blocks of BLOCK lines (view.ts
-// viewBlocks). Every piece but the last, which ends in </chat>, is whole: an engine marks the one
-// before it. No ids anywhere: shown `id+n|text`, the model starts copying the format (E24).
-// Byte-stable from call to call.
-export const contextBlocks = (job: Job) => viewBlocks(["<chat>", ...job.ctx, "</chat>"].join("\n")).blocks;
+// The context pieces: <chat>, the bare lines, </chat>, in blocks of BLOCK lines, and the last whole
+// one, where an engine puts its mark (view.ts viewBlocks). No ids anywhere: shown `id+n|text`, the
+// model starts copying the format (E24). Byte-stable from call to call.
+export const contextBlocks = (job: Job): Blocks => viewBlocks(["<chat>", ...job.ctx, "</chat>"].join("\n"));
 
 // what the earlier gist's step block says above the message or the two lines (E24): the message
 // whole with its newlines, the two lines written out again, flattened

@@ -97,11 +97,11 @@ export function render(mem: Mem): string {
 
 // The view, or a compactor's context, as content blocks (docs/optchat.md §3.3 "How the cache is
 // marked"): `size` lines each, counted from the start, so a text that only grows at its end keeps
-// every whole block byte for byte. `whole` counts the leading blocks of `size` whole lines (each
-// ending in a line break): the one cache mark goes on the last of them. What follows, the
-// unterminated last line (`</chat>`) and the lines before it that fill no block, is the partial
-// block, never marked.
-export type Blocks = { readonly blocks: readonly string[]; readonly whole: number };
+// every whole block byte for byte. A whole block is `size` lines each ending in a line break;
+// `mark` is the index of the last one, where the one cache mark goes (none while no block is
+// whole). What follows, the unterminated last line (`</chat>`) and the lines before it that fill
+// no block, is the partial block, never marked.
+export type Blocks = { readonly blocks: readonly string[]; readonly mark: number | undefined };
 export function viewBlocks(text: string, size: number = BLOCK): Blocks {
   const blocks: string[] = [];
   let start = 0, lines = 0;
@@ -110,9 +110,9 @@ export function viewBlocks(text: string, size: number = BLOCK): Blocks {
       blocks.push(text.slice(start, at + 1));
       start = at + 1;
     }
-  const whole = blocks.length;
+  const mark = blocks.length > 0 ? blocks.length - 1 : undefined;
   if (start < text.length) blocks.push(text.slice(start));
-  return { blocks, whole };
+  return { blocks, mark };
 }
 
 export function unbuilt(mem: Mem) {

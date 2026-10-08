@@ -78,7 +78,7 @@ test("a line logged with a lone surrogate reaches no model as one: every wire en
   const job = { ctx: ["older", `echo: ${bad}`], i: 7, l: 0, msg };
   const asked = step(job);
   // Anthropic's request body, as a compactor's or a turn's, a tool result included
-  wellFormedOnWire(requestBody({ history: [{ marks: 0, parts: [...contextBlocks(job), asked], type: "user" }, { id: "t", output: bad, type: "result" }], model: "m", system: "s" }));
+  wellFormedOnWire(requestBody({ history: [{ parts: [...contextBlocks(job).blocks, asked], type: "user" }, { id: "t", output: bad, type: "result" }], model: "m", system: "s" }));
   // the Responses API's
   wellFormedOnWire(responsesBody({ input: [{ parts: [asked], role: "user" }, { id: "c", output: bad, role: "output" }], instructions: "s", model: "m" }));
   // claude's stream-json input (a turn's or a compactor's message)

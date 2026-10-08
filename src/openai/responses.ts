@@ -27,11 +27,11 @@ import type { Endpoints } from "./endpoints.ts";
 // The conversation as sent. A user message is a list of parts, so stable context blocks stay
 // byte-stable on the wire; an image part goes as `input_image` with a data URL (SPEC "Media"); a
 // function call and its output are items of their own (our tool loop).
-// `marks`: how many leading parts are whole view blocks; the last of them carries the breakpoint.
+// `mark`: the index of the part that carries the breakpoint, the view's last whole block.
 // A reasoning item is the API's own, sent back exactly as it came.
 export type Reasoning = Readonly<Record<string, Schema.Json>>;
 export type Turn =
-  | { readonly role: "user"; readonly parts: readonly Part[]; readonly marks?: number }
+  | { readonly role: "user"; readonly parts: readonly Part[]; readonly mark?: number | undefined }
   | { readonly role: "reasoning"; readonly item: Reasoning }
   | { readonly role: "assistant"; readonly text: string }
   | { readonly role: "call"; readonly id: string; readonly name: string; readonly arguments: string }
@@ -97,12 +97,12 @@ const BREAKPOINT = { mode: "explicit" } as const;
 const item = (t: Turn, breakpoints: boolean): (typeof Body.Type)["input"][number] => {
   switch (t.role) {
     case "user": {
-      const last = breakpoints ? (t.marks ?? 0) - 1 : -1;
+      const mark = breakpoints ? t.mark : undefined;
       return {
         content: t.parts.map((p, k) =>
           isPicture(p)
             ? { detail: "auto" as const, image_url: `data:${p.mime};base64,${p.data}`, type: "input_image" as const }
-            : k === last
+            : k === mark
               ? { prompt_cache_breakpoint: BREAKPOINT, text: p, type: "input_text" as const }
               : { text: p, type: "input_text" as const },
         ),

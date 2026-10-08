@@ -91,7 +91,7 @@ export const toolLoop = (o: {
       const view = viewBlocks(input.view);
       // the view (byte-stable blocks, the provider's one cache mark on the last whole one), the new
       // messages' pictures, then their texts
-      const history: Item[] = [{ marks: view.whole, parts: [...view.blocks, ...input.media, openingText(input)], type: "user" }];
+      const history: Item[] = [{ mark: view.mark, parts: [...view.blocks, ...input.media, openingText(input)], type: "user" }];
       for (let round = 1; ; round++) {
         history.push(...(yield* steered(input, out)));
         const started = yield* Clock.currentTimeMillis;

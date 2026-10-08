@@ -1,5 +1,5 @@
 // The compactor on an API key (SPEC "Compactor calls", api-key; E5): the context pieces first, a
-// cache mark at each of their cuts, then the step; the request's end is cached too (docs/optchat.md §3.3), so a
+// cache mark on the last whole one, then the step; the request's end is cached too (docs/optchat.md §3.3), so a
 // size retry reads the try before it. OpenAI gets what openai-plan gets. Size retries stay in the
 // same conversation, each try re-sent with the reply it got (thinking blocks included). Every try
 // is priced and counted against the monthly budget; the size retries are step.ts's.
@@ -27,7 +27,7 @@ export const apiKeyCompactor = (o: {
   // the transport: one request per try, the whole conversation so far in each
   const call = (job: Job, failoverFrom: string | null) => {
     const context = contextBlocks(job);
-    const history: Item[] = [{ marks: context.length - 1, parts: [...context, step(job)], type: "user" }];
+    const history: Item[] = [{ mark: context.mark, parts: [...context.blocks, step(job)], type: "user" }];
     const ask = (t: Try) =>
       Effect.gen(function* () {
         if (t.retry !== null) history.push({ parts: [t.retry.text], type: "user" });
