@@ -1,12 +1,13 @@
 // The Bend kernel against a literal model of the view, written from the gist's prose alone
-// (gist §3 "Addressing", §4.1; the merge order of the 2026-10-08 gist §3.2). Seeded random chats,
-// several budgets; after every step the kernel and the model must agree on the view, `first` and
-// rule 3's offers, and now and then on the refold from message 0. Then the merge order against
-// Taelin's rollback push, the check the gist itself reports (§3.2).
+// (gist §3 "Addressing", §4.1; the merge order and the sawtooth of the 2026-10-08 gist §3.2).
+// Seeded random chats, several pairs of marks; after every step the kernel and the model must
+// agree on the view, whether a batch is owed, `first` and rule 3's offers, and now and then on the
+// rebuild from message 0. Then the merge order against Taelin's rollback push, the check the gist
+// itself reports (§3.2).
 import { expect, test } from "bun:test";
 import kernel, { type List, type Part } from "../kernel/kernel.mjs";
 import * as K from "../src/kernel.ts";
-import { type Coord, newMem, setNode } from "../src/tree.ts";
+import { type Coord, type Marks, newMem, setNode } from "../src/tree.ts";
 import { PLACEHOLDER } from "../src/view.ts";
 
 const encoder = new TextEncoder();
@@ -17,8 +18,9 @@ const HOLE = utf8(PLACEHOLDER);
 class Model {
   T = 0;
   view: Coord[] = [];
+  folding = false; // a batch stopped over low and goes on at the next message
   readonly sizes = new Map<string, number>(); // built nodes: "l,i" -> bytes of their text
-  constructor(readonly budget: number) {}
+  constructor(readonly marks: Marks) {}
 
   has = (c: Coord) => this.sizes.has(`${c.l},${c.i}`);
   size = (c: Coord) => this.sizes.get(`${c.l},${c.i}`) ?? HOLE; // an unbuilt part counts its placeholder
@@ -27,9 +29,10 @@ class Model {
   // while over budget, replace the most due adjacent built pair by its parent; ties to the left.
   // due = (T - last) / 2^l, last being the pair's last message: how long ago it ended, in its own
   // line size (exact in binary floating point)
-  fit() {
-    let total = this.view.reduce((sum, c) => sum + this.size(c), 0);
-    while (total > this.budget) {
+  total = () => this.view.reduce((sum, c) => sum + this.size(c), 0);
+  fit(budget: number) {
+    let total = this.total();
+    while (total > budget) {
       let best = -1, most = -1;
       for (const [k, left] of this.view.entries()) {
         const right = this.view[k + 1];
@@ -47,23 +50,27 @@ class Model {
     }
   }
 
+  // each message appends its line; once the view passes high, or while a batch is owed, one batch
+  // merges down to low, and owes the rest if parents not built yet stop it over low
   append() {
     this.view.push({ i: this.T, l: 0 });
     this.T++;
-    this.fit();
+    if (!this.folding && this.total() <= this.marks.high) return;
+    this.fit(this.marks.low);
+    this.folding = this.total() > this.marks.low;
   }
 
+  // a summary changes no line of the view: the next message's batch may use it
   build(l: number, i: number, bytes: number) {
     this.sizes.set(`${l},${i}`, bytes);
-    this.fit();
   }
 
-  // at load: the same append + fit for every message in order, against today's tree
+  // the rebuild: the same appends for every message in order, against today's tree
   refold() {
-    const m = new Model(this.budget);
+    const m = new Model(this.marks);
     for (const [k, v] of this.sizes) m.sizes.set(k, v);
     while (m.T < this.T) m.append();
-    return m.view;
+    return { folding: m.folding, view: m.view };
   }
 
   first() {
@@ -118,43 +125,44 @@ function text(r: () => number, max: number) {
 }
 
 // `appends`: the share of steps that log a message; low, the compactor keeps up, high, it lags
-function run(seed: number, budget: number, steps: number, appends: number) {
-  const r = rng(seed), model = new Model(budget), mem = newMem(budget);
+function run(seed: number, marks: Marks, steps: number, appends: number) {
+  const r = rng(seed), model = new Model(marks), mem = newMem(marks);
   for (let step = 0; step < steps; step++) {
     const offered = model.offers(), roll = r();
     // mostly the pump's order; sometimes any ready node (free nodes skip rule 3); and runs of
-    // messages with nothing built, so the view sits over budget with unbuilt lines
+    // messages with nothing built, so the view sits over its marks with unbuilt lines
     const pool = roll < appends ? [] : roll < 0.9 ? offered : model.candidates();
     const pick = pool[Math.floor(r() * pool.length)];
     if (pick) {
       const t = text(r, r() < 0.1 ? 400 : 120);
       setNode(mem, { i: pick.i, l: pick.l, text: t });
-      mem.view = K.fit(mem, HOLE);
       model.build(pick.l, pick.i, utf8(t));
     } else {
       const t = text(r, r() < 0.05 ? 3000 : 200);
       mem.root.push({ date: new Date(0).toISOString(), i: mem.root.length, kind: "user", size: utf8(`user: ${t}`), text: t });
-      mem.view = K.append(mem, HOLE);
+      ({ folding: mem.folding, view: mem.view } = K.append(mem, mem, marks, HOLE));
       model.append();
     }
-    expect(mem.view).toEqual(model.view);
+    expect({ folding: mem.folding, view: mem.view }).toEqual({ folding: model.folding, view: model.view });
     expect(K.first(mem)).toBe(model.first());
     expect(K.offers(mem)).toEqual(model.offers());
-    if (step % 25 === 24) expect(K.refold(mem, HOLE)).toEqual(model.refold());
+    if (step % 25 === 24) expect(K.refold(mem, marks, HOLE)).toEqual(model.refold());
   }
-  expect(K.refold(mem, HOLE)).toEqual(model.refold());
+  expect(K.refold(mem, marks, HOLE)).toEqual(model.refold());
   return model;
 }
 
-test("the kernel's view, refold, first and rule-3 offers match the gist's literal model", () => {
-  const budgets = [200, 450, 1000, 2500, 6000, 10_000];
-  let merged = 0;
-  for (const [k, budget] of budgets.entries())
+test("the kernel's view, sawtooth, rebuild, first and rule-3 offers match the gist's literal model", () => {
+  const marks = [[200, 100], [450, 300], [1000, 500], [2500, 1200], [6000, 3000], [10_000, 2000]] as const;
+  let merged = 0, owed = 0;
+  for (const [k, [high, low]] of marks.entries())
     for (const [seed, appends] of [0.15, 0.25, 0.35, 0.5].entries()) {
-      const model = run(1000 * k + seed, budget, 300, appends);
+      const model = run(1000 * k + seed, { high, low }, 300, appends);
       merged += model.view.filter((c) => c.l > 0).length;
+      if (model.folding) owed++;
     }
-  expect(merged).toBeGreaterThan(0); // the runs did exercise fit
+  expect(merged).toBeGreaterThan(0); // the runs did exercise the batches
+  expect(owed).toBeGreaterThan(0); // and some ended owing one
 });
 
 test("id+n addressing matches the gist for every id, n and T under 70", () => {
@@ -168,20 +176,21 @@ const logged = (i: number) => ({ date: "2026-10-05T00:00:00.000Z", i, kind: "use
 
 // A view waits on a long backlog after a big import: 100k lines, nothing to merge. Every walk over it
 // must stay off the JS stack (it overflows past ~20k nested calls), and refold must not go quadratic.
-test("a 100k-line view refolds, appends, fits and offers without blowing the stack", () => {
-  const T = 100_000, mem = newMem(128_000);
+test("a 100k-line view rebuilds, appends, fits and offers without blowing the stack", () => {
+  const T = 100_000, mem = newMem();
   for (let k = 0; k < T; k++) mem.root.push(logged(k));
   for (let i = 0; i < T; i += 2) setNode(mem, { i, l: 0, size: 100, text: "z".repeat(100) }); // every other leaf built
   const t0 = performance.now();
-  mem.view = K.refold(mem, HOLE);
+  ({ folding: mem.folding, view: mem.view } = K.refold(mem, mem.marks, HOLE));
   expect(mem.view).toHaveLength(T);
+  expect(mem.folding).toBe(true); // far over its marks, with nothing it can merge
   expect(performance.now() - t0).toBeLessThan(5000);
   expect(K.first(mem)).toBe(1);
   expect(K.offers(mem)).toEqual([{ i: 1, l: 0 }]);
   mem.root.push(logged(T));
-  mem.view = K.append(mem, HOLE);
+  ({ folding: mem.folding, view: mem.view } = K.append(mem, mem, mem.marks, HOLE));
   expect(mem.view).toHaveLength(T + 1);
-  expect(K.fit(mem, HOLE)).toHaveLength(T + 1);
+  expect(K.fit(mem, mem.view, mem.marks.low, HOLE)).toHaveLength(T + 1);
 });
 
 // Taelin's push (rollback_state_list.js, 2022, as gist §3.1 quotes it), life = 0: a list of

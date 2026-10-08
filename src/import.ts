@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { buildFree } from "./compactor.ts";
-import { appendMessage, appendNode, loadChat, lock, newMsg } from "./store.ts";
+import { appendMessage, appendNode, loadChat, lock, newMsg, saveView } from "./store.ts";
 import type { Node } from "./records.ts";
 import { dayOf, setNode } from "./tree.ts";
 import { refold } from "./view.ts";
@@ -48,8 +48,8 @@ export function parseOptmem(raw: string): Note[] {
 
 // Into an empty chat only, under the lock. The free nodes are built at once, so the chat reads
 // well before the compactor ever runs. Everything is written first and the view folded once at
-// the end, as the next start would fold it: refitting it after every note and every node made a
-// 10k-note import quadratic.
+// the end, as appending every note would fold it, then saved: refitting it after every note and
+// every node made a 10k-note import quadratic.
 export const importOptmem = (dir: string, path = OPTMEM_LOG) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -74,6 +74,7 @@ export const importOptmem = (dir: string, path = OPTMEM_LOG) =>
         });
       yield* buildFree(mem, keep);
       refold(mem);
+      yield* saveView(dir, mem);
       return mem;
     }),
   );

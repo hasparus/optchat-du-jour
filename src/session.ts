@@ -140,7 +140,7 @@ export const makeSession = (o: {
 
 
     const state = (): SessionState => ({
-      budget: chat.mem.budget,
+      budget: chat.mem.marks.high,
       device,
       down: o.compactorDown?.now() ?? [],
       engine,

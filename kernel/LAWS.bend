@@ -128,6 +128,29 @@ def Total(ps: List<&2, K.Part>) -> Nat:
 def Fits(budget: Nat, ps: List<&2, K.Part>) -> Type:
   {Nat.is_gt(Total(ps), budget) == False{} : Bool} | (@k: Nat -> PairAt(ps, k) -> Empty)
 
+# The sawtooth's words: the view a Saw holds and whether it owes a batch;
+# the view with a line after its last; message T's line (0, T)
+def ViewOf(r: K.Saw) -> List<&2, K.Part>:
+  K.Saw{ps, _} = r
+  ps
+
+def Snoc(ps: List<&2, K.Part>, p: K.Part) -> List<&2, K.Part>:
+  match ps:
+    case Nil{}:
+      [p]
+    case Con{h, t}:
+      h <> Snoc(t, p)
+
+def Line(T: Nat, m: K.Msg) -> K.Part:
+  K.Msg{s, b, ups} = m
+  K.Part{0n, T, s, b, ups}
+
+# what a batch leaves: a view within low, or one where no pair can merge;
+# and it owes the rest exactly when it ended over low
+def Batched(low: Nat, r: K.Saw) -> Type:
+  K.Saw{ps, f} = r
+  (Fits(low, ps) & {f == Nat.is_gt(Total(ps), low) : Bool})
+
 # node (l, i) is present (one entry per node in levels[l]); and built
 def Present(levels: List<&2, List<&2, Bool>>, l: Nat, i: Nat) -> Bool:
   Nat.is_lt(i, Len(Bool, Nth(List<&2, Bool>, levels, l, Nil{})))
@@ -193,16 +216,19 @@ def Names(m: Maybe<&2, K.Coord>, id: Nat, n: Nat, T: Nat) -> Type:
 # ------------------------------------------------------------
 
 law tiles_refold:
-  for +budget: Nat
+  for +high: Nat
+  for +low: Nat
   for +ms: List<&2, K.Msg>
-  Tiles(K.refold(budget, ms), 0n, Len(K.Msg, ms))
+  Tiles(ViewOf(K.refold(high, low, ms)), 0n, Len(K.Msg, ms))
 
 law tiles_append:
   for +T: Nat
-  for +budget: Nat
+  for +high: Nat
+  for +low: Nat
+  for +folding: Bool
   for +ps: List<&2, K.Part>
   for +m: K.Msg
-  Tiles(ps, 0n, T) -> Tiles(K.append(T, budget, ps, m), 0n, 1n+T)
+  Tiles(ps, 0n, T) -> Tiles(ViewOf(K.append(T, high, low, folding, ps, m)), 0n, 1n+T)
 
 law tiles_fit:
   for +T: Nat
@@ -228,9 +254,10 @@ law coords_names:
   for +T: Nat
   Names(K.coords(id, n, T), id, n, T)
 
-# 3. fit merges only an adjacent sibling pair whose parent is built, and
-#    never splits a part; a view within budget it leaves as it is
-# ----------------------------------------------------------------------
+# 3. fit and the sawtooth merge only an adjacent sibling pair whose parent
+#    is built, and never split a part; they leave alone a view that needs
+#    no merge
+# ------------------------------------------------------------------------
 
 law fit_merges:
   for +T: Nat
@@ -246,14 +273,65 @@ law fit_within:
   for +ps: List<&2, K.Part>
   {Nat.is_gt(Total(ps), budget) == False{} : Bool} -> {K.fit(T, budget, ps) == ps : List<&2, K.Part>}
 
-# 4. After fit, the view's size is at most VIEW, or no pair can be merged
-# -----------------------------------------------------------------------
+law saw_merges:
+  for +T: Nat
+  for +high: Nat
+  for +low: Nat
+  for +folding: Bool
+  for +ps: List<&2, K.Part>
+  exs n: Nat
+  Merges(n, ps, ViewOf(K.saw(T, high, low, folding, ps)))
+
+law append_merges:
+  for +T: Nat
+  for +high: Nat
+  for +low: Nat
+  for +folding: Bool
+  for +ps: List<&2, K.Part>
+  for +m: K.Msg
+  exs n: Nat
+  Merges(n, Snoc(ps, Line(T, m)), ViewOf(K.append(T, high, low, folding, ps, m)))
+
+# fit_within for the sawtooth: a view within high that owes no batch is
+# left as it is, still owing none (gist §3.2 "When")
+law saw_within:
+  for +T: Nat
+  for +high: Nat
+  for +low: Nat
+  for +ps: List<&2, K.Part>
+  {Nat.is_gt(Total(ps), high) == False{} : Bool} -> {K.saw(T, high, low, False{}, ps) == K.Saw{ps, False{}} : K.Saw}
+
+# Between batches the view only grows at its end (gist §3.3): a message
+# that leaves a view owing no batch within high is its line put after the
+# last, and nothing else changes, so the last call's view is a prefix of
+# the next one's
+law append_grows:
+  for +T: Nat
+  for +high: Nat
+  for +low: Nat
+  for +ps: List<&2, K.Part>
+  for +m: K.Msg
+  {Nat.is_gt(Total(Snoc(ps, Line(T, m))), high) == False{} : Bool}
+    -> {K.append(T, high, low, False{}, ps, m) == K.Saw{Snoc(ps, Line(T, m)), False{}} : K.Saw}
+
+# 4. After fit, the view's size is at most its budget, or no pair can be
+#    merged; a batch ends at most low, or with no pair left to merge, and
+#    owes the rest exactly when it ends over low
+# ----------------------------------------------------------------------
 
 law fit_fits:
   for +T: Nat
   for +budget: Nat
   for +ps: List<&2, K.Part>
   Fits(budget, K.fit(T, budget, ps))
+
+law saw_batch:
+  for +T: Nat
+  for +high: Nat
+  for +low: Nat
+  for +folding: Bool
+  for +ps: List<&2, K.Part>
+  {Bool.or(folding, Nat.is_gt(Total(ps), high)) == True{} : Bool} -> Batched(low, K.saw(T, high, low, folding, ps))
 
 # 5. Rule 3 never offers a node whose children are unbuilt, nor one beyond
 #    the first unbuilt view line

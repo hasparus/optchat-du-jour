@@ -1,7 +1,7 @@
 // What the chat holds in RAM (gist §1, §3): every logged message, the summaries built so far and
 // the coordinates of the view. Pure data and lookups; store.ts fills it, view.ts keeps the view
 // current and the pump adds nodes
-import { NODE, VIEW } from "./config.ts";
+import { NODE, VIEW_HIGH, VIEW_LOW } from "./config.ts";
 import type { Msg, Node } from "./records.ts";
 import { span } from "./wire.ts";
 
@@ -12,18 +12,29 @@ export type Entry = Msg & { readonly size: number };
 // a built node; size = bytes of its text
 export type Built = Node & { readonly size: number };
 
+// A sawtooth's marks (gist 2026-10-08 §3.2): past `high`, one batch merges down to `low`
+export type Marks = { readonly high: number; readonly low: number };
+// A view and its sawtooth's state: whether a batch is still owed, because the last one stopped
+// over its low mark on parents not built yet
+export type Saw = { readonly view: readonly Coord[]; readonly folding: boolean };
+
 export type Mem = {
   readonly root: Entry[];
   readonly tree: Map<string, Built>;
-  // reassigned by view.ts on every change, never edited in place
+  // view and folding: reassigned by view.ts on every change, never edited in place; saved to
+  // chat/view.json (store.ts)
   view: readonly Coord[];
-  readonly budget: number;
-  // called after every change of the view (settle, idle priming)
+  folding: boolean;
+  readonly marks: Marks;
+  // called after every change of the view or of what its lines show (settle, idle priming)
   readonly listeners: Set<() => void>;
 };
 
-export function newMem(budget: number = VIEW): Mem {
-  return { root: [], view: [], tree: new Map(), listeners: new Set(), budget };
+// the turns' view: 128 KB down to 64 KB
+export const VIEW_MARKS: Marks = { high: VIEW_HIGH, low: VIEW_LOW };
+
+export function newMem(marks: Marks = VIEW_MARKS): Mem {
+  return { root: [], view: [], folding: false, tree: new Map(), listeners: new Set(), marks };
 }
 
 export const bytes = (text: string) => Buffer.byteLength(text);

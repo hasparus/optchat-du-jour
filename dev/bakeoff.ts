@@ -96,7 +96,7 @@ export const replay = <R>(o: {
   readonly messages: readonly Message[];
   readonly summarizeFor: (contender: Contender, log: (r: UsageRecord) => Effect.Effect<void>, report: (m: string) => Effect.Effect<void>) => Effect.Effect<Summarize, never, R>;
   readonly poll?: Duration.Input;
-  readonly budget?: number; // a smaller view than VIEW, to make a short replay fold
+  readonly budget?: number; // a smaller view than VIEW_HIGH (folded to half of it), to make a short replay fold
   readonly deadline?: Duration.Input; // 2 hours
   readonly retry?: Duration.Input; // the pump's, RETRY
 }) =>
@@ -113,7 +113,7 @@ export const replay = <R>(o: {
         });
       const summarize = yield* o.summarizeFor(o.contender, log, report);
       const chat = yield* openChat(dir, {
-        budget: o.budget,
+        marks: o.budget === undefined ? undefined : { high: o.budget, low: Math.floor(o.budget / 2) },
         report,
         retry: o.retry,
         summarize: (job) => summarize(job).pipe(Effect.provideService(CurrentNode, `${job.l}.${job.i}`)),

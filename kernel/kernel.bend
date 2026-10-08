@@ -1,7 +1,8 @@
-# The fold kernel (SPEC E14): id+n addressing, the view's append and fit,
-# the refold at load, `first` and the pump's rule 3 (gist §3-§5). It never
-# sees text, only sizes in bytes, as Nats. LAWS.bend states what must hold;
-# PROOF.bend proves it. src/kernel.ts is the only caller.
+# The fold kernel (SPEC E14): id+n addressing, the view's merge order, its
+# sawtooth and the rebuild from the log, `first` and the pump's rule 3
+# (gist §3, §4). It never sees text, only sizes in bytes, as Nats. LAWS.bend
+# states what must hold; PROOF.bend proves it. src/kernel.ts is the only
+# caller.
 #
 # Comparisons the proofs rely on are computed, then checked with is_eq:
 # a check that holds hands the proof an equation, and nothing here divides
@@ -279,20 +280,57 @@ def fit(+T: Nat, +budget: Nat, +ps: List<&2, Part>) -> List<&2, Part>:
 def snoc(ps: List<&2, Part>, p: Part) -> List<&2, Part>:
   rev_onto(rev_onto(ps, Nil{}), [p])
 
-# message T arrives: its line (0, T) goes at the end, then fit with T + 1
-# messages
-def append(+T: Nat, +budget: Nat, ps: List<&2, Part>, m: Msg) -> List<&2, Part>:
-  Msg{s, b, ups} = m
-  fit(1n+T, budget, snoc(ps, Part{0n, T, s, b, ups}))
+# The sawtooth (gist §3.2 "When", §7 mistake 2)
+# ---------------------------------------------
+# The view, and whether a batch is still owed: the last one stopped over
+# low because the parents it needed were not built yet. high and low are
+# parameters: the turns' view runs 128 KB down to 64 KB, and a compaction
+# view can run its own sawtooth at other marks.
+type Saw is Data:
+  Saw{ps: List<&2, Part>, folding: Bool}
 
-# What refold carries from one message to the next: the view newest first
-# (so a new line costs nothing), its size, and whether no pair in it can
-# merge. A view within budget, or stuck with nothing to merge and no new
-# pair, is what fit would leave unchanged, so fit is skipped: after a big
-# import the view waits on a long backlog, and scanning it on every message
-# would make the refold quadratic.
+# one batch: the most due built pairs merge until the view is at most low
+# or nothing can merge; ending over low, it owes the rest
+def batch(+T: Nat, +low: Nat, +ps: List<&2, Part>) -> Saw:
+  +fitted = fit(T, low, ps)
+  Saw{fitted, Nat.is_gt(size(fitted), low)}
+
+def saw.go(due: Bool, +T: Nat, +low: Nat, +ps: List<&2, Part>) -> Saw:
+  match due:
+    case True{}:
+      batch(T, low, ps)
+    case False{}:
+      Saw{ps, False{}}
+
+# a view past high, or one a batch still owes, merges down to low; any
+# other view stays as it is, so between batches it only grows at its end
+# and the prompt cache keeps all of it (gist §3.3)
+def saw(+T: Nat, +high: Nat, +low: Nat, folding: Bool, +ps: List<&2, Part>) -> Saw:
+  saw.go(folding || Nat.is_gt(size(ps), high), T, low, ps)
+
+# message T arrives: its line (0, T) goes at the end, then the sawtooth
+# with T + 1 messages
+def append(+T: Nat, +high: Nat, +low: Nat, folding: Bool, ps: List<&2, Part>, m: Msg) -> Saw:
+  Msg{s, b, ups} = m
+  saw(1n+T, high, low, folding, snoc(ps, Part{0n, T, s, b, ups}))
+
+# The rebuild
+# -----------
+# The view is saved and loaded, never rebuilt (gist §3.2, §7 mistake 3);
+# this is for a data dir with no saved view, or a damaged one. It appends
+# every message as append does, against today's tree.
+#
+# What it carries from one message to the next: the view newest first (so
+# a new line costs nothing), its size, and whether a batch is owed. Two
+# kinds of message skip the batch, since it would leave the view as it is:
+# one that keeps an owing-nothing view within high, and one that comes
+# while a batch is owed and makes no new pair with the newest line. The
+# tree does not change during a rebuild, so a batch that ended over low
+# left no pair to merge (fit_fits), and only the new line can make one.
+# After a big import the view waits on a long backlog, and scanning it on
+# every message would make the rebuild quadratic.
 type Fold is Data:
-  Fold{rev: List<&2, Part>, size: Nat, stuck: Bool}
+  Fold{rev: List<&2, Part>, size: Nat, folding: Bool}
 
 # the newest line of the view and p are a pair that can merge
 def pairs_with(rev: List<&2, Part>, +p: Part) -> Bool:
@@ -302,41 +340,42 @@ def pairs_with(rev: List<&2, Part>, +p: Part) -> Bool:
     case Con{q, _}:
       mergeable(q, p)
 
-def fold.fit(+T: Nat, +budget: Nat, ps: List<&2, Part>) -> Fold:
-  +fitted = fit(T, budget, ps)
+def fold.batch(+T: Nat, +low: Nat, ps: List<&2, Part>) -> Fold:
+  +fitted = fit(T, low, ps)
   +n = size(fitted)
-  Fold{rev_onto(fitted, Nil{}), n, Nat.is_gt(n, budget)}
+  Fold{rev_onto(fitted, Nil{}), n, Nat.is_gt(n, low)}
 
-def fold.decide(fits: Bool, +T: Nat, +budget: Nat, rev: List<&2, Part>, n: Nat, stuck: Bool) -> Fold:
-  match fits:
+def fold.decide(skip: Bool, +T: Nat, +low: Nat, rev: List<&2, Part>, n: Nat, folding: Bool) -> Fold:
+  match skip:
     case True{}:
-      Fold{rev, n, stuck}
+      Fold{rev, n, folding}
     case False{}:
-      fold.fit(T, budget, rev_onto(rev, Nil{}))
+      fold.batch(T, low, rev_onto(rev, Nil{}))
 
 # message T arrives; T + 1 messages afterwards
-def fold.push(+T: Nat, +budget: Nat, f: Fold, m: Msg) -> Fold:
-  Fold{+rev, n, stuck} = f
+def fold.push(+T: Nat, +high: Nat, +low: Nat, f: Fold, m: Msg) -> Fold:
+  Fold{+rev, n, +folding} = f
   Msg{+s, b, ups} = m
   +p = {Part{0n, T, s, b, ups} : Part}
-  +stuck2 = stuck && Bool.not(pairs_with(rev, p))
   +n2 = Nat.add(n, s)
-  fold.decide(Nat.is_le(n2, budget) || stuck2, 1n+T, budget, p <> rev, n2, stuck2)
+  +calm = Bool.not(folding) && Nat.is_le(n2, high)
+  +stuck = folding && Bool.not(pairs_with(rev, p))
+  fold.decide(calm || stuck, 1n+T, low, p <> rev, n2, folding)
 
-def refold.go(ms: List<&2, Msg>, +budget: Nat, +T: Nat, f: Fold) -> Fold:
+def refold.go(ms: List<&2, Msg>, +high: Nat, +low: Nat, +T: Nat, f: Fold) -> Fold:
   match ms:
     case Nil{}:
       f
     case Con{m, rest}:
-      refold.go(rest, budget, 1n+T, fold.push(T, budget, f, m))
+      refold.go(rest, high, low, 1n+T, fold.push(T, high, low, f, m))
 
-def refold.end(f: Fold) -> List<&2, Part>:
-  Fold{rev, _, _} = f
-  rev_onto(rev, Nil{})
+def refold.end(f: Fold) -> Saw:
+  Fold{rev, _, folding} = f
+  Saw{rev_onto(rev, Nil{}), folding}
 
-# the view is not saved: fold it again from message 0 (gist §5.2 "At load")
-def refold(+budget: Nat, ms: List<&2, Msg>) -> List<&2, Part>:
-  refold.end(refold.go(ms, budget, 0n, Fold{Nil{}, 0n, True{}}))
+# the view rebuilt from message 0: what appending every message gives
+def refold(+high: Nat, +low: Nat, ms: List<&2, Msg>) -> Saw:
+  refold.end(refold.go(ms, high, low, 0n, Fold{Nil{}, 0n, False{}}))
 
 # Rule 3
 # ------

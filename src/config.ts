@@ -8,8 +8,10 @@ import { FollowUp } from "./wire.ts";
 
 // a summary line's target size, and the most a free node may hold
 export const NODE = 512;
-// the view's budget
-export const VIEW = 128_000;
+// The view's sawtooth (gist 2026-10-08 §3.2): each message appends its line, and once the view
+// passes VIEW_HIGH one batch of merges takes it down to VIEW_LOW
+export const VIEW_HIGH = 128_000;
+export const VIEW_LOW = 64_000;
 // compactor calls at once
 export const JOBS = 8;
 // tries per node to get a summary under NODE

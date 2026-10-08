@@ -345,12 +345,15 @@ test("a torn last line is skipped quietly by readers, and repaired by the lock h
   const jsonl = `${day}/2026-09-30.jsonl`;
   const hi = { date: "2026-09-30T08:00:00.000Z", i: 0, kind: "user", size: 8, text: "hi" };
   writeFileSync(jsonl, `${JSON.stringify(hi)}\n{"i":1,"kind":"us`);
+  // a log written by hand has no saved view: each load says it rebuilt one, and only the writer saves it
+  const rebuilt = "chat/view.json: missing; the view was rebuilt from the log";
   const reader = await run(loadChat(dir, { repair: false }));
   expect(reader.mem.root.map((m) => m.text)).toEqual(["hi"]);
-  expect(reader.problems).toHaveLength(0);
+  expect(reader.problems).toEqual([rebuilt]);
   expect(readFileSync(jsonl, "utf8").at(-1)).not.toBe("\n");
+  expect(existsSync(`${dir}/chat/view.json`)).toBe(false);
   const writer = await runScoped(Effect.andThen(lock(dir), loadChat(dir)));
-  expect(writer.problems).toEqual(["main/2026-09-30.jsonl line 2: unreadable, ignored"]);
+  expect(writer.problems).toEqual(["main/2026-09-30.jsonl line 2: unreadable, ignored", rebuilt]);
   const yo = { date: "2026-09-30T08:01:00.000Z", i: 1, kind: "talk", size: 8, text: "yo" };
   appendFileSync(jsonl, `${JSON.stringify(yo)}\n`);
   const after = await run(loadChat(dir, { repair: false }));

@@ -1,39 +1,86 @@
 // The view's text (gist §5, §6; ref §5.1). Which nodes are in the view is the kernel's call
-// (kernel.ts); this file keeps mem.view up to date, renders it and waits on it.
+// (kernel.ts); this file keeps mem.view up to date, checks a saved one, renders it and waits on it.
 import { Effect } from "effect";
 import { MARKS } from "./config.ts";
 import * as K from "./kernel.ts";
 import type { Node } from "./records.ts";
-import { built, bytes, type Coord, dayOf, end, type Entry, getNode, label, type Mem, nodes, setNode } from "./tree.ts";
+import { built, bytes, dayOf, end, type Entry, getNode, label, type Mem, nodes, type Saw, setNode } from "./tree.ts";
 
 // What a line shows until its summary exists (gist §6). Only people read it: rule 3 keeps it out
 // of every compactor call, and a turn waits until no view line shows it.
 export const PLACEHOLDER = "(not summarized yet: zoom it)";
 const HOLE = bytes(PLACEHOLDER);
 
-function changed(mem: Mem, view: readonly Coord[]) {
-  mem.view = view;
-  for (const tell of mem.listeners) tell();
+const tell = (mem: Mem) => {
+  for (const listener of mem.listeners) listener();
+};
+function changed(mem: Mem, next: Saw) {
+  mem.view = next.view;
+  mem.folding = next.folding;
+  tell(mem);
 }
 
-// message i arrives: its line goes at the end, then the view is fit again (gist §5.2)
+// Message i arrives: its line goes at the end, and only past the high mark, or with a batch still
+// owed, does anything merge (gist 2026-10-08 §3.2). The caller saves the view (store.saveView).
 export function addMessage(mem: Mem, msg: Entry) {
   const next = mem.root.length;
   if (msg.i !== next) throw new Error(`addMessage: the next id is ${next}, ${msg.i} is out of turn`);
   mem.root.push(msg);
-  changed(mem, K.append(mem, HOLE));
+  changed(mem, K.append(mem, mem, mem.marks, HOLE));
 }
 
-// a node was built: keep it, then fit
+// A node was built: kept. The view's lines stay as they are until the next message (a batch owed
+// goes on then), but a line may now show its summary instead of the placeholder.
 export function addNode(mem: Mem, record: Node): void {
   setNode(mem, record);
-  changed(mem, K.fit(mem, HOLE));
+  tell(mem);
 }
 
-// at load (and after a bulk import): the view folded from message 0 again
+// after a bulk import, or with no usable saved view: the view rebuilt from message 0, once
 export const refold = (mem: Mem): void => {
-  changed(mem, K.refold(mem, HOLE));
+  changed(mem, K.refold(mem, mem.marks, HOLE));
 };
+
+// A saved view (chat/view.json) as [l, i] pairs, and whether a batch is owed; or why there is none
+// to use ("missing", "unreadable")
+export type Saved = { readonly folding: boolean; readonly view: readonly (readonly [number, number])[] };
+export type Found = { readonly ok: true; readonly saved: Saved } | { readonly ok: false; readonly why: string };
+
+// Where the saved lines end, if they are legal: whole nodes, each starting where the one before
+// ended, the first at 0, the last at or before T, and every merged line built (a merge needs its
+// parent). A message's own line may still wait for its summary.
+function savedEnd(mem: Mem, saved: Saved): { readonly ok: true; readonly end: number } | { readonly ok: false; readonly why: string } {
+  let at = 0;
+  for (const [l, i] of saved.view) {
+    const c = { i, l };
+    if (l < 0 || l > 52 || i < 0) return { ok: false, why: `[${l}, ${i}] is no node` };
+    const width = 2 ** l;
+    if (i * width !== at) return { ok: false, why: `${label(c)} does not start at ${at}` };
+    if (l > 0 && !built(mem, c)) return { ok: false, why: `${label(c)} is a merge whose summary is not in the tree` };
+    at += width;
+    if (at > mem.root.length) return { ok: false, why: `${label(c)} runs past the log's ${mem.root.length} messages` };
+  }
+  return { end: at, ok: true };
+}
+
+// The view at load (gist §3.2 "Save the view to view.json and load it at start"): the saved one
+// when it fits the log and the tree. One that stops short of the log (a crash between logging a
+// message and saving the view) gets the missing messages appended, as they would have been.
+// Missing or damaged, it is rebuilt from the log; every cache entry dies then, so it is said.
+export function restore(mem: Mem, found: Found): string | null {
+  const rebuilt = (why: string) => {
+    refold(mem);
+    return `chat/view.json: ${why}; the view was rebuilt from the log`;
+  };
+  if (!found.ok) return rebuilt(found.why);
+  const ends = savedEnd(mem, found.saved);
+  if (!ends.ok) return rebuilt(ends.why);
+  let at: Saw = { folding: found.saved.folding, view: found.saved.view.map(([l, i]) => ({ i, l })) };
+  for (let i = ends.end; i < mem.root.length; i++) at = K.append(mem, at, mem.marks, HOLE, i);
+  changed(mem, at);
+  const behind = mem.root.length - ends.end;
+  return behind === 0 ? null : `chat/view.json: ${behind} messages behind the log; appended them`;
+}
 
 // one space for each line break, whether LF, CRLF or a CR on its own
 export const flat = (text: string) => text.split(/\r\n?|\n/).join(" ");
@@ -123,7 +170,7 @@ export function stats(mem: Mem, at: Date = new Date()): readonly [string, string
     span = `optchat: ${count} messages, ${from} → ${to}, last ${elapsed(at.getTime() - Date.parse(newest.date))} ago`;
   }
   const owed = nodes(count).filter((c) => !built(mem, c)).toArray().length;
-  const used = viewSize(mem), percent = Math.round((used / mem.budget) * 100), lineCount = mem.view.length, limit = kb(mem.budget);
+  const used = viewSize(mem), percent = Math.round((used / mem.marks.high) * 100), lineCount = mem.view.length, limit = kb(mem.marks.high);
   const fill = `view ${kb(used).toFixed(1)}/${limit} KB (${percent}%), ${lineCount} lines · ${owed} summaries pending`;
   const open = unbuilt(mem);
   return [span, open > 0 ? `${fill}, ${open} view lines unsummarized` : fill];
