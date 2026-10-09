@@ -9,6 +9,7 @@
     "build": "tsc -p . && bun --filter optchat-web build",
     "lint": "oxlint --deny-warnings --disable-nested-config",
     "lint:effect": "bun dev/lint-effect.ts",
+    "lint:design": "bun dev/lint-design.ts",
     "test": "bun test --pass-with-no-tests && bun --filter '@hasparus/oxlint-config' test && bun --filter optchat-web test",
     "kernel": "cd kernel && bend kernel.bend -o kernel.mjs",
     "proofs": "cd kernel && bend PROOF.bend",
@@ -22,6 +23,7 @@
     "eslint-plugin-better-tailwindcss": "4.0.2",
     "eslint-plugin-perfectionist": "5.4.0",
     "eslint-plugin-sonarjs": "4.2.0",
+    "impeccable": "4.1.0",
     "oxlint": "1.86.0",
     "oxlint-tsgolint": "7.0.2003",
     "typescript": "5.9.3"

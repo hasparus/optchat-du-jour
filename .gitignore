@@ -9,3 +9,14 @@ vendor/oxlint-config/anti-slop/**/*.js
 web/test-results
 web/playwright-report
 web/dev-dist
+# the /impeccable skill's local state, as in pbakaus/impeccable's own .gitignore but stricter for
+# .impeccable/live/, which upstream ignores only in part
+.impeccable/config.local.json
+.impeccable/live/
+.impeccable/history/
+.impeccable/critique/*
+!.impeccable/critique/ignore.md
+**/.impeccable/hook.*.json
+.claude/skills/impeccable/scripts/bin/
+# per-developer Claude Code settings; `impeccable hooks on` writes its hooks here
+.claude/settings.local.json

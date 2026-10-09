@@ -52,6 +52,7 @@ message sent mid-run does.
 bun run build   # typecheck, and the web UI into web/dist
 bun run lint    # oxlint, @hasparus/oxlint-config
 bun run lint:effect   # Effect-aware diagnostics (@effect/language-service), server and web
+bun run lint:design   # Impeccable's design anti-pattern detector over the web UI (/impeccable skill)
 bun run test    # also the web UI's tests (web/, happy-dom); no real model is ever called
 bun run parity  # REF=<shitty-optchat checkout>: byte-for-byte against the reference
 bun run proofs  # the kernel's laws (needs bend: sh kernel/install-bend.sh, then ~/.bend/bin on PATH)
@@ -59,3 +60,13 @@ cd web && bun run e2e   # Playwright: the real server, a fake claude, Chromium a
 cd web && bun run dev   # Vite, proxying /ws and /api to a server on 127.0.0.1:7700
 bun dev/latency.ts --fake   # turn latency over /ws (or --url ws://127.0.0.1:7700/ws)
 ```
+
+`/impeccable` in Claude Code is [Impeccable](https://impeccable.style)'s design skill, vendored in
+`.claude/skills/impeccable`. When it runs, it checks impeccable.style for updates
+(`IMPECCABLE_NO_UPDATE_CHECK=1` stops that), may download its engine into `~/.impeccable`, offers
+image generation billed to `OPENAI_API_KEY` if that is set, tells the model to stop and ask you even
+in an autonomous session, tells it that it may spawn the skill's subagents without asking, and sends
+impeccable.style which kind of design direction you picked (`DO_NOT_TRACK=1` stops that). Most of
+its requests bypass `HTTPS_PROXY`. Decline its offer to run `npx impeccable update`, which rewrites
+the vendored skill in place, and update it by the steps in its `PROVENANCE.md`, which has the
+details.
