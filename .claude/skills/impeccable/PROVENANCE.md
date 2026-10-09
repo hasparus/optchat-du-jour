@@ -25,13 +25,17 @@ The skill's commands run `scripts/impeccable`, a launcher for the engine binary.
   https://impeccable.style/api/version for the latest skill version at most once a day and writes
   `~/.impeccable/update-check.json`. `IMPECCABLE_NO_UPDATE_CHECK=1`, or `"updateCheck": false` in
   `.impeccable/config.json`, stops it.
+- **Update offer.** When a newer skill exists, `context` prints `UPDATE_AVAILABLE`, and the model
+  offers to run `npx impeccable update`, which rewrites this vendored skill in place. Decline it
+  and update by the steps at the end of this file, or set `IMPECCABLE_NO_UPDATE_CHECK=1`.
 - **Engine download.** The launcher takes the first engine it finds: `$IMPECCABLE_BIN`;
   `scripts/bin/<os>-<arch>/impeccable` (not vendored); `~/.impeccable/bin/impeccable` if it
-  answers `engine-probe`; `$IMPECCABLE_HOME/bin/0.1.5/impeccable` (default `~/.impeccable/bin/0.1.5/`);
-  `impeccable` on PATH if it answers `engine-probe`. This repo's devDependency puts one in
-  `node_modules/.bin`, but that is on PATH only inside `bun run` scripts. Otherwise it downloads the 16 MB engine from the `engine-v0.1.5` GitHub
-  release into that cache directory. It checks the download against a `.sha256` file from
-  that same release, so the check catches a corrupt download, not a tampered release.
+  answers `engine-probe`; `$IMPECCABLE_HOME/bin/0.1.5/impeccable` (by default under
+  `~/.impeccable`); `impeccable` on PATH if it answers `engine-probe`. This repo's devDependency
+  puts one in `node_modules/.bin`, but that is on PATH only inside `bun run` scripts. Otherwise it
+  downloads the 16 MB engine from the `engine-v0.1.5` GitHub release into that cache directory. It
+  checks the download against a `.sha256` file from that same release, so the check catches a
+  corrupt download, not a tampered release.
 - **Paid image generation.** When `OPENAI_API_KEY` is set, `context` tells the model it may
   generate images with `scripts/impeccable generate-image`, billed to that key.
 - **Autonomy directive.** `context` prints `AUTONOMY_DIRECTIVE_CHECK`. It tells the model that a
@@ -40,6 +44,12 @@ The skill's commands run `scripts/impeccable`, a launcher for the engine binary.
   going on.
 - **Direction roll.** For new work, `scripts/impeccable concept-seed` sends one GET to
   https://impeccable.style/api/roll (scope, mode, a random seed and a counter; no project files).
+- **Telemetry.** After the user picks a direction, the skill reruns `scripts/impeccable
+  concept-seed --kind … --from …`, which POSTs to https://impeccable.style/api/chosen the card
+  kind (assigned, pick, challenger or canon), the catalog id of a challenger that won, and the
+  roll's seed, scope and mode. `DO_NOT_TRACK=1` or `IMPECCABLE_NO_TELEMETRY=1` stops it.
+
+The engine's requests (update check, roll, telemetry) go out directly: they ignore `HTTPS_PROXY`.
 
 To update: copy `.claude/skills/impeccable/` and `.claude/agents/impeccable-*.md` from a newer
 `skill-v*` tag, bump the `impeccable` devDependency to the CLI release with the same engine

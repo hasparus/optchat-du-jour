@@ -5,9 +5,17 @@
 // assets, the e2e tests, and build and test output. Fails on any primary finding; advisory ones are
 // listed but never fail, as in `impeccable detect` itself. `bun run lint:design -- --format
 // github-actions` in CI writes each finding as an annotation instead, a format the detector lacks.
-import { Schema } from "effect";
+//
+// The detector also reads .impeccable/config.json (committed, so CI sees it too) and
+// .impeccable/config.local.json (per developer, gitignored). `detector` settings in the local file
+// (ignoreRules, ignoreFiles, ignoreValues) change what a local run reports but not what CI does, so
+// this script warns when that file has them.
+import { Option, Schema } from "effect";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
+const ROOT = path.resolve(import.meta.dir, "..");
 const TARGETS = ["web/index.html", "web/src"];
 
 const fail = (message: string): never => {
@@ -38,15 +46,37 @@ const Finding = Schema.Struct({
 type Finding = typeof Finding.Type;
 const decodeFindings = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Finding)));
 
-// The engine is the one the impeccable devDependency pins (@impeccable/cli-<os>-<arch>): no
-// IMPECCABLE_BIN override, and no fallback download, which would fail loudly here if the platform
-// package is missing. No update check either.
-const { IMPECCABLE_BIN: _override, ...env } = process.env;
-const run = Bun.spawnSync(["impeccable", "detect", "--json", ...TARGETS], {
-  env: { ...env, IMPECCABLE_DOWNLOAD_BASE: "http://127.0.0.1:9", IMPECCABLE_NO_UPDATE_CHECK: "1" },
+// .impeccable/config.local.json, if it has detector settings
+const LocalConfig = Schema.Struct({ detector: Schema.optional(Schema.Unknown) });
+const decodeLocalConfig = Schema.decodeUnknownOption(Schema.fromJsonString(LocalConfig));
+const localConfigPath = path.join(ROOT, ".impeccable", "config.local.json");
+let localConfigText: string | undefined;
+try {
+  localConfigText = readFileSync(localConfigPath, "utf8");
+} catch {
+  // no local config
+}
+if (localConfigText !== undefined && Option.exists(decodeLocalConfig(localConfigText), (config) => config.detector !== undefined)) {
+  process.stderr.write(
+    `lint:design: warning: ${path.relative(ROOT, localConfigPath)} has detector settings; they apply to this run but not to CI\n`,
+  );
+}
+
+// The engine is the one the impeccable devDependency pins (@impeccable/cli-<os>-<arch>), run by
+// that package's shim in node_modules/.bin, never an `impeccable` elsewhere on PATH. The shim's
+// other ways to an engine are shut: IMPECCABLE_BIN is dropped, IMPECCABLE_HOME is an empty temp
+// dir (no engine cached under ~/.impeccable is used), and its fallback download points at an
+// unreachable address, so a missing platform package fails loudly. No update check either.
+const { IMPECCABLE_BIN: _bin, IMPECCABLE_HOME: _home, ...env } = process.env;
+const home = mkdtempSync(path.join(tmpdir(), "lint-design-"));
+const run = Bun.spawnSync([path.join(ROOT, "node_modules", ".bin", "impeccable"), "detect", "--json", ...TARGETS], {
+  cwd: ROOT,
+  env: { ...env, IMPECCABLE_DOWNLOAD_BASE: "http://127.0.0.1:9", IMPECCABLE_HOME: home, IMPECCABLE_NO_UPDATE_CHECK: "1" },
   stderr: "inherit",
   stdout: "pipe",
 });
+rmSync(home, { force: true, recursive: true });
+const ended = run.signalCode === undefined ? `exited with ${run.exitCode}` : `was killed by ${run.signalCode}`;
 // exit 0: no primary findings, 2: some, 1: a target could not be scanned (impeccable detect --help)
 const scanned = run.exitCode === 0 || run.exitCode === 2;
 const stdout = run.stdout.toString();
@@ -55,7 +85,7 @@ let findings: readonly Finding[] = [];
 try {
   findings = stdout.trim() === "" && !scanned ? [] : decodeFindings(stdout);
 } catch (error) {
-  fail(`cannot read the findings of impeccable detect (exit ${run.exitCode}): ${String(error).replaceAll(/\s+/g, " ")}`);
+  fail(`cannot read the findings of impeccable detect, which ${ended}: ${String(error).replaceAll(/\s+/g, " ")}`);
 }
 const isAdvisory = (finding: Finding) => finding.advisory === true || finding.severity === "advisory";
 const primary = findings.filter((finding) => !isAdvisory(finding));
@@ -67,7 +97,7 @@ const level = { advisory: "notice", error: "error", warning: "warning" } as cons
 const oneLine = (text: string) => text.replaceAll(/\s+/g, " ").trim();
 
 for (const finding of findings) {
-  const file = path.relative(process.cwd(), finding.file);
+  const file = path.relative(ROOT, finding.file);
   const severity = isAdvisory(finding) ? "advisory" : finding.severity;
   if (github) {
     const line = finding.line >= 1 ? `,line=${finding.line}` : "";
@@ -89,6 +119,6 @@ if (scanned || findings.length > 0) {
   );
 }
 if (!scanned) {
-  fail(`impeccable detect exited with ${run.exitCode}${run.exitCode === 1 ? ": a target could not be scanned" : ""}`);
+  fail(`impeccable detect ${ended}${run.exitCode === 1 ? ": a target could not be scanned" : ""}`);
 }
 process.exitCode = primary.length > 0 ? 1 : 0;
