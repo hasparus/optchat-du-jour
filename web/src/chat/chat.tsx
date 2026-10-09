@@ -177,6 +177,18 @@ function NeedsModel({ session, state, onModel }: { readonly session: Pick<Sessio
   );
 }
 
+// A log with nothing in it yet: what this chat is, once, instead of a blank page
+function EmptyChat() {
+  return (
+    <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-8" data-testid="empty-chat">
+      <div className="max-w-xs space-y-2 text-center text-sm text-muted-foreground">
+        <p className="text-base font-medium text-foreground">One chat, for good</p>
+        <p>Everything said here stays: it is folded into a memory the model reads at every turn, and can zoom back into.</p>
+      </div>
+    </div>
+  );
+}
+
 export type ChatProps = {
   readonly link: Link;
   readonly session: SessionStore;
@@ -207,7 +219,29 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
   useEffect(() => {
     if (kept !== null && kept !== chosen && engines?.some((e) => e.ref === kept)) onModel(kept);
   }, [kept, chosen, engines, onModel]);
-  const { scrollToMessage } = useMessageScroller();
+  const { scrollToEnd, scrollToMessage } = useMessageScroller();
+  // A web font that lands after the chat opened at its newest row reflows the rows above and
+  // leaves the view short of the end. In the first seconds, before the reader has scrolled, the
+  // view follows the end again as each font loads.
+  const touched = useRef(false);
+  useEffect(() => {
+    const fonts = "fonts" in document ? document.fonts : null;
+    if (!fonts) return;
+    const settle = () => {
+      if (!touched.current) scrollToEnd({ behavior: "auto" });
+    };
+    fonts.addEventListener("loadingdone", settle);
+    const stop = setTimeout(() => {
+      fonts.removeEventListener("loadingdone", settle);
+    }, 4000);
+    return () => {
+      clearTimeout(stop);
+      fonts.removeEventListener("loadingdone", settle);
+    };
+  }, [scrollToEnd]);
+  const touch = () => {
+    touched.current = true;
+  };
   // at the newest end (nothing more to scroll to): the store may drop what is far out of sight
   const atEnd = !useMessageScrollerScrollable().end;
   useEffect(() => {
@@ -226,6 +260,28 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
   const busy = state.state !== null && state.state.phase !== "idle";
   const waiting = queued(state);
   const line = status(state);
+  // the server says the log is empty: a first visit, not a page still loading
+  const empty = state.state !== null && rows.length === 0 && state.markers.length === 0 && first === 0;
+  // The composer grows with an attachment tray or a longer draft, and the chat's view shrinks by
+  // as much: a reader who was at the newest row stays there. Not while a turn runs: the scroller
+  // then holds the sent message at the top, and following the end would undo that.
+  const dock = useRef<HTMLDivElement>(null);
+  const follow = useRef(false);
+  follow.current = atEnd && !busy;
+  useEffect(() => {
+    const el = dock.current?.querySelector("form");
+    if (!el || !("ResizeObserver" in globalThis)) return;
+    let height = el.offsetHeight;
+    const ro = new ResizeObserver(() => {
+      const now = el.offsetHeight;
+      if (now > height && follow.current) scrollToEnd({ behavior: "auto" });
+      height = now;
+    });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+    };
+  }, [scrollToEnd]);
 
   // one older page, prepended: true while there may be more, null when it couldn't be read
   const loadOlder = useCallback(async () => {
@@ -273,21 +329,26 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <MessageScroller className="min-h-0 flex-1">
-        <MessageScrollerViewport aria-label="Chat" preserveScrollOnPrepend>
-          <MessageScrollerContent className="gap-4 p-4">
-            <div className="flex justify-center" ref={top}>
-              {first > 0 && (
-                <button className="text-xs text-muted-foreground underline" disabled={loading} onClick={() => void loadOlder()} type="button">
-                  {loading ? "loading…" : "earlier messages"}
-                </button>
-              )}
+        {/* The sentinel and the "earlier" button sit outside the content: the scroller reads its
+            content's first child to keep the view still when older rows are prepended, and opens
+            at the newest row only when the first rows arrive into an empty content. */}
+        <MessageScrollerViewport aria-label="Chat" className="relative" onKeyDown={touch} onTouchMove={touch} onWheel={touch} preserveScrollOnPrepend>
+          <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-px" ref={top} />
+          {first > 0 && (
+            <div className="flex justify-center pt-3" data-slot="chat-earlier">
+              <button className="min-h-8 px-2 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground pointer-coarse:min-h-11" disabled={loading} onClick={() => void loadOlder()} type="button">
+                {loading ? "loading…" : "earlier messages"}
+              </button>
             </div>
+          )}
+          {empty && <EmptyChat />}
+          <MessageScrollerContent className="mx-auto w-full max-w-3xl gap-4 p-4" data-region="chat-content">
             {placed.above.map((m) => (
               <StatusRow key={`k${m.key}`} marker={m} />
             ))}
             {rows.map((row, k) => (
               <Fragment key={row.key}>
-                <MessageScrollerItem data-log-index={row.id} messageId={row.key} scrollAnchor={row.kind === "user"}>
+                <MessageScrollerItem data-kind={row.kind} data-log-index={row.id} messageId={row.key} scrollAnchor={row.kind === "user"}>
                   <ChatRow
                     row={row}
                     streaming={row.key === draftKey}
@@ -301,10 +362,10 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
             ))}
           </MessageScrollerContent>
         </MessageScrollerViewport>
-        <MessageScrollerButton />
+        <MessageScrollerButton className="size-10 rounded-full border bg-popover text-popover-foreground shadow-md" />
       </MessageScroller>
 
-      <div className="space-y-2 border-t bg-background p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+      <div className="mx-auto w-full max-w-3xl space-y-2 bg-background p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]" data-slot="chat-dock" ref={dock}>
         {line !== null && (
           <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground" data-testid="status" role="status">
             {busy && <Spinner className="size-3" />}

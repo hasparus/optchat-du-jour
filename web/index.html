@@ -14,6 +14,18 @@
         const dark = saved ? saved === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
         document.documentElement.classList.toggle("dark", dark);
       } catch {}
+      // the design direction on trial (src/lib/look.ts): ?variant=a|b|c, kept; ?variant= clears it
+      (() => {
+        const ok = (v) => v === "a" || v === "b" || v === "c";
+        const asked = new URLSearchParams(location.search).get("variant");
+        let kept = null;
+        try {
+          if (asked !== null) ok(asked) ? localStorage.setItem("variant", asked) : localStorage.removeItem("variant");
+          kept = localStorage.getItem("variant");
+        } catch {}
+        const v = asked ?? kept;
+        if (ok(v)) document.documentElement.dataset.variant = v;
+      })();
     </script>
   </head>
   <body>

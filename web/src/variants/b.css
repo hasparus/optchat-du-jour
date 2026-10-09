@@ -1,0 +1,254 @@
+/* Variant B, "Ledger": dense, for the hours at the desk. The log is append-only and every entry has
+   a permanent index, the same `i` the Memory screen's `id+n` names and zoom takes; here each row
+   wears it in a gutter, so a summary line, a zoom and the chat point at the same numbers. Rows
+   are ruled, not boxed; your turns are a tinted band with the index in the accent. One family in
+   two voices: Recursive's sans for prose, its MONO axis for indices, tool calls and code. Slate,
+   not black; one teal accent, kept for what is live: running, focus, send.
+   Opt in with ?variant=b (src/lib/look.ts). Unlayered, so it wins over Tailwind's utilities. */
+
+:root[data-variant="b"] {
+  --background: oklch(0.975 0.003 230);
+  --foreground: oklch(0.21 0.01 250);
+  --card: oklch(0.995 0.001 230);
+  --card-foreground: oklch(0.21 0.01 250);
+  --popover: oklch(0.995 0.001 230);
+  --popover-foreground: oklch(0.21 0.01 250);
+  --primary: oklch(0.5 0.1 200);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.94 0.008 220);
+  --secondary-foreground: oklch(0.21 0.01 250);
+  --muted: oklch(0.94 0.008 220);
+  --muted-foreground: oklch(0.48 0.012 250);
+  --accent: oklch(0.92 0.012 220);
+  --accent-foreground: oklch(0.21 0.01 250);
+  --border: oklch(0.9 0.006 240);
+  --input: oklch(0.8 0.01 240);
+  --ring: oklch(0.5 0.1 200);
+  --focus: oklch(0.5 0.1 200);
+  --radius: 0.3rem;
+  --mono: "OC Recursive", ui-monospace, "SF Mono", Menlo, monospace;
+  font-family: "OC Recursive", ui-sans-serif, system-ui, sans-serif;
+  font-variation-settings: "MONO" 0;
+}
+
+:root[data-variant="b"].dark {
+  --background: oklch(0.165 0.01 250);
+  --foreground: oklch(0.92 0.005 250);
+  --card: oklch(0.2 0.012 250);
+  --card-foreground: oklch(0.92 0.005 250);
+  --popover: oklch(0.21 0.012 250);
+  --popover-foreground: oklch(0.92 0.005 250);
+  --primary: oklch(0.8 0.12 190);
+  --primary-foreground: oklch(0.16 0.02 200);
+  --secondary: oklch(0.22 0.014 230);
+  --secondary-foreground: oklch(0.92 0.005 250);
+  --muted: oklch(0.22 0.014 230);
+  --muted-foreground: oklch(0.7 0.012 250);
+  --accent: oklch(0.25 0.016 230);
+  --accent-foreground: oklch(0.92 0.005 250);
+  --border: oklch(1 0 0 / 8%);
+  --input: oklch(1 0 0 / 16%);
+  --ring: oklch(0.8 0.12 190);
+  --focus: oklch(0.8 0.12 190);
+}
+
+/* the mono voice: code, indices, tool calls, data */
+[data-variant="b"] :is(.font-mono, code, pre, kbd, samp) {
+  font-family: var(--mono);
+  font-variation-settings: "MONO" 1;
+}
+[data-variant="b"] ::selection {
+  background: color-mix(in oklch, var(--primary) 28%, transparent);
+}
+
+/* a compact masthead */
+[data-variant="b"] [data-slot="tabs-list"] {
+  height: 2rem;
+  border-radius: 0.3rem;
+}
+[data-variant="b"] [data-slot="tabs-trigger"] {
+  border-radius: 0.2rem;
+  font-size: 0.8125rem;
+  letter-spacing: 0.01em;
+}
+@media (pointer: coarse) {
+  [data-variant="b"] [data-slot="tabs-list"] {
+    height: 2.75rem;
+  }
+}
+
+/* the ledger: ruled rows, each with its log index in the gutter */
+[data-variant="b"] [data-region="chat-content"] {
+  max-width: 60rem;
+  gap: 0;
+  padding: 0.25rem 0 1.5rem;
+}
+[data-variant="b"] [data-region="chat-content"] > [data-log-index] {
+  position: relative;
+  padding: 0.625rem 1rem 0.625rem 4rem;
+  border-top: 1px solid var(--border);
+}
+[data-variant="b"] [data-region="chat-content"] > [data-log-index]::before {
+  content: attr(data-log-index);
+  position: absolute;
+  top: 0.8rem;
+  left: 0;
+  width: 3rem;
+  color: var(--muted-foreground);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  font-variation-settings: "MONO" 1;
+  line-height: 1;
+  text-align: right;
+}
+[data-variant="b"] [data-region="chat-content"] > [data-kind="user"] {
+  background: var(--muted);
+}
+[data-variant="b"] [data-region="chat-content"] > [data-kind="user"]::before {
+  color: var(--primary);
+  font-weight: 700;
+}
+[data-variant="b"] [data-region="chat-content"] > [data-slot="marker"] {
+  padding: 0.375rem 1rem 0.375rem 4rem;
+  border-top: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-variation-settings: "MONO" 1;
+}
+
+/* every row is text in one column: no bubbles */
+[data-variant="b"] [data-region="chat-content"] [data-slot="message"] {
+  flex-direction: row;
+}
+[data-variant="b"] [data-region="chat-content"] [data-slot="message-content"] > *,
+[data-variant="b"] [data-region="chat-content"] [data-slot="bubble"] {
+  align-self: flex-start;
+  max-width: 100%;
+}
+[data-variant="b"] [data-region="chat-content"] [data-slot="bubble-content"] {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--foreground);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+[data-variant="b"] [data-kind="user"] [data-slot="bubble-content"] {
+  font-weight: 560;
+}
+[data-variant="b"] [data-kind="note"] [data-slot="message-header"] {
+  padding: 0;
+  color: var(--primary);
+  font-family: var(--mono);
+  font-variation-settings: "MONO" 1;
+}
+[data-variant="b"] [data-testid="user-attachments"] {
+  justify-content: flex-start;
+}
+[data-variant="b"] [data-kind="talk"] [data-slot="message-content"] {
+  gap: 0.25rem;
+}
+[data-variant="b"] [data-slot="message-actions"] {
+  margin-left: -0.5rem;
+}
+[data-variant="b"] [data-slot="message-actions"] button {
+  width: 1.75rem;
+  height: 1.75rem;
+  color: var(--muted-foreground);
+}
+@media (pointer: coarse) {
+  [data-variant="b"] [data-slot="message-actions"] button {
+    width: 2.5rem;
+    height: 2.5rem;
+  }
+}
+
+/* a tool call: one mono line, its state a word in the accent while it runs */
+[data-variant="b"] [data-slot="tool"] {
+  border: 0;
+  border-radius: 0;
+}
+[data-variant="b"] [data-slot="tool"] > [data-slot="collapsible-trigger"] {
+  padding: 0;
+  border-radius: 0.2rem;
+}
+[data-variant="b"] [data-slot="tool"] > [data-slot="collapsible-trigger"] .font-mono {
+  font-size: 0.75rem;
+}
+[data-variant="b"] [data-slot="tool"] [data-slot="badge"] {
+  padding: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  font-variation-settings: "MONO" 1;
+}
+[data-variant="b"] [data-slot="tool"] [data-slot="badge"][data-state="running"] {
+  color: var(--primary);
+}
+[data-variant="b"] [data-slot="tool"] [data-slot="badge"] svg {
+  display: none;
+}
+[data-variant="b"] [data-slot="tool"] > [data-slot="collapsible-content"] {
+  padding: 0.5rem 0 0;
+}
+[data-variant="b"] [data-streamdown="code-block"],
+[data-variant="b"] [data-streamdown="table-wrapper"] {
+  border-radius: 0.3rem;
+}
+
+/* the composer: tight, square, its hints in the mono voice */
+[data-variant="b"] [data-slot="chat-dock"] {
+  max-width: 60rem;
+}
+[data-variant="b"] [data-slot="chat-dock"] [data-slot="input-group"] {
+  border-radius: 0.3rem;
+  background: var(--card);
+  box-shadow: none;
+}
+[data-variant="b"] [data-slot="chat-dock"] [data-slot="input-group-control"] {
+  font-size: 0.875rem;
+}
+@media (pointer: coarse) {
+  [data-variant="b"] [data-slot="chat-dock"] [data-slot="input-group-control"] {
+    font-size: 1rem; /* under 16 px, iOS zooms the page into the field */
+  }
+}
+[data-variant="b"] [data-slot="chat-dock"] [data-slot="input-group"] button[type="submit"],
+[data-variant="b"] [data-slot="chat-dock"] [data-slot="input-group"] button[aria-label="Stop"] {
+  border-radius: 0.25rem;
+}
+[data-variant="b"] :is([data-testid="composer-hint"], [data-testid="status"]) {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  font-variation-settings: "MONO" 1;
+}
+[data-variant="b"] [data-testid="status"] {
+  color: var(--primary);
+}
+
+/* stats and memory: the same rules and figures */
+[data-variant="b"] [data-slot="card"] {
+  border-radius: 0.3rem;
+  box-shadow: none;
+}
+
+/* a phone: a narrower gutter */
+@media (max-width: 640px) {
+  [data-variant="b"] [data-region="chat-content"] > [data-log-index] {
+    padding: 0.5rem 0.75rem 0.5rem 2.75rem;
+  }
+  [data-variant="b"] [data-region="chat-content"] > [data-log-index]::before {
+    top: 0.7rem;
+    width: 2.1rem;
+    font-size: 0.625rem;
+  }
+  [data-variant="b"] [data-region="chat-content"] > [data-slot="marker"] {
+    padding-left: 2.75rem;
+  }
+  [data-variant="b"] [data-region="chat-content"] [data-slot="bubble-content"] {
+    font-size: 0.9375rem;
+  }
+}

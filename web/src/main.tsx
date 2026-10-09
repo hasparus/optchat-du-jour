@@ -5,8 +5,15 @@ import { createRoot } from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
 import { App } from "./app";
 import { openLink } from "./lib/connection";
+import { syncThemeColor } from "./lib/look";
 import { makeSession } from "./lib/session";
 import "./index.css";
+// the proposed design directions (src/lib/look.ts): tokens and a few rules each, under
+// html[data-variant]; none applies by default
+import "./variants/fonts.css";
+import "./variants/a.css";
+import "./variants/b.css";
+import "./variants/c.css";
 
 const ws = new URL("/ws", location.href);
 ws.protocol = location.protocol === "https:" ? "wss:" : "ws:";
@@ -21,4 +28,5 @@ if (root) {
     </StrictMode>,
   );
 }
+syncThemeColor();
 void registerSW({ immediate: true });

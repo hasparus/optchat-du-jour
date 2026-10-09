@@ -33,6 +33,7 @@ function Reply({ text, streaming }: { text: string; streaming: boolean }) {
         <MessageActions>
           <MessageAction
             aria-pressed={raw}
+            className="text-muted-foreground pointer-coarse:size-10"
             label={raw ? "Show rendered" : "Show raw text"}
             onClick={() => {
               setRaw(!raw);

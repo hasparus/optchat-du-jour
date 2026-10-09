@@ -8,6 +8,7 @@ import { api } from "@/lib/api";
 import type { Uploader } from "@/lib/attach";
 import type { Link } from "@/lib/connection";
 import type { SessionStore } from "@/lib/session";
+import { syncThemeColor } from "@/lib/look";
 import { useApi } from "@/lib/use-api";
 import { MoonIcon, SunIcon } from "lucide-react";
 import { Component, lazy, type ReactNode, Suspense, useCallback, useState, useSyncExternalStore } from "react";
@@ -64,9 +65,10 @@ function ThemeToggle() {
       // no storage (a private window): the choice lasts this page
     }
     setDark(next);
+    syncThemeColor();
   };
   return (
-    <Button aria-label={dark ? "Light theme" : "Dark theme"} onClick={toggle} size="icon-sm" variant="ghost">
+    <Button aria-label={dark ? "Light theme" : "Dark theme"} className="pointer-coarse:size-10" onClick={toggle} size="icon-sm" variant="ghost">
       {dark ? <SunIcon /> : <MoonIcon />}
     </Button>
   );
@@ -90,13 +92,13 @@ export function App({ link, session, uploader }: { link: Link; session: SessionS
         }}
         value={tab}
       >
-        <header className="flex items-center gap-2 border-b px-2 pt-[max(0.25rem,env(safe-area-inset-top))] pb-1">
+        <header data-slot="app-header" className="flex items-center gap-2 border-b px-2 pt-[max(0.25rem,env(safe-area-inset-top))] pb-1">
           <span
             aria-label={`connection ${state.status}`}
             className={`size-2 shrink-0 rounded-full ${state.status === "open" ? "bg-green-600" : "bg-muted-foreground"}`}
             role="img"
           />
-          <TabsList className="min-w-0 flex-1">
+          <TabsList className="min-w-0 flex-1 pointer-coarse:h-11">
             {TABS.map((t) => (
               <TabsTrigger className="capitalize" key={t} value={t}>
                 {t}

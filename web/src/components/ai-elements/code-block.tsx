@@ -53,7 +53,7 @@ const highlighter = async (language: BundledLanguage) => {
   const cached = highlighters.get(language);
   if (cached) return cached;
   // shiki loads with the first block it highlights, not with the app
-  const made = import("shiki").then(async ({ createHighlighter }) => createHighlighter({ langs: [language], themes: ["github-light", "github-dark"] }));
+  const made = import("shiki").then(async ({ createHighlighter }) => createHighlighter({ langs: [language], themes: ["github-light-high-contrast", "github-dark-high-contrast"] }));
   highlighters.set(language, made);
   return made;
 };
@@ -71,7 +71,7 @@ const highlight = async (code: string, language: BundledLanguage): Promise<Token
   const h = await highlighter(language);
   const result = h.codeToTokens(code, {
     lang: h.getLoadedLanguages().includes(language) ? language : "text",
-    themes: { dark: "github-dark", light: "github-light" },
+    themes: { dark: "github-dark-high-contrast", light: "github-light-high-contrast" },
   });
   const tokenized = { bg: result.bg ?? "transparent", fg: result.fg ?? "inherit", tokens: result.tokens };
   cache.set(key, tokenized);
