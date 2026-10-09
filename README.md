@@ -60,3 +60,9 @@ cd web && bun run e2e   # Playwright: the real server, a fake claude, Chromium a
 cd web && bun run dev   # Vite, proxying /ws and /api to a server on 127.0.0.1:7700
 bun dev/latency.ts --fake   # turn latency over /ws (or --url ws://127.0.0.1:7700/ws)
 ```
+
+`/impeccable` in Claude Code is [Impeccable](https://impeccable.style)'s design skill, vendored in
+`.claude/skills/impeccable`. When it runs, it checks impeccable.style for updates
+(`IMPECCABLE_NO_UPDATE_CHECK=1` stops that), may download its engine into `~/.impeccable`, offers
+image generation billed to `OPENAI_API_KEY` if that is set, and tells the model to stop and ask
+you even in an autonomous session. Its `PROVENANCE.md` has the details.
