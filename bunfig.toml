@@ -1,5 +1,6 @@
 [test]
-# the vendored package's suite and the web UI's run with their own configs (see the test script)
-pathIgnorePatterns = ["vendor/**", "web/**"]
+# the vendored package's suite and the web UI's run with their own configs (see the test script);
+# the iOS app's run in its own check (mobile/check.ts, CI's mobile job)
+pathIgnorePatterns = ["vendor/**", "web/**", "mobile/**"]
 # no test reaches a real claude or a real key unless it says so (test/preload.ts)
 preload = ["./test/preload.ts"]

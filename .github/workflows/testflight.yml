@@ -1,0 +1,91 @@
+name: TestFlight
+
+# Builds the iOS app (mobile/) on EAS Build's Macs and hands it to TestFlight (docs/mobile.md). Never
+# on a push to a branch or on a PR: each run spends one of EAS's iOS builds (the free plan has 15 a
+# month). This runner is Linux and only uploads the source; Expo's Mac compiles, signs and uploads
+# to App Store Connect, so no macOS minutes are billed here.
+#
+# Needs, once (docs/mobile.md, "Setup"):
+#   - the secret EXPO_TOKEN: the access token of a robot user in the Expo organization that owns
+#     the project (Developer role), never a personal token (see below);
+#   - mobile/app.json linked to the EAS project (`bun run eas init --account <organization>`), and
+#     the app's App Store Connect id as ascAppId in mobile/eas.json's submit profile, both committed;
+#   - on EAS, from one `bun run eas credentials -p ios` by hand: the distribution certificate, the
+#     provisioning profile, and an App Store Connect API key for EAS Submit. No key is stored on
+#     GitHub, but it does reach this runner: with EXPO_TOKEN, eas-cli fetches the key's .p8 from EAS
+#     into memory to renew the profile and set up TestFlight's group. So EXPO_TOKEN is as strong as
+#     that App Manager key: use a robot user's token, scoped to this project (docs/mobile.md).
+
+on:
+  workflow_dispatch:
+    inputs:
+      wait:
+        description: Wait for EAS to finish (the run's result is then the build's and the upload's)
+        type: boolean
+        default: false
+  push:
+    tags: ["ios-v*"]
+
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  testflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: mobile
+    env:
+      EXPO_NO_TELEMETRY: 1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # the same checks as CI's mobile job but lint: a build that can't pass them isn't worth one
+      # of the month's builds
+      - name: Check
+        env:
+          EXPO_OFFLINE: 1
+        run: bun run check
+
+      - name: Settings are in place
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          failed=0
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "::error::The secret EXPO_TOKEN is not set (docs/mobile.md, Setup)"
+            failed=1
+          fi
+          if [ -z "$(jq -r '.expo.extra.eas.projectId // empty' app.json)" ]; then
+            echo "::error::mobile/app.json has no EAS project: run 'bun run eas init --account <organization>' in mobile/ once and commit app.json"
+            failed=1
+          fi
+          if [ -z "$(jq -r '.submit.production.ios.ascAppId // empty' eas.json)" ]; then
+            echo "::error::mobile/eas.json has no submit.production.ios.ascAppId: the app's Apple ID from App Store Connect (App Information)"
+            failed=1
+          fi
+          exit "$failed"
+
+      - name: Build on EAS and submit to TestFlight
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          WAIT: ${{ inputs.wait && '--wait' || '--no-wait' }}
+        run: |
+          note="$(git log -1 --pretty=%s) ($(git rev-parse --short HEAD))"
+          bun run eas build --platform ios --profile production --non-interactive --auto-submit \
+            "$WAIT" --message="$note" --what-to-test="$note"
