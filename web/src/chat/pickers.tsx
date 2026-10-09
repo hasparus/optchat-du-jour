@@ -18,7 +18,7 @@ export function FollowUps({ link, followUp }: { readonly link: Link; readonly fo
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <InputGroupButton aria-label={`Follow-ups: ${followUp}`} size="xs" title="What a message sent while a turn runs does" variant="ghost">
+        <InputGroupButton aria-label={`Follow-ups: ${followUp}`} className="pointer-coarse:h-10 pointer-coarse:px-2.5" size="xs" title="What a message sent while a turn runs does" variant="ghost">
           <SlidersHorizontalIcon className="hidden min-[400px]:block" />
           <span className="capitalize">{followUp}</span>
         </InputGroupButton>
@@ -64,7 +64,7 @@ type CompactSelectProps = ComponentProps<"select"> & { readonly label: string; r
 export function CompactSelect({ label, shown, title, testId, down = false, children, ...props }: CompactSelectProps) {
   return (
     <span
-      className="relative flex h-6 max-w-28 min-w-0 items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground has-[select:focus-visible]:ring-[3px] has-[select:focus-visible]:ring-ring/50"
+      className="relative flex h-6 max-w-28 min-w-0 items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground has-[select:focus-visible]:outline-2 has-[select:focus-visible]:outline-offset-2 has-[select:focus-visible]:outline-(--focus) pointer-coarse:h-10 pointer-coarse:px-2 pointer-coarse:text-sm"
       data-testid={testId}
       title={title}
     >

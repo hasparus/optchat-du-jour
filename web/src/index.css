@@ -57,13 +57,14 @@
     --secondary: oklch(0.97 0 0);
     --secondary-foreground: oklch(0.205 0 0);
     --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
+    --muted-foreground: oklch(0.52 0 0); /* 0.556 was 4.3:1 on --muted, under AA */
     --accent: oklch(0.97 0 0);
     --accent-foreground: oklch(0.205 0 0);
     --destructive: oklch(0.577 0.245 27.325);
     --border: oklch(0.922 0 0);
     --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
+    --ring: oklch(0.556 0 0);
+    --focus: oklch(0.42 0 0);
     --chart-1: #2a78d6;
     --chart-2: #eb6834;
     --chart-3: #1baf7a;
@@ -90,7 +91,8 @@
     --destructive: oklch(0.704 0.191 22.216);
     --border: oklch(1 0 0 / 10%);
     --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
+    --ring: oklch(0.708 0 0);
+    --focus: oklch(0.86 0 0);
     --chart-1: #3987e5;
     --chart-2: #d95926;
     --chart-3: #199e70;
@@ -105,7 +107,7 @@
     @apply h-full;
   }
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border outline-ring;
     }
   body {
     @apply bg-background text-foreground;
@@ -113,4 +115,41 @@
   html {
     @apply font-sans;
     }
+}
+/* Focus you can see (WCAG 2.4.7, 1.4.11): shadcn's rings are the ring colour at half strength,
+   ~1.5:1 against the page in both themes. Unlayered, so it wins over a component's outline-none;
+   the textarea is left out, its input group shows focus instead. */
+:where(button, a[href], summary, [role="tab"], [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+/* Streamdown sets a code block or a table in a bordered box inside a bordered box (a card in a
+   card); the inner edge is enough */
+[data-streamdown="code-block"],
+[data-streamdown="table-wrapper"] {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+/* prose at a readable measure (65ch of "0", ~75 characters of text), however wide the column;
+   tables and code keep the width */
+[data-kind="talk"] [data-slot="bubble-content"] :is(p, li, blockquote, h1, h2, h3, h4) {
+  max-width: 65ch;
+}
+[data-slot="message-scroller-viewport"]:focus-visible {
+  outline-offset: -2px;
+}
+
+/* A reply's raw-text toggle (SPEC "Web UI": rendering never hides what the model wrote) is under
+   every reply; with a mouse it shows on hover or focus, on a touch screen it stays */
+@media (pointer: fine) {
+  [data-slot="message-actions"] {
+    opacity: 0;
+    transition: opacity 150ms ease-out;
+  }
+  [data-slot="message"]:hover [data-slot="message-actions"],
+  [data-slot="message-actions"]:focus-within,
+  [data-slot="message-actions"]:has([aria-pressed="true"]) {
+    opacity: 1;
+  }
 }

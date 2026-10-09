@@ -148,7 +148,7 @@ export const PromptInputAttachment = ({ name, kind, preview, progress, done, err
       </div>
       <button
         aria-label={`Remove ${name}`}
-        className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full border bg-background text-foreground shadow-xs"
+        className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full border bg-background text-foreground shadow-xs after:absolute after:-inset-2.5 pointer-coarse:size-6"
         onClick={onRemove}
         type="button"
       >
@@ -159,7 +159,7 @@ export const PromptInputAttachment = ({ name, kind, preview, progress, done, err
           aria-label={`High detail for ${name}`}
           aria-pressed={high}
           className={cn(
-            "absolute bottom-1 left-1 rounded-sm border px-1 text-[10px]/4 font-semibold shadow-xs",
+            "absolute bottom-1 left-1 rounded-sm border px-1 text-[10px]/4 font-semibold shadow-xs after:absolute after:-inset-2",
             high ? "border-primary bg-primary text-primary-foreground" : "bg-background/90 text-foreground",
           )}
           disabled={!onHigh}

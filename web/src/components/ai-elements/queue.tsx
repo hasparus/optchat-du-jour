@@ -31,7 +31,7 @@ export type QueueItemActionProps = ComponentProps<"button">;
 export const QueueItemAction = ({ className, ...props }: QueueItemActionProps) => (
   <button
     className={cn(
-      "-my-1 flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50 [&_svg]:size-4",
+      "-my-1 flex size-8 pointer-coarse:size-10 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50 [&_svg]:size-4",
       className,
     )}
     type="button"

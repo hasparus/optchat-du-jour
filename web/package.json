@@ -12,6 +12,10 @@
   },
   "dependencies": {
     "@ag-ui/core": "1.0.1",
+    "@fontsource-variable/atkinson-hyperlegible-next": "5.3.0",
+    "@fontsource-variable/hanken-grotesk": "5.3.0",
+    "@fontsource-variable/literata": "5.3.0",
+    "@fontsource-variable/recursive": "5.3.0",
     "@shadcn/react": "0.3.1",
     "@streamdown/code": "2.0.0",
     "class-variance-authority": "0.7.1",

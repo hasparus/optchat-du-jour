@@ -15,7 +15,7 @@ export type ToolState = "running" | "done" | "ended";
 export type ToolProps = ComponentProps<typeof Collapsible>;
 
 export const Tool = ({ className, ...props }: ToolProps) => (
-  <Collapsible className={cn("group w-full rounded-md border", className)} {...props} />
+  <Collapsible className={cn("group w-full rounded-md border", className)} data-slot="tool" {...props} />
 );
 
 const statusLabels = {
@@ -31,7 +31,7 @@ const statusIcons = {
 } satisfies Record<ToolState, ReactNode>;
 
 export const getStatusBadge = (status: ToolState) => (
-  <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">
+  <Badge className="gap-1.5 rounded-full text-xs" data-state={status} variant="secondary">
     {statusIcons[status]}
     {statusLabels[status]}
   </Badge>

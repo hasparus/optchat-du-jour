@@ -258,7 +258,7 @@ export function Composer({ link, session, state, busy, open, devices, device, on
         </div>
         <p
           aria-live="polite"
-          className={cn("w-full px-1 text-xs", blocked ? "text-muted-foreground" : "hidden text-muted-foreground/80 pointer-fine:sm:block")}
+          className={cn("w-full px-1 text-xs", blocked ? "text-muted-foreground" : "hidden text-muted-foreground pointer-fine:sm:block")}
           data-testid="composer-hint"
           id={hint}
         >

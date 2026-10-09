@@ -83,6 +83,11 @@ test("cancel stops the turn; the next message gets its own bubble", async ({ pag
 test.describe("a long log", () => {
   test.use({ seeded: 300 });
 
+  test("the chat opens at its newest message, not at the oldest one loaded", async ({ page }) => {
+    await open(page);
+    await expect(page.getByText("m299", { exact: true })).toBeInViewport();
+  });
+
   test("a reconnect with older history loaded leaves no gap", async ({ page, server }) => {
     await open(page);
     await expect(page.getByText("m299", { exact: true })).toBeVisible();
@@ -129,6 +134,28 @@ test("the stats and devices screens render", async ({ page }) => {
   await expect(page.locator(".recharts-surface").first()).toBeVisible();
   await page.getByRole("tab", { name: "Devices" }).click();
   await expect(page.getByTestId("devices")).toContainText("macbook");
+});
+
+test("an empty log says what this chat is, until the first message", async ({ page }) => {
+  await open(page);
+  await expect(page.getByTestId("empty-chat")).toBeVisible();
+  await send(page, "first words");
+  await expect(page.getByTestId("user-message").filter({ hasText: "first words" })).toBeVisible();
+  await expect(page.getByTestId("empty-chat")).toBeHidden();
+});
+
+test("?variant= picks a proposed look and keeps it; ?variant= alone clears it", async ({ page }) => {
+  await page.goto("/?variant=b");
+  await expect(page.locator("html")).toHaveAttribute("data-variant", "b");
+  await page.goto("/");
+  await expect(page.locator("html")).toHaveAttribute("data-variant", "b");
+  await page.goto("/?variant=");
+  await expect(page.locator("html")).not.toHaveAttribute("data-variant", /./);
+  // the Devices screen's picker, for the installed app with no address bar
+  await expect(page.getByRole("img", { name: "connection open" })).toBeVisible();
+  await page.getByRole("tab", { name: "Devices" }).click();
+  await page.getByTestId("look").getByRole("combobox").selectOption("c");
+  await expect(page.locator("html")).toHaveAttribute("data-variant", "c");
 });
 
 test("a reload shows the log again from the snapshot", async ({ page, server }) => {

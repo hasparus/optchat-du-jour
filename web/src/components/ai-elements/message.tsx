@@ -14,7 +14,7 @@ import { defaultRehypePlugins, Streamdown, type StreamdownProps } from "streamdo
 export type MessageActionsProps = ComponentProps<"div">;
 
 export const MessageActions = ({ className, children, ...props }: MessageActionsProps) => (
-  <div className={cn("flex items-center gap-1", className)} {...props}>
+  <div className={cn("flex items-center gap-1", className)} data-slot="message-actions" {...props}>
     {children}
   </div>
 );
@@ -35,6 +35,9 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 // Streamdown's code highlighting, loaded with the first fenced block rather than with the app:
 // shiki is most of its weight. Until it is in, a block shows as plain text.
 let loaded: CodeHighlighterPlugin | null = null;
+// GitHub's high-contrast pair: the default github-light sets strings and numbers in #e36209, 3.5:1
+// on white, under WCAG AA's 4.5:1 for text
+const THEMES: ReturnType<CodeHighlighterPlugin["getThemes"]> = ["github-light-high-contrast", "github-dark-high-contrast"];
 let loading: Promise<CodeHighlighterPlugin> | null = null;
 const loadCode = async () => {
   loading ??= import("@streamdown/code").then((m) => {
@@ -50,7 +53,7 @@ const loadCode = async () => {
 };
 const lazyCode: CodeHighlighterPlugin = {
   getSupportedLanguages: () => loaded?.getSupportedLanguages() ?? [],
-  getThemes: () => loaded?.getThemes() ?? ["github-light", "github-dark"],
+  getThemes: () => THEMES,
   highlight: (options, callback) => {
     if (loaded) return loaded.highlight(options, callback);
     loadCode().then(
