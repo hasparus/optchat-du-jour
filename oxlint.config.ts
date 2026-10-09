@@ -3,7 +3,13 @@
 // vendor/oxlint-config/package.json. The lint script passes --disable-nested-config: oxlint would
 // otherwise load the vendored package's own oxlint.config.ts as a nested config, and refuse it.
 import base, { ignorePatterns, overrides } from "@hasparus/oxlint-config";
+import { existsSync } from "node:fs";
 import { defineConfig } from "oxlint";
+
+// mobile/ (the iOS app) has its own dependencies, which the root install doesn't fetch, and its
+// type-aware rules need Expo's types. With them installed (`cd mobile && bun install`; CI's mobile
+// job) it is linted like the rest; without them it is left out rather than failed.
+const mobile = existsSync(new URL("mobile/node_modules/expo/package.json", import.meta.url)) ? [] : ["mobile"];
 
 // Sorting imports, keys and unions is churn, not review: every perfectionist rule is off.
 const unsorted = Object.fromEntries(
@@ -14,7 +20,7 @@ const unsorted = Object.fromEntries(
 
 export default defineConfig({
   extends: [base],
-  ignorePatterns: [...ignorePatterns, "vendor", "kernel/kernel.mjs"],
+  ignorePatterns: [...ignorePatterns, "vendor", "kernel/kernel.mjs", ...mobile],
   overrides: [
     ...overrides,
     // a script whose output is its report

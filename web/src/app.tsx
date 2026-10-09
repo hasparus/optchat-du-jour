@@ -10,7 +10,8 @@ import type { Link } from "@/lib/connection";
 import type { SessionStore } from "@/lib/session";
 import { syncThemeColor } from "@/lib/look";
 import { useApi } from "@/lib/use-api";
-import { MoonIcon, SunIcon } from "lucide-react";
+import { nativeShell } from "@/lib/shell";
+import { MoonIcon, ServerIcon, SunIcon } from "lucide-react";
 import { Component, lazy, type ReactNode, Suspense, useCallback, useState, useSyncExternalStore } from "react";
 import { Chat } from "./chat/chat";
 import { Devices } from "./devices/devices";
@@ -74,6 +75,17 @@ function ThemeToggle() {
   );
 }
 
+// in the iOS app: its server-address screen, over this page, the only way back to it once a server is set
+function ChangeServer() {
+  const shell = nativeShell();
+  if (shell === undefined) return null;
+  return (
+    <Button aria-label="Change server" onClick={shell.changeServer} size="icon-sm" variant="ghost">
+      <ServerIcon />
+    </Button>
+  );
+}
+
 export function App({ link, session, uploader }: { link: Link; session: SessionStore; uploader?: Uploader }) {
   const state = useSyncExternalStore(session.subscribe, session.get);
   const devices = useApi(api.devices);
@@ -105,6 +117,7 @@ export function App({ link, session, uploader }: { link: Link; session: SessionS
               </TabsTrigger>
             ))}
           </TabsList>
+          <ChangeServer />
           <ThemeToggle />
         </header>
         <TabsContent className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden" forceMount value="chat">

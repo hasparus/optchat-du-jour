@@ -3,7 +3,7 @@ import { EventType } from "@ag-ui/core";
 import type { Kind, UsageRecord } from "@wire";
 import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { ack, type Entry, fakeServer, IDLE, parseSent, said, snapshot, state } from "../test/fixture";
-import { openLink } from "./connection";
+import { openLink, STALE_MS, wakeOnReturn } from "./connection";
 import { sentKey } from "./draft";
 import { applyEvent, applyPage, emptyLog, hole, type Log, MAX_HELD, tip, trimHeld, visible, withDraft } from "./log";
 import type { Inbound } from "./protocol";
@@ -115,6 +115,80 @@ describe("link", () => {
     expect(link.abort()).toBe(true);
     expect(server.sent[1]).toBe('{"type":"abort"}');
     link.close();
+  });
+
+  test("wake: a link that is down connects again at once, not after its backoff; closed for good, it stays closed", async () => {
+    const server = fakeServer(() => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT }]);
+    const link = openLink("ws://x/ws", { retryMs: 60_000, socket: server.socket });
+    await tick();
+    server.drop();
+    await tick();
+    expect(link.status()).toBe("closed"); // the next try is a minute away
+    link.wake(0);
+    await tick();
+    expect(server.sockets).toHaveLength(2);
+    expect(link.status()).toBe("open");
+    link.close();
+    link.wake(Number.POSITIVE_INFINITY);
+    expect(server.sockets).toHaveLength(2);
+  });
+
+  test("wake: an open link away STALE_MS or more is opened afresh (iOS may have killed it silently); a short absence, or one still connecting, is left alone", async () => {
+    const server = fakeServer(() => [snapshot([{ kind: "user", text: "old" }]), { snapshot: { ...IDLE, messages: 1 }, type: EventType.STATE_SNAPSHOT }]);
+    const link = openLink("ws://x/ws", { socket: server.socket });
+    link.wake(Number.POSITIVE_INFINITY); // still connecting: no second socket
+    expect(server.sockets).toHaveLength(1);
+    const statuses: string[] = [];
+    link.onStatus((s) => {
+      statuses.push(s);
+    });
+    const snapshots: Inbound[] = [];
+    link.listen((e) => {
+      if (e.type === EventType.MESSAGES_SNAPSHOT) snapshots.push(e);
+    });
+    await tick();
+    link.wake(STALE_MS - 1);
+    expect(server.sockets).toHaveLength(1);
+    link.wake(STALE_MS);
+    await tick();
+    expect(server.sockets).toHaveLength(2);
+    expect(server.sockets[0]?.readyState).toBe(3); // the suspect socket is closed, not left open
+    expect(statuses).toEqual(["open", "connecting", "open"]); // its close is not this link's
+    expect(snapshots).toHaveLength(2); // the new connection's greeting resyncs the log
+    link.send("after the wake", "id-w");
+    expect(parseSent(server.sent.at(-1) ?? "{}").messages?.at(-1)).toMatchObject({ content: "after the wake" });
+    link.close();
+  });
+
+  test("wakeOnReturn: wakes with how long the page was hidden, and as if away for ever when the network comes back", () => {
+    const woken: number[] = [];
+    let state: DocumentVisibilityState = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+    let clock = 1000;
+    const stop = wakeOnReturn(
+      {
+        wake: (ms) => {
+          woken.push(ms);
+        },
+      },
+      document,
+      () => clock,
+    );
+    try {
+      state = "hidden";
+      document.dispatchEvent(new Event("visibilitychange"));
+      clock += 45_000;
+      state = "visible";
+      document.dispatchEvent(new Event("visibilitychange"));
+      globalThis.dispatchEvent(new Event("online"));
+      expect(woken).toEqual([45_000, Number.POSITIVE_INFINITY]);
+      stop();
+      document.dispatchEvent(new Event("visibilitychange"));
+      expect(woken).toHaveLength(2);
+    } finally {
+      stop();
+      Reflect.deleteProperty(document, "visibilityState"); // the prototype's getter again
+    }
   });
 
   test("a frame that isn't one of ours is dropped with a warning, not passed on", async () => {

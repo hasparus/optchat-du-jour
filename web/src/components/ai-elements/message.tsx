@@ -3,6 +3,7 @@
 // pieces (Message, MessageContent) come from shadcn's chat components instead, and the branch
 // switcher is gone: the log has no branches (SPEC "Web UI").
 import { Button } from "@/components/ui/button";
+import { nativeShell } from "@/lib/shell";
 import { cn } from "@/lib/utils";
 import type { CodeHighlighterPlugin } from "@streamdown/code";
 import type { ComponentProps } from "react";
@@ -80,9 +81,20 @@ const rehypePlugins: StreamdownProps["rehypePlugins"] = [
   [harden, { allowDataImages: false, allowedImagePrefixes: [], allowedLinkPrefixes: ["*"], allowedProtocols: ["*"], defaultOrigin: undefined }],
 ];
 
+// Streamdown's download buttons save a blob: URL through a link click. The iOS app's WebView has
+// no downloads and loads nothing but the server's `/` in its top frame (mobile/src/server-url.ts),
+// so there they would do nothing: inside the app they are hidden, and copy stays.
+const NO_DOWNLOADS: StreamdownProps["controls"] = { code: { download: false }, image: { download: false }, mermaid: { download: false }, table: { download: false } };
+
 export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (
-    <Streamdown className={cn("size-full *:first:mt-0 *:last:mb-0", className)} plugins={plugins} rehypePlugins={rehypePlugins} {...props} />
+    <Streamdown
+      className={cn("size-full *:first:mt-0 *:last:mb-0", className)}
+      controls={nativeShell() === undefined ? undefined : NO_DOWNLOADS}
+      plugins={plugins}
+      rehypePlugins={rehypePlugins}
+      {...props}
+    />
   ),
   (prev, next) => prev.children === next.children && prev.isAnimating === next.isAnimating,
 );

@@ -1,0 +1,29 @@
+{
+  "name": "optchat-mobile",
+  "description": "the iOS app: a WebView on your own optchat server, built and sent to TestFlight by EAS (docs/mobile.md)",
+  "private": true,
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "eas": "eas",
+    "typecheck": "tsc -b",
+    "check": "bun check.ts"
+  },
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "expo": "57.0.24",
+    "expo-status-bar": "57.0.1",
+    "expo-web-browser": "57.0.3",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-webview": "13.16.1"
+  },
+  "devDependencies": {
+    "@expo/eas-json": "24.5.0",
+    "@types/bun": "1.4.2",
+    "@types/react": "19.2.18",
+    "eas-cli": "24.7.0",
+    "typescript": "5.9.3"
+  }
+}
