@@ -1,0 +1,7 @@
+{
+  // what runs under Bun: check.ts and the tests
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": { "types": ["bun"] },
+  "include": ["check.ts", "src/**/*.test.ts"],
+  "exclude": []
+}

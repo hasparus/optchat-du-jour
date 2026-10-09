@@ -26,9 +26,12 @@ export type Link = {
   readonly listen: (listener: (event: Inbound) => void) => () => void;
   readonly onStatus: (listener: (status: LinkStatus) => void) => () => void;
   readonly status: () => LinkStatus;
-  // the page is back in front (a phone unlocked, the iOS app reopened): a link that is down tries
-  // again now, not after a backoff that grew while nothing could connect
-  readonly wake: () => void;
+  // the page is back in front after `awayMs` hidden (wakeOnReturn). A link that is down tries again
+  // now, not after a backoff that grew while nothing could connect. One that says it is open but
+  // was away STALE_MS or more is opened afresh: iOS suspends a hidden page and may kill its socket
+  // without a close event, and a socket like that would sit "open" and dead. The server greets every
+  // connection with a snapshot, so nothing is lost. A link still connecting is left to finish.
+  readonly wake: (awayMs: number) => void;
   readonly close: () => void;
 };
 
@@ -46,6 +49,7 @@ export type LinkOptions = {
 };
 
 const MAX_RETRY_MS = 10_000;
+export const STALE_MS = 30_000; // hidden this long, an open socket is no longer trusted
 
 export function openLink(url: string, options: LinkOptions = {}): Link {
   const open = options.socket ?? ((target: string): SocketLike => new WebSocket(target));
@@ -137,9 +141,17 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
     configure: (change) => {
       deliver(settingsFrame(change));
     },
-    wake: () => {
-      if (closed || status !== "closed") return;
-      clearTimeout(timer);
+    wake: (awayMs) => {
+      if (closed) return;
+      if (status === "closed") {
+        clearTimeout(timer);
+      } else if (status === "open" && awayMs >= STALE_MS) {
+        const stale = socket;
+        socket = null; // its close event, if one ever comes, is then not this link's
+        stale?.close();
+      } else {
+        return;
+      }
       retry = firstRetry;
       connect();
     },
@@ -149,5 +161,30 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
       return true;
     },
     status: () => status,
+  };
+}
+
+// The page's side of wake: how long it was hidden, from visibilitychange (Safari, the PWA and the
+// iOS app's WKWebView all fire it when iOS sends them to the background), and `online` after the
+// network was gone, when any socket is suspect. Returns the unsubscribe.
+export function wakeOnReturn(link: Pick<Link, "wake">, doc: Document = document, now: () => number = Date.now): () => void {
+  let hiddenAt = doc.visibilityState === "hidden" ? now() : null;
+  const visibility = () => {
+    if (doc.visibilityState === "hidden") {
+      hiddenAt = now();
+      return;
+    }
+    link.wake(hiddenAt === null ? 0 : now() - hiddenAt);
+    hiddenAt = null;
+  };
+  const online = () => {
+    link.wake(Number.POSITIVE_INFINITY);
+  };
+  const view = doc.defaultView;
+  doc.addEventListener("visibilitychange", visibility);
+  view?.addEventListener("online", online);
+  return () => {
+    doc.removeEventListener("visibilitychange", visibility);
+    view?.removeEventListener("online", online);
   };
 }

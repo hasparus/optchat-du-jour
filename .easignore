@@ -1,0 +1,10 @@
+# What EAS Build uploads from this repository (its root, as EAS archives the whole git repo). With
+# this file there, EAS reads no .gitignore, so this is the whole list. The iOS app needs only
+# mobile/, without what is generated or installed there.
+/*
+!/mobile/
+/mobile/node_modules/
+/mobile/.expo/
+/mobile/ios/
+/mobile/android/
+/mobile/*.tsbuildinfo

@@ -99,8 +99,6 @@ test("in the iOS app's WebView the header offers its server screen; in a browser
     changeServer: () => {
       asked.push("change-server");
     },
-    platform: "ios",
-    version: "0.1.0",
   };
   try {
     start();

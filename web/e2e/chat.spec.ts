@@ -209,7 +209,7 @@ test("in the iOS app's WebView the header's server button asks the app for its s
   await page.exposeFunction("rnPost", (data: string) => {
     posted.push(data);
   });
-  await page.addInitScript(`window.ReactNativeWebView = { postMessage: function (data) { window.rnPost(data); } };\n${shellScript("0.1.0")}`);
+  await page.addInitScript(`window.ReactNativeWebView = { postMessage: function (data) { window.rnPost(data); } };\n${shellScript}`);
   await open(page);
   await page.getByRole("button", { name: "Change server" }).click();
   await expect.poll(() => posted).toEqual([CHANGE_SERVER]);

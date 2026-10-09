@@ -73,7 +73,7 @@ function ThemeToggle() {
   );
 }
 
-// in the iOS app: its server-address screen, the only way back to it once a server is set
+// in the iOS app: its server-address screen, over this page, the only way back to it once a server is set
 function ChangeServer() {
   const shell = nativeShell();
   if (shell === undefined) return null;

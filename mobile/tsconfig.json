@@ -1,12 +1,6 @@
 {
-  "extends": "expo/tsconfig.base",
-  "compilerOptions": {
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "noFallthroughCasesInSwitch": true,
-    "noImplicitOverride": true,
-    "verbatimModuleSyntax": true,
-    "types": ["bun"]
-  },
-  "include": ["*.ts", "src"]
+  // two programs: the app (tsconfig.app.json, React Native's types) and what runs under Bun,
+  // check.ts and the tests (tsconfig.bun.json, Bun's types)
+  "files": [],
+  "references": [{ "path": "./tsconfig.app.json" }, { "path": "./tsconfig.bun.json" }]
 }

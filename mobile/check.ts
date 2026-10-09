@@ -18,7 +18,8 @@ const run = (...cmd: string[]) => {
   check(done.exitCode === 0, cmd.join(" "));
 };
 
-run("bunx", "tsc", "-p", ".");
+run("bunx", "tsc", "-p", "tsconfig.app.json"); // the app, with React Native's types only
+run("bunx", "tsc", "-p", "tsconfig.bun.json"); // this file and the tests, with Bun's
 run("bun", "test");
 
 // the profiles the TestFlight workflow builds and submits with

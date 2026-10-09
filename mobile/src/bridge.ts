@@ -1,27 +1,25 @@
 // What the app tells the page it shows, and what it takes back. Before the page's scripts run it
-// defines window.optchatShell (web/src/lib/shell.ts reads it): the app's platform and version, and
-// changeServer, which posts the one message the app answers. On every return to the foreground it
-// fires optchat:wake, so a dropped /ws link retries at once. bridge.test.ts runs these scripts
-// against web/src/lib/shell.ts.
+// defines window.optchatShell (web/src/lib/shell.ts reads it), whose changeServer posts the one
+// message the app answers. bridge.test.ts runs the script against web/src/lib/shell.ts.
+import { sameOrigin } from "./server-url";
 
-// the global and the event, as web/src/lib/shell.ts names them
+// the global, as web/src/lib/shell.ts names it
 export const SHELL_GLOBAL = "optchatShell";
-export const WAKE_EVENT = "optchat:wake";
 
 // the one message the page sends, exactly as the shell's changeServer posts it
 export const CHANGE_SERVER = JSON.stringify({ type: "change-server" });
 
-// the script that runs before the page's own (injectedJavaScriptBeforeContentLoaded); it ends in
-// true, as react-native-webview asks of injected scripts
-export function shellScript(version: string): string {
-  const shell = `{
-    platform: "ios",
-    version: ${JSON.stringify(version)},
-    changeServer: function () {
-      window.ReactNativeWebView.postMessage(${JSON.stringify(CHANGE_SERVER)});
-    },
-  }`;
-  return `window[${JSON.stringify(SHELL_GLOBAL)}] = Object.freeze(${shell});\ntrue;`;
-}
+// the script that runs before the page's own (injectedJavaScriptBeforeContentLoaded, main frame
+// only); it ends in true, as react-native-webview asks of injected scripts
+export const shellScript = `window[${JSON.stringify(SHELL_GLOBAL)}] = Object.freeze({
+  changeServer: function () {
+    window.ReactNativeWebView.postMessage(${JSON.stringify(CHANGE_SERVER)});
+  },
+});
+true;`;
 
-export const wakeScript = `window.dispatchEvent(new Event(${JSON.stringify(WAKE_EVENT)}));\ntrue;`;
+// A message from a page asks for the server screen only when it is that message and the page that
+// sent it is the server's own: react-native-webview hands every frame the same postMessage, and
+// says which page's URL a message came from.
+export const asksForServerScreen = (origin: string, message: { readonly url: string; readonly data: string }): boolean =>
+  message.data === CHANGE_SERVER && sameOrigin(origin, message.url);

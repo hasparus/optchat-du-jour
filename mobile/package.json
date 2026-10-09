@@ -1,12 +1,13 @@
 {
   "name": "optchat-mobile",
-  "description": "the iOS app: a WebView on your own optchat server, built and sent to TestFlight by EAS (README \"On your phone\")",
+  "description": "the iOS app: a WebView on your own optchat server, built and sent to TestFlight by EAS (docs/mobile.md)",
   "private": true,
   "type": "module",
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
-    "typecheck": "tsc -p .",
+    "eas": "eas",
+    "typecheck": "tsc -b",
     "check": "bun check.ts"
   },
   "dependencies": {

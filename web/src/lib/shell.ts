@@ -1,13 +1,11 @@
-// The iOS app (mobile/, README "On your phone") is a WebView on this page as the server serves it.
-// Before any script here runs it defines `optchatShell` on window: what the page may ask of the
-// app. In a browser or the PWA there is none, and nothing that uses it shows. mobile/src/bridge.ts
-// writes it; mobile/src/bridge.test.ts runs that script and reads it back through this module, so
-// the two can't drift.
+// The iOS app (mobile/, docs/mobile.md) is a WebView on this page as the server serves it. Before
+// any script here runs it defines `optchatShell` on window: what the page may ask of the app. In a
+// browser or the PWA there is none, and nothing that uses it shows. mobile/src/bridge.ts writes it;
+// mobile/src/bridge.test.ts runs that script and reads it back through this module, so the two
+// can't drift.
 
 export type Shell = {
-  readonly platform: string;
-  readonly version: string;
-  // back to the app's own screen for the server's address
+  // the app's own screen for the server's address, over the page
   readonly changeServer: () => void;
 };
 
@@ -17,9 +15,8 @@ declare global {
   var optchatShell: Shell | undefined;
 }
 
-// the global the app defines, and the event it fires on window when it comes back to the foreground
+// the global the app defines
 export const SHELL_GLOBAL = "optchatShell";
-export const WAKE_EVENT = "optchat:wake";
 
 export type ShellHost = { readonly optchatShell?: Shell | undefined };
 

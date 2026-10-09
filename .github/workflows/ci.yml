@@ -84,6 +84,7 @@ jobs:
       contents: read
     env:
       EXPO_NO_TELEMETRY: 1
+      EXPO_OFFLINE: 1 # prebuild and export need nothing from the network
     steps:
       - name: Checkout
         uses: actions/checkout@v4

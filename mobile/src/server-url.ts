@@ -33,8 +33,7 @@ export function parseServerUrl(input: string): Parsed {
   return { ok: true, origin: url.origin };
 }
 
-// whether a URL the page wants to load is the server's own: only those load in the app; anything
-// else (a link in a reply) opens in the browser
+// whether `target` is on the server: same scheme, host and port
 export function sameOrigin(origin: string, target: string): boolean {
   try {
     return new URL(target).origin === origin;
@@ -42,6 +41,13 @@ export function sameOrigin(origin: string, target: string): boolean {
     return false;
   }
 }
+
+// What may load in the app's WebView, in any frame: the server's own pages (a blob: URL its page
+// made has its origin too), and the empty documents a page makes itself (about:blank, an iframe's
+// srcdoc). Nothing else, so no other site,
+// and no other port on the server's host, runs with the app's bridge or its media grant. A link
+// elsewhere opens outside the app.
+export const loadsInApp = (origin: string, target: string): boolean => target === "about:blank" || target === "about:srcdoc" || sameOrigin(origin, target);
 
 export type Probe = { readonly ok: true } | { readonly ok: false; readonly error: string };
 export type Fetch = (url: string, init: RequestInit) => Promise<Response>;

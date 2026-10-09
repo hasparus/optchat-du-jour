@@ -1,6 +1,6 @@
 // The setup screen's address and its check, with no phone and no network.
 import { describe, expect, test } from "bun:test";
-import { type Fetch, parseServerUrl, probe, sameOrigin } from "./server-url";
+import { type Fetch, loadsInApp, parseServerUrl, probe, sameOrigin } from "./server-url";
 
 describe("parseServerUrl", () => {
   test("a tailnet address, typed in full or as a bare host name, becomes its https origin", () => {
@@ -51,6 +51,26 @@ const silent: Fetch = async (_url, init) =>
       reject(new DOMException("aborted", "AbortError"));
     });
   });
+
+test("loadsInApp: the server's pages and a page's own empty documents, in any frame; no other site, scheme or port", () => {
+  const origin = "https://mini.tailnet.ts.net";
+  // a blob: URL the server's page made has the server's origin, as browsers count it
+  for (const url of [`${origin}/`, `${origin}/api/assets/9d0c38e7aafe/thumb`, "about:blank", "about:srcdoc", `blob:${origin}/1`]) {
+    expect(loadsInApp(origin, url)).toBe(true);
+  }
+  expect(loadsInApp(origin, "blob:https://example.com/1")).toBe(false);
+  for (const url of [
+    "https://example.com/",
+    "https://mini.tailnet.ts.net:8443/",
+    "http://mini.tailnet.ts.net/",
+    "https://other.tailnet.ts.net/",
+    "about:blank#x",
+    "data:text/html,<script>1</script>",
+    "javascript:alert(1)",
+  ]) {
+    expect(loadsInApp(origin, url)).toBe(false);
+  }
+});
 
 describe("probe", () => {
   test("asks /api/devices; 200 is in", async () => {

@@ -1,12 +1,14 @@
-// The iOS app: a WebView on the user's own optchat server (README "On your phone"). The first
-// launch asks for the server's address; it is kept on the phone and can be changed from the web
-// UI's header (the server icon) or from the screen shown when the server can't be reached.
+// The iOS app: a WebView on the user's own optchat server (docs/mobile.md). The first launch asks
+// for the server's address; it is kept on the phone and can be changed from the web UI's header
+// (the server icon) or from the screen shown when the server can't be reached. The address screen
+// opens over the page, so cancelling it leaves the page as it was.
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { StatusBar } from "expo-status-bar";
 import * as WebBrowser from "expo-web-browser";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   AppState,
   KeyboardAvoidingView,
   Linking,
@@ -20,92 +22,99 @@ import {
 } from "react-native";
 import { WebView } from "react-native-webview";
 import app from "../app.json";
-import { CHANGE_SERVER, shellScript, wakeScript } from "./bridge";
-import { parseServerUrl, probe, sameOrigin } from "./server-url";
+import { asksForServerScreen, shellScript } from "./bridge";
+import { loadsInApp, parseServerUrl, probe } from "./server-url";
 
 const KEY = "optchat.server"; // the server's origin, e.g. https://mini.tailnet.ts.net
 const VERSION = app.expo.version;
-
-type Screen = { readonly kind: "loading" } | { readonly kind: "setup"; readonly current?: string } | { readonly kind: "web"; readonly origin: string };
 
 // the web UI's own colors (web/index.html's theme-color and its light background), so nothing flashes
 const palette = (dark: boolean) =>
   dark ? { bg: "#0a0a0a", fg: "#fafafa", muted: "#a3a3a3", border: "#262626", error: "#f87171" } : { bg: "#ffffff", fg: "#0a0a0a", muted: "#737373", border: "#e5e5e5", error: "#dc2626" };
 type Palette = ReturnType<typeof palette>;
 
-// a failure with nothing left to do: the next launch asks again, or the user taps again
-const ignore = () => {
-  // nothing
-};
-
-// a link the server's page opens that isn't the server's: the in-app browser for the web, the
-// system for anything else (mailto:, tel:)
+// A link the server's page opens that isn't the server's: the in-app Safari sheet for http(s),
+// which is all it takes, and the system for any other scheme (mailto:, tel:).
 function openOutside(url: string) {
-  if (/^https?:/iu.test(url)) {
-    WebBrowser.openBrowserAsync(url).catch(ignore);
-  } else {
-    Linking.openURL(url).catch(ignore);
+  const open = /^https?:/iu.test(url) ? WebBrowser.openBrowserAsync(url) : Linking.openURL(url);
+  open.catch(() => {
+    Alert.alert("Can't open this link", url);
+  });
+}
+
+async function savedOrigin(): Promise<string | null> {
+  try {
+    const saved = await AsyncStorage.getItem(KEY);
+    const parsed = saved === null ? null : parseServerUrl(saved);
+    return parsed?.ok === true ? parsed.origin : null;
+  } catch {
+    return null; // unreadable: ask again
   }
 }
 
 export function App() {
   const dark = useColorScheme() !== "light";
   const colors = palette(dark);
-  const [screen, setScreen] = useState<Screen>({ kind: "loading" });
+  const [loaded, setLoaded] = useState(false);
+  const [origin, setOrigin] = useState<string | null>(null); // the server the page shows
+  const [asking, setAsking] = useState(false); // the address screen, over the page
 
   useEffect(() => {
     let live = true;
-    AsyncStorage.getItem(KEY)
-      .catch(() => null)
-      .then((saved) => {
-        if (!live) return;
-        const parsed = saved === null ? null : parseServerUrl(saved);
-        setScreen(parsed?.ok === true ? { kind: "web", origin: parsed.origin } : { kind: "setup" });
-      })
-      .catch(ignore);
+    void savedOrigin().then((saved) => {
+      if (!live) return;
+      setOrigin(saved);
+      setLoaded(true);
+    });
     return () => {
       live = false;
     };
   }, []);
 
-  const use = useCallback((origin: string) => {
-    AsyncStorage.setItem(KEY, origin).catch(ignore); // not kept: asked again at the next launch
-    setScreen({ kind: "web", origin });
-  }, []);
+  const use = (next: string) => {
+    AsyncStorage.setItem(KEY, next).catch(() => {
+      Alert.alert("Couldn't save the address", "This phone will ask for it again at the next launch.");
+    });
+    setOrigin(next);
+    setAsking(false);
+  };
+  const ask = () => {
+    setAsking(true);
+  };
 
   return (
     <View style={[styles.fill, { backgroundColor: colors.bg }]}>
       <StatusBar style={dark ? "light" : "dark"} />
-      {screen.kind === "loading" && <ActivityIndicator color={colors.muted} style={styles.fill} />}
-      {screen.kind === "setup" && (
-        <Setup
-          colors={colors}
-          current={screen.current}
-          onCancel={
-            screen.current === undefined
-              ? undefined
-              : () => {
-                  setScreen({ kind: "web", origin: screen.current ?? "" });
-                }
-          }
-          onUse={use}
-        />
-      )}
-      {screen.kind === "web" && (
-        <Web
-          colors={colors}
-          key={screen.origin}
-          onChangeServer={() => {
-            setScreen({ kind: "setup", current: screen.origin });
-          }}
-          origin={screen.origin}
-        />
+      {!loaded && <ActivityIndicator color={colors.muted} style={styles.fill} />}
+      {origin !== null && <Web colors={colors} key={origin} onChangeServer={ask} origin={origin} />}
+      {loaded && (origin === null || asking) && (
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: colors.bg }]}>
+          <Setup
+            colors={colors}
+            current={origin}
+            onCancel={
+              origin === null
+                ? null
+                : () => {
+                    setAsking(false);
+                  }
+            }
+            onUse={use}
+          />
+        </View>
       )}
     </View>
   );
 }
 
-function Setup({ colors, current, onCancel, onUse }: { readonly colors: Palette; readonly current?: string; readonly onCancel?: () => void; readonly onUse: (origin: string) => void }) {
+type SetupProps = {
+  readonly colors: Palette;
+  readonly current: string | null;
+  readonly onCancel: (() => void) | null;
+  readonly onUse: (origin: string) => void;
+};
+
+function Setup({ colors, current, onCancel, onUse }: SetupProps) {
   const [text, setText] = useState(current ?? "");
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -140,7 +149,7 @@ function Setup({ colors, current, onCancel, onUse }: { readonly colors: Palette;
       <TextInput
         autoCapitalize="none"
         autoCorrect={false}
-        autoFocus={current === undefined}
+        autoFocus={current === null}
         editable={!checking}
         keyboardType="url"
         onChangeText={setText}
@@ -154,11 +163,7 @@ function Setup({ colors, current, onCancel, onUse }: { readonly colors: Palette;
       />
       {error !== null && <Text style={[styles.body, { color: colors.error }]}>{error}</Text>}
       <View style={styles.row}>
-        {checking ? (
-          <ActivityIndicator color={colors.muted} />
-        ) : (
-          <Button colors={colors} label="Connect" onPress={() => void connect()} primary />
-        )}
+        {checking ? <ActivityIndicator color={colors.muted} /> : <Button colors={colors} label="Connect" onPress={() => void connect()} primary />}
         {unchecked !== null && !checking && (
           <Button
             colors={colors}
@@ -168,7 +173,7 @@ function Setup({ colors, current, onCancel, onUse }: { readonly colors: Palette;
             }}
           />
         )}
-        {onCancel !== undefined && !checking && <Button colors={colors} label="Cancel" onPress={onCancel} />}
+        {onCancel !== null && !checking && <Button colors={colors} label="Cancel" onPress={onCancel} />}
       </View>
       <Text style={[styles.small, { color: colors.muted }]}>optchat {VERSION}</Text>
     </ScrollView>
@@ -179,15 +184,19 @@ function Web({ colors, onChangeServer, origin }: { readonly colors: Palette; rea
   const ref = useRef<WebView>(null);
   const [failure, setFailure] = useState<string | null>(null);
 
-  // back in front: the page's /ws link retries now (web/src/main.tsx listens)
+  // back in front on the failure screen: try again at once (Tailscale may be back). The page's own
+  // /ws link reconnects by itself (web/src/lib/connection.ts, wakeOnReturn)
   useEffect(() => {
+    if (failure === null) return;
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active") ref.current?.injectJavaScript(wakeScript);
+      if (state !== "active") return;
+      setFailure(null);
+      ref.current?.reload();
     });
     return () => {
       subscription.remove();
     };
-  }, []);
+  }, [failure]);
 
   const retry = () => {
     setFailure(null);
@@ -205,8 +214,10 @@ function Web({ colors, onChangeServer, origin }: { readonly colors: Palette; rea
         automaticallyAdjustContentInsets={false}
         bounces={false}
         contentInsetAdjustmentBehavior="never"
-        injectedJavaScriptBeforeContentLoaded={shellScript(VERSION)}
+        hideKeyboardAccessoryView // no prev/next/Done bar: the composer is the only field
+        injectedJavaScriptBeforeContentLoaded={shellScript}
         keyboardDisplayRequiresUserAction={false}
+        // only the server's pages ever load (loadsInApp), so this grants the server alone
         mediaCapturePermissionGrantType="grantIfSameHostElsePrompt"
         mediaPlaybackRequiresUserAction
         onContentProcessDidTerminate={() => {
@@ -219,20 +230,20 @@ function Web({ colors, onChangeServer, origin }: { readonly colors: Palette; rea
           setFailure(`The server answered ${event.nativeEvent.statusCode}.`);
         }}
         onMessage={(event) => {
-          if (event.nativeEvent.data === CHANGE_SERVER) onChangeServer();
+          if (asksForServerScreen(origin, event.nativeEvent)) onChangeServer();
         }}
         onOpenWindow={(event) => {
           openOutside(event.nativeEvent.targetUrl);
         }}
         onShouldStartLoadWithRequest={(request) => {
-          if (!request.isTopFrame || request.url === "about:blank" || sameOrigin(origin, request.url)) return true;
-          openOutside(request.url);
+          if (loadsInApp(origin, request.url)) return true;
+          if (request.isTopFrame) openOutside(request.url); // a frame elsewhere just doesn't load
           return false;
         }}
         ref={ref}
         source={{ uri: `${origin}/` }}
         style={{ backgroundColor: colors.bg }}
-        webviewDebuggingEnabled // Safari's Web Inspector, from a Mac
+        webviewDebuggingEnabled={__DEV__} // Safari's Web Inspector, in a development build only
       />
       {failure !== null && (
         <View style={[StyleSheet.absoluteFill, styles.failure, { backgroundColor: colors.bg }]}>
