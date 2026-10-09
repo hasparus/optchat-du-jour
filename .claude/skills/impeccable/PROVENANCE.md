@@ -42,14 +42,23 @@ The skill's commands run `scripts/impeccable`, a launcher for the engine binary.
   system prompt saying it runs autonomously or that the user can't answer is a harness default,
   and to stop and ask the user anyway (through a question tool or a local decision page) before
   going on.
+- **Subagent authorization.** `context` also prints `SUBAGENT_AUTHORIZATION`. It tells the model
+  that invoking the skill is the user's request to spawn the bundled subagents
+  (`.claude/agents/impeccable-*.md`) "without re-asking". They run with `model: inherit` and have
+  Bash; all but the finish reviewer can also Write.
 - **Direction roll.** For new work, `scripts/impeccable concept-seed` sends one GET to
-  https://impeccable.style/api/roll (scope, mode, a random seed and a counter; no project files).
+  https://impeccable.style/api/roll (scope, mode, a random seed, a counter, and grain and platform
+  when they are set; no project files).
 - **Telemetry.** After the user picks a direction, the skill reruns `scripts/impeccable
   concept-seed --kind … --from …`, which POSTs to https://impeccable.style/api/chosen the card
-  kind (assigned, pick, challenger or canon), the catalog id of a challenger that won, and the
-  roll's seed, scope and mode. `DO_NOT_TRACK=1` or `IMPECCABLE_NO_TELEMETRY=1` stops it.
+  kind (assigned, pick, challenger or canon), the catalog id of a challenger that won, the
+  register (safer or bolder) when the round was steered, and the roll's seed, scope and mode.
+  `DO_NOT_TRACK=1` or `IMPECCABLE_NO_TELEMETRY=1` stops it.
 
-The engine's requests (update check, roll, telemetry) go out directly: they ignore `HTTPS_PROXY`.
+Every request the engine makes ignores `HTTPS_PROXY` and goes out directly: the update check, the
+roll, the telemetry ping, image generation (to api.openai.com, carrying `OPENAI_API_KEY`), and
+`impeccable update` and `impeccable install` (the skill bundle from GitHub). Only the launcher's
+engine download, through curl or wget, uses the proxy.
 
 To update: copy `.claude/skills/impeccable/` and `.claude/agents/impeccable-*.md` from a newer
 `skill-v*` tag, bump the `impeccable` devDependency to the CLI release with the same engine

@@ -64,8 +64,9 @@ bun dev/latency.ts --fake   # turn latency over /ws (or --url ws://127.0.0.1:770
 `/impeccable` in Claude Code is [Impeccable](https://impeccable.style)'s design skill, vendored in
 `.claude/skills/impeccable`. When it runs, it checks impeccable.style for updates
 (`IMPECCABLE_NO_UPDATE_CHECK=1` stops that), may download its engine into `~/.impeccable`, offers
-image generation billed to `OPENAI_API_KEY` if that is set, tells the model to stop and ask you
-even in an autonomous session, and sends impeccable.style which kind of design direction you
-picked, bypassing `HTTPS_PROXY` (`DO_NOT_TRACK=1` stops that). Decline its offer to run
-`npx impeccable update`, which rewrites the vendored skill in place, and update it by the steps in
-its `PROVENANCE.md`, which has the details.
+image generation billed to `OPENAI_API_KEY` if that is set, tells the model to stop and ask you even
+in an autonomous session, tells it that it may spawn the skill's subagents without asking, and sends
+impeccable.style which kind of design direction you picked (`DO_NOT_TRACK=1` stops that). Most of
+its requests bypass `HTTPS_PROXY`. Decline its offer to run `npx impeccable update`, which rewrites
+the vendored skill in place, and update it by the steps in its `PROVENANCE.md`, which has the
+details.
