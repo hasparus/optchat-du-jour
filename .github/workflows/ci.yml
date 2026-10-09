@@ -38,6 +38,10 @@ jobs:
       - name: Lint (Effect)
         run: bun run lint:effect -- --format github-actions
 
+      # Impeccable's design anti-pattern detector (the /impeccable skill's `detect`) over web/
+      - name: Lint (design)
+        run: bun run lint:design -- --format github-actions
+
       - name: Test
         run: bun run test
 
