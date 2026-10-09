@@ -1,0 +1,6 @@
+node_modules
+.expo
+# `expo prebuild` writes the native project from app.json (Continuous Native Generation); EAS
+# Build writes it again on its Mac, so it is never committed
+ios
+android

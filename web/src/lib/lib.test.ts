@@ -117,6 +117,24 @@ describe("link", () => {
     link.close();
   });
 
+  test("wake: a link that is down connects again at once, not after its backoff; an open one is left alone", async () => {
+    const server = fakeServer(() => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT }]);
+    const link = openLink("ws://x/ws", { retryMs: 60_000, socket: server.socket });
+    await tick();
+    link.wake();
+    expect(server.sockets).toHaveLength(1);
+    server.drop();
+    await tick();
+    expect(link.status()).toBe("closed"); // the next try is a minute away
+    link.wake();
+    await tick();
+    expect(server.sockets).toHaveLength(2);
+    expect(link.status()).toBe("open");
+    link.close();
+    link.wake(); // closed for good: no new socket
+    expect(server.sockets).toHaveLength(2);
+  });
+
   test("a frame that isn't one of ours is dropped with a warning, not passed on", async () => {
     const server = fakeServer(() => []);
     const link = openLink("ws://x/ws", { socket: server.socket });

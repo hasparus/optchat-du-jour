@@ -26,6 +26,9 @@ export type Link = {
   readonly listen: (listener: (event: Inbound) => void) => () => void;
   readonly onStatus: (listener: (status: LinkStatus) => void) => () => void;
   readonly status: () => LinkStatus;
+  // the page is back in front (a phone unlocked, the iOS app reopened): a link that is down tries
+  // again now, not after a backoff that grew while nothing could connect
+  readonly wake: () => void;
   readonly close: () => void;
 };
 
@@ -133,6 +136,12 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
     },
     configure: (change) => {
       deliver(settingsFrame(change));
+    },
+    wake: () => {
+      if (closed || status !== "closed") return;
+      clearTimeout(timer);
+      retry = firstRetry;
+      connect();
     },
     resume: (engine) => {
       if (!socket || status !== "open") return false;

@@ -1,0 +1,112 @@
+name: TestFlight
+
+# Builds the iOS app (mobile/) on EAS Build's Macs and hands it to TestFlight (README "On your
+# phone"). Never on a push to a branch or on a PR: each run spends one of EAS's iOS builds (the
+# free plan has 15 a month). This runner is Linux and only uploads the source; Expo's Mac
+# compiles, signs and uploads to App Store Connect, so no macOS minutes are billed here.
+#
+# Needs, once (README "On your phone" has the steps):
+#   secrets  EXPO_TOKEN      an Expo access token (expo.dev → Account settings → Access tokens)
+#            ASC_KEY_ID      an App Store Connect API key: its key ID,
+#            ASC_ISSUER_ID   its issuer ID,
+#            ASC_KEY_P8      and the .p8 file's contents (role App Manager or Admin)
+#   vars     ASC_APP_ID      the app's Apple ID in App Store Connect (App Information), digits
+#            APPLE_TEAM_ID   the Apple Developer team ID (developer.apple.com → Membership)
+#            APPLE_TEAM_TYPE INDIVIDUAL (default) or COMPANY_OR_ORGANIZATION
+#   and the EAS project linked in mobile/app.json, with a distribution certificate on EAS
+#   (`eas init`, `eas credentials`, run once by hand).
+
+on:
+  workflow_dispatch:
+    inputs:
+      wait:
+        description: Wait for EAS to finish (the run's result is then the build's and the upload's)
+        type: boolean
+        default: false
+  push:
+    tags: ["ios-v*"]
+
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  testflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: mobile
+    env:
+      EXPO_NO_TELEMETRY: 1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # the same checks as CI's mobile job but lint: a build that can't pass them isn't worth one
+      # of the month's builds
+      - name: Check
+        run: bun run check
+
+      - name: Settings are in place
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_APP_ID: ${{ vars.ASC_APP_ID }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          missing=""
+          for name in EXPO_TOKEN ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 ASC_APP_ID APPLE_TEAM_ID; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Not set:$missing (README \"On your phone\")"
+            exit 1
+          fi
+          if [ "$(jq -r '.expo.extra.eas.projectId // empty' app.json)" = "" ]; then
+            echo "::error::mobile/app.json has no EAS project: run 'bunx eas init' in mobile/ once and commit app.json"
+            exit 1
+          fi
+
+      # The key goes to a file outside the checkout, so EAS never uploads it with the source. The
+      # submit profile points at it; EXPO_ASC_* let a non-interactive build renew the provisioning
+      # profile and set up TestFlight's internal group.
+      - name: App Store Connect API key
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_APP_ID: ${{ vars.ASC_APP_ID }}
+        run: |
+          key="$RUNNER_TEMP/asc-api-key.p8"
+          (umask 077 && printf '%s\n' "$ASC_KEY_P8" > "$key")
+          echo "EXPO_ASC_API_KEY_PATH=$key" >> "$GITHUB_ENV"
+          jq --arg path "$key" --arg id "$ASC_KEY_ID" --arg issuer "$ASC_ISSUER_ID" --arg app "$ASC_APP_ID" \
+            '.submit.production.ios += {ascApiKeyPath: $path, ascApiKeyId: $id, ascApiKeyIssuerId: $issuer, ascAppId: $app}' \
+            eas.json > "$RUNNER_TEMP/eas.json"
+          mv "$RUNNER_TEMP/eas.json" eas.json
+
+      - name: Build on EAS and submit to TestFlight
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          EXPO_ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          EXPO_APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          EXPO_APPLE_TEAM_TYPE: ${{ vars.APPLE_TEAM_TYPE || 'INDIVIDUAL' }}
+          WAIT: ${{ inputs.wait && '--wait' || '--no-wait' }}
+        run: |
+          note="$(git log -1 --pretty=%s) ($(git rev-parse --short HEAD))"
+          bunx eas build --platform ios --profile production --non-interactive --auto-submit \
+            "$WAIT" --message "$note" --what-to-test "$note"

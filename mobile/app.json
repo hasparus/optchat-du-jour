@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "optchat",
+    "slug": "optchat",
+    "version": "0.1.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "platforms": [
+      "ios"
+    ],
+    "ios": {
+      "bundleIdentifier": "dev.hasparus.optchat",
+      "supportsTablet": false,
+      "config": {
+        "usesNonExemptEncryption": false
+      },
+      "infoPlist": {
+        "NSCameraUsageDescription": "optchat uses the camera when you take a photo or a video to attach to a message.",
+        "NSMicrophoneUsageDescription": "optchat uses the microphone when you record a video or dictate a message.",
+        "NSPhotoLibraryUsageDescription": "optchat opens your photo library when you attach photos or videos to a message.",
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": false,
+          "NSAllowsLocalNetworking": true
+        }
+      }
+    }
+  }
+}

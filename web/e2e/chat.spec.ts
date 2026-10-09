@@ -2,6 +2,7 @@
 // 360 px phone screen. Every test gets its own server and an empty log (or one it seeds).
 import { Schema } from "effect";
 import sharp from "sharp";
+import { CHANGE_SERVER, shellScript } from "../../mobile/src/bridge.ts";
 import { answered, expect, expectShowsLog, open, REPLY, send, test } from "./fixture";
 
 test("a message gets a reply that streams in, after its tool call", async ({ page, server }) => {
@@ -199,4 +200,23 @@ test("an attached photo is uploaded, sent, shown in the chat with its marker, an
   const Blocks = Schema.Array(Schema.Struct({ type: Schema.String, source: Schema.optional(Schema.Struct({ type: Schema.String, media_type: Schema.String })) }));
   const opening = Schema.decodeUnknownSync(Blocks)(server.fakeInputs("turn")[0]);
   expect(opening.filter((b) => b.type === "image")).toEqual([{ source: { media_type: "image/jpeg", type: "base64" }, type: "image" }]);
+});
+
+// The iOS app (mobile/) loads this same page in a WebView and runs its script before the page's
+// own; here Chromium stands in for WKWebView and exposeFunction for react-native-webview's bridge.
+test("in the iOS app's WebView the header's server button asks the app for its server screen", async ({ page }) => {
+  const posted: string[] = [];
+  await page.exposeFunction("rnPost", (data: string) => {
+    posted.push(data);
+  });
+  await page.addInitScript(`window.ReactNativeWebView = { postMessage: function (data) { window.rnPost(data); } };\n${shellScript("0.1.0")}`);
+  await open(page);
+  await page.getByRole("button", { name: "Change server" }).click();
+  await expect.poll(() => posted).toEqual([CHANGE_SERVER]);
+});
+
+test("in a browser there is no server button", async ({ page }) => {
+  await open(page);
+  await expect(page.getByRole("button", { name: "Dark theme" }).or(page.getByRole("button", { name: "Light theme" }))).toBeVisible();
+  await expect(page.getByRole("button", { name: "Change server" })).toHaveCount(0);
 });

@@ -89,6 +89,28 @@ test("the snapshot shows the log: messages, a collapsed tool call, markdown with
   expect(screen.getByText("Two things: **notes** and a repo.")).toBeTruthy();
 });
 
+test("in the iOS app's WebView the header offers its server screen; in a browser it doesn't", async () => {
+  start();
+  await screen.findByText("what is in the repo?");
+  expect(screen.queryByRole("button", { name: "Change server" })).toBeNull();
+  cleanup();
+  const asked: string[] = [];
+  globalThis.optchatShell = {
+    changeServer: () => {
+      asked.push("change-server");
+    },
+    platform: "ios",
+    version: "0.1.0",
+  };
+  try {
+    start();
+    fireEvent.click(await screen.findByRole("button", { name: "Change server" }));
+    expect(asked).toEqual(["change-server"]);
+  } finally {
+    globalThis.optchatShell = undefined;
+  }
+});
+
 test("a turn another client started streams in, with its status line", async () => {
   const { play } = start();
   await screen.findByText("what is in the repo?");

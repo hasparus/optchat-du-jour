@@ -36,9 +36,29 @@ Everything is built and tested against fakes. Each check below needs a real logi
 
 ## Machines and network
 
-- [ ] The phone over Tailscale as a PWA: install, reconnect, chat (SPEC M2).
+- [ ] The phone over Tailscale as a PWA: install, reconnect, chat (SPEC M2). The iOS app has its own list below.
 - [ ] A live two-machine run over a real tailnet: one chat edits files on both machines (SPEC M4).
 - [ ] Re-measure latency with real claude after the inline system prompt change, `dev/latency.ts` (SPEC Turn and priming).
+
+## iPhone app (TestFlight)
+
+Setup only you can do (README "On your phone" has each step):
+
+- [ ] Apple Developer Program; the bundle id (`dev.hasparus.optchat`, or yours in `mobile/app.json`) and the App Store Connect app record.
+- [ ] An App Store Connect API key (App Manager): secrets `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8`; variables `ASC_APP_ID`, `APPLE_TEAM_ID` (and `APPLE_TEAM_TYPE` for a company team).
+- [ ] An Expo account and access token: secret `EXPO_TOKEN`.
+- [ ] `cd mobile && bunx eas init`, commit `app.json`; `bunx eas credentials -p ios` for the distribution certificate and profile.
+- [ ] Run the TestFlight workflow; install from TestFlight.
+
+Then on the phone, which no CI can check:
+
+- [ ] The build compiles and signs on EAS at all (Expo SDK 57, react-native-webview 13.16.1; nothing native was compiled here).
+- [ ] First launch: the address check passes over Tailscale (`/api/devices` answers 200), and a wrong login gets the 403 message.
+- [ ] Keyboard: the composer sits right on top of it, nothing jumps when it closes; safe areas at the notch and the home indicator.
+- [ ] Camera and photo attach from the composer, a video's sound; the permission prompts show their strings.
+- [ ] Back from the background after minutes and after hours: the link reconnects at once (`optchat:wake`), no white page.
+- [ ] Links in a reply open in the Safari sheet; an attachment opens full size.
+- [ ] Push notifications, later: APNs from the server for a finished turn (expo-notifications in the app, a `.p8` key on the server).
 
 ## Media
 
