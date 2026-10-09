@@ -35,26 +35,29 @@ export function parseServerUrl(input: string): Parsed {
   return { ok: true, origin: url.origin };
 }
 
-// whether `target` is on the server: same scheme, host and port
+// whether `target` is a page on the server: http(s), same scheme, host and port. (A blob: URL has
+// its maker's origin too, but it is not a page the server serves.)
 export function sameOrigin(origin: string, target: string): boolean {
   try {
-    return new URL(target).origin === origin;
+    const url = new URL(target);
+    return (url.protocol === "https:" || url.protocol === "http:") && url.origin === origin;
   } catch {
     return false;
   }
 }
 
-// What may load in the app's WebView. In any frame: nothing but the server's origin (a blob: URL
-// its page made has its origin too) and the empty documents a page makes itself (about:blank, an
-// iframe's srcdoc), so no other site, and no other port on the server's host, runs with the app's
-// bridge or its media grant. The top frame holds the app itself, the server's `/`: a link to
-// another of its paths (an attachment, an API answer) would leave the app on a page with no way
-// back, so it opens outside, as a link elsewhere does.
+// What may load in the app's WebView. react-native-webview asks its own origin filter first (the
+// default originWhitelist: http, https and about:blank) and hands anything else to the system, so
+// about:srcdoc, blob: and data: never get here and never load; mailto: and tel: open in their
+// apps. Of what does get here: a frame loads only the server's pages, or about:blank, so no other
+// site, and no other port on the server's host, runs with the app's bridge or its media grant. The
+// top frame holds only the app itself, the server's `/`: another of its paths (an attachment, an
+// API answer) would leave the app on a page with no way back, so it opens outside, as a link
+// elsewhere does.
 export function loadsInApp(origin: string, request: { readonly url: string; readonly isTopFrame: boolean }): boolean {
   const { isTopFrame, url } = request;
-  if (url === "about:blank" || (!isTopFrame && url === "about:srcdoc")) return true;
-  if (!sameOrigin(origin, url)) return false;
-  return !isTopFrame || new URL(url).pathname === "/";
+  if (!isTopFrame) return url === "about:blank" || sameOrigin(origin, url);
+  return sameOrigin(origin, url) && new URL(url).pathname === "/";
 }
 
 export type Probe = { readonly ok: true } | { readonly ok: false; readonly error: string };

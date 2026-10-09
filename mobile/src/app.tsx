@@ -33,8 +33,9 @@ const palette = (dark: boolean) =>
   dark ? { bg: "#0a0a0a", fg: "#fafafa", muted: "#a3a3a3", border: "#262626", error: "#f87171" } : { bg: "#ffffff", fg: "#0a0a0a", muted: "#737373", border: "#e5e5e5", error: "#dc2626" };
 type Palette = ReturnType<typeof palette>;
 
-// A link the server's page opens that isn't the server's: the in-app Safari sheet for http(s),
-// which is all it takes, and the system for any other scheme (mailto:, tel:).
+// A link the server's page opens that isn't the app: the in-app Safari sheet for http(s), which is
+// all it takes, and the system for any other scheme (mailto:, tel:; in the top frame the
+// WebView's own filter has sent those to the system already, but a new window comes here).
 function openOutside(url: string) {
   const open = /^https?:/iu.test(url) ? WebBrowser.openBrowserAsync(url) : Linking.openURL(url);
   open.catch(() => {
@@ -235,6 +236,8 @@ function Web({ colors, onChangeServer, origin }: { readonly colors: Palette; rea
         onOpenWindow={(event) => {
           openOutside(event.nativeEvent.targetUrl);
         }}
+        // after the default originWhitelist (http, https, about:blank), which hands anything else
+        // (mailto:, tel:, blob:, data:) to the system: see loadsInApp
         onShouldStartLoadWithRequest={(request) => {
           if (loadsInApp(origin, request)) return true;
           if (request.isTopFrame) openOutside(request.url); // a frame elsewhere just doesn't load

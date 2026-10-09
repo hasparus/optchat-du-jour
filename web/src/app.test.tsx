@@ -89,10 +89,16 @@ test("the snapshot shows the log: messages, a collapsed tool call, markdown with
   expect(screen.getByText("Two things: **notes** and a repo.")).toBeTruthy();
 });
 
-test("in the iOS app's WebView the header offers its server screen; in a browser it doesn't", async () => {
-  start();
-  await screen.findByText("what is in the repo?");
+const CODE: Entry[] = [{ kind: "talk", text: "Here:\n\n```ts\nconst x = 1;\n```" }];
+const downloads = () => document.querySelectorAll('[data-streamdown="code-block-download-button"]').length;
+
+test("in the iOS app's WebView the header offers its server screen and code blocks have no download; in a browser neither", async () => {
+  start(CODE);
+  await screen.findByText(/const x = 1/u);
   expect(screen.queryByRole("button", { name: "Change server" })).toBeNull();
+  await waitFor(() => {
+    expect(downloads()).toBe(1);
+  });
   cleanup();
   const asked: string[] = [];
   globalThis.optchatShell = {
@@ -101,7 +107,11 @@ test("in the iOS app's WebView the header offers its server screen; in a browser
     },
   };
   try {
-    start();
+    start(CODE);
+    await screen.findByText(/const x = 1/u);
+    // a blob: download can't load in the app (its top frame holds only the server's /)
+    expect(downloads()).toBe(0);
+    expect(document.querySelectorAll('[data-streamdown="code-block-copy-button"]')).toHaveLength(1);
     fireEvent.click(await screen.findByRole("button", { name: "Change server" }));
     expect(asked).toEqual(["change-server"]);
   } finally {

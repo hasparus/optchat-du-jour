@@ -39,6 +39,7 @@ test("sameOrigin: only the server's own pages load in the app", () => {
   expect(sameOrigin(origin, "http://mini.tailnet.ts.net/")).toBe(false);
   expect(sameOrigin(origin, "https://example.com/?u=https://mini.tailnet.ts.net")).toBe(false);
   expect(sameOrigin(origin, "not a url")).toBe(false);
+  expect(sameOrigin(origin, `blob:${origin}/1`)).toBe(false); // the maker's origin, but not a page of the server
 });
 
 // a server that answers every request with `status`, noting what was asked
@@ -59,25 +60,27 @@ const silent: Fetch = async (_url, init) =>
     });
   });
 
-test("loadsInApp: frames load only the server's origin and empty documents; the top frame only the app at /", () => {
+// Only what passes react-native-webview's own filter (http, https, about:blank) is ever asked; the
+// rest is in here to show it would be refused anyway.
+test("loadsInApp: a frame loads only the server's pages or about:blank; the top frame only the app at /", () => {
   const origin = "https://mini.tailnet.ts.net";
   const top = (url: string) => loadsInApp(origin, { isTopFrame: true, url });
   const frame = (url: string) => loadsInApp(origin, { isTopFrame: false, url });
   // the app itself, as loaded and reloaded
-  for (const url of [`${origin}/`, origin, `${origin}/?tab=memory`, `${origin}/#x`, "about:blank"]) expect(top(url)).toBe(true);
-  // another of the server's paths would strand the app there: it opens outside
-  for (const url of [`${origin}/api/assets/9d0c38e7aafe`, `${origin}/api/devices`, `${origin}/index.html`, "about:srcdoc"]) expect(top(url)).toBe(false);
-  // a blob: URL the server's page made has the server's origin, as browsers count it
-  for (const url of [`${origin}/`, `${origin}/api/assets/9d0c38e7aafe/thumb`, "about:blank", "about:srcdoc", `blob:${origin}/1`]) expect(frame(url)).toBe(true);
+  for (const url of [`${origin}/`, origin, `${origin}/?tab=memory`, `${origin}/#x`]) expect(top(url)).toBe(true);
+  // another of the server's paths would strand the app there: it opens outside; nor is a blank page the app
+  for (const url of [`${origin}/api/assets/9d0c38e7aafe`, `${origin}/api/devices`, `${origin}/index.html`, "about:blank"]) expect(top(url)).toBe(false);
+  for (const url of [`${origin}/`, `${origin}/api/assets/9d0c38e7aafe/thumb`, "about:blank"]) expect(frame(url)).toBe(true);
   for (const url of [
     "https://example.com/",
     "https://mini.tailnet.ts.net:8443/",
     "http://mini.tailnet.ts.net/",
     "https://other.tailnet.ts.net/",
     "about:blank#x",
+    "about:srcdoc",
+    `blob:${origin}/1`,
     "data:text/html,<script>1</script>",
     "javascript:alert(1)",
-    "blob:https://example.com/1",
   ]) {
     expect(top(url)).toBe(false);
     expect(frame(url)).toBe(false);

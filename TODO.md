@@ -47,7 +47,7 @@ Setup only you can do (docs/mobile.md, "Setup", has each step):
 - [ ] Apple Developer Program; the App Store Connect app for `dev.hasparus.optchat` (or yours in `mobile/app.json`); its Apple ID as `ascAppId` in `mobile/eas.json`, committed.
 - [ ] An App Store Connect API key (App Manager); keep the `.p8` for the EAS step.
 - [ ] An Expo account; an organization with a robot user (Developer) whose token is the repository secret `EXPO_TOKEN`. It can fetch the App Store Connect key from EAS, so not a personal token.
-- [ ] `cd mobile && bun install`, then `bun run eas login`, `bun run eas init` (commit `app.json`), `bun run eas credentials -p ios`: build credentials, and the API key for EAS Submit.
+- [ ] `cd mobile && bun install`, then `bun run eas login`, `bun run eas init --account <organization>` (commit `app.json`), `bun run eas credentials -p ios`: build credentials, and the API key for EAS Submit.
 - [ ] Run the TestFlight workflow; install from TestFlight.
 
 Then on the phone, which no CI can check:

@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 // What can be checked of the iOS app without a Mac (CI's `mobile` job, `bun run check` here): its
-// types and tests, that eas.json's profiles are ones EAS takes, what EAS Build would upload, that
-// Metro bundles the JavaScript
-// into Hermes bytecode for iOS, and that `expo prebuild` turns app.json into an Xcode project with
-// the bundle id, the permission strings and the icon. It can't compile the native code, sign or
-// run the app: only EAS Build on Apple's toolchain does (.github/workflows/testflight.yml).
+// types and tests (the root `bun test` leaves mobile/ out; they run here), that eas.json's profiles
+// are ones EAS takes, what EAS Build would upload, that Metro bundles the JavaScript into Hermes
+// bytecode for iOS, and that `expo prebuild` turns app.json into an Xcode project with the bundle
+// id, the permission strings and the icon. It can't compile the native code, sign or run the app:
+// only EAS Build on Apple's toolchain does (.github/workflows/testflight.yml).
 import { AppVersionSource, EasJsonAccessor, EasJsonUtils, Platform } from "@expo/eas-json";
 import GitClient from "eas-cli/build/vcs/clients/git.js";
 import { Ignore } from "eas-cli/build/vcs/local.js";
@@ -59,28 +59,39 @@ check(existsSync(`${here}/ios/${app.expo.name}/Images.xcassets/AppIcon.appiconse
 // (asked about bare paths, as its copy asks) and then its copy of the repository, as `eas build`
 // makes it before uploading (the generated mobile/ios above must stay out). A pattern eas-cli reads
 // differently from git uploads an empty project, which nothing else would notice before EAS did.
-const root = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { cwd: here }).stdout.toString().trim();
-const ignore = await Ignore.createForCopyingAsync(root);
-const uploaded: readonly (readonly [string, boolean])[] = [
-  ["mobile", true],
-  ["mobile/app.json", true],
-  ["mobile/src/app.tsx", true],
-  ["mobile/ios", false],
-  ["mobile/node_modules", false],
-  ["mobile/.expo", false],
-  ["web", false],
-  ["server", false],
-  ["package.json", false],
-];
-for (const [path, up] of uploaded) check(ignore.ignores(path) !== up, `.easignore: ${path} is ${up ? "uploaded" : "left out"}`);
-const upload = mkdtempSync(join(tmpdir(), "optchat-eas-upload-"));
-try {
-  await new GitClient({ maybeCwdOverride: root, requireCommit: false }).makeShallowCopyAsync(`${upload}/repo`);
-  for (const [path, up] of [...uploaded, ["mobile/package.json", true], ["mobile/bun.lock", true], ["mobile/assets/icon.png", true]] as const) {
-    if (path !== "mobile") check(existsSync(`${upload}/repo/${path}`) === up, `EAS's copy ${up ? "has" : "leaves out"} ${path}`);
+// The copy runs on Linux only (CI, this box): eas-cli sets the repository's core.ignorecase while
+// it copies, and on a Mac's case-insensitive disk that shared setting is not one to flip under a
+// running editor or another worktree. The ignore rules are asked everywhere.
+const gitRoot = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { cwd: here });
+const root = gitRoot.stdout.toString().trim();
+check(gitRoot.exitCode === 0 && root !== "", "git rev-parse: mobile/ is in a git checkout (EAS uploads from git)");
+if (gitRoot.exitCode === 0 && root !== "") {
+  const ignore = await Ignore.createForCopyingAsync(root);
+  const uploaded: readonly (readonly [string, boolean])[] = [
+    ["mobile", true],
+    ["mobile/app.json", true],
+    ["mobile/src/app.tsx", true],
+    ["mobile/ios", false],
+    ["mobile/node_modules", false],
+    ["mobile/.expo", false],
+    ["web", false],
+    ["server", false],
+    ["package.json", false],
+  ];
+  for (const [path, up] of uploaded) check(ignore.ignores(path) !== up, `.easignore: ${path} is ${up ? "uploaded" : "left out"}`);
+  if (process.platform === "linux") {
+    const upload = mkdtempSync(join(tmpdir(), "optchat-eas-upload-"));
+    try {
+      const requireCommit = cli?.requireCommit ?? false; // as eas.json has it: what `eas build` does
+      await new GitClient({ maybeCwdOverride: root, requireCommit }).makeShallowCopyAsync(`${upload}/repo`);
+      const expected = [...uploaded, [".git", true], ["mobile/package.json", true], ["mobile/bun.lock", true], ["mobile/assets/icon.png", true]] as const;
+      for (const [path, up] of expected) {
+        if (path !== "mobile") check(existsSync(`${upload}/repo/${path}`) === up, `EAS's copy ${up ? "has" : "leaves out"} ${path}`);
+      }
+    } finally {
+      rmSync(upload, { force: true, recursive: true });
+    }
   }
-} finally {
-  rmSync(upload, { force: true, recursive: true });
 }
 
 if (failures.length > 0) {

@@ -59,9 +59,9 @@ You do this once. A Mac is not needed: every step works from Linux.
 6. **Build.** Go to GitHub → Actions → TestFlight → Run workflow, or push a tag `ios-v…`. The job
    checks the app, uploads `mobile/` to EAS and ends. EAS uploads the git repository from its
    root, and the root `.easignore` keeps everything but `mobile/` out. `mobile/check.ts` runs
-   eas-cli's own copy to check what it would upload. EAS then builds and submits. The free plan has 15 iOS builds a month, in a slower queue.
-   Apple takes a few minutes to process the upload. Then the build is in TestFlight for the team's
-   internal testers, with no review.
+   eas-cli's own copy to check what it would upload. EAS then builds and submits. The free plan
+   has 15 iOS builds a month, in a slower queue. Apple takes a few minutes to process the upload.
+   Then the build is in TestFlight for the team's internal testers, with no review.
 7. **On the iPhone.** Install TestFlight and Tailscale from the App Store, connect Tailscale, then
    install optchat from TestFlight. Type the server's https address: the one `tailscale serve`
    publishes, which must also be `server.publicUrl`. Your login must be in `allowedLogins`.
@@ -73,7 +73,9 @@ needs no rebuild, because the app shows whatever UI the server serves.
 - both TypeScript programs and the tests;
 - `eas.json`;
 - the Metro bundle compiled to Hermes;
-- the Xcode project that `expo prebuild` writes, with its bundle id, permission strings and icon.
+- the Xcode project that `expo prebuild` writes, with its bundle id, permission strings and icon;
+- what EAS would upload: eas-cli's own ignore rules for the root `.easignore`, and on Linux its own
+  copy of the repository, which must hold `mobile/` and `.git` and nothing else.
 
 The native compile, the signing and the device itself are checked only by EAS's Macs and by a phone
 (TODO.md, "iPhone app"). On a Mac with Xcode, `bunx expo run:ios` runs the app in the simulator;
