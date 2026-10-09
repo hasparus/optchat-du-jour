@@ -68,10 +68,11 @@ workflow that runs on Linux: no Mac or Xcode needed. Once (each step in
 1. Apple Developer Program; an App Store Connect app for the bundle id `dev.hasparus.optchat`; its
    Apple ID as `ascAppId` in `mobile/eas.json`.
 2. An App Store Connect API key (App Manager); its `.p8` stays on your machine for step 4.
-3. An Expo account and access token: the repository secret `EXPO_TOKEN`, the only one.
-4. `cd mobile && bun install && bun run eas login && bun run eas init` (commit `app.json`), then
-   `bun run eas credentials -p ios`: the distribution certificate and profile, and the API key
-   for EAS Submit.
+3. An Expo account and a robot user's access token: the repository secret `EXPO_TOKEN`, the only
+   one. It can fetch the API key from EAS, so keep it scoped (docs/mobile.md, step 4).
+4. `cd mobile && bun install && bun run eas login && bun run eas init --account <organization>`
+   (commit `app.json`), then `bun run eas credentials -p ios`: the distribution certificate and
+   profile, and the API key for EAS Submit.
 5. Actions → TestFlight → Run workflow (or push a tag `ios-v…`); install from TestFlight.
 
 ## Develop

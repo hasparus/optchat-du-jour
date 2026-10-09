@@ -1,11 +1,16 @@
 #!/usr/bin/env bun
 // What can be checked of the iOS app without a Mac (CI's `mobile` job, `bun run check` here): its
-// types and tests, that eas.json's profiles are ones EAS takes, that Metro bundles the JavaScript
+// types and tests, that eas.json's profiles are ones EAS takes, what EAS Build would upload, that
+// Metro bundles the JavaScript
 // into Hermes bytecode for iOS, and that `expo prebuild` turns app.json into an Xcode project with
 // the bundle id, the permission strings and the icon. It can't compile the native code, sign or
 // run the app: only EAS Build on Apple's toolchain does (.github/workflows/testflight.yml).
 import { AppVersionSource, EasJsonAccessor, EasJsonUtils, Platform } from "@expo/eas-json";
-import { existsSync, readFileSync } from "node:fs";
+import GitClient from "eas-cli/build/vcs/clients/git.js";
+import { Ignore } from "eas-cli/build/vcs/local.js";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import app from "./app.json";
 
 const here = import.meta.dir;
@@ -49,6 +54,34 @@ const pbxPath = `${here}/ios/${app.expo.name}.xcodeproj/project.pbxproj`;
 const pbx = existsSync(pbxPath) ? readFileSync(pbxPath, "utf8") : "";
 check(pbx.includes(`PRODUCT_BUNDLE_IDENTIFIER = "${app.expo.ios.bundleIdentifier}";`), "project.pbxproj: the bundle id");
 check(existsSync(`${here}/ios/${app.expo.name}/Images.xcassets/AppIcon.appiconset/App-Icon-1024x1024@1x.png`), "the app icon");
+
+// What EAS Build uploads, by the root .easignore, made with eas-cli's own code: its ignore rules
+// (asked about bare paths, as its copy asks) and then its copy of the repository, as `eas build`
+// makes it before uploading (the generated mobile/ios above must stay out). A pattern eas-cli reads
+// differently from git uploads an empty project, which nothing else would notice before EAS did.
+const root = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { cwd: here }).stdout.toString().trim();
+const ignore = await Ignore.createForCopyingAsync(root);
+const uploaded: readonly (readonly [string, boolean])[] = [
+  ["mobile", true],
+  ["mobile/app.json", true],
+  ["mobile/src/app.tsx", true],
+  ["mobile/ios", false],
+  ["mobile/node_modules", false],
+  ["mobile/.expo", false],
+  ["web", false],
+  ["server", false],
+  ["package.json", false],
+];
+for (const [path, up] of uploaded) check(ignore.ignores(path) !== up, `.easignore: ${path} is ${up ? "uploaded" : "left out"}`);
+const upload = mkdtempSync(join(tmpdir(), "optchat-eas-upload-"));
+try {
+  await new GitClient({ maybeCwdOverride: root, requireCommit: false }).makeShallowCopyAsync(`${upload}/repo`);
+  for (const [path, up] of [...uploaded, ["mobile/package.json", true], ["mobile/bun.lock", true], ["mobile/assets/icon.png", true]] as const) {
+    if (path !== "mobile") check(existsSync(`${upload}/repo/${path}`) === up, `EAS's copy ${up ? "has" : "leaves out"} ${path}`);
+  }
+} finally {
+  rmSync(upload, { force: true, recursive: true });
+}
 
 if (failures.length > 0) {
   process.stderr.write(`mobile check failed:\n${failures.map((f) => `  - ${f}`).join("\n")}\n`);

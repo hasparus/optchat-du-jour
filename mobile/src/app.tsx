@@ -236,7 +236,7 @@ function Web({ colors, onChangeServer, origin }: { readonly colors: Palette; rea
           openOutside(event.nativeEvent.targetUrl);
         }}
         onShouldStartLoadWithRequest={(request) => {
-          if (loadsInApp(origin, request.url)) return true;
+          if (loadsInApp(origin, request)) return true;
           if (request.isTopFrame) openOutside(request.url); // a frame elsewhere just doesn't load
           return false;
         }}

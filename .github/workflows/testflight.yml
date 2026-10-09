@@ -10,8 +10,10 @@ name: TestFlight
 #   - mobile/app.json linked to the EAS project (`bun run eas init`), and the app's App Store Connect
 #     id as ascAppId in mobile/eas.json's submit profile, both committed;
 #   - on EAS, from one `bun run eas credentials -p ios` by hand: the distribution certificate, the
-#     provisioning profile, and an App Store Connect API key for EAS Submit. EAS keeps the key; a
-#     non-interactive build renews the profile and submits with it, so the key never comes here.
+#     provisioning profile, and an App Store Connect API key for EAS Submit. No key is stored on
+#     GitHub, but it does reach this runner: with EXPO_TOKEN, eas-cli fetches the key's .p8 from EAS
+#     into memory to renew the profile and set up TestFlight's group. So EXPO_TOKEN is as strong as
+#     that App Manager key: use a robot user's token, scoped to this project (docs/mobile.md).
 
 on:
   workflow_dispatch:

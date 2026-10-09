@@ -1,10 +1,13 @@
-# What EAS Build uploads from this repository (its root, as EAS archives the whole git repo). With
-# this file there, EAS reads no .gitignore, so this is the whole list. The iOS app needs only
-# mobile/, without what is generated or installed there.
+# What EAS Build uploads from this repository: EAS archives the git repo from its root, and with
+# this file there it reads no .gitignore, so this is the whole list. The iOS app needs only
+# mobile/, without what is generated or installed there; .git stays, as it does without this file.
+# No trailing slashes: eas-cli asks about directories by bare path ("mobile"), which a pattern
+# like "!/mobile/" never matches. mobile/check.ts checks this list with eas-cli's own copy.
 /*
-!/mobile/
-/mobile/node_modules/
-/mobile/.expo/
-/mobile/ios/
-/mobile/android/
+!/.git
+!/mobile
+/mobile/node_modules
+/mobile/.expo
+/mobile/ios
+/mobile/android
 /mobile/*.tsbuildinfo

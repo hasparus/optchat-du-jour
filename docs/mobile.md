@@ -20,16 +20,28 @@ You do this once. A Mac is not needed: every step works from Linux.
    ```
 3. **An App Store Connect API key.** Go to Users and Access → Integrations → App Store Connect API
    → Team Keys → +, with App Manager access. Download the `.p8` file; Apple lets you download it
-   only once. Keep it on your machine for step 5. It never goes to GitHub.
-4. **Expo.** Make an account at [expo.dev](https://expo.dev). Under Account settings → Access tokens,
-   make a token and store it as the repository secret `EXPO_TOKEN`. It is the only secret the
-   workflow needs.
+   only once. Keep it on your machine for step 5. It is never stored on GitHub, but see step 4.
+4. **Expo.** Make an account at [expo.dev](https://expo.dev), and a token for the workflow: the
+   repository secret `EXPO_TOKEN`, the only secret it needs.
+
+   **That token effectively grants the App Store Connect key.** During the build, eas-cli on the
+   GitHub runner uses it to fetch the key's `.p8` from EAS into memory. It needs the key to renew
+   the provisioning profile and set up TestFlight's internal group. Anyone holding the token can
+   do the same, so they can act as App Manager on your App Store Connect team. So don't use a
+   personal token (Account settings → Access tokens), which can do everything your account can.
+   Use a robot user's token instead. Robot users belong to an organization, and an organization
+   is free:
+   - Make one, and in step 5 create the project under it: `bun run eas init --account <organization>`.
+   - Add a robot user (organization settings → Members → Robot users) with the Developer role.
+   - Make its access token, and use that as `EXPO_TOKEN`.
+
+   Revoke the token, and the key in App Store Connect, if either leaks.
 5. **EAS, by hand, once:**
    ```sh
    cd mobile
    bun install
    bun run eas login
-   bun run eas init              # makes the EAS project; commit what it adds to app.json
+   bun run eas init --account <organization>   # the EAS project; commit what it adds to app.json
    bun run eas credentials -p ios
    ```
    In `eas credentials`, choose the production profile, then:
@@ -45,8 +57,9 @@ You do this once. A Mac is not needed: every step works from Linux.
    (`tryAuthenticateAppStoreWithEasAscApiKeyAsync`, and the submit key's `credentialsService`
    source).
 6. **Build.** Go to GitHub → Actions → TestFlight → Run workflow, or push a tag `ios-v…`. The job
-   checks the app, uploads `mobile/` to EAS (`.easignore` keeps the rest of the repo out) and
-   ends. EAS then builds and submits. The free plan has 15 iOS builds a month, in a slower queue.
+   checks the app, uploads `mobile/` to EAS and ends. EAS uploads the git repository from its
+   root, and the root `.easignore` keeps everything but `mobile/` out. `mobile/check.ts` runs
+   eas-cli's own copy to check what it would upload. EAS then builds and submits. The free plan has 15 iOS builds a month, in a slower queue.
    Apple takes a few minutes to process the upload. Then the build is in TestFlight for the team's
    internal testers, with no review.
 7. **On the iPhone.** Install TestFlight and Tailscale from the App Store, connect Tailscale, then
@@ -123,7 +136,8 @@ type `http://127.0.0.1:7700`.
   well, from a template bundled in `expo`.
 - **Build from Linux:** EAS builds, signs and submits on Expo's Macs. The GitHub job runs on ubuntu,
   with no macOS minutes. Expo keeps the certificate, the profile and the API key. One
-  `eas credentials` run by hand sets them up.
+  `eas credentials` run by hand sets them up. The workflow's Expo token can fetch the key, so it
+  should be a robot user's.
 - **Remote:** a remote page is what the component is for. Every request is same-origin, so the
   server needs no change.
 - **Permissions:** Info.plist strings come from `app.json`. `mediaCapturePermissionGrantType`
@@ -164,7 +178,7 @@ has fewer and younger mobile plugins. It is the most toolchain for no gain here.
 | Build from Linux | n/a | macOS runner + your fastlane/signing | **EAS cloud Mac; CI on ubuntu** | macOS runner + Rust | macOS runner + fastlane |
 | macOS CI minutes | 0 | ~15–25/build at ~$0.062 | **0 (15 free iOS builds/mo)** | ~20–30/build | ~10–15/build |
 | Signing | n/a | match or cloud signing, by hand | **EAS-managed; one `eas credentials`** | by hand | by hand |
-| Secrets on GitHub | none | ASC key, match password | **`EXPO_TOKEN` only** | ASC key | ASC key |
+| Secrets on GitHub | none | ASC key, match password | **`EXPO_TOKEN` only (which can fetch the ASC key)** | ASC key | ASC key |
 | UI source | server | bundled (drifts) | **server (always matches)** | bundled | server |
 | Server changes | none | CORS + Origin + base URLs | **none** | CORS + Origin | none |
 | Push later | Web Push (16.4+) | plugin, APNs | **expo-notifications, APNs** | plugin | APNs by hand |

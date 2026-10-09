@@ -46,18 +46,19 @@ Setup only you can do (docs/mobile.md, "Setup", has each step):
 
 - [ ] Apple Developer Program; the App Store Connect app for `dev.hasparus.optchat` (or yours in `mobile/app.json`); its Apple ID as `ascAppId` in `mobile/eas.json`, committed.
 - [ ] An App Store Connect API key (App Manager); keep the `.p8` for the EAS step.
-- [ ] An Expo account and access token: the repository secret `EXPO_TOKEN`.
+- [ ] An Expo account; an organization with a robot user (Developer) whose token is the repository secret `EXPO_TOKEN`. It can fetch the App Store Connect key from EAS, so not a personal token.
 - [ ] `cd mobile && bun install`, then `bun run eas login`, `bun run eas init` (commit `app.json`), `bun run eas credentials -p ios`: build credentials, and the API key for EAS Submit.
 - [ ] Run the TestFlight workflow; install from TestFlight.
 
 Then on the phone, which no CI can check:
 
+- [ ] The robot user's Developer role is enough for a non-interactive build and submit (it must read the stored key); if not, the next role up, never a personal token.
 - [ ] The build compiles and signs on EAS at all (Expo SDK 57, react-native-webview 13.16.1; nothing native was compiled here), and the non-interactive submit finds the key EAS keeps.
 - [ ] First launch: the address check passes over Tailscale (`/api/devices` answers 200), and a wrong login gets the 403 message.
 - [ ] Keyboard: the composer sits right on top of it, and nothing jumps when it opens or closes. Risk of a double adjustment: KeyboardAvoidingView shrinks the WebView while WKWebView may also inset or scroll its own scroll view for the same keyboard; if the page jumps, drop one (e.g. `scrollEnabled={false}` on the WebView, or no KeyboardAvoidingView). With `hideKeyboardAccessoryView` there is no Done button: check that tapping the chat dismisses the keyboard. Safe areas at the notch and the home indicator.
 - [ ] Camera and photo attach from the composer, a video's sound; the permission prompts show their strings, and the page gets the mic and camera with no second WebKit prompt.
 - [ ] Back from the background after a few seconds, after a minute and after hours: the link reconnects at once (WKWebView fires `visibilitychange`; past 30 s an "open" socket is replaced), no white page; the failure screen retries by itself.
-- [ ] Links in a reply open in the Safari sheet, `mailto:` in Mail; an attachment opens full size.
+- [ ] Links in a reply open in the Safari sheet, `mailto:` in Mail; an attachment opens full size in the sheet, and the app stays on its page (the top frame only ever holds the server's `/`).
 - [ ] Push notifications, later: APNs from the server for a finished turn (expo-notifications in the app, a `.p8` key on the server).
 
 ## Media

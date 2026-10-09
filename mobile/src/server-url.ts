@@ -29,6 +29,8 @@ export function parseServerUrl(input: string): Parsed {
     return { error: "Use the https:// address that tailscale serve gives the server; plain http only reaches 127.0.0.1.", ok: false };
   }
   if (url.username !== "" || url.password !== "") return { error: "Leave the user name and password out of the address.", ok: false };
+  // the app always opens the server's own /, so a path would be dropped without a word
+  if (url.pathname !== "/" || url.search !== "" || url.hash !== "") return { error: `Type the server's address alone, without a path: ${url.origin}`, ok: false };
   if (url.hostname === "") return { error: "That address has no host name.", ok: false };
   return { ok: true, origin: url.origin };
 }
@@ -42,12 +44,18 @@ export function sameOrigin(origin: string, target: string): boolean {
   }
 }
 
-// What may load in the app's WebView, in any frame: the server's own pages (a blob: URL its page
-// made has its origin too), and the empty documents a page makes itself (about:blank, an iframe's
-// srcdoc). Nothing else, so no other site,
-// and no other port on the server's host, runs with the app's bridge or its media grant. A link
-// elsewhere opens outside the app.
-export const loadsInApp = (origin: string, target: string): boolean => target === "about:blank" || target === "about:srcdoc" || sameOrigin(origin, target);
+// What may load in the app's WebView. In any frame: nothing but the server's origin (a blob: URL
+// its page made has its origin too) and the empty documents a page makes itself (about:blank, an
+// iframe's srcdoc), so no other site, and no other port on the server's host, runs with the app's
+// bridge or its media grant. The top frame holds the app itself, the server's `/`: a link to
+// another of its paths (an attachment, an API answer) would leave the app on a page with no way
+// back, so it opens outside, as a link elsewhere does.
+export function loadsInApp(origin: string, request: { readonly url: string; readonly isTopFrame: boolean }): boolean {
+  const { isTopFrame, url } = request;
+  if (url === "about:blank" || (!isTopFrame && url === "about:srcdoc")) return true;
+  if (!sameOrigin(origin, url)) return false;
+  return !isTopFrame || new URL(url).pathname === "/";
+}
 
 export type Probe = { readonly ok: true } | { readonly ok: false; readonly error: string };
 export type Fetch = (url: string, init: RequestInit) => Promise<Response>;

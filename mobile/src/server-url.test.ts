@@ -5,7 +5,7 @@ import { type Fetch, loadsInApp, parseServerUrl, probe, sameOrigin } from "./ser
 describe("parseServerUrl", () => {
   test("a tailnet address, typed in full or as a bare host name, becomes its https origin", () => {
     expect(parseServerUrl("https://mini.tailnet.ts.net")).toEqual({ ok: true, origin: "https://mini.tailnet.ts.net" });
-    expect(parseServerUrl("  mini.tailnet.ts.net/chat?x=1 ")).toEqual({ ok: true, origin: "https://mini.tailnet.ts.net" });
+    expect(parseServerUrl("  mini.tailnet.ts.net/ ")).toEqual({ ok: true, origin: "https://mini.tailnet.ts.net" });
     expect(parseServerUrl("HTTPS://Mini.Tailnet.TS.net:8443/")).toEqual({ ok: true, origin: "https://mini.tailnet.ts.net:8443" });
   });
 
@@ -14,6 +14,13 @@ describe("parseServerUrl", () => {
     expect(parseServerUrl("http://localhost:7700")).toEqual({ ok: true, origin: "http://localhost:7700" });
     expect(parseServerUrl("http://mini.tailnet.ts.net").ok).toBe(false);
     expect(parseServerUrl("http://192.168.1.20:7700").ok).toBe(false);
+  });
+
+  test("a path, query or fragment is refused, not dropped, and the message gives the address to type", () => {
+    for (const input of ["mini.tailnet.ts.net/chat", "https://mini.tailnet.ts.net/?x=1", "https://mini.tailnet.ts.net/#memory", "https://mini.tailnet.ts.net/api/"]) {
+      const parsed = parseServerUrl(input);
+      expect(parsed).toEqual({ error: "Type the server's address alone, without a path: https://mini.tailnet.ts.net", ok: false });
+    }
   });
 
   test("nothing, another scheme, or credentials in the address are refused with a reason", () => {
@@ -52,13 +59,16 @@ const silent: Fetch = async (_url, init) =>
     });
   });
 
-test("loadsInApp: the server's pages and a page's own empty documents, in any frame; no other site, scheme or port", () => {
+test("loadsInApp: frames load only the server's origin and empty documents; the top frame only the app at /", () => {
   const origin = "https://mini.tailnet.ts.net";
+  const top = (url: string) => loadsInApp(origin, { isTopFrame: true, url });
+  const frame = (url: string) => loadsInApp(origin, { isTopFrame: false, url });
+  // the app itself, as loaded and reloaded
+  for (const url of [`${origin}/`, origin, `${origin}/?tab=memory`, `${origin}/#x`, "about:blank"]) expect(top(url)).toBe(true);
+  // another of the server's paths would strand the app there: it opens outside
+  for (const url of [`${origin}/api/assets/9d0c38e7aafe`, `${origin}/api/devices`, `${origin}/index.html`, "about:srcdoc"]) expect(top(url)).toBe(false);
   // a blob: URL the server's page made has the server's origin, as browsers count it
-  for (const url of [`${origin}/`, `${origin}/api/assets/9d0c38e7aafe/thumb`, "about:blank", "about:srcdoc", `blob:${origin}/1`]) {
-    expect(loadsInApp(origin, url)).toBe(true);
-  }
-  expect(loadsInApp(origin, "blob:https://example.com/1")).toBe(false);
+  for (const url of [`${origin}/`, `${origin}/api/assets/9d0c38e7aafe/thumb`, "about:blank", "about:srcdoc", `blob:${origin}/1`]) expect(frame(url)).toBe(true);
   for (const url of [
     "https://example.com/",
     "https://mini.tailnet.ts.net:8443/",
@@ -67,8 +77,10 @@ test("loadsInApp: the server's pages and a page's own empty documents, in any fr
     "about:blank#x",
     "data:text/html,<script>1</script>",
     "javascript:alert(1)",
+    "blob:https://example.com/1",
   ]) {
-    expect(loadsInApp(origin, url)).toBe(false);
+    expect(top(url)).toBe(false);
+    expect(frame(url)).toBe(false);
   }
 });
 
