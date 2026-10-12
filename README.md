@@ -96,7 +96,8 @@ bun dev/latency.ts --fake   # turn latency over /ws (or --url ws://127.0.0.1:770
 (`IMPECCABLE_NO_UPDATE_CHECK=1` stops that), may download its engine into `~/.impeccable`, offers
 image generation billed to `OPENAI_API_KEY` if that is set, tells the model to stop and ask you even
 in an autonomous session, tells it that it may spawn the skill's subagents without asking, and sends
-impeccable.style which kind of design direction you picked (`DO_NOT_TRACK=1` stops that). Most of
-its requests bypass `HTTPS_PROXY`. Decline its offer to run `npx impeccable update`, which rewrites
-the vendored skill in place, and update it by the steps in its `PROVENANCE.md`, which has the
-details.
+impeccable.style which kind of design direction you picked (`DO_NOT_TRACK=1` stops that). It
+downloads design-direction card images into `.impeccable/mocks/worlds/`. Its requests go through
+`ALL_PROXY`, `HTTPS_PROXY` or `HTTP_PROXY` when one is set, but it ignores `NO_PROXY`. Decline its
+offer to run `npx impeccable update`, which rewrites the vendored skill in place, and update it by
+the steps in its `PROVENANCE.md`, which has the details.
