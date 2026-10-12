@@ -64,7 +64,11 @@ function shortest(tries: readonly string[]): string {
 }
 
 // One try: the first message (attempt 1), or the retry text that answers the line before it.
-export type Try = { readonly attempt: number; readonly retry: { readonly line: string; readonly text: string } | null };
+export type Try = {
+  readonly attempt: number;
+  readonly retry: { readonly line: string; readonly text: string } | null;
+  readonly beforeRequest: Effect.Effect<void, EngineError>;
+};
 export type Answer = { readonly text: string; readonly usage: Tokens; readonly model: string | null; readonly dollars?: number };
 
 export type CompactAttempt = {
@@ -75,7 +79,7 @@ export type CompactAttempt = {
   readonly job: Job;
 };
 export type CompactAttemptHooks = {
-  readonly beforeAttempt: (attempt: CompactAttempt) => Effect.Effect<void, EngineError>;
+  readonly beforeRequest: (attempt: CompactAttempt) => Effect.Effect<void, EngineError>;
   readonly onFailure: (attempt: CompactAttempt, error: EngineError) => Effect.Effect<void>;
 };
 
@@ -119,22 +123,15 @@ export const sizeRetries = (o: {
           };
           yield* o.log(dollars === undefined ? line : { ...line, dollars });
         });
-      let answer: Answer;
-      if (o.hooks === undefined) {
-        answer = yield* o.ask({ attempt, retry }).pipe(
-          Effect.tapError((e) => (e._tag !== "DeviceOffline" && e.spent !== undefined ? record(e.spent.usage, e.spent.model, e.spent.dollars) : Effect.void)),
-        );
-      } else {
-        const metadata: CompactAttempt = { attempt, auth: o.auth, engine: o.engine, failoverFrom: o.failoverFrom, job: o.job };
-        yield* o.hooks.beforeAttempt(metadata);
-        answer = yield* o.ask({ attempt, retry }).pipe(
-          Effect.tapError((e) =>
-            o.hooks!.onFailure(metadata, e).pipe(
-              Effect.andThen(e._tag !== "DeviceOffline" && e.spent !== undefined ? record(e.spent.usage, e.spent.model, e.spent.dollars) : Effect.void),
-            ),
+      const metadata: CompactAttempt = { attempt, auth: o.auth, engine: o.engine, failoverFrom: o.failoverFrom, job: o.job };
+      const beforeRequest = o.hooks?.beforeRequest(metadata) ?? Effect.void;
+      const answer: Answer = yield* o.ask({ attempt, beforeRequest, retry }).pipe(
+        Effect.tapError((e) =>
+          (o.hooks === undefined ? Effect.void : o.hooks.onFailure(metadata, e)).pipe(
+            Effect.andThen(e._tag !== "DeviceOffline" && e.spent !== undefined ? record(e.spent.usage, e.spent.model, e.spent.dollars) : Effect.void),
           ),
-        );
-      }
+        ),
+      );
       yield* record(answer.usage, answer.model, answer.dollars);
       const line = answer.text.trim();
       // an empty answer ends the call: a line tried before it still stands, the shortest of them

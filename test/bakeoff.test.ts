@@ -2,8 +2,8 @@
 // them away. The measures must tell the two apart, and the retry count must come out of the
 // usage records alone.
 import { expect, test } from "bun:test";
-import { Effect } from "effect";
-import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { Deferred, Effect, Fiber } from "effect";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { CompactError, type Job } from "../src/compactor.ts";
 import { UsageLimit } from "../src/engines/errors.ts";
@@ -12,8 +12,10 @@ import { bytes } from "../src/tree.ts";
 import type { UsageRecord } from "../src/usage.ts";
 import {
   type ArtifactContender,
+  BakeoffStopped,
   bakeoffArtifact,
   type Contender,
+  controlledStopText,
   type Measured,
   type Message,
   lexicalAnswerer,
@@ -172,7 +174,7 @@ test("the process-wide controller permits exactly N concurrent attempts", async 
   const outcomes = await Effect.runPromise(
     Effect.all(
       Array.from({ length: 24 }, () =>
-        hooks.beforeAttempt(fakeAttempt).pipe(
+        hooks.beforeRequest(fakeAttempt).pipe(
           Effect.andThen(Effect.sync(() => void invoked++)),
           Effect.result,
         ),
@@ -196,7 +198,7 @@ test("a UsageLimit without spent usage is observed after its attempt is counted"
   const error = await Effect.runPromise(
     Effect.flip(
       sizeRetries({
-        ask: () => Effect.sync(() => void invoked++).pipe(Effect.andThen(Effect.fail(new UsageLimit({ message: "monthly cap" })))),
+        ask: (attempt) => attempt.beforeRequest.pipe(Effect.andThen(Effect.sync(() => void invoked++)), Effect.andThen(Effect.fail(new UsageLimit({ message: "PRIVATE-USAGE-SENTINEL" })))),
         auth: "chatgpt-pro",
         effort: undefined,
         engine: "openai-plan",
@@ -213,8 +215,11 @@ test("a UsageLimit without spent usage is observed after its attempt is counted"
   expect(control.snapshot()).toEqual({
     attempts: 1,
     maxAttempts: 4,
-    stop: { contender: "limited", engine: "openai-plan", message: "monthly cap", node: "0.0", type: "usage-limit" },
+    stop: { contender: "limited", engine: "openai-plan", node: "0.0", type: "usage-limit" },
   });
+  const artifact = bakeoffArtifact([], [], control);
+  expect(JSON.stringify(artifact)).not.toContain("PRIVATE-USAGE-SENTINEL");
+  expect(controlledStopText(artifact.stop!)).not.toContain("PRIVATE-USAGE-SENTINEL");
 });
 
 test("an over-limit summary stops replay before more work is scheduled", async () => {
@@ -266,11 +271,12 @@ test("a stopped contender is persisted as partial and gates later factories", as
     runContenders({
       contenders,
       control,
+      initial: (contender) => contender.name,
       persist: (current) => Effect.sync(() => void persisted.push(current.map((result) => result.name))),
       run: (contender) =>
         Effect.gen(function* () {
           started.push(contender.name);
-          yield* control.stop({ contender: contender.name, message: "failed", node: "0.0", type: "unbuilt" });
+          yield* control.stop({ contender: contender.name, node: "0.0", type: "unbuilt" });
           return { complete: false, value: contender.name };
         }),
     }),
@@ -284,8 +290,8 @@ test("a controlled stop writes an atomic, parseable versioned partial artifact",
   const control = makeBakeoffController(1);
   const contender = parseContender("only=openai-plan:fake");
   const hooks = control.hooks(contender.name);
-  await Effect.runPromise(hooks.beforeAttempt(fakeAttempt));
-  await Effect.runPromise(Effect.result(hooks.beforeAttempt(fakeAttempt)));
+  await Effect.runPromise(hooks.beforeRequest(fakeAttempt));
+  await Effect.runPromise(Effect.result(hooks.beforeRequest(fakeAttempt)));
   const results: ArtifactContender[] = [{ name: contender.name, status: "partial", value: { metrics: emptyMeasured(contender.name), usageRecords: 0 } }];
   const artifact = bakeoffArtifact([contender], results, control);
   const dir = mkdtempSync(`${tmpdir()}/bake-artifact-`);
@@ -314,10 +320,105 @@ test("explicit non-fail-fast mode retains legacy over-limit replay behavior", as
       summarizeFor: () => Effect.succeed(() => Effect.succeed("y".repeat(513))),
     }),
   );
-  expect(control.snapshot().stop?.type).toBe("over-limit");
+  expect(control.snapshot().stop).toBeNull();
   expect(control.isStopped()).toBe(false);
   expect(r.unbuilt).toEqual([]);
   expect(overLimit(r.mem)).toBe(1);
+});
+
+test("a defect replaces a stale artifact with one stopped partial contender", async () => {
+  const contender = parseContender("defect=openai-plan:fake");
+  const control = makeBakeoffController(10);
+  const dir = mkdtempSync(`${tmpdir()}/bake-defect-`);
+  const path = `${dir}/result.json`;
+  writeFileSync(path, '{"stale":"PRIVATE-STALE-SENTINEL"}\n');
+  const exit = await Effect.runPromiseExit(
+    runContenders({
+      contenders: [contender],
+      control,
+      initial: (current) => ({ metrics: null, usageRecords: current.name.length }),
+      persist: (results: readonly ArtifactContender[]) =>
+        Effect.sync(() => {
+          writeArtifact(path, bakeoffArtifact([contender], results, control));
+        }),
+      run: () => Effect.die("PRIVATE-DEFECT-SENTINEL"),
+    }),
+  );
+  expect(exit._tag).toBe("Failure");
+  const artifact: unknown = JSON.parse(readFileSync(path, "utf8"));
+  expect(artifact).toMatchObject({
+    contenders: [{ name: "defect", status: "partial", value: { metrics: null } }],
+    status: "stopped",
+    stop: { contender: "defect", type: "unexpected" },
+    version: 1,
+  });
+  expect(JSON.stringify(artifact)).not.toContain("PRIVATE-STALE-SENTINEL");
+  expect(JSON.stringify(artifact)).not.toContain("PRIVATE-DEFECT-SENTINEL");
+});
+
+test("interrupting a contender finalizes its current partial artifact", async () => {
+  const path = `${tmpdir()}/optchat-bakeoff-interrupt-${crypto.randomUUID()}.json`;
+  const contender = parseContender("interrupt=claude-code:sonnet:medium");
+  const control = makeBakeoffController(10);
+  const started = await Effect.runPromise(Deferred.make<null>());
+  const fiber = Effect.runFork(
+    runContenders({
+      contenders: [contender],
+      control,
+      initial: () => ({ metrics: null, usageRecords: 0 }),
+      persist: (results: readonly ArtifactContender[]) =>
+        Effect.sync(() => {
+          writeArtifact(path, bakeoffArtifact([contender], results, control));
+        }),
+      run: () => Deferred.succeed(started, null).pipe(Effect.andThen(Effect.never)),
+    }),
+  );
+  await Effect.runPromise(Deferred.await(started));
+  await Effect.runPromise(Fiber.interrupt(fiber));
+  const artifact: unknown = JSON.parse(readFileSync(path, "utf8"));
+  expect(artifact).toMatchObject({
+    contenders: [{ name: "interrupt", status: "partial", value: { metrics: null } }],
+    status: "stopped",
+    stop: { contender: "interrupt", type: "unexpected" },
+    version: 1,
+  });
+});
+
+test("unbuilt stop artifacts and controlled output never expose compactor errors", async () => {
+  const sentinel = "PRIVATE-UNBUILT-SENTINEL";
+  const contender = parseContender("broken=openai-plan:fake");
+  const control = makeBakeoffController(10);
+  const replayed = await Effect.runPromise(
+    replay({
+      budget: 100_000,
+      contender,
+      control,
+      messages: [{ kind: "user", text: "x".repeat(600) }],
+      poll: "1 millis",
+      summarizeFor: () => Effect.succeed(() => Effect.fail(new CompactError({ message: sentinel }))),
+    }),
+  );
+  const reason = replayed.stop;
+  expect(reason).toEqual({ contender: "broken", node: "0.0", type: "unbuilt" });
+  const artifact = bakeoffArtifact([contender], [{ name: contender.name, status: "partial", value: { metrics: null, usageRecords: 0 } }], control);
+  expect(JSON.stringify(artifact)).not.toContain(sentinel);
+  expect(reason === null ? "" : controlledStopText(reason)).not.toContain(sentinel);
+  expect(reason === null ? "" : String(new BakeoffStopped({ reason }))).not.toContain(sentinel);
+});
+
+test("non-fail-fast diagnostics do not replace a later authoritative cap", async () => {
+  const control = makeBakeoffController(1, false);
+  await Effect.runPromise(control.stop({ bytes: 513, contender: "diagnostic", limit: 512, node: "0.0", type: "over-limit" }));
+  expect(control.snapshot().stop).toBeNull();
+  const hooks = control.hooks("diagnostic");
+  await Effect.runPromise(hooks.beforeRequest(fakeAttempt));
+  await Effect.runPromise(Effect.result(hooks.beforeRequest(fakeAttempt)));
+  expect(control.isStopped()).toBe(true);
+  expect(control.snapshot()).toEqual({
+    attempts: 1,
+    maxAttempts: 1,
+    stop: { attempted: 1, contender: "diagnostic", max: 1, type: "max-attempts" },
+  });
 });
 
 test("the preflight lower bound counts the complete requested tree", () => {

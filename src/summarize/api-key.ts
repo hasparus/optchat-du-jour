@@ -41,7 +41,7 @@ export const apiKeyCompactor = (o: {
       const ask = (t: Try) =>
         Effect.gen(function* () {
           if (t.retry !== null) history.push({ parts: [t.retry.text], type: "user" });
-          const reply = yield* provider.call({ final: true, history, instructions, onStart: started, onText: () => Effect.void, tools });
+          const reply = yield* provider.call({ beforeRequest: t.beforeRequest, final: true, history, instructions, onStart: started, onText: () => Effect.void, tools });
           history.push(...reply.items); // thinking blocks included, so the retry continues the same conversation
           const text = reply.items.flatMap((i) => (i.type === "text" ? [i.text] : [])).join("");
           return { dollars: reply.dollars, model: reply.model, text, usage: reply.usage };

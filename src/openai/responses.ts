@@ -54,6 +54,7 @@ export type Ask<E extends Tagged = never> = {
   readonly onThinking?: (tokens: number) => Effect.Effect<void>; // the size of the reasoning streamed so far
   readonly onOut?: (out: Out) => Effect.Effect<void, E>; // each item of `output` as it completes
   readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
+  readonly beforeRequest?: Effect.Effect<void, EngineError>;
 };
 export type Reply = { readonly text: string; readonly usage: Usage; readonly model: string; readonly output: readonly Out[] };
 export type Respond = <E extends Tagged = never>(ask: Ask<E>) => Effect.Effect<Reply, EngineError | E>;
@@ -280,14 +281,14 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
     const http = yield* HttpClient.HttpClient;
     // the models that refused `prompt_cache_breakpoint`: their requests go without it from then on
     const unmarked = new Set<string>();
-    const post = <E extends Tagged>(ask: Ask<E>, token: string, marked: boolean) =>
-      http.execute(
-        HttpClientRequest.post(`${o.api}/responses`).pipe(
-          HttpClientRequest.bearerToken(token),
-          HttpClientRequest.accept("text/event-stream"),
-          HttpClientRequest.bodyText(body(ask, marked), "application/json"),
-        ),
+    const post = <E extends Tagged>(ask: Ask<E>, token: string, marked: boolean) => {
+      const request = HttpClientRequest.post(`${o.api}/responses`).pipe(
+        HttpClientRequest.bearerToken(token),
+        HttpClientRequest.accept("text/event-stream"),
+        HttpClientRequest.bodyText(body(ask, marked), "application/json"),
       );
+      return (ask.beforeRequest ?? Effect.void).pipe(Effect.andThen(http.execute(request)));
+    };
     // A model that refuses the breakpoints (a 400 naming the field) gets the same request again
     // without them, and none from then on, which the user hears once, rather than failing every
     // call; our marks are then off for it.

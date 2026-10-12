@@ -10,7 +10,7 @@
 // model, a budget) and a stored key (`optchat key anthropic`); what it spends counts against the
 // month's budget.
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Array as Arr, Console, Context, Data, Deferred, Duration, Effect, Layer, Option, Result, Schema } from "effect";
+import { Array as Arr, Console, Context, Data, Deferred, Duration, Effect, Exit, Layer, Option, Result, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { existsSync, mkdtempSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -43,12 +43,15 @@ export type Contender = { readonly name: string; readonly byLevel: Settings["com
 
 export type StopReason =
   | { readonly type: "max-attempts"; readonly contender: string; readonly attempted: number; readonly max: number }
-  | { readonly type: "usage-limit"; readonly contender: string; readonly engine: string; readonly node: string; readonly message: string }
+  | { readonly type: "usage-limit"; readonly contender: string; readonly engine: string; readonly node: string }
   | { readonly type: "deadline"; readonly contender: string; readonly duration: string }
-  | { readonly type: "unbuilt"; readonly contender: string; readonly node: string; readonly message: string }
-  | { readonly type: "over-limit"; readonly contender: string; readonly node: string; readonly bytes: number; readonly limit: number };
+  | { readonly type: "unbuilt"; readonly contender: string; readonly node: string }
+  | { readonly type: "over-limit"; readonly contender: string; readonly node: string; readonly bytes: number; readonly limit: number }
+  | { readonly type: "unexpected"; readonly contender: string | null };
 
 export class BakeoffStopped extends Data.TaggedError("BakeoffStopped")<{ readonly reason: StopReason }> {}
+
+export const controlledStopText = (reason: StopReason): string => `bake-off stopped: ${reason.type}`;
 
 export type BakeoffController = {
   readonly maxAttempts: number;
@@ -68,13 +71,13 @@ export function makeBakeoffController(maxAttempts: number, failFast = true): Bak
   let halted = false;
   const stop = (reason: StopReason): Effect.Effect<boolean> =>
     Effect.suspend(() => {
-      first ??= reason;
       if ((!failFast && reason.type !== "max-attempts") || halted) return Effect.succeed(false);
+      first ??= reason;
       halted = true;
       return Deferred.succeed(stopped, first);
     });
   const hooks = (contender: string): CompactAttemptHooks => ({
-    beforeAttempt: (_attempt) =>
+    beforeRequest: (_attempt) =>
       Effect.suspend(() => {
         if (halted) return Effect.fail(new ModelError({ message: `bake-off stopped: ${first?.type ?? "unknown"}` }));
         if (attempts >= maxAttempts) {
@@ -86,7 +89,7 @@ export function makeBakeoffController(maxAttempts: number, failFast = true): Bak
       }),
     onFailure: (attempt, error) =>
       error._tag === "UsageLimit"
-        ? stop({ contender, engine: attempt.engine, message: error.message, node: `${attempt.job.l}.${attempt.job.i}`, type: "usage-limit" }).pipe(Effect.asVoid)
+        ? stop({ contender, engine: attempt.engine, node: `${attempt.job.l}.${attempt.job.i}`, type: "usage-limit" }).pipe(Effect.asVoid)
         : Effect.void,
   });
   return { awaitStop: Deferred.await(stopped), failFast, hooks, isStopped: () => halted, maxAttempts, snapshot: () => ({ attempts, maxAttempts, stop: first }), stop };
@@ -190,7 +193,7 @@ export const replay = <R>(o: {
                     ? control.stop({ bytes: bytes(line), contender: o.contender.name, limit: NODE, node: `${job.l}.${job.i}`, type: "over-limit" }).pipe(Effect.asVoid)
                     : Effect.void,
                 ),
-                Effect.tapError((error) => control.stop({ contender: o.contender.name, message: error.message, node: `${job.l}.${job.i}`, type: "unbuilt" }).pipe(Effect.asVoid)),
+                Effect.tapError(() => control.stop({ contender: o.contender.name, node: `${job.l}.${job.i}`, type: "unbuilt" }).pipe(Effect.asVoid)),
               );
       const chat = yield* openChat(dir, {
         marks: o.budget === undefined ? undefined : { high: o.budget, low: Math.floor(o.budget / 2) },
@@ -407,30 +410,43 @@ export type ContenderResult<A> = {
 export const runContenders = <A, E, R>(o: {
   readonly contenders: readonly Contender[];
   readonly control: BakeoffController;
+  readonly initial: (contender: Contender) => A;
   readonly run: (contender: Contender) => Effect.Effect<{ readonly complete: boolean; readonly value: A }, E, R>;
   readonly persist: (results: readonly ContenderResult<A>[]) => Effect.Effect<void>;
-}): Effect.Effect<readonly ContenderResult<A>[], E, R> =>
-  Effect.gen(function* () {
-    const results: ContenderResult<A>[] = [];
+}): Effect.Effect<readonly ContenderResult<A>[], E, R> => {
+  const results: ContenderResult<A>[] = [];
+  let current: string | null = null;
+  const persist = Effect.suspend(() => o.persist(results));
+  return Effect.gen(function* () {
     for (const contender of o.contenders) {
       if (o.control.isStopped()) break;
+      current = contender.name;
+      const at = results.push({ name: contender.name, status: "partial", value: o.initial(contender) }) - 1;
+      yield* persist;
       const result = yield* o.run(contender);
-      const entry: ContenderResult<A> = {
+      results[at] = {
         name: contender.name,
         status: result.complete && o.control.snapshot().stop === null ? "complete" : "partial",
         value: result.value,
       };
-      results.push(entry);
-      yield* o.persist(results);
-      if (o.control.isStopped()) {
-        yield* o.persist(results);
-        break;
-      }
+      current = null;
+      yield* persist;
+      if (o.control.isStopped()) break;
     }
     return results;
-  });
+  }).pipe(
+    Effect.onExit((exit) =>
+      Exit.isSuccess(exit)
+        ? Effect.void
+        : o.control.stop({ contender: current, type: "unexpected" }).pipe(
+            Effect.andThen(persist),
+            Effect.asVoid,
+          ),
+    ),
+  );
+};
 
-export type ArtifactContender = ContenderResult<{ readonly metrics: Measured; readonly usageRecords: number }>;
+export type ArtifactContender = ContenderResult<{ readonly metrics: Measured | null; readonly usageRecords: number }>;
 export type BakeoffArtifact = {
   readonly version: 1;
   readonly status: "complete" | "stopped";
@@ -440,6 +456,16 @@ export type BakeoffArtifact = {
   readonly completedContenders: readonly string[];
   readonly contenders: readonly ArtifactContender[];
 };
+
+export const initialArtifact = (requested: readonly string[], maxAttempts: number): BakeoffArtifact => ({
+  attempts: { attempted: 0, max: maxAttempts },
+  completedContenders: [],
+  contenders: [],
+  requestedContenders: requested,
+  status: "stopped",
+  stop: { contender: null, type: "unexpected" },
+  version: 1,
+});
 
 export function bakeoffArtifact(requested: readonly Contender[], results: readonly ArtifactContender[], control: BakeoffController): BakeoffArtifact {
   const snapshot = control.snapshot();
@@ -503,12 +529,23 @@ const main = Effect.gen(function* () {
   });
   const n = count(values.n, 1), skip = count(values.skip, 0), questionCount = count(values.questions, 0), deadline = count(values.deadline, 1);
   const maxAttempts = values["max-attempts"] === undefined ? null : count(values["max-attempts"], 1);
+  const safety =
+    values.out === undefined || maxAttempts === null
+      ? null
+      : { control: makeBakeoffController(maxAttempts, !values["no-fail-fast"]), maxAttempts, out: values.out };
+  if (safety !== null)
+    writeArtifact(
+      safety.out,
+      initialArtifact(
+        (values.chain ?? []).map((spec) => spec.slice(0, Math.max(0, spec.indexOf("="))) || "invalid"),
+        safety.maxAttempts,
+      ),
+    );
   if (
     values.from === undefined ||
     !existsSync(values.from) ||
     !values.chain?.length ||
-    values.out === undefined ||
-    maxAttempts === null ||
+    safety === null ||
     n === null ||
     skip === null ||
     questionCount === null ||
@@ -516,6 +553,7 @@ const main = Effect.gen(function* () {
   )
     return yield* Console.error(USAGE);
   const { chain } = values;
+  const { control, out } = safety;
   const contenders = Result.try({ catch: (e) => (e instanceof Error ? e.message : String(e)), try: () => chain.map(parseContender) });
   if (Result.isFailure(contenders)) return yield* Console.error(`${contenders.failure}\n${USAGE}`);
   const root = new URL("..", import.meta.url).pathname;
@@ -533,59 +571,80 @@ const main = Effect.gen(function* () {
   const nodesPerContender = modelBuiltNodes(messages.length);
   const lowerBound = nodesPerContender * canonical.length;
   for (const contender of canonical) yield* Console.error(`${contender.name}: ${nodesPerContender} model-built nodes`);
-  yield* Console.error(`one-call lower bound: ${lowerBound}; max attempts: ${maxAttempts}`);
-  if (maxAttempts < lowerBound) yield* Console.error(`warning: max attempts ${maxAttempts} is below the one-call lower bound ${lowerBound}`);
-  const control = makeBakeoffController(maxAttempts, !values["no-fail-fast"]);
-  const { out } = values;
-  const outside = Layer.mergeAll(SecretsLive, FetchHttpClient.layer);
-  const scope = yield* Effect.scope;
-  const plan = yield* Effect.cached(Layer.buildWithScope(openAiPlanLayer(settings.openai, { report: (m) => Console.error(m) }).pipe(Layer.provide(outside)), scope).pipe(Effect.map((c) => Context.get(c, OpenAiPlan))));
-  const apiKeys = yield* Effect.cached(Layer.buildWithScope(apiKeysLayer(settings.apiKey).pipe(Layer.provide(outside)), scope).pipe(Effect.map((c) => Context.get(c, ApiKeys))));
-  const runner = Context.get(yield* Layer.build(LocalRunner.pipe(Layer.provide(BunServices.layer))), Runner);
-  // api-key contenders: the real keys, and every call counted against the month's budget like the
-  // server's, and appended to its usage.jsonl too, so a server started later counts what this spent
-  const usagePath = `${HOME}/usage.jsonl`;
-  const budget = makeBudget({ monthly: settings.apiKey?.monthlyBudget ?? 0, report: (m) => Console.error(m), usagePath });
-  const spend = (r: UsageRecord) => (r.auth === "api-key" ? logUsage(usagePath, r).pipe(Effect.flatMap((e) => (e ? Console.error(e) : Effect.void))) : Effect.void);
-  const results = yield* runContenders({
-    contenders: canonical,
-    control,
-    persist: (current: readonly ArtifactContender[]) =>
-      Effect.sync(() => {
-        writeArtifact(out, bakeoffArtifact(canonical, current, control));
-      }),
-    run: (contender) =>
-      Effect.gen(function* () {
-        yield* Console.error(`${contender.name}: replaying ${messages.length} messages`);
-        const replayed = yield* replay({
-          contender,
-          control,
-          deadline: Duration.minutes(deadline),
-          messages,
-          summarizeFor: (c, log, report, attemptHooks) =>
-            makeSummarize({
-              apiKeys,
-              attemptHooks,
-              budget,
-              log: (r) => budget.note(r).pipe(Effect.andThen(log(r)), Effect.andThen(spend(r))),
-              plan,
-              report,
-              gate: makeGate(),
-              instructions: systemPrompt(HOME),
-              placement: Effect.succeed({ cwd: undefined, mcpConfig: JSON.stringify({ mcpServers: {} }), mcpSeen: () => Effect.succeed(false), runner }),
-              tools: toolDefs({ device: settings.defaultDevice, folders: settings.devices[settings.defaultDevice]?.folders ?? [] }),
-              settings: { ...settings, compactor: { ...settings.compactor, byLevel: c.byLevel } },
-            }).pipe(Effect.map((m) => m.summarize)),
-        });
-        for (const message of replayed.reports) yield* Console.error(`${contender.name}: ${message}`);
-        const metrics = yield* measure(replayed, messages, { answerer: lexicalAnswerer, kinds, questions: questionCount });
-        return { complete: replayed.stop === null && replayed.unbuilt.length === 0, value: { metrics, usageRecords: replayed.records.length } };
-      }),
-  });
-  writeArtifact(out, bakeoffArtifact(canonical, results, control));
-  yield* Console.log(table(results.map((result) => result.value.metrics)));
-  const stopped = control.snapshot().stop;
-  if (stopped !== null) return yield* new BakeoffStopped({ reason: stopped });
+  yield* Console.error(`one-call lower bound: ${lowerBound}; max attempts: ${safety.maxAttempts}`);
+  if (safety.maxAttempts < lowerBound) yield* Console.error(`warning: max attempts ${safety.maxAttempts} is below the one-call lower bound ${lowerBound}`);
+  let latest: readonly ArtifactContender[] = [];
+  const execute = Effect.scoped(
+    Effect.gen(function* () {
+      const outside = Layer.mergeAll(SecretsLive, FetchHttpClient.layer);
+      const scope = yield* Effect.scope;
+      const plan = yield* Effect.cached(Layer.buildWithScope(openAiPlanLayer(settings.openai, { report: (m) => Console.error(m) }).pipe(Layer.provide(outside)), scope).pipe(Effect.map((c) => Context.get(c, OpenAiPlan))));
+      const apiKeys = yield* Effect.cached(Layer.buildWithScope(apiKeysLayer(settings.apiKey).pipe(Layer.provide(outside)), scope).pipe(Effect.map((c) => Context.get(c, ApiKeys))));
+      const runner = Context.get(yield* Layer.build(LocalRunner.pipe(Layer.provide(BunServices.layer))), Runner);
+      const usagePath = `${HOME}/usage.jsonl`;
+      const budget = makeBudget({ monthly: settings.apiKey?.monthlyBudget ?? 0, report: (m) => Console.error(m), usagePath });
+      const spend = (r: UsageRecord) => (r.auth === "api-key" ? logUsage(usagePath, r).pipe(Effect.flatMap((e) => (e ? Console.error(e) : Effect.void))) : Effect.void);
+      const results = yield* runContenders({
+        contenders: canonical,
+        control,
+        initial: () => ({ metrics: null, usageRecords: 0 }),
+        persist: (current: readonly ArtifactContender[]) =>
+          Effect.sync(() => {
+            latest = [...current];
+            writeArtifact(out, bakeoffArtifact(canonical, latest, control));
+          }),
+        run: (contender) =>
+          Effect.gen(function* () {
+            yield* Console.error(`${contender.name}: replaying ${messages.length} messages`);
+            const replayed = yield* replay({
+              contender,
+              control,
+              deadline: Duration.minutes(deadline),
+              messages,
+              summarizeFor: (c, log, report, attemptHooks) =>
+                makeSummarize({
+                  apiKeys,
+                  attemptHooks,
+                  budget,
+                  log: (r) => budget.note(r).pipe(Effect.andThen(log(r)), Effect.andThen(spend(r))),
+                  plan,
+                  report,
+                  gate: makeGate(),
+                  instructions: systemPrompt(HOME),
+                  placement: Effect.succeed({ cwd: undefined, mcpConfig: JSON.stringify({ mcpServers: {} }), mcpSeen: () => Effect.succeed(false), runner }),
+                  tools: toolDefs({ device: settings.defaultDevice, folders: settings.devices[settings.defaultDevice]?.folders ?? [] }),
+                  settings: { ...settings, compactor: { ...settings.compactor, byLevel: c.byLevel } },
+                }).pipe(Effect.map((m) => m.summarize)),
+            });
+            if (replayed.stop === null && replayed.reports.length > 0) yield* Console.error(`${contender.name}: ${replayed.reports.length} compactor diagnostics`);
+            else if (replayed.stop !== null) yield* Console.error(`${contender.name}: stopped (${replayed.stop.type})`);
+            const metrics = yield* measure(replayed, messages, { answerer: lexicalAnswerer, kinds, questions: questionCount });
+            return { complete: replayed.stop === null && replayed.unbuilt.length === 0, value: { metrics, usageRecords: replayed.records.length } };
+          }),
+      });
+      writeArtifact(out, bakeoffArtifact(canonical, results, control));
+      yield* Console.log(table(results.flatMap((result) => (result.value.metrics === null ? [] : [result.value.metrics]))));
+      const stopped = control.snapshot().stop;
+      if (stopped !== null) {
+        yield* Console.error(controlledStopText(stopped));
+        return yield* new BakeoffStopped({ reason: stopped });
+      }
+    }),
+  );
+  return yield* execute.pipe(
+    Effect.onExit((exit) =>
+      Exit.isSuccess(exit)
+        ? Effect.void
+        : control.stop({ contender: null, type: "unexpected" }).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                writeArtifact(out, bakeoffArtifact(canonical, latest, control));
+              }),
+            ),
+            Effect.asVoid,
+          ),
+    ),
+  );
 });
 
 if (import.meta.main) BunRuntime.runMain(Effect.scoped(main));

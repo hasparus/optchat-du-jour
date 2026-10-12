@@ -52,7 +52,7 @@ export const openAiPlanCompactor = (o: OpenAiPlanCompactorOptions & { readonly p
       const ask = (t: Try) =>
         Effect.gen(function* () {
           if (t.retry !== null) input.push({ parts: [t.retry.text], role: "user" });
-          const reply = yield* o.plan.respond({ effort: o.effort, input: [...input], instructions, model: o.model, onStart: started, toolChoice: "none", tools });
+          const reply = yield* o.plan.respond({ beforeRequest: t.beforeRequest, effort: o.effort, input: [...input], instructions, model: o.model, onStart: started, toolChoice: "none", tools });
           input.push(...turnsOf(reply.output)); // what it answered, reasoning and all, for a retry to continue
           return reply;
         });

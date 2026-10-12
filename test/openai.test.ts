@@ -14,7 +14,7 @@ import { failover, watchChain } from "../src/engines/chain.ts";
 import { UsageLimit } from "../src/engines/errors.ts";
 import { Credentials, SECRET, encodeCredentials, login } from "../src/openai/auth.ts";
 import { type Endpoints, DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
-import { OpenAiPlan, openAiPlanLayer, readStream } from "../src/openai/responses.ts";
+import { OpenAiPlan, makeResponses, openAiPlanLayer, readStream } from "../src/openai/responses.ts";
 import { responsesProvider } from "../src/providers/responses.ts";
 import { makeGate } from "../src/engines/inflight.ts";
 import { SECURITY_LINE_MAX, Secrets, SecretsError, keychainLine, memorySecrets } from "../src/secrets.ts";
@@ -22,7 +22,9 @@ import { makeSession, noMedia } from "../src/session.ts";
 import { newMsg } from "../src/store.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
 import { blocks } from "../src/summarize/claude-code.ts";
+import { apiKeyCompactor } from "../src/summarize/api-key.ts";
 import { openAiPlanCompactor } from "../src/summarize/openai-plan.ts";
+import { makeBakeoffController } from "../dev/bakeoff.ts";
 import type { Mid, TurnEvents, TurnInput } from "../src/turn/engine.ts";
 import { toolLoop } from "../src/turn/loop.ts";
 import { bytes } from "../src/tree.ts";
@@ -537,6 +539,92 @@ test("the compactor on the plan replays its reasoning on a size retry, and a mod
   expect(reports).toHaveLength(1);
   expect(reports[0]).toContain("gpt-6.1-sol refuses prompt_cache_breakpoint");
   fake.state.refuseBreakpoints = false;
+});
+
+test("cap 1 blocks cache-breakpoint fallback POSTs for plan and API-key OpenAI", async () => {
+  const markedJob: Job = { ctx: Array.from({ length: 8 }, (_, k) => `user: marked ${k}`), i: 8, l: 0, msg: newMsg(8, "user", "marked") };
+  const secrets = memorySecrets();
+  const e = await signedIn(secrets);
+  const planControl = makeBakeoffController(1);
+  const planCompact = await Effect.runPromise(
+    Effect.gen(function* () {
+      return openAiPlanCompactor({
+        ...compactorBase,
+        attemptHooks: planControl.hooks("plan"),
+        effort: "medium",
+        log: () => Effect.void,
+        model: "gpt-6.1-sol",
+        plan: yield* OpenAiPlan,
+      });
+    }).pipe(Effect.provide(plan(e, secrets))),
+  );
+  fake.state.refuseBreakpoints = true;
+  fake.state.requests = 0;
+  fake.state.seen.length = 0;
+  const planResult = await Effect.runPromise(Effect.result(planCompact(markedJob, null)));
+  expect(planResult._tag).toBe("Failure");
+  expect(fake.state.requests).toBe(1);
+  expect(fake.state.seen).toHaveLength(1);
+  expect(planControl.snapshot()).toMatchObject({ attempts: 1, stop: { type: "max-attempts" } });
+
+  fake.state.access = "sk-test";
+  const respond = await Effect.runPromise(
+    makeResponses({
+      api: `${fake.base}/v1`,
+      bearer: { current: Effect.succeed("sk-test"), renew: () => Effect.fail(new UsageLimit({ message: "rejected" })) },
+      label: "api-key: openai",
+    }).pipe(Effect.provide(FetchHttpClient.layer)),
+  );
+  const provider = responsesProvider({ auth: "api-key", engine: "api-key", model: "gpt-6.1-sol", respond });
+  const keyControl = makeBakeoffController(1);
+  const keyCompact = apiKeyCompactor({
+    attemptHooks: keyControl.hooks("key"),
+    effort: "medium",
+    gate: makeGate(),
+    instructions: "SYSTEM",
+    log: () => Effect.void,
+    model: "gpt-6.1-sol",
+    provider,
+    tools: [READ],
+  });
+  fake.state.requests = 0;
+  fake.state.seen.length = 0;
+  const keyResult = await Effect.runPromise(Effect.result(keyCompact(markedJob, null)));
+  expect(keyResult._tag).toBe("Failure");
+  expect(fake.state.requests).toBe(1);
+  expect(fake.state.seen).toHaveLength(1);
+  expect(keyControl.snapshot()).toMatchObject({ attempts: 1, stop: { type: "max-attempts" } });
+  fake.state.refuseBreakpoints = false;
+});
+
+test("cap 1 blocks the Responses POST retried after a 401 refresh", async () => {
+  const secrets = memorySecrets();
+  const e = await signedIn(secrets);
+  const service = await Effect.runPromise(
+    Effect.gen(function* () {
+      return yield* OpenAiPlan;
+    }).pipe(Effect.provide(plan(e, secrets))),
+  );
+  await Effect.runPromise(service.respond({ input: [{ parts: ["warm"], role: "user" }], instructions: "x", model: "warm" }));
+  const control = makeBakeoffController(1);
+  const compact = openAiPlanCompactor({
+    ...compactorBase,
+    attemptHooks: control.hooks("refresh"),
+    effort: "medium",
+    log: () => Effect.void,
+    model: "gpt-6.1-sol",
+    plan: service,
+  });
+  const { refreshes } = fake.state;
+  fake.state.access = "revoked-on-server";
+  fake.state.requests = 0;
+  fake.state.seen.length = 0;
+  const result = await Effect.runPromise(Effect.result(compact(leaf("refresh"), null)));
+  expect(result._tag).toBe("Failure");
+  expect(fake.state.requests).toBe(1);
+  expect(fake.state.seen).toHaveLength(0);
+  expect(fake.state.refreshes).toBe(refreshes + 1);
+  expect(control.snapshot()).toMatchObject({ attempts: 1, stop: { type: "max-attempts" } });
 });
 
 const respondWith = (layer: Layer.Layer<OpenAiPlan>) => (text: string) =>

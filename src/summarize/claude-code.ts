@@ -97,6 +97,7 @@ export const claudeCodeCompactor = (o: CompactorOptions) => {
           });
           const ask = (t: Try) =>
             Effect.gen(function* () {
+              yield* t.beforeRequest;
               yield* claude.send(t.retry === null ? first : [{ text: t.retry.text, type: "text" }]);
               const result = yield* answer;
               const usage = tokensOf(result.usage), model = claude.model() ?? null;

@@ -40,6 +40,7 @@ export const apiKeyProvider = (o: ApiKeyOptions): Provider => {
       Effect.gen(function* () {
         yield* before;
         const reply = yield* o.clients.anthropic({
+          beforeRequest: c.beforeRequest,
           effort: o.effort,
           history: c.history,
           maxTokens: apiKey.maxTokens,

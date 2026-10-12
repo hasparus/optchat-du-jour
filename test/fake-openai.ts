@@ -38,6 +38,7 @@ export type FakeState = {
   script: Answer[];
   readonly seen: Seen[];
   refuseBreakpoints: boolean;
+  requests: number;
   readonly issued: Set<string>; // the encrypted reasoning it has sent
   authorizeParams: URLSearchParams | null;
 };
@@ -63,6 +64,7 @@ export function fakeOpenAi() {
     refreshes: 0,
     refuseBreakpoints: false,
     reject: false,
+    requests: 0,
     script: [],
     seen: [],
     tokenStatus: null,
@@ -121,6 +123,7 @@ export function fakeOpenAi() {
         return json({ error: "invalid_grant" }, 400);
       }
       if (url.pathname === "/v1/responses") {
+        state.requests++;
         const token = (req.headers.get("authorization") ?? "").replace(/^Bearer /, "");
         if (state.reject || token !== state.access) return json({ error: { code: "invalid_token", message: "expired" } }, 401);
         const body = await req.text();

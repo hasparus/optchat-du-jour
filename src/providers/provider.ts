@@ -37,6 +37,7 @@ export type Call<E extends Tagged> = {
   // every text and call item of the reply as it completes, in reply order, before the call returns
   readonly onItem?: (item: Item) => Effect.Effect<void, E>;
   readonly onStart?: Effect.Effect<void>; // the response started: its first stream event (src/engines/inflight.ts)
+  readonly beforeRequest?: Effect.Effect<void, EngineError>;
 };
 
 // A failure that still cost something carries it as `spent`, priced on an API key.

@@ -40,6 +40,7 @@ export type MessagesAsk<E extends Tagged = never> = {
   readonly onThinking?: (tokens: number) => Effect.Effect<void>; // the size of the thought so far
   readonly onItem?: (item: Item) => Effect.Effect<void, E>; // each block as it completes, in order
   readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
+  readonly beforeRequest?: Effect.Effect<void, EngineError>;
 };
 // `writes` splits the cache writes by TTL when the API says how; `stop` is the API's stop_reason
 export type MessagesReply = {
@@ -317,6 +318,7 @@ export const makeMessages = (o: { readonly base: string; readonly key: Effect.Ef
           HttpClientRequest.accept("text/event-stream"),
           HttpClientRequest.bodyText(requestBody(ask), "application/json"),
         );
+        if (ask.beforeRequest !== undefined) yield* ask.beforeRequest;
         const res = yield* http.execute(req);
         if (res.status !== 200) {
           const raw = yield* res.text;
