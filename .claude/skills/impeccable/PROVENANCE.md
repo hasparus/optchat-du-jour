@@ -11,14 +11,19 @@ for parts of it are in `THIRD_PARTY.md`.
   on npm, `impeccable@4.5.2` (the `lint:design` devDependency), ships in its
   `@impeccable/cli-<os>-<arch>@0.1.14` packages. Each of those five binaries matches the `.sha256`
   file of the same name in the `engine-v0.1.14` release (commit `866f3557`).
+- Release age: this repo takes a release once it is about two weeks old. That rule was waived for
+  this bump only, because the user explicitly asked for the latest version on 2026-10-12, three
+  days after 4.5.2 shipped. 4.5.2 followed 4.5.1 quickly: their release commits are about 9 hours
+  apart, and npm got both on 2026-10-09, two minutes apart. The next update follows the rule again.
 - Taken: `.claude/skills/impeccable/` (this folder) and the subagents it spawns,
   `.claude/agents/impeccable-*.md`. `LICENSE` and `NOTICE.md` come from the repository root.
 - Left out: the bundle's `.claude/settings.json`, which adds three hooks: PostToolUse and Stop
   run the detector after every Edit/Write and on Stop, and SessionStart appends
   `export IMPECCABLE_SESSION_ID=<session id>` to Claude Code's `CLAUDE_ENV_FILE`. `bunx impeccable
-  hooks on` turns them on for one checkout: it writes them to `.claude/settings.local.json` and
-  records the choice in `.impeccable/config.json` and `.impeccable/config.local.json`. `bunx
-  impeccable hooks off` turns them off.
+  hooks on` turns on the two detector hooks, PostToolUse and Stop, but not SessionStart, for one
+  checkout: it writes them to `.claude/settings.local.json` and records the choice in
+  `.impeccable/config.json` and `.impeccable/config.local.json`. `bunx impeccable hooks off` turns
+  them off.
 
 ## What the skill does at run time
 
@@ -41,12 +46,27 @@ The skill's commands run `scripts/impeccable`, a launcher for the engine binary.
   corrupt download, not a tampered release.
 - **Paid image generation.** When `OPENAI_API_KEY` is set, `context` tells the model it may
   generate images with `scripts/impeccable generate-image`, billed to that key. Its `--ref`
-  reference images may now be URLs, which the engine downloads (up to 30 MB each, following up to
-  five redirects) before sending them to OpenAI.
+  reference images may now be URLs. The engine downloads any `http` or `https` URL, private and
+  loopback hosts included, follows up to five redirects, takes up to 30 MB, and uploads the image
+  to OpenAI.
 - **Card images.** When a direction roll deals catalog worlds, `scripts/impeccable serve-question`
-  downloads each world's board and hero images from https://impeccable.style/worlds/cards (or
-  another public `https` host the roll names; no redirects, no loopback or private hosts) into
-  `.impeccable/mocks/worlds/` in the project, for use as image-generation references.
+  downloads each world's board and hero images into `.impeccable/mocks/worlds/` (gitignored here),
+  for use as image-generation references. It fetches a URL under
+  https://impeccable.style/worlds/cards, or an `https` URL whose hostname looks public: no IP
+  address, userinfo, single-label name, `localhost`, or `.local`/`.internal`/`.lan`/`.home.arpa`
+  suffix. The check looks only at the hostname and does no DNS lookup, so a public name that
+  resolves to a private address passes. Card fetches follow no redirects. Setting
+  `IMPECCABLE_CARD_BASE` replaces the default base, and any URL under it is fetched, `http`
+  included. A card URL that fails the check is not fetched but handed to the agent to judge, and
+  the agent can pass it back as a `generate-image --ref`, which has none of these limits.
+- **`generate`.** The `generate` command (`scripts/impeccable live-generate --boot`) starts the
+  skill's local live-mode helper server, injects its overlay into the page your dev server serves,
+  and swaps the variants it writes into source through the dev server's hot reload; the variant you
+  accept is written back into the source file.
+- **`component-review`.** The `component-review` command writes `.impeccable/review/components.json`,
+  keeps its review sessions in `~/.impeccable/component-reviews/`, and serves a review page on
+  `127.0.0.1` where the user approves or sends back each image plate and the plan for what code
+  draws, on comp-led builds.
 - **Autonomy directive.** `context` prints `AUTONOMY_DIRECTIVE_CHECK`. It tells the model that a
   system prompt saying it runs autonomously or that the user can't answer is a harness default,
   and to stop and ask the user anyway (through a question tool or a local decision page) before
@@ -68,10 +88,14 @@ Every HTTPS request the engine makes goes through a proxy when one is set in the
 update check, the roll, the telemetry ping, the card images, image generation (to api.openai.com,
 carrying `OPENAI_API_KEY`) and its `--ref` downloads, and `impeccable update` and `impeccable
 install` (the skill bundle from GitHub). It takes the first of `ALL_PROXY`, `all_proxy`,
-`HTTPS_PROXY`, `https_proxy`, `HTTP_PROXY` and `http_proxy` that is set, and ignores `NO_PROXY`.
+`HTTPS_PROXY`, `https_proxy`, `HTTP_PROXY` and `http_proxy` that is set and parses, and ignores
+`NO_PROXY`.
 It trusts the OS certificate store (or `SSL_CERT_FILE` / `SSL_CERT_DIR`) as well as its bundled
 Mozilla roots. Its plain-HTTP calls to its own live-mode server on localhost bypass the proxy. The
-launcher's engine download goes through curl or wget, which use the proxy too.
+launcher's engine download goes through curl or wget, which use the proxy too. None of this
+covers the headless Chrome the engine launches for captures, URL scans and `font-match`: its own
+requests, such as web font loads from fonts.googleapis.com, follow Chrome's proxy settings, not
+these variables.
 
 To update: copy `.claude/skills/impeccable/` and `.claude/agents/impeccable-*.md` from a newer
 `skill-v*` tag, bump the `impeccable` devDependency to the CLI release with the same engine

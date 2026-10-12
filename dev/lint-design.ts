@@ -6,7 +6,7 @@
 // listed but never fail, as in `impeccable detect` itself. `bun run lint:design -- --format
 // github-actions` in CI writes each finding as an annotation instead, a format the detector lacks.
 //
-// The detector also reads .impeccable/config.json (committed, so CI sees it too) and
+// The detector also reads .impeccable/config.json (none yet; once committed, CI sees it too) and
 // .impeccable/config.local.json (per developer, gitignored). Detector settings in the local file
 // (detector.ignoreRules, ignoreFiles, ignoreValues, designSystem.enabled, advisoryRules) change
 // what a local run reports but not what CI does, so this script warns when that file sets any.
