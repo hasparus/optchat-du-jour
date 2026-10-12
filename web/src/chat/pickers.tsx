@@ -18,18 +18,27 @@ export function FollowUps({ link, followUp }: { readonly link: Link; readonly fo
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <InputGroupButton aria-label={`Follow-ups: ${followUp}`} className="pointer-coarse:h-10 pointer-coarse:px-2.5" size="xs" title="What a message sent while a turn runs does" variant="ghost">
-          <SlidersHorizontalIcon className="hidden min-[400px]:block" />
+        <InputGroupButton
+          aria-label={`Follow-ups: ${followUp}`}
+          className="h-7 rounded-full px-2.5 text-ui font-medium text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground pointer-coarse:h-10"
+          size="xs"
+          title="What a message sent while a turn runs does"
+          variant="ghost"
+        >
+          <SlidersHorizontalIcon className="hidden size-3.5 min-[400px]:block" />
           <span className="capitalize">{followUp}</span>
         </InputGroupButton>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-72 space-y-2 text-sm">
+      <PopoverContent align="start" className="w-72 space-y-3 rounded-xl border-0 p-3 text-ui shadow-[0_0_0_1px_var(--border),var(--elevation-float)]">
         <p className="font-medium">A message sent while a turn runs</p>
         <div className="grid grid-cols-2 gap-1.5">
           {choices.map((c) => (
             <button
               aria-pressed={followUp === c.value}
-              className={cn("rounded-md border px-2 py-1.5 text-left transition-colors", followUp === c.value ? "border-primary bg-primary/10" : "hover:bg-muted")}
+              className={cn(
+                "rounded-lg px-2.5 py-2 text-left shadow-[inset_0_0_0_1px_var(--border)] transition-[background-color,box-shadow] active:scale-[0.98]",
+                followUp === c.value ? "bg-signal/8 shadow-[inset_0_0_0_1.5px_var(--signal)]" : "hover:bg-accent",
+              )}
               key={c.value}
               onClick={() => {
                 link.configure({ followUp: c.value });
@@ -41,7 +50,7 @@ export function FollowUps({ link, followUp }: { readonly link: Link; readonly fo
             </button>
           ))}
         </div>
-        <p className="text-xs text-muted-foreground">Shared by every device. The other button next to send, or Ctrl/⌘+Enter, does the other for one message.</p>
+        <p className="text-xs/relaxed text-muted-foreground">Shared by every device. The other button next to send, or Ctrl/⌘+Enter, does the other for one message.</p>
       </PopoverContent>
     </Popover>
   );
@@ -64,13 +73,13 @@ type CompactSelectProps = ComponentProps<"select"> & { readonly label: string; r
 export function CompactSelect({ label, shown, title, testId, down = false, children, ...props }: CompactSelectProps) {
   return (
     <span
-      className="relative flex h-6 max-w-28 min-w-0 items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground has-[select:focus-visible]:outline-2 has-[select:focus-visible]:outline-offset-2 has-[select:focus-visible]:outline-(--focus) pointer-coarse:h-10 pointer-coarse:px-2 pointer-coarse:text-sm"
+      className="relative flex h-7 max-w-32 min-w-0 items-center gap-1 rounded-full px-2.5 text-ui font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground has-[select:focus-visible]:outline-2 has-[select:focus-visible]:outline-offset-2 has-[select:focus-visible]:outline-(--focus) pointer-coarse:h-10 pointer-coarse:px-2"
       data-testid={testId}
       title={title}
     >
       {down && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-destructive" data-testid="picker-down" />}
       <span className="truncate">{shown}</span>
-      <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
+      <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-70" />
       <select aria-label={label} className="absolute inset-0 cursor-pointer opacity-0" {...props}>
         {children}
       </select>

@@ -19,12 +19,14 @@ export type PromptInputProps = Omit<HTMLAttributes<HTMLFormElement>, "onSubmit">
   canSubmit?: (text: string) => boolean;
   // files pasted or dropped onto the composer
   onFiles?: (files: File[]) => void;
+  // a line under the composer's surface (the shortcuts, or why send is off)
+  below?: ReactNode;
 };
 
 const filesOf = (list: FileList | null | undefined) => (list ? [...list] : []);
 const hasFiles = (e: DragEvent) => e.dataTransfer.types.includes("Files");
 
-export const PromptInput = ({ className, onSubmit, canSubmit = (text) => text.trim() !== "", onFiles, children, ...props }: PromptInputProps) => {
+export const PromptInput = ({ className, onSubmit, canSubmit = (text) => text.trim() !== "", onFiles, below, children, ...props }: PromptInputProps) => {
   const [dragging, setDragging] = useState(false);
   const submit = (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -65,9 +67,19 @@ export const PromptInput = ({ className, onSubmit, canSubmit = (text) => text.tr
       onSubmit={submit}
       {...props}
     >
-      <InputGroup className={cn("overflow-hidden", dragging && "border-primary ring-[3px] ring-primary/30")} data-dragging={dragging || undefined}>
+      <InputGroup
+        className={cn(
+          // the one raised object on the page (DESIGN.md, Composer): a hairline ring and a soft drop,
+          // the ring turning to the accent while the text has focus or a file is dragged over
+          "relative z-10 overflow-hidden rounded-3xl border-0 bg-raised shadow-[0_0_0_1px_var(--input),var(--elevation-raised)] transition-shadow duration-150 dark:bg-raised",
+          "has-[[data-slot=input-group-control]:focus-visible]:shadow-[0_0_0_1px_color-mix(in_oklch,var(--signal)_65%,transparent),0_0_0_4px_color-mix(in_oklch,var(--signal)_14%,transparent),var(--elevation-raised)] has-[[data-slot=input-group-control]:focus-visible]:ring-0",
+          dragging && "shadow-[0_0_0_1.5px_var(--signal),0_0_0_5px_color-mix(in_oklch,var(--signal)_16%,transparent),var(--elevation-raised)]",
+        )}
+        data-dragging={dragging || undefined}
+      >
         {children}
       </InputGroup>
+      {below}
     </form>
   );
 };
@@ -81,7 +93,7 @@ export type PromptInputAttachProps = Omit<ComponentProps<typeof InputGroupButton
   readonly onFiles: (files: File[]) => void;
 };
 
-export const PromptInputAttach = ({ accept, capture, label, onFiles, children, ...props }: PromptInputAttachProps) => {
+export const PromptInputAttach = ({ accept, capture, label, onFiles, children, className, ...props }: PromptInputAttachProps) => {
   const input = useRef<HTMLInputElement>(null);
   const picked = (e: ChangeEvent<HTMLInputElement>) => {
     const files = filesOf(e.currentTarget.files);
@@ -96,7 +108,9 @@ export const PromptInputAttach = ({ accept, capture, label, onFiles, children, .
         onClick={() => {
           input.current?.click();
         }}
+        className={cn("rounded-full text-muted-foreground hover:text-foreground", className)}
         size="icon-sm"
+        title={label}
         variant="ghost"
         {...props}
       >
@@ -108,7 +122,7 @@ export const PromptInputAttach = ({ accept, capture, label, onFiles, children, .
 
 // the tray over the text: one thumbnail per attachment
 export const PromptInputAttachments = ({ className, ...props }: HTMLAttributes<HTMLDivElement>) => (
-  <InputGroupAddon align="block-start" className={cn("flex-wrap gap-2", className)} data-testid="attachments" {...props} />
+  <InputGroupAddon align="block-start" className={cn("flex-wrap gap-2.5 px-3.5 pt-3.5", className)} data-testid="attachments" {...props} />
 );
 
 export type PromptInputAttachmentProps = {
@@ -129,38 +143,46 @@ export const PromptInputAttachment = ({ name, kind, preview, progress, done, err
   // a file the browser can't show (the server may still take it, or say why not)
   const [broken, setBroken] = useState(false);
   return (
-    <div className="relative w-20 shrink-0" data-state={error ? "error" : done ? "done" : "uploading"} data-testid="attachment">
-      <div className={cn("flex size-20 items-center justify-center overflow-hidden rounded-md border bg-muted", error && "border-destructive")}>
+    <div className="relative w-16 shrink-0" data-state={error ? "error" : done ? "done" : "uploading"} data-testid="attachment">
+      <div
+        className={cn(
+          "relative flex size-16 items-center justify-center overflow-hidden rounded-xl bg-muted text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]",
+          error && "shadow-[inset_0_0_0_1.5px_var(--destructive)]",
+        )}
+      >
         {kind === "image" && !broken ? (
           <img
             alt={name}
-            className="size-full object-cover"
+            className={cn("size-full object-cover transition-opacity duration-200", !done && !error && "opacity-60")}
             onError={() => {
               setBroken(true);
             }}
             src={preview}
           />
         ) : kind === "image" ? (
-          <ImageOffIcon aria-label={name} className="size-6" />
+          <ImageOffIcon aria-label={name} className="size-5" />
         ) : (
-          <FilmIcon aria-label={name} className="size-6" />
+          <FilmIcon aria-label={name} className="size-5" />
+        )}
+        {!done && !error && (
+          <Progress aria-label={`Uploading ${name}`} className="absolute inset-x-1.5 bottom-1.5 h-1 w-auto bg-background/70" value={Math.round(progress * 100)} />
         )}
       </div>
       <button
         aria-label={`Remove ${name}`}
-        className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full border bg-background text-foreground shadow-xs after:absolute after:-inset-2.5 pointer-coarse:size-6"
+        className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full bg-foreground text-background shadow-[0_0_0_2px_var(--raised)] transition-transform after:absolute after:-inset-2.5 hover:scale-105 active:scale-95 pointer-coarse:size-6"
         onClick={onRemove}
         type="button"
       >
-        <XIcon className="size-3" />
+        <XIcon className="size-3" strokeWidth={2.5} />
       </button>
       {kind === "image" && (onHigh !== undefined || high) && (
         <button
           aria-label={`High detail for ${name}`}
           aria-pressed={high}
           className={cn(
-            "absolute bottom-1 left-1 rounded-sm border px-1 text-[10px]/4 font-semibold shadow-xs after:absolute after:-inset-2",
-            high ? "border-primary bg-primary text-primary-foreground" : "bg-background/90 text-foreground",
+            "absolute top-1 left-1 rounded-md px-1 text-2xs font-semibold tracking-wide shadow-xs after:absolute after:-inset-2",
+            high ? "bg-signal text-signal-foreground" : "bg-raised/90 text-foreground",
           )}
           disabled={!onHigh}
           onClick={onHigh}
@@ -170,9 +192,8 @@ export const PromptInputAttachment = ({ name, kind, preview, progress, done, err
           HD
         </button>
       )}
-      {!done && !error && <Progress aria-label={`Uploading ${name}`} className="mt-1 h-1" value={Math.round(progress * 100)} />}
       {error !== null && (
-        <p className="mt-1 line-clamp-3 text-[10px] leading-tight text-destructive" role="alert" title={error}>
+        <p className="mt-1 line-clamp-3 text-2xs/tight text-destructive" role="alert" title={error}>
           {error}
         </p>
       )}
@@ -224,7 +245,7 @@ export const PromptInputTextarea = ({ onKeyDown, className, placeholder = "Messa
 
   return (
     <InputGroupTextarea
-      className={cn("field-sizing-content max-h-48 min-h-12", className)}
+      className={cn("field-sizing-content max-h-[min(12rem,40dvh)] min-h-13 px-4 pt-3.5 pb-1 text-read/normal placeholder:text-muted-foreground md:text-read", className)}
       enterKeyHint={touch ? "enter" : "send"}
       name="message"
       ref={own}
@@ -245,19 +266,26 @@ export const PromptInputTextarea = ({ onKeyDown, className, placeholder = "Messa
 export type PromptInputFooterProps = Omit<ComponentProps<typeof InputGroupAddon>, "align">;
 
 export const PromptInputFooter = ({ className, ...props }: PromptInputFooterProps) => (
-  <InputGroupAddon align="block-end" className={cn("justify-between gap-1", className)} {...props} />
+  <InputGroupAddon align="block-end" className={cn("cursor-default justify-between gap-1 px-2 pt-1 pb-2", className)} {...props} />
 );
 
 export type PromptInputToolsProps = HTMLAttributes<HTMLDivElement>;
 
 export const PromptInputTools = ({ className, ...props }: PromptInputToolsProps) => (
-  <div className={cn("flex min-w-0 items-center gap-1", className)} {...props} />
+  <div className={cn("flex min-w-0 items-center gap-0.5", className)} {...props} />
 );
 
 export type PromptInputSubmitProps = ComponentProps<typeof InputGroupButton>;
 
 export const PromptInputSubmit = ({ className, variant = "default", size = "icon-sm", children, ...props }: PromptInputSubmitProps) => (
-  <InputGroupButton aria-label="Send" className={cn("rounded-full", className)} size={size} type="submit" variant={variant} {...props}>
+  <InputGroupButton
+    aria-label="Send"
+    className={cn("rounded-full transition-[background-color,color,transform] active:not-disabled:scale-95 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100", className)}
+    size={size}
+    type="submit"
+    variant={variant}
+    {...props}
+  >
     {children ?? <ArrowUpIcon className="size-4" />}
   </InputGroupButton>
 );
@@ -271,7 +299,7 @@ export const PromptInputStop = ({ className, variant = "outline", size = "icon-s
   <InputGroupButton
     aria-label="Stop"
     className={cn(
-      "rounded-full border-destructive text-destructive hover:bg-destructive/10 hover:text-destructive dark:border-destructive dark:text-destructive dark:hover:bg-destructive/20",
+      "rounded-full border-destructive/60 bg-transparent text-destructive shadow-none hover:bg-destructive/10 hover:text-destructive active:not-disabled:scale-95 dark:border-destructive/60 dark:bg-transparent dark:text-destructive dark:hover:bg-destructive/20",
       className,
     )}
     size={size}

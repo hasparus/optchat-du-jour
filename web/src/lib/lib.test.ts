@@ -7,7 +7,7 @@ import { openLink, STALE_MS, wakeOnReturn } from "./connection";
 import { sentKey } from "./draft";
 import { applyEvent, applyPage, emptyLog, hole, type Log, MAX_HELD, tip, trimHeld, visible, withDraft } from "./log";
 import type { Inbound } from "./protocol";
-import { chatRows, entryRows, rowFor, rowIndexFor } from "./rows";
+import { chatRows, entryRows, rowFor, rowIndexFor, toolFailed, toolSummary } from "./rows";
 import { makeSession, queued, type Session, UNSENT } from "./session";
 import { buckets, byModel, periodOf, totals } from "./stats";
 
@@ -584,5 +584,26 @@ describe("stats", () => {
       ["claude-code:claude-opus-5-5", 1, 110, 0.5],
       ["claude-code:claude-opus-5-5@high", 1, 110, 0.5],
     ]);
+  });
+});
+
+describe("a tool call's one line", () => {
+  test("names what the tool was called on, else shows the input on one line", () => {
+    expect(toolSummary('{"command":"cd web && bun run e2e"}')).toBe("cd web && bun run e2e");
+    expect(toolSummary('{"file_path":"test/media/budget.test.ts","old_string":"let"}')).toBe("test/media/budget.test.ts");
+    expect(toolSummary('{"id":412,"n":64}')).toBe("412+64");
+    expect(toolSummary('{"todos":[{"content":"a"},{"content":"b"}]}')).toBe("2 items");
+    expect(toolSummary('{"command":"  "}')).toBe('{"command":" "}');
+    expect(toolSummary("not json\n  at all")).toBe("not json at all");
+    expect(toolSummary("")).toBe("");
+  });
+  test("says a call failed only from what its output starts with", () => {
+    expect(toolFailed("Exit code 1\n\nsrc/x.ts:1 error")).toBe(true);
+    expect(toolFailed("<tool_use_error>File does not exist.</tool_use_error>")).toBe(true);
+    expect(toolFailed("Error: ENOENT")).toBe(true);
+    expect(toolFailed("Exit code 0")).toBe(false);
+    expect(toolFailed("notes.md\nrepo")).toBe(false);
+    expect(toolFailed("an Error: further down")).toBe(false);
+    expect(toolFailed(null)).toBe(false);
   });
 });

@@ -25,13 +25,14 @@ import {
   useMessageScroller,
   useMessageScrollerScrollable,
 } from "@/components/ui/message-scroller";
-import { Spinner } from "@/components/ui/spinner";
+import { Shimmer } from "@/components/ai-elements/shimmer";
 import type { Link } from "@/lib/connection";
 import { visible } from "@/lib/log";
-import { chatRows, entryRows, type Row, rowFor, rowIndexFor } from "@/lib/rows";
+import { chatRows, entryRows, type Row, rowFor, rowIndexFor, toolFailed } from "@/lib/rows";
 import { type Marker as StatusMarker, type Queued, queued, type Session, type SessionStore } from "@/lib/session";
 import { canonicalRef, type Device, engineLabel, type SessionState, shortSha } from "@wire";
-import { AlertCircleIcon, FilmIcon, InfoIcon, Undo2Icon } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { AlertCircleIcon, ArrowDownIcon, FilmIcon, InfoIcon, TriangleAlertIcon, Undo2Icon } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Uploader } from "@/lib/attach";
 import { loadModel, saveModel } from "@/lib/draft";
@@ -59,8 +60,12 @@ function status(s: Session): string | null {
 
 function StatusRow({ marker }: { marker: StatusMarker }) {
   return (
-    <Marker className={marker.tone === "error" ? "text-destructive" : undefined} data-testid={`marker-${marker.tone}`} role={marker.tone === "error" ? "alert" : "status"}>
-      <MarkerIcon>{marker.tone === "error" ? <AlertCircleIcon /> : <InfoIcon />}</MarkerIcon>
+    <Marker
+      className={cn("w-fit max-w-full gap-1.5 self-center rounded-full px-2.5 py-1 text-xs", marker.tone === "error" ? "bg-destructive/8 text-destructive" : "text-muted-foreground")}
+      data-testid={`marker-${marker.tone}`}
+      role={marker.tone === "error" ? "alert" : "status"}
+    >
+      <MarkerIcon className="size-3.5 [&_svg:not([class*='size-'])]:size-3.5">{marker.tone === "error" ? <AlertCircleIcon /> : <InfoIcon />}</MarkerIcon>
       <MarkerContent>{marker.text}</MarkerContent>
     </Marker>
   );
@@ -88,7 +93,7 @@ function Waiting({ q, asking, model, state, onTakeBack }: { readonly q: Queued; 
   const other = q.engine !== null && q.engine !== model ? labelOf(state, q.engine) : null;
   return (
     <QueueItem data-state={q.where} data-testid="queue-item">
-      <QueueItemIndicator className={queuedHere ? "border-dashed" : q.where === "sent" ? "border-primary bg-primary/30" : undefined} />
+      <QueueItemIndicator className={queuedHere ? "border-dashed" : q.where === "sent" ? "animate-breathe border-signal bg-signal" : q.where === "failed" ? "border-destructive bg-destructive" : undefined} />
       <div className="min-w-0 grow">
         {q.text.trim() !== "" && <QueueItemContent>{q.text}</QueueItemContent>}
         {q.media.length > 0 && (
@@ -97,12 +102,12 @@ function Waiting({ q, asking, model, state, onTakeBack }: { readonly q: Queued; 
               a.kind === "image" ? (
                 <img
                   alt={`image ${shortSha(a.sha)}`}
-                  className="size-8 rounded-sm border object-cover"
+                  className="size-9 rounded-md border object-cover"
                   key={a.sha}
                   src={`/api/assets/${shortSha(a.sha)}/thumb`}
                 />
               ) : (
-                <span aria-label={`video ${shortSha(a.sha)}`} className="flex size-8 items-center justify-center rounded-sm border bg-muted" key={a.sha} role="img">
+                <span aria-label={`video ${shortSha(a.sha)}`} className="flex size-9 items-center justify-center rounded-md border bg-muted" key={a.sha} role="img">
                   <FilmIcon className="size-4" />
                 </span>
               ),
@@ -110,9 +115,9 @@ function Waiting({ q, asking, model, state, onTakeBack }: { readonly q: Queued; 
           </div>
         )}
         {(q.where !== "failed" || other !== null) && (
-          <p className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+          <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-2xs text-muted-foreground">
             {other !== null && (
-              <span className="shrink-0 rounded-sm border px-1 font-medium text-foreground" data-testid="queue-engine" title={`for ${other}`}>
+              <span className="shrink-0 rounded-sm px-1 font-medium text-foreground shadow-[inset_0_0_0_1px_var(--input)]" data-testid="queue-engine" title={`for ${other}`}>
                 {shortLabel(other)}
               </span>
             )}
@@ -149,29 +154,33 @@ function NeedsModel({ session, state, onModel }: { readonly session: Pick<Sessio
   const { stopped } = state;
   if (stopped === null) return null;
   return (
-    <div className="space-y-2 rounded-lg border border-destructive/50 bg-destructive/5 p-2.5 text-sm" data-testid="needs-model" role="alert">
-      <p>
-        <span className="font-medium">{stopped.label}</span>: {stopped.why}. Choose how to go on:
-      </p>
-      <div className="flex flex-wrap gap-1.5">
-        {state.engines.map((e) => {
-          const again = e.ref === stopped.ref;
-          const out = e.down !== null && !again;
-          return (
-            <Button
-              disabled={out}
-              key={e.ref}
-              onClick={() => {
-                if (session.resume(e.ref)) onModel(e.ref);
-              }}
-              size="sm"
-              title={e.down !== null && !again ? `unavailable: ${e.down}` : undefined}
-              variant={again ? "outline" : "default"}
-            >
-              {again ? `Try ${e.label} again` : `Continue with ${e.label}`}
-            </Button>
-          );
-        })}
+    <div className="flex gap-2.5 bg-warning-surface px-3.5 py-3 text-ui" data-testid="needs-model" role="alert">
+      <TriangleAlertIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-warning" />
+      <div className="min-w-0 space-y-2.5">
+        <p className="text-foreground">
+          <span className="font-semibold">{stopped.label}</span>: {stopped.why}. <span className="text-warning-foreground">Choose how to go on:</span>
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          {state.engines.map((e) => {
+            const again = e.ref === stopped.ref;
+            const out = e.down !== null && !again;
+            return (
+              <Button
+                className="h-8 rounded-lg pointer-coarse:h-10"
+                disabled={out}
+                key={e.ref}
+                onClick={() => {
+                  if (session.resume(e.ref)) onModel(e.ref);
+                }}
+                size="sm"
+                title={e.down !== null && !again ? `unavailable: ${e.down}` : undefined}
+                variant={again ? "outline" : "default"}
+              >
+                {again ? `Try ${e.label} again` : `Continue with ${e.label}`}
+              </Button>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -181,9 +190,9 @@ function NeedsModel({ session, state, onModel }: { readonly session: Pick<Sessio
 function EmptyChat() {
   return (
     <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-8" data-testid="empty-chat">
-      <div className="max-w-xs space-y-2 text-center text-sm text-muted-foreground">
-        <p className="text-base font-medium text-foreground">One chat, for good</p>
-        <p>Everything said here stays: it is folded into a memory the model reads at every turn, and can zoom back into.</p>
+      <div className="max-w-sm space-y-2 text-center">
+        <p className="text-xl font-semibold tracking-tight text-foreground">One chat, for good</p>
+        <p className="text-read text-muted-foreground">Everything said here stays: it is folded into a memory the model reads at every turn, and can zoom back into.</p>
       </div>
     </div>
   );
@@ -335,14 +344,19 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
         <MessageScrollerViewport aria-label="Chat" className="relative" onKeyDown={touch} onTouchMove={touch} onWheel={touch} preserveScrollOnPrepend>
           <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-px" ref={top} />
           {first > 0 && (
-            <div className="flex justify-center pt-3" data-slot="chat-earlier">
-              <button className="min-h-8 px-2 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground pointer-coarse:min-h-11" disabled={loading} onClick={() => void loadOlder()} type="button">
-                {loading ? "loading…" : "earlier messages"}
+            <div className="flex justify-center pt-4" data-slot="chat-earlier">
+              <button
+                className="min-h-8 rounded-full px-3 text-xs text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)] transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60 pointer-coarse:min-h-10"
+                disabled={loading}
+                onClick={() => void loadOlder()}
+                type="button"
+              >
+                {loading ? <Shimmer>loading…</Shimmer> : "earlier messages"}
               </button>
             </div>
           )}
           {empty && <EmptyChat />}
-          <MessageScrollerContent className="mx-auto w-full max-w-3xl gap-4 p-4" data-region="chat-content">
+          <MessageScrollerContent className="mx-auto w-full max-w-184 gap-0 px-4 pt-6 pb-10 sm:px-6" data-region="chat-content">
             {placed.above.map((m) => (
               <StatusRow key={`k${m.key}`} marker={m} />
             ))}
@@ -352,7 +366,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
                   <ChatRow
                     row={row}
                     streaming={row.key === draftKey}
-                    toolState={row.kind === "tool" && row.output !== null ? "done" : busy && row.key === lastTool ? "running" : "ended"}
+                    toolState={row.kind === "tool" && row.output !== null ? (toolFailed(row.output) ? "error" : "done") : busy && row.key === lastTool ? "running" : "ended"}
                   />
                 </MessageScrollerItem>
                 {placed.after.get(k)?.map((m) => (
@@ -362,34 +376,58 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
             ))}
           </MessageScrollerContent>
         </MessageScrollerViewport>
-        <MessageScrollerButton className="size-10 rounded-full border bg-popover text-popover-foreground shadow-md" />
+        <MessageScrollerButton className="size-9 rounded-full border-0 bg-raised text-foreground shadow-[0_0_0_1px_var(--border),var(--elevation-float)] hover:bg-raised hover:text-foreground data-[direction=end]:bottom-3 pointer-coarse:size-10">
+          <ArrowDownIcon className="size-4" />
+          <span className="sr-only">Scroll to end</span>
+        </MessageScrollerButton>
       </MessageScroller>
 
-      <div className="mx-auto w-full max-w-3xl space-y-2 bg-background p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]" data-slot="chat-dock" ref={dock}>
+      <div
+        className="relative mx-auto w-full max-w-184 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] before:pointer-events-none before:absolute before:inset-x-0 before:-top-6 before:h-6 before:bg-linear-to-b before:from-transparent before:to-background sm:px-4 sm:pb-[max(1rem,env(safe-area-inset-bottom))]"
+        data-slot="chat-dock"
+        ref={dock}
+      >
         {line !== null && (
-          <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground" data-testid="status" role="status">
-            {busy && <Spinner className="size-3" />}
-            {line}
+          <div className="flex h-7 items-center gap-2 px-3 text-xs" data-testid="status" role="status">
+            {busy ? (
+              <>
+                <span aria-hidden="true" className="size-1.5 shrink-0 animate-breathe rounded-full bg-signal" />
+                <Shimmer>{line}</Shimmer>
+              </>
+            ) : (
+              <span className="text-muted-foreground">{line}</span>
+            )}
           </div>
         )}
-        {state.state?.phase === "needs-model" && <NeedsModel onModel={onModel} session={session} state={state.state} />}
-        {waiting.length > 0 && (
-          <Queue data-testid="queue">
-            <QueueSection>
-              <QueueSectionTrigger>
-                <QueueSectionLabel count={waiting.length} label="waiting for the model" />
-              </QueueSectionTrigger>
-              <QueueSectionContent>
-                <QueueList>
-                  {waiting.map((q) => (
-                    <Waiting asking={q.clientId !== null && state.asking.includes(q.clientId)} key={q.key} model={model} onTakeBack={() => {
-                        session.takeBack(q);
-                      }} q={q} state={state.state} />
-                  ))}
-                </QueueList>
-              </QueueSectionContent>
-            </QueueSection>
-          </Queue>
+        {(state.state?.phase === "needs-model" || waiting.length > 0) && (
+          <div className="mx-2.5 -mb-px overflow-hidden rounded-t-xl border border-b-0 bg-raised [&>*+*]:border-t" data-slot="composer-tray">
+            {state.state?.phase === "needs-model" && <NeedsModel onModel={onModel} session={session} state={state.state} />}
+            {waiting.length > 0 && (
+              <Queue data-testid="queue">
+                <QueueSection>
+                  <QueueSectionTrigger>
+                    <QueueSectionLabel count={waiting.length} label="waiting for the model" />
+                  </QueueSectionTrigger>
+                  <QueueSectionContent>
+                    <QueueList>
+                      {waiting.map((q) => (
+                        <Waiting
+                          asking={q.clientId !== null && state.asking.includes(q.clientId)}
+                          key={q.key}
+                          model={model}
+                          onTakeBack={() => {
+                            session.takeBack(q);
+                          }}
+                          q={q}
+                          state={state.state}
+                        />
+                      ))}
+                    </QueueList>
+                  </QueueSectionContent>
+                </QueueSection>
+              </Queue>
+            )}
+          </div>
         )}
         <Composer
           busy={busy}

@@ -86,17 +86,22 @@ const rehypePlugins: StreamdownProps["rehypePlugins"] = [
 // so there they would do nothing: inside the app they are hidden, and copy stays.
 const NO_DOWNLOADS: StreamdownProps["controls"] = { code: { download: false }, image: { download: false }, mermaid: { download: false }, table: { download: false } };
 
+// While a reply streams a caret marks its end (DESIGN.md, Motion); words are not faded in one by one,
+// which would split the text into a span per word. Code blocks go without line numbers.
 export const MessageResponse = memo(
-  ({ className, ...props }: MessageResponseProps) => (
+  ({ className, isAnimating, ...props }: MessageResponseProps) => (
     <Streamdown
+      caret={isAnimating === true ? "circle" : undefined}
       className={cn("size-full *:first:mt-0 *:last:mb-0", className)}
       controls={nativeShell() === undefined ? undefined : NO_DOWNLOADS}
+      isAnimating={isAnimating}
+      lineNumbers={false}
       plugins={plugins}
       rehypePlugins={rehypePlugins}
       {...props}
     />
   ),
-  (prev, next) => prev.children === next.children && prev.isAnimating === next.isAnimating,
+  (prev, next) => prev.children === next.children && prev.isAnimating === next.isAnimating && prev.className === next.className,
 );
 
 MessageResponse.displayName = "MessageResponse";

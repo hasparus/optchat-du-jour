@@ -1,67 +1,41 @@
 // The Devices screen (SPEC "Web UI", Devices; "Multi-machine"): the machines a turn can run on, from
 // the server's config, with their folders. Online state and `claude` versions come with the device
 // runner (M4).
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
-import { applyVariant, currentVariant, VARIANTS } from "@/lib/look";
 import { useApi } from "@/lib/use-api";
-import { useState } from "react";
-
-// Which proposed design direction this page wears (UI audit): the same as ?variant=, for the
-// installed app, which has no address bar. Kept in this browser only.
-function Look() {
-  const [variant, setVariant] = useState(currentVariant);
-  return (
-    <label className="flex items-center justify-between gap-3 text-sm" data-testid="look">
-      <span>
-        Look <span className="text-muted-foreground">(design proposal, this browser only)</span>
-      </span>
-      <select
-        className="h-9 rounded-md border bg-background px-2 text-sm pointer-coarse:h-11"
-        onChange={(e) => {
-          const v = VARIANTS.find((x) => x.id === e.currentTarget.value)?.id ?? "";
-          applyVariant(v);
-          setVariant(v);
-        }}
-        value={variant}
-      >
-        {VARIANTS.map((v) => (
-          <option key={v.id} value={v.id}>
-            {v.label}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
+import { FolderIcon, LaptopIcon } from "lucide-react";
 
 export function Devices() {
   const { data, error } = useApi(api.devices);
-  if (error !== null) return <p className="p-4 text-sm text-destructive">{error}</p>;
+  if (error !== null) return <p className="p-6 text-ui text-destructive">{error}</p>;
   return (
-    <div className="mx-auto w-full max-w-2xl space-y-3 p-4" data-testid="devices">
-      <Look />
-      {data?.map((d) => (
-        <Card className="gap-2 py-4" key={d.name}>
-          <CardHeader className="px-4">
-            <CardTitle className="flex items-center gap-2 text-sm">
-              {d.name}
-              {d.local && <Badge variant="secondary">this server</Badge>}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-1 px-4 text-xs text-muted-foreground">
-            <div className="font-mono break-all">{d.url}</div>
-            <ul>
-              {d.folders.map((f) => (
-                <li className="font-mono" key={f}>
-                  {f}
-                </li>
-              ))}
-            </ul>
-          </CardContent>
-        </Card>
-      ))}
+    <div className="mx-auto w-full max-w-2xl px-4 py-6 sm:px-6" data-testid="devices">
+      <h1 className="text-base font-semibold tracking-tight">Devices</h1>
+      <p className="mt-1 text-ui text-muted-foreground">Where a turn can run, and the folders it may work in.</p>
+      <ul className="mt-5 divide-y overflow-hidden rounded-xl border bg-raised">
+        {data?.map((d) => (
+          <li className="flex gap-3 px-4 py-3.5" key={d.name}>
+            <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+              <LaptopIcon className="size-4" strokeWidth={1.75} />
+            </span>
+            <div className="min-w-0 flex-1 space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-ui font-semibold">{d.name}</span>
+                {d.local && <span className="rounded-full bg-signal/10 px-2 py-0.5 text-2xs font-medium text-signal">this server</span>}
+              </div>
+              <div className="font-mono text-xs break-all text-muted-foreground">{d.url}</div>
+              <ul className="space-y-0.5 pt-1">
+                {d.folders.map((f) => (
+                  <li className="flex items-center gap-1.5 font-mono text-xs text-foreground/80" key={f}>
+                    <FolderIcon aria-hidden="true" className="size-3 shrink-0 text-muted-foreground" />
+                    <span className="break-all">{f}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

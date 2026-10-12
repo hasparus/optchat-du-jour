@@ -155,6 +155,19 @@ export function Composer({ link, session, state, busy, open, devices, device, on
   const otherLabel = other === "steer" ? "Send now" : "Queue for the next turn";
   return (
     <PromptInput
+      below={
+        <p
+          aria-live="polite"
+          className={cn("px-4 pt-2 text-center text-2xs text-muted-foreground", blocked === null && "hidden pointer-fine:sm:block")}
+          data-testid="composer-hint"
+          id={hint}
+        >
+          {blocked ??
+            (touch
+              ? null
+              : `Enter to send · Shift+Enter new line${running && !elsewhere ? ` · Ctrl/⌘+Enter ${other === "steer" ? "sends now" : "queues"}` : ""}${history.current.length > 0 ? " · ↑ last message" : ""}`)}
+        </p>
+      }
       canSubmit={sendable}
       onFiles={tray.add}
       onSubmit={() => {
@@ -205,10 +218,18 @@ export function Composer({ link, session, state, busy, open, devices, device, on
           value={text}
         />
       </PromptInputBody>
-      <PromptInputFooter className="flex-wrap">
+      <PromptInputFooter>
         <PromptInputTools>
           <PromptInputAttach accept="image/*,video/*" label="Attach" onFiles={tray.add} />
-          <PromptInputAttach accept="image/*" capture="environment" label="Take a photo" onFiles={tray.add} />
+          {/* on a narrow screen with the second send button showing, the camera makes room: the
+              attach button's own picker offers the camera there too (iOS, Android) */}
+          <PromptInputAttach
+            accept="image/*"
+            capture="environment"
+            className={cn("rounded-full text-muted-foreground hover:text-foreground", running && !elsewhere && content && "max-[419px]:hidden")}
+            label="Take a photo"
+            onFiles={tray.add}
+          />
           {devices.length > 1 && (
             <CompactSelect
               label="Device"
@@ -229,7 +250,7 @@ export function Composer({ link, session, state, busy, open, devices, device, on
           {state && model !== null && <ModelPicker model={model} onModel={onModel} state={state} />}
           {state && <FollowUps followUp={state.followUp} link={link} />}
         </PromptInputTools>
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {running && !elsewhere && content && (
             <InputGroupButton
               aria-label={otherLabel}
@@ -237,9 +258,10 @@ export function Composer({ link, session, state, busy, open, devices, device, on
               onClick={() => {
                 send(other);
               }}
+              className="h-8 rounded-full px-3 text-ui text-foreground shadow-[inset_0_0_0_1px_var(--input)] hover:bg-accent pointer-coarse:h-10"
               size="sm"
               title={`${otherLabel} (Ctrl/⌘+Enter)`}
-              variant="outline"
+              variant="ghost"
             >
               {other === "steer" ? <ZapIcon /> : <ListEndIcon />}
               <span className="hidden min-[400px]:inline">{other === "steer" ? "Now" : "Queue"}</span>
@@ -256,17 +278,6 @@ export function Composer({ link, session, state, busy, open, devices, device, on
           )}
           {(!busy || content) && <PromptInputSubmit aria-describedby={hint} disabled={blocked !== null || !content} title={blocked ?? sendLabel} />}
         </div>
-        <p
-          aria-live="polite"
-          className={cn("w-full px-1 text-xs", blocked ? "text-muted-foreground" : "hidden text-muted-foreground pointer-fine:sm:block")}
-          data-testid="composer-hint"
-          id={hint}
-        >
-          {blocked ??
-            (touch
-              ? null
-              : `Enter to send · Shift+Enter new line${running && !elsewhere ? ` · Ctrl/⌘+Enter ${other === "steer" ? "sends now" : "queues"}` : ""}${history.current.length > 0 ? " · ↑ last message" : ""}`)}
-        </p>
       </PromptInputFooter>
     </PromptInput>
   );

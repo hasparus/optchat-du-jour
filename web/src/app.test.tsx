@@ -203,6 +203,9 @@ test("after a reconnect the chat is rebuilt from the new snapshot, without dupli
   expect(screen.getByRole("img", { name: "connection open" })).toBeTruthy();
 });
 
+// the text of the tool row that is open
+const openTool = () => document.querySelector('[data-slot="tool"][data-state="open"]')?.textContent ?? "";
+
 test("a tool row opened mid-turn stays open as the turn goes on and the run's snapshot lands", async () => {
   const { log, play } = start();
   await screen.findByText("what is in the repo?");
@@ -213,7 +216,10 @@ test("a tool row opened mid-turn stays open as the turn goes on and the run's sn
     { toolCallId: "t5", type: EventType.TOOL_CALL_END },
   );
   fireEvent.click(await screen.findByText(/^Read/));
-  await screen.findByText(/"file_path":"notes\.md"/); // the input as logged, not re-serialised
+  // the line names the file; open, the input shows as logged, not re-serialised
+  await waitFor(() => {
+    expect(openTool()).toContain('{"file_path":"notes.md"}');
+  });
   play({ content: "# notes", messageId: "6", role: "tool", toolCallId: "t5", type: EventType.TOOL_CALL_RESULT }, ...said(7, "assistant", "It has notes."));
   log([
     { kind: "user", text: "look again" },
@@ -223,7 +229,7 @@ test("a tool row opened mid-turn stays open as the turn goes on and the run's sn
   ]);
   play({ runId: "4", threadId: "mini", type: EventType.RUN_FINISHED }, snapshot([...LOG, { kind: "user", text: "look again" }, { kind: "tool", text: 'Read {"file_path":"notes.md"}' }, { kind: "echo", text: "# notes" }, { kind: "talk", text: "It has notes." }]), state({ phase: "idle" }));
   await screen.findByText("It has notes.");
-  expect(screen.getByText(/"file_path":"notes\.md"/)).toBeTruthy(); // still open
+  expect(openTool()).toContain('{"file_path":"notes.md"}'); // still open
   expect(screen.getByText("# notes")).toBeTruthy();
   const rows = [...document.querySelectorAll<HTMLElement>("[data-log-index]")].map((e) => e.dataset.logIndex);
   expect(rows).toEqual(["0", "1", "3", "4", "5", "7"]);

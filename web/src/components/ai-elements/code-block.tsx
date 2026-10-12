@@ -1,6 +1,7 @@
 // AI Elements' Code Block (elements.ai-sdk.dev registry): highlighted code with shiki, plain text
 // until the highlighter has loaded; shiki itself loads with the first block. Used for tool inputs
-// (SPEC "Web UI", Chat). The language picker is left out; a block's language is known.
+// (SPEC "Web UI", Chat). The language picker is left out; a block's language is known. The theme's
+// own background is dropped: a block takes the ground of the panel it sits in (DESIGN.md).
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { CheckIcon, CopyIcon } from "lucide-react";
@@ -22,9 +23,8 @@ const keyed = (lines: ThemedToken[][]): Line[] =>
 
 const TokenSpan = ({ token }: { token: ThemedToken }) => (
   <span
-    className="dark:bg-(--shiki-dark-bg)! dark:text-(--shiki-dark)!"
+    className="dark:text-(--shiki-dark)!"
     style={{
-      backgroundColor: token.bgColor,
       color: token.color,
       fontStyle: has(token.fontStyle, ITALIC) ? "italic" : undefined,
       fontWeight: has(token.fontStyle, BOLD) ? "bold" : undefined,
@@ -81,11 +81,8 @@ const highlight = async (code: string, language: BundledLanguage): Promise<Token
 const CodeBlockBody = memo(({ tokenized, className }: { tokenized: Tokenized; className?: string }) => {
   const lines = useMemo(() => keyed(tokenized.tokens), [tokenized.tokens]);
   return (
-    <pre
-      className={cn("m-0 p-3 text-xs wrap-break-word whitespace-pre-wrap dark:bg-(--shiki-dark-bg)! dark:text-(--shiki-dark)!", className)}
-      style={{ backgroundColor: tokenized.bg, color: tokenized.fg }}
-    >
-      <code className="font-mono text-xs">
+    <pre className={cn("m-0 px-3 pb-3 font-mono text-xs/relaxed wrap-break-word whitespace-pre-wrap dark:text-(--shiki-dark)!", className)} style={{ color: tokenized.fg }}>
+      <code className="font-mono">
         {lines.map((line) => (
           <LineSpan key={line.key} line={line} />
         ))}
@@ -98,7 +95,7 @@ CodeBlockBody.displayName = "CodeBlockBody";
 
 export const CodeBlockContainer = ({ className, language, style, ...props }: HTMLAttributes<HTMLDivElement> & { language: string }) => (
   <div
-    className={cn("group relative w-full overflow-hidden rounded-md border bg-background text-foreground", className)}
+    className={cn("group relative w-full overflow-hidden rounded-lg border bg-code text-foreground", className)}
     data-language={language}
     style={{ containIntrinsicSize: "auto 200px", contentVisibility: "auto", ...style }}
     {...props}

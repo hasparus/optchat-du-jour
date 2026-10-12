@@ -47,8 +47,8 @@ export default defineConfig({
             options: { cacheName: "chunks", cacheableResponse: { statuses: [200] }, expiration: { maxEntries: 60 } },
           },
           {
-            // a variant's self-hosted fonts (src/variants): cached once used, so the installed app
-            // keeps its type offline
+            // the self-hosted fonts (src/fonts.css): cached once used, so the installed app keeps
+            // its type offline
             urlPattern: /\/assets\/.*\.woff2$/,
             handler: "CacheFirst",
             options: { cacheName: "fonts", cacheableResponse: { statuses: [200] }, expiration: { maxEntries: 30 } },

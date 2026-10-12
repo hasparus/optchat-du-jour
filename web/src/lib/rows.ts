@@ -3,6 +3,7 @@
 // keyed by the log index it starts at, so a row keeps its key (and a tool row its open state) from
 // the first streamed event to the snapshot that confirms it.
 import { splitTool } from "@wire";
+import { Option, Schema } from "effect";
 import { type Draft, draftItem, type Item, withDraft } from "./log.ts";
 
 export type Row =
@@ -65,3 +66,49 @@ export function rowIndexFor(rows: readonly Row[], i: number): number {
 
 // the row to scroll to for log index i: the last one starting at or before it
 export const rowFor = (rows: readonly Row[], i: number) => rows.findLast((r) => r.id <= i) ?? rows[0];
+
+// Whether a tool's output says the call failed. The log keeps the output's text only (an echo has no
+// error flag), so this reads what Claude Code's tools write when they fail: a Bash exit code other
+// than 0, a <tool_use_error> wrapper, or an "Error:" first line. Used for how the row looks, never
+// for what it shows: the output is there as logged either way.
+const FAILED = /^\s*(?:Exit code [1-9]\d*\b|<tool_use_error>|Error:|error:)/;
+export const toolFailed = (output: string | null) => output !== null && FAILED.test(output);
+
+const oneLine = (s: string, max = 120) => {
+  const flat = s.replaceAll(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+};
+
+// What a tool was called on, for its one line: the command, the file, the pattern or the address
+// when the input names one, a memory node as `id+n`, a todo list by its length, else the input
+// itself on one line. The input as logged is under the line, open.
+const Text = Schema.optional(Schema.String);
+const ToolInputFields = Schema.Struct({
+  command: Text,
+  description: Text,
+  file_path: Text,
+  id: Schema.optional(Schema.Number),
+  n: Schema.optional(Schema.Number),
+  notebook_path: Text,
+  path: Text,
+  pattern: Text,
+  prompt: Text,
+  query: Text,
+  todos: Schema.optional(Schema.Array(Schema.Unknown)),
+  url: Text,
+});
+const decodeToolInput = Schema.decodeUnknownOption(Schema.fromJsonString(ToolInputFields));
+
+export const toolSummary = (args: string): string =>
+  Option.match(decodeToolInput(args), {
+    onNone: () => oneLine(args),
+    onSome: (input) => {
+      if (input.id !== undefined && input.n !== undefined) return `${input.id}+${input.n}`;
+      const named = [input.command, input.file_path, input.notebook_path, input.pattern, input.url, input.query, input.path, input.description, input.prompt].find(
+        (v) => v !== undefined && v.trim() !== "",
+      );
+      if (named !== undefined) return oneLine(named);
+      if (input.todos !== undefined) return `${input.todos.length} items`;
+      return oneLine(args);
+    },
+  });

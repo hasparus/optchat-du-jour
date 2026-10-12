@@ -144,20 +144,6 @@ test("an empty log says what this chat is, until the first message", async ({ pa
   await expect(page.getByTestId("empty-chat")).toBeHidden();
 });
 
-test("?variant= picks a proposed look and keeps it; ?variant= alone clears it", async ({ page }) => {
-  await page.goto("/?variant=b");
-  await expect(page.locator("html")).toHaveAttribute("data-variant", "b");
-  await page.goto("/");
-  await expect(page.locator("html")).toHaveAttribute("data-variant", "b");
-  await page.goto("/?variant=");
-  await expect(page.locator("html")).not.toHaveAttribute("data-variant", /./);
-  // the Devices screen's picker, for the installed app with no address bar
-  await expect(page.getByRole("img", { name: "connection open" })).toBeVisible();
-  await page.getByRole("tab", { name: "Devices" }).click();
-  await page.getByTestId("look").getByRole("combobox").selectOption("c");
-  await expect(page.locator("html")).toHaveAttribute("data-variant", "c");
-});
-
 test("a reload shows the log again from the snapshot", async ({ page, server }) => {
   await open(page);
   await send(page, "still here?");

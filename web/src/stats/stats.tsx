@@ -4,13 +4,13 @@
 // replaces `optchat stats`. Charts are shadcn's (recharts); every one has a legend or a title for
 // its one series, and the numbers are in the table below them too.
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { type ChartConfig, ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { api } from "@/lib/api";
 import { type Bucket, buckets, byModel, ENGINES, type Period, ranOn, ROLES, type Split, total, totals } from "@/lib/stats";
 import { useApi } from "@/lib/use-api";
 import { Bar, BarChart, CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
-import { useState } from "react";
+import { cn } from "@/lib/utils";
+import { type ReactNode, useState } from "react";
 
 const compact = new Intl.NumberFormat("en-US", { notation: "compact" });
 const pct = (x: number | null) => (x === null ? "–" : `${Math.round(x * 100)}%`);
@@ -24,18 +24,19 @@ const coldConfig: ChartConfig = {
 };
 const hitConfig: ChartConfig = { hitRate: { color: "var(--chart-1)", label: "hit rate" } };
 
-function Tile({ label, value }: { label: string; value: string }) {
+// one figure of the summary strip: the number, then what it counts
+function Figure({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border p-3">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="text-xl font-semibold">{value}</div>
+    <div className="px-4 py-3">
+      <div className="text-xl font-semibold tracking-tight tabular-nums">{value}</div>
+      <div className="mt-0.5 text-xs text-muted-foreground">{label}</div>
     </div>
   );
 }
 
 function Toggle<A extends string>({ value, options, onChange, label }: { value: A; options: readonly A[]; onChange: (a: A) => void; label: string }) {
   return (
-    <div aria-label={label} className="inline-flex rounded-md border p-0.5" role="group">
+    <div aria-label={label} className="inline-flex rounded-lg bg-muted p-0.5" role="group">
       {options.map((o) => (
         <Button
           aria-pressed={o === value}
@@ -43,8 +44,12 @@ function Toggle<A extends string>({ value, options, onChange, label }: { value: 
           onClick={() => {
             onChange(o);
           }}
+          className={cn(
+            "h-7 rounded-md px-2.5 text-ui capitalize pointer-coarse:h-9",
+            o === value ? "bg-raised text-foreground shadow-[0_0_0_1px_var(--border),0_1px_2px_oklch(0_0_0/6%)] hover:bg-raised" : "text-muted-foreground hover:bg-transparent hover:text-foreground",
+          )}
           size="xs"
-          variant={o === value ? "secondary" : "ghost"}
+          variant="ghost"
         >
           {o}
         </Button>
@@ -55,11 +60,7 @@ function Toggle<A extends string>({ value, options, onChange, label }: { value: 
 
 function Stacked({ title, data, field, names }: { title: string; data: readonly Bucket[]; field: "calls" | "tokens"; names: readonly string[] }) {
   return (
-    <Card className="gap-2 py-4">
-      <CardHeader className="px-4">
-        <CardTitle className="text-sm">{title}</CardTitle>
-      </CardHeader>
-      <CardContent className="px-2">
+    <ChartSection title={title}>
         <ChartContainer className="aspect-auto h-48 w-full" config={seriesConfig(names)}>
           <BarChart data={[...data]}>
             <CartesianGrid vertical={false} />
@@ -72,8 +73,17 @@ function Stacked({ title, data, field, names }: { title: string; data: readonly 
             ))}
           </BarChart>
         </ChartContainer>
-      </CardContent>
-    </Card>
+    </ChartSection>
+  );
+}
+
+// a chart under its title, on the sheet: a hairline above, no card around it
+function ChartSection({ title, children }: { readonly title: string; readonly children: ReactNode }) {
+  return (
+    <section className="border-t pt-4">
+      <h2 className="mb-3 text-ui font-medium">{title}</h2>
+      <div className="-mx-2">{children}</div>
+    </section>
   );
 }
 
@@ -82,53 +92,48 @@ export function Stats() {
   const [period, setPeriod] = useState<Period>("day");
   const [split, setSplit] = useState<Split>("role");
 
-  if (error !== null) return <p className="p-4 text-sm text-destructive">{error}</p>;
-  if (data === null) return <p className="p-4 text-sm text-muted-foreground">loading…</p>;
+  if (error !== null) return <p className="p-6 text-ui text-destructive">{error}</p>;
+  if (data === null) return <p className="p-6 text-ui text-muted-foreground">Loading…</p>;
 
   const all = totals(data);
   const rows = buckets(data, period, split);
   const names = split === "role" ? ROLES : ENGINES;
 
   return (
-    <div className="mx-auto w-full max-w-2xl space-y-4 p-4" data-testid="stats">
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <Tile label="calls" value={compact.format(all.calls)} />
-        <Tile label="tokens" value={compact.format(all.tokens)} />
-        <Tile label="cache hit rate" value={pct(all.hitRate)} />
-        <Tile label="cold turns" value={`${all.coldTurns} / ${all.turns}`} />
+    <div className="mx-auto w-full max-w-2xl space-y-5 px-4 py-6 sm:px-6" data-testid="stats">
+      <div>
+        <h1 className="text-base font-semibold tracking-tight">Stats</h1>
+        <p className="mt-1 text-ui text-muted-foreground">Every model call, from usage.jsonl.</p>
       </div>
-      {all.dollars > 0 && <p className="text-sm">API-key spend: ${all.dollars.toFixed(2)}</p>}
+      <div className="grid grid-cols-2 overflow-hidden rounded-xl border bg-raised sm:grid-cols-4 *:border-border max-sm:[&>*:nth-child(-n+2)]:border-b sm:[&>*+*]:border-l max-sm:[&>*:nth-child(even)]:border-l">
+        <Figure label="calls" value={compact.format(all.calls)} />
+        <Figure label="tokens" value={compact.format(all.tokens)} />
+        <Figure label="cache hit rate" value={pct(all.hitRate)} />
+        <Figure label="cold turns" value={`${all.coldTurns} / ${all.turns}`} />
+      </div>
+      {all.dollars > 0 && <p className="text-ui">API-key spend: ${all.dollars.toFixed(2)}</p>}
       <div className="flex flex-wrap gap-2">
         <Toggle label="Period" onChange={setPeriod} options={["day", "week"] as const} value={period} />
         <Toggle label="Split" onChange={setSplit} options={["role", "engine"] as const} value={split} />
       </div>
       {data.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No model calls yet.</p>
+        <p className="text-ui text-muted-foreground">No model calls yet.</p>
       ) : (
         <>
           <Stacked data={rows} field="calls" names={names} title={`Calls per ${period}, by ${split}`} />
           <Stacked data={rows} field="tokens" names={names} title={`Tokens per ${period}, by ${split}`} />
-          <Card className="gap-2 py-4">
-            <CardHeader className="px-4">
-              <CardTitle className="text-sm">Cache hit rate per {period}</CardTitle>
-            </CardHeader>
-            <CardContent className="px-2">
+          <ChartSection title={`Cache hit rate per ${period}`}>
               <ChartContainer className="aspect-auto h-40 w-full" config={hitConfig}>
                 <LineChart data={rows.map((r) => ({ hitRate: r.hitRate, period: r.period }))}>
                   <CartesianGrid vertical={false} />
                   <XAxis dataKey="period" tickLine={false} />
                   <YAxis domain={[0, 1]} tickFormatter={(v: number) => pct(v)} tickLine={false} width={36} />
                   <ChartTooltip content={<ChartTooltipContent valueFormatter={pct} />} />
-                  <Line dataKey="hitRate" dot={{ r: 4 }} stroke="var(--color-hitRate)" strokeWidth={2} type="monotone" />
+                  <Line dataKey="hitRate" dot={{ r: 3, strokeWidth: 0, fill: "var(--color-hitRate)" }} stroke="var(--color-hitRate)" strokeWidth={2} type="monotone" />
                 </LineChart>
               </ChartContainer>
-            </CardContent>
-          </Card>
-          <Card className="gap-2 py-4">
-            <CardHeader className="px-4">
-              <CardTitle className="text-sm">Cold and warm turns per {period}</CardTitle>
-            </CardHeader>
-            <CardContent className="px-2">
+          </ChartSection>
+          <ChartSection title={`Cold and warm turns per ${period}`}>
               <ChartContainer className="aspect-auto h-40 w-full" config={coldConfig}>
                 <BarChart data={rows.map((r) => ({ cold: r.cold, period: r.period, warm: r.warm }))}>
                   <CartesianGrid vertical={false} />
@@ -140,12 +145,11 @@ export function Stats() {
                   <Bar dataKey="cold" fill="var(--color-cold)" radius={2} stackId="t" stroke="var(--background)" strokeWidth={2} />
                 </BarChart>
               </ChartContainer>
-            </CardContent>
-          </Card>
-          <table className="w-full text-xs tabular-nums">
-            <caption className="py-1 text-left text-muted-foreground">Per {period}</caption>
+          </ChartSection>
+          <table className="w-full text-ui tabular-nums [&_td]:border-t [&_td]:py-1.5 [&_th]:pb-1.5">
+            <caption className="border-t pt-4 pb-3 text-left font-medium">Per {period}</caption>
             <thead>
-              <tr className="text-left text-muted-foreground">
+              <tr className="text-left text-xs text-muted-foreground">
                 <th className="font-normal">{period}</th>
                 <th className="text-right font-normal">calls</th>
                 <th className="text-right font-normal">tokens</th>
@@ -167,10 +171,10 @@ export function Stats() {
               ))}
             </tbody>
           </table>
-          <table className="w-full text-xs tabular-nums" data-testid="by-model">
-            <caption className="py-1 text-left text-muted-foreground">By model and effort</caption>
+          <table className="w-full text-ui tabular-nums [&_td]:border-t [&_td]:py-1.5 [&_th]:pb-1.5" data-testid="by-model">
+            <caption className="border-t pt-4 pb-3 text-left font-medium">By model and effort</caption>
             <thead>
-              <tr className="text-left text-muted-foreground">
+              <tr className="text-left text-xs text-muted-foreground">
                 <th className="font-normal">model</th>
                 <th className="text-right font-normal">calls</th>
                 <th className="text-right font-normal">tokens</th>
@@ -180,7 +184,7 @@ export function Stats() {
             <tbody>
               {byModel(data).map((m) => (
                 <tr key={m.name}>
-                  <td className="break-all">{m.name}</td>
+                  <td className="font-mono text-xs break-all">{m.name}</td>
                   <td className="text-right">{m.calls}</td>
                   <td className="text-right">{compact.format(m.tokens)}</td>
                   <td className="text-right">{pct(m.hitRate)}</td>
@@ -190,13 +194,13 @@ export function Stats() {
           </table>
         </>
       )}
-      <section className="space-y-1">
-        <h2 className="text-sm font-medium">Engine changes</h2>
+      <section className="space-y-1 border-t pt-4">
+        <h2 className="text-ui font-medium">Engine changes</h2>
         <p className="text-xs text-muted-foreground">Compactor and caption failovers, and turns taken up by the engine picked after a stop.</p>
         {all.failovers.length === 0 ? (
-          <p className="text-sm text-muted-foreground">None.</p>
+          <p className="pt-1 text-ui text-muted-foreground">None.</p>
         ) : (
-          <ul className="text-xs">
+          <ul className="space-y-0.5 pt-1 font-mono text-xs">
             {all.failovers.map((r) => (
               <li key={`${r.date}:${r.role}:${r.engine}`}>
                 {r.date.slice(0, 16).replace("T", " ")} · {r.role}: {r.failoverFrom} → {ranOn(r)}

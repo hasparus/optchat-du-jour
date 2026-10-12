@@ -8,8 +8,9 @@ import { api } from "@/lib/api";
 import type { Uploader } from "@/lib/attach";
 import type { Link } from "@/lib/connection";
 import type { SessionStore } from "@/lib/session";
-import { syncThemeColor } from "@/lib/look";
+import { syncThemeColor } from "@/lib/theme";
 import { useApi } from "@/lib/use-api";
+import { cn } from "@/lib/utils";
 import { nativeShell } from "@/lib/shell";
 import { MoonIcon, ServerIcon, SunIcon } from "lucide-react";
 import { Component, lazy, type ReactNode, Suspense, useCallback, useState, useSyncExternalStore } from "react";
@@ -35,7 +36,7 @@ class ScreenBoundary extends Component<{ readonly children: ReactNode }, { reado
   override render(): ReactNode {
     if (!this.state.failed) return this.props.children;
     return (
-      <div className="space-y-2 p-4 text-sm" role="alert">
+      <div className="space-y-3 p-6 text-ui" role="alert">
         <p>Couldn't load this screen.</p>
         <Button
           onClick={() => {
@@ -69,7 +70,7 @@ function ThemeToggle() {
     syncThemeColor();
   };
   return (
-    <Button aria-label={dark ? "Light theme" : "Dark theme"} className="pointer-coarse:size-10" onClick={toggle} size="icon-sm" variant="ghost">
+    <Button aria-label={dark ? "Light theme" : "Dark theme"} className="text-muted-foreground hover:text-foreground pointer-coarse:size-10" onClick={toggle} size="icon-sm" variant="ghost">
       {dark ? <SunIcon /> : <MoonIcon />}
     </Button>
   );
@@ -80,7 +81,7 @@ function ChangeServer() {
   const shell = nativeShell();
   if (shell === undefined) return null;
   return (
-    <Button aria-label="Change server" onClick={shell.changeServer} size="icon-sm" variant="ghost">
+    <Button aria-label="Change server" className="text-muted-foreground hover:text-foreground pointer-coarse:size-10" onClick={shell.changeServer} size="icon-sm" variant="ghost">
       <ServerIcon />
     </Button>
   );
@@ -104,23 +105,37 @@ export function App({ link, session, uploader }: { link: Link; session: SessionS
         }}
         value={tab}
       >
-        <header data-slot="app-header" className="flex items-center gap-2 border-b px-2 pt-[max(0.25rem,env(safe-area-inset-top))] pb-1">
+        <header
+          className="flex h-[calc(3rem+env(safe-area-inset-top))] shrink-0 items-center gap-2 border-b bg-background pt-[env(safe-area-inset-top)] pr-[max(0.5rem,env(safe-area-inset-right))] pl-[max(0.75rem,env(safe-area-inset-left))] md:border-transparent md:bg-shell md:pr-3 md:pl-4"
+          data-slot="app-header"
+        >
+          <span className="hidden items-center gap-2 pr-3 text-ui font-semibold tracking-tight md:flex">optchat</span>
           <span
             aria-label={`connection ${state.status}`}
-            className={`size-2 shrink-0 rounded-full ${state.status === "open" ? "bg-green-600" : "bg-muted-foreground"}`}
+            className={cn(
+              "size-2 shrink-0 rounded-full md:order-first",
+              state.status === "open" ? "bg-success shadow-[0_0_0_3px_color-mix(in_oklch,var(--success)_18%,transparent)]" : "animate-breathe bg-muted-foreground",
+            )}
             role="img"
+            title={state.status === "open" ? "Connected" : state.status === "connecting" ? "Connecting…" : "Disconnected, reconnecting…"}
           />
-          <TabsList className="min-w-0 flex-1 pointer-coarse:h-11">
+          <TabsList className="h-8 min-w-0 flex-1 justify-start gap-0.5 bg-transparent p-0 md:flex-none pointer-coarse:h-10">
             {TABS.map((t) => (
-              <TabsTrigger className="capitalize" key={t} value={t}>
+              <TabsTrigger
+                className="h-full flex-1 rounded-md px-2.5 text-ui font-medium capitalize text-muted-foreground hover:bg-accent hover:text-foreground data-[state=active]:bg-raised data-[state=active]:text-foreground data-[state=active]:shadow-[0_0_0_1px_var(--border),0_1px_2px_oklch(0_0_0/6%)] md:flex-none dark:data-[state=active]:border-transparent dark:data-[state=active]:bg-raised"
+                key={t}
+                value={t}
+              >
                 {t}
               </TabsTrigger>
             ))}
           </TabsList>
-          <ChangeServer />
-          <ThemeToggle />
+          <div className="ml-auto flex items-center gap-0.5">
+            <ChangeServer />
+            <ThemeToggle />
+          </div>
         </header>
-        <TabsContent className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden" forceMount value="chat">
+        <TabsContent className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden md:mx-2 md:mb-2 md:overflow-hidden md:rounded-2xl md:border md:bg-background md:shadow-[0_1px_2px_oklch(0_0_0/4%)]" forceMount value="chat">
           <Chat
             devices={devices.data ?? []}
             link={link}
@@ -131,7 +146,7 @@ export function App({ link, session, uploader }: { link: Link; session: SessionS
             uploader={uploader}
           />
         </TabsContent>
-        <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="memory">
+        <TabsContent className="min-h-0 flex-1 overflow-y-auto md:mx-2 md:mb-2 md:rounded-2xl md:border md:bg-background md:shadow-[0_1px_2px_oklch(0_0_0/4%)]" value="memory">
           <Memory
             onShowInChat={(i) => {
               setTarget(i);
@@ -139,14 +154,14 @@ export function App({ link, session, uploader }: { link: Link; session: SessionS
             }}
           />
         </TabsContent>
-        <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="stats">
+        <TabsContent className="min-h-0 flex-1 overflow-y-auto md:mx-2 md:mb-2 md:rounded-2xl md:border md:bg-background md:shadow-[0_1px_2px_oklch(0_0_0/4%)]" value="stats">
           <ScreenBoundary>
-            <Suspense fallback={<p className="p-4 text-sm text-muted-foreground">loading…</p>}>
+            <Suspense fallback={<p className="p-6 text-ui text-muted-foreground">Loading…</p>}>
               <Stats />
             </Suspense>
           </ScreenBoundary>
         </TabsContent>
-        <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="devices">
+        <TabsContent className="min-h-0 flex-1 overflow-y-auto md:mx-2 md:mb-2 md:rounded-2xl md:border md:bg-background md:shadow-[0_1px_2px_oklch(0_0_0/4%)]" value="devices">
           <Devices />
         </TabsContent>
       </Tabs>
