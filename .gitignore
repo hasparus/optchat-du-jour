@@ -14,6 +14,10 @@ web/dev-dist
 .impeccable/config.local.json
 .impeccable/live/
 .impeccable/history/
+# serve-question's state and pid files
+.impeccable/questions/
+# third-party card images serve-question downloads; the rest of .impeccable/mocks/ is tracked
+.impeccable/mocks/worlds/
 .impeccable/critique/*
 !.impeccable/critique/ignore.md
 **/.impeccable/hook.*.json
