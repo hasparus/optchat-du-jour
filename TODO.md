@@ -38,7 +38,7 @@ Everything is built and tested against fakes. Each check below needs a real logi
 
 - [ ] The phone over Tailscale as a PWA: install, reconnect, chat (SPEC M2). The iOS app has its own list below.
 - [ ] A live two-machine run over a real tailnet: one chat edits files on both machines (SPEC M4).
-- [ ] Re-measure latency with real claude after the inline system prompt change, `dev/latency.ts` (SPEC Turn and priming).
+- [x] Re-measure latency with real claude after the inline system prompt change, `dev/latency.ts` (SPEC Turn and priming).
 
 ## iPhone app (TestFlight)
 
