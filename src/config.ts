@@ -1,6 +1,8 @@
 // The constants of docs/optchat.md and of its earlier revision (SPEC "Constants and configuration") and the reference's timings (ref §2, §7). Sizes are UTF-8
 // bytes. Everything that may differ per machine is in optchat.config.ts instead.
 import { Array as Arr, Data, Effect, Result, Schema, SchemaGetter, SchemaIssue, SchemaTransformation } from "effect";
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { Endpoints } from "./openai/endpoints.ts";
 import { Engine } from "./usage.ts";
 import { canonicalRef, effortSplit, engineLabel, FollowUp } from "./wire.ts";
@@ -291,7 +293,7 @@ export const loadSettings = (path: string) =>
   Effect.gen(function* () {
     const module = yield* Effect.tryPromise({
       catch: (cause) => new ConfigError({ message: `cannot load ${path}: ${cause instanceof Error ? cause.message : String(cause)}` }),
-      try: async () => decodeModule(await import(path)).default,
+      try: async () => decodeModule(await import(pathToFileURL(realpathSync(path)).href)).default,
     });
     // every engine ref is decoded here, so nothing after this parses one again
     const settings = yield* decodeSettings(module).pipe(

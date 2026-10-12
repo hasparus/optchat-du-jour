@@ -3,7 +3,8 @@
 import { afterAll, afterEach, beforeEach, expect } from "bun:test";
 import { BunServices } from "@effect/platform-bun";
 import { Effect, Layer, Schema, type Scope } from "effect";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type { Block } from "../src/claude/events.ts";
 import { LocalRunner, Runner } from "../src/claude/process.ts";
@@ -12,7 +13,7 @@ const FAKE_BIN = `${import.meta.dir}/fake-claude.ts`;
 
 const dirs: string[] = [];
 export const tmp = () => {
-  const d = mkdtempSync(`${tmpdir()}/oc-`); // short: socket paths stop at ~107 characters
+  const d = realpathSync(mkdtempSync(`${tmpdir()}/oc-`));
   dirs.push(d);
   return d;
 };
@@ -48,13 +49,18 @@ export const records = (log: string): Rec[] => {
 
 // a process is running: it exists, and it is not a zombie (/proc/PID/stat, state after the name)
 export const alive = (pid: number) => {
-  const stat = `/proc/${pid}/stat`;
-  if (!existsSync(stat)) return false;
-  try {
-    return readFileSync(stat, "utf8").split(") ")[1]?.[0] !== "Z";
-  } catch {
-    return false; // gone between the two calls
+  if (process.platform === "linux") {
+    const stat = `/proc/${pid}/stat`;
+    if (!existsSync(stat)) return false;
+    try {
+      return readFileSync(stat, "utf8").split(") ")[1]?.[0] !== "Z";
+    } catch {
+      return false;
+    }
   }
+  const status = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8", timeout: 250 });
+  const state = status.status === 0 ? status.stdout.trim() : "";
+  return state !== "" && !state.startsWith("Z");
 };
 
 
