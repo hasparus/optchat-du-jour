@@ -3,10 +3,29 @@
 // usage records alone.
 import { expect, test } from "bun:test";
 import { Effect } from "effect";
+import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { CompactError, type Job } from "../src/compactor.ts";
+import { UsageLimit } from "../src/engines/errors.ts";
+import { sizeRetries } from "../src/summarize/step.ts";
 import { bytes } from "../src/tree.ts";
 import type { UsageRecord } from "../src/usage.ts";
-import { type Contender, type Message, lexicalAnswerer, measure, parseContender, replay } from "../dev/bakeoff.ts";
+import {
+  type ArtifactContender,
+  bakeoffArtifact,
+  type Contender,
+  type Measured,
+  type Message,
+  lexicalAnswerer,
+  makeBakeoffController,
+  measure,
+  modelBuiltNodes,
+  overLimit,
+  parseContender,
+  replay,
+  runContenders,
+  writeArtifact,
+} from "../dev/bakeoff.ts";
 
 const TOPICS = ["cartography", "metallurgy", "photosynthesis", "glassblowing", "beekeeping", "astronomy", "calligraphy", "orthodontics"];
 const pad = "-".repeat(600); // no words: long enough that every message needs a model call
@@ -122,3 +141,185 @@ test("tries are counted per node across failed calls and failovers; a replay tha
   expect(r.replayed.unbuilt).toEqual(["1.0", "1.1", "2.0"]);
   expect(r.replayed.reports.at(-1)).toMatch(/^deadline .*4 of 4 messages logged, 3 nodes unbuilt$/);
 }, 10_000);
+
+const oneJob: Job = { ctx: [], i: 0, l: 0, msg: { date: "", i: 0, kind: "user", size: 600, text: "x".repeat(600) } };
+const fakeAttempt = { attempt: 1, auth: "chatgpt-pro", engine: "openai-plan", failoverFrom: null, job: oneJob } as const;
+
+const emptyMeasured = (contender: string): Measured => ({
+  contender,
+  cost: {
+    callsPerMessage: 0,
+    cold: 0,
+    dollarsPerMessage: 0,
+    failovers: 0,
+    tokensPerMessage: { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 },
+  },
+  dir: "fake",
+  findability: { asked: 0, found: 0, share: 0 },
+  messages: 0,
+  nodes: 0,
+  overLimit: 0,
+  reports: 0,
+  tries: { max: 0, mean: 0, nodes: 0, p95: 0 },
+  unbuilt: 0,
+  wordsKept: [],
+});
+
+test("the process-wide controller permits exactly N concurrent attempts", async () => {
+  const control = makeBakeoffController(7);
+  const hooks = control.hooks("first");
+  let invoked = 0;
+  const outcomes = await Effect.runPromise(
+    Effect.all(
+      Array.from({ length: 24 }, () =>
+        hooks.beforeAttempt(fakeAttempt).pipe(
+          Effect.andThen(Effect.sync(() => void invoked++)),
+          Effect.result,
+        ),
+      ),
+      { concurrency: "unbounded" },
+    ),
+  );
+  expect(invoked).toBe(7);
+  expect(outcomes.filter((outcome) => outcome._tag === "Success")).toHaveLength(7);
+  expect(control.snapshot()).toEqual({
+    attempts: 7,
+    maxAttempts: 7,
+    stop: { attempted: 7, contender: "first", max: 7, type: "max-attempts" },
+  });
+});
+
+test("a UsageLimit without spent usage is observed after its attempt is counted", async () => {
+  const control = makeBakeoffController(4);
+  const records: UsageRecord[] = [];
+  let invoked = 0;
+  const error = await Effect.runPromise(
+    Effect.flip(
+      sizeRetries({
+        ask: () => Effect.sync(() => void invoked++).pipe(Effect.andThen(Effect.fail(new UsageLimit({ message: "monthly cap" })))),
+        auth: "chatgpt-pro",
+        effort: undefined,
+        engine: "openai-plan",
+        failoverFrom: null,
+        hooks: control.hooks("limited"),
+        job: oneJob,
+        log: (record) => Effect.sync(() => void records.push(record)),
+      }),
+    ),
+  );
+  expect(error._tag).toBe("UsageLimit");
+  expect(invoked).toBe(1);
+  expect(records).toEqual([]);
+  expect(control.snapshot()).toEqual({
+    attempts: 1,
+    maxAttempts: 4,
+    stop: { contender: "limited", engine: "openai-plan", message: "monthly cap", node: "0.0", type: "usage-limit" },
+  });
+});
+
+test("an over-limit summary stops replay before more work is scheduled", async () => {
+  const control = makeBakeoffController(10);
+  let calls = 0;
+  const r = await Effect.runPromise(
+    replay({
+      budget: 100_000,
+      contender: parseContender("wide=openai-plan:fake"),
+      control,
+      messages: [{ kind: "user", text: "x".repeat(600) }],
+      poll: "1 millis",
+      summarizeFor: () => Effect.succeed(() => Effect.sync(() => (calls++, "y".repeat(513)))),
+    }),
+  );
+  expect(calls).toBe(1);
+  expect(r.stop).toEqual({ bytes: 513, contender: "wide", limit: 512, node: "0.0", type: "over-limit" });
+  expect(r.reports.at(-1)).toMatch(/^stopped \(over-limit\):/);
+});
+
+test("a deadline interrupts hanging work and awaits its finalizer", async () => {
+  const control = makeBakeoffController(10);
+  let finalized = false;
+  const r = await Effect.runPromise(
+    replay({
+      budget: 100_000,
+      contender: parseContender("hanging=openai-plan:fake"),
+      control,
+      deadline: "40 millis",
+      messages: [{ kind: "user", text: "x".repeat(600) }],
+      poll: "1 millis",
+      summarizeFor: () =>
+        Effect.succeed(() =>
+          Effect.acquireUseRelease(Effect.void, () => Effect.never, () => Effect.sync(() => void (finalized = true))),
+        ),
+    }),
+  );
+  expect(finalized).toBe(true);
+  expect(r.stop?.type).toBe("deadline");
+  expect(r.unbuilt).toEqual(["0.0"]);
+});
+
+test("a stopped contender is persisted as partial and gates later factories", async () => {
+  const contenders = [parseContender("first=openai-plan:fake"), parseContender("second=openai-plan:fake")];
+  const control = makeBakeoffController(10);
+  const started: string[] = [];
+  const persisted: string[][] = [];
+  const results = await Effect.runPromise(
+    runContenders({
+      contenders,
+      control,
+      persist: (current) => Effect.sync(() => void persisted.push(current.map((result) => result.name))),
+      run: (contender) =>
+        Effect.gen(function* () {
+          started.push(contender.name);
+          yield* control.stop({ contender: contender.name, message: "failed", node: "0.0", type: "unbuilt" });
+          return { complete: false, value: contender.name };
+        }),
+    }),
+  );
+  expect(started).toEqual(["first"]);
+  expect(results).toEqual([{ name: "first", status: "partial", value: "first" }]);
+  expect(persisted).toEqual([["first"], ["first"]]);
+});
+
+test("a controlled stop writes an atomic, parseable versioned partial artifact", async () => {
+  const control = makeBakeoffController(1);
+  const contender = parseContender("only=openai-plan:fake");
+  const hooks = control.hooks(contender.name);
+  await Effect.runPromise(hooks.beforeAttempt(fakeAttempt));
+  await Effect.runPromise(Effect.result(hooks.beforeAttempt(fakeAttempt)));
+  const results: ArtifactContender[] = [{ name: contender.name, status: "partial", value: { metrics: emptyMeasured(contender.name), usageRecords: 0 } }];
+  const artifact = bakeoffArtifact([contender], results, control);
+  const dir = mkdtempSync(`${tmpdir()}/bake-artifact-`);
+  const path = `${dir}/result.json`;
+  writeArtifact(path, artifact);
+  expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(artifact);
+  expect(artifact).toMatchObject({
+    attempts: { attempted: 1, max: 1 },
+    completedContenders: [],
+    requestedContenders: ["only"],
+    status: "stopped",
+    version: 1,
+  });
+  expect(readdirSync(dir)).toEqual(["result.json"]);
+});
+
+test("explicit non-fail-fast mode retains legacy over-limit replay behavior", async () => {
+  const control = makeBakeoffController(10, false);
+  const r = await Effect.runPromise(
+    replay({
+      budget: 100_000,
+      contender: parseContender("diagnostic=openai-plan:fake"),
+      control,
+      messages: [{ kind: "user", text: "x".repeat(600) }],
+      poll: "1 millis",
+      summarizeFor: () => Effect.succeed(() => Effect.succeed("y".repeat(513))),
+    }),
+  );
+  expect(control.snapshot().stop?.type).toBe("over-limit");
+  expect(control.isStopped()).toBe(false);
+  expect(r.unbuilt).toEqual([]);
+  expect(overLimit(r.mem)).toBe(1);
+});
+
+test("the preflight lower bound counts the complete requested tree", () => {
+  expect(modelBuiltNodes(20)).toBe(38);
+});

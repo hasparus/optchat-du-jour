@@ -14,7 +14,7 @@ import type { Item, Provider } from "../providers/provider.ts";
 import type { ToolDef } from "../tools/files.ts";
 import type { UsageRecord } from "../usage.ts";
 import { keyOf } from "./openai-plan.ts";
-import { type Try, contextBlocks, sizeRetries, task } from "./step.ts";
+import { type CompactAttemptHooks, type Try, contextBlocks, sizeRetries, task } from "./step.ts";
 
 // `provider` is the api-key one, from the registry's `providerOf`; its `engine` and `auth` name the
 // usage records
@@ -28,6 +28,7 @@ export const apiKeyCompactor = (o: {
   readonly gate: Gate; // waits on a call writing the same marked prefix (docs/optchat.md §3.3)
   readonly model: string; // for the in-flight key, with the effort
   readonly effort: string | undefined;
+  readonly attemptHooks?: CompactAttemptHooks;
 }) => {
   const { instructions, provider, tools } = o;
   const timeout = o.timeout ?? CALL_TIMEOUT;
@@ -45,7 +46,7 @@ export const apiKeyCompactor = (o: {
           const text = reply.items.flatMap((i) => (i.type === "text" ? [i.text] : [])).join("");
           return { dollars: reply.dollars, model: reply.model, text, usage: reply.usage };
         });
-      return sizeRetries({ ask, auth: provider.auth, device: o.device, effort: o.effort, engine: provider.engine, failoverFrom, job, log: o.log });
+      return sizeRetries({ ask, auth: provider.auth, device: o.device, effort: o.effort, engine: provider.engine, failoverFrom, hooks: o.attemptHooks, job, log: o.log });
     });
   };
 

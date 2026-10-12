@@ -26,7 +26,7 @@ Everything is built and tested against fakes. Each check below needs a real logi
 - [ ] Does the compactor fit the ChatGPT Pro weekly limit alongside Codex work? (SPEC Usage and cost tracking)
 - [x] One real compactor call on the plan route, with `instructions` seen on the wire (SPEC M3)
 - [ ] Luna's level-0 quality: retries per node, how much of the user's wording survives (SPEC M3)
-- [ ] Before another real bake-off, enforce a process-wide request cap and stop all contenders on the first over-limit, unbuilt, quota, or deadline result; the 20-message pilot exposed both gaps (SPEC M3).
+- [x] Before another real bake-off, enforce a process-wide request cap and stop all contenders on the first over-limit, unbuilt, quota, or deadline result; the harness now counts before invocation, cancels active work, gates later contenders, and atomically writes a partial artifact (SPEC M3).
 - [ ] The bake-off: `dev/bakeoff.ts` over ~500 real messages for Luna, Sol, Haiku at xhigh, Sonnet and a split; set the level cutoff only after a successful bounded pilot (SPEC M3).
 
 ## API keys

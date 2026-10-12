@@ -16,7 +16,7 @@ import { turnsOf } from "../providers/responses.ts";
 import type { ToolDef } from "../tools/files.ts";
 import type { UsageRecord } from "../usage.ts";
 import type { Blocks } from "../view.ts";
-import { type Try, contextBlocks, sizeRetries, task } from "./step.ts";
+import { type CompactAttemptHooks, type Try, contextBlocks, sizeRetries, task } from "./step.ts";
 
 export type OpenAiPlanCompactorOptions = {
   readonly model: string;
@@ -27,6 +27,7 @@ export type OpenAiPlanCompactorOptions = {
   readonly instructions: string; // the one system prompt (docs/optchat.md §5)
   readonly tools: readonly ToolDef[]; // a turn's, on the default device
   readonly gate: Gate; // waits on a call writing the same marked prefix (docs/optchat.md §3.3)
+  readonly attemptHooks?: CompactAttemptHooks;
 };
 
 // the context blocks, the last whole one marked (`mark`), then the task
@@ -55,7 +56,7 @@ export const openAiPlanCompactor = (o: OpenAiPlanCompactorOptions & { readonly p
           input.push(...turnsOf(reply.output)); // what it answered, reasoning and all, for a retry to continue
           return reply;
         });
-      return sizeRetries({ ask, auth: "chatgpt-pro", device: o.device, effort: o.effort, engine: "openai-plan", failoverFrom, job, log: o.log });
+      return sizeRetries({ ask, auth: "chatgpt-pro", device: o.device, effort: o.effort, engine: "openai-plan", failoverFrom, hooks: o.attemptHooks, job, log: o.log });
     });
   };
 

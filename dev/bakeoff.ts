@@ -3,28 +3,16 @@
 // through each compactor chain, each into its own temp data dir, and compare retries per node,
 // usage per message, how much of the user's own wording survives up the tree, and whether the
 // tree leads back to what was said. Run by hand; it calls real models.
-//
-//   bun dev/bakeoff.ts --from ~/.optchat/streams/mini --n 500 \
-//     --chain "luna=openai-plan:gpt-6-luna" --chain "split=0:openai-plan:gpt-6-luna;3:openai-plan:gpt-6.1-sol" \
-//     --chain "sonnet=claude-code:sonnet" --out bakeoff.json
-//
 // An entry may carry its own effort ("ref@effort"; --effort sets the default of the rest, else the
 // config's compactor.effort). The spec's choice (docs/optchat.md §4), Haiku at xhigh, on the Claude
 // plan and over an API key, against Sonnet at medium and high:
-//
-//   bun dev/bakeoff.ts --from ~/.optchat/streams/mini --n 500 --effort medium \
-//     --chain "haiku-cc=claude-code:haiku@xhigh" \
-//     --chain "haiku-key=api-key:anthropic/claude-haiku-5-5@xhigh" \
-//     --chain "sonnet-med=claude-code:sonnet" --chain "sonnet-high=claude-code:sonnet@high" \
-//     --out bakeoff.json
-//
 // An api-key contender needs the `apiKey` block of optchat.config.ts uncommented (a price for the
 // model, a budget) and a stored key (`optchat key anthropic`); what it spends counts against the
 // month's budget.
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Array as Arr, Console, Context, Duration, Effect, Layer, Option, Result, Schema } from "effect";
+import { Array as Arr, Console, Context, Data, Deferred, Duration, Effect, Layer, Option, Result, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { parseArgs } from "node:util";
 import { makeBudget } from "../src/apikey/budget.ts";
@@ -40,16 +28,69 @@ import { HOME } from "../src/paths.ts";
 import type { Kind } from "../src/records.ts";
 import { SecretsLive } from "../src/secrets.ts";
 import { loadChat } from "../src/store.ts";
+import { ModelError } from "../src/engines/errors.ts";
 import { makeGate } from "../src/engines/inflight.ts";
 import { systemPrompt } from "../src/prompts.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
+import type { CompactAttemptHooks } from "../src/summarize/step.ts";
 import { toolDefs } from "../src/tools/box.ts";
-import { built, getNode, type Mem, nodes } from "../src/tree.ts";
+import { built, bytes, getNode, type Mem, nodes } from "../src/tree.ts";
 import { type UsageRecord, logUsage } from "../src/usage.ts";
 import { render, settle } from "../src/view.ts";
 
 export type Message = { readonly kind: Kind; readonly text: string };
 export type Contender = { readonly name: string; readonly byLevel: Settings["compactor"]["byLevel"] };
+
+export type StopReason =
+  | { readonly type: "max-attempts"; readonly contender: string; readonly attempted: number; readonly max: number }
+  | { readonly type: "usage-limit"; readonly contender: string; readonly engine: string; readonly node: string; readonly message: string }
+  | { readonly type: "deadline"; readonly contender: string; readonly duration: string }
+  | { readonly type: "unbuilt"; readonly contender: string; readonly node: string; readonly message: string }
+  | { readonly type: "over-limit"; readonly contender: string; readonly node: string; readonly bytes: number; readonly limit: number };
+
+export class BakeoffStopped extends Data.TaggedError("BakeoffStopped")<{ readonly reason: StopReason }> {}
+
+export type BakeoffController = {
+  readonly maxAttempts: number;
+  readonly failFast: boolean;
+  readonly awaitStop: Effect.Effect<StopReason>;
+  readonly hooks: (contender: string) => CompactAttemptHooks;
+  readonly isStopped: () => boolean;
+  readonly snapshot: () => { readonly attempts: number; readonly maxAttempts: number; readonly stop: StopReason | null };
+  readonly stop: (reason: StopReason) => Effect.Effect<boolean>;
+};
+
+export function makeBakeoffController(maxAttempts: number, failFast = true): BakeoffController {
+  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) throw new Error("maxAttempts must be a positive safe integer");
+  const stopped = Deferred.makeUnsafe<StopReason>();
+  let attempts = 0;
+  let first: StopReason | null = null;
+  let halted = false;
+  const stop = (reason: StopReason): Effect.Effect<boolean> =>
+    Effect.suspend(() => {
+      first ??= reason;
+      if ((!failFast && reason.type !== "max-attempts") || halted) return Effect.succeed(false);
+      halted = true;
+      return Deferred.succeed(stopped, first);
+    });
+  const hooks = (contender: string): CompactAttemptHooks => ({
+    beforeAttempt: (_attempt) =>
+      Effect.suspend(() => {
+        if (halted) return Effect.fail(new ModelError({ message: `bake-off stopped: ${first?.type ?? "unknown"}` }));
+        if (attempts >= maxAttempts) {
+          const reason: StopReason = { attempted: attempts, contender, max: maxAttempts, type: "max-attempts" };
+          return stop(reason).pipe(Effect.andThen(Effect.fail(new ModelError({ message: `bake-off attempt cap ${maxAttempts} reached` }))));
+        }
+        attempts++;
+        return Effect.void;
+      }),
+    onFailure: (attempt, error) =>
+      error._tag === "UsageLimit"
+        ? stop({ contender, engine: attempt.engine, message: error.message, node: `${attempt.job.l}.${attempt.job.i}`, type: "usage-limit" }).pipe(Effect.asVoid)
+        : Effect.void,
+  });
+  return { awaitStop: Deferred.await(stopped), failFast, hooks, isStopped: () => halted, maxAttempts, snapshot: () => ({ attempts, maxAttempts, stop: first }), stop };
+}
 
 // "name=ref,ref" for one chain at every level, or "name=0:ref,ref;3:ref,ref" per level; each ref
 // decoded as the config decodes it
@@ -98,6 +139,7 @@ export type Replayed = {
   readonly reports: readonly string[];
   readonly logged: number; // messages logged before the deadline
   readonly unbuilt: readonly string[]; // nodes ("l.i") still unbuilt when the replay ended
+  readonly stop: StopReason | null;
 };
 
 // the node the current compactor call is for, read where its usage is logged
@@ -111,7 +153,13 @@ const unbuiltOf = (mem: Mem) => [...nodes(mem.root.length)].filter((c) => !built
 export const replay = <R>(o: {
   readonly contender: Contender;
   readonly messages: readonly Message[];
-  readonly summarizeFor: (contender: Contender, log: (r: UsageRecord) => Effect.Effect<void>, report: (m: string) => Effect.Effect<void>) => Effect.Effect<Summarize, never, R>;
+  readonly summarizeFor: (
+    contender: Contender,
+    log: (r: UsageRecord) => Effect.Effect<void>,
+    report: (m: string) => Effect.Effect<void>,
+    hooks?: CompactAttemptHooks,
+  ) => Effect.Effect<Summarize, never, R>;
+  readonly control?: BakeoffController;
   readonly poll?: Duration.Input;
   readonly budget?: number; // a smaller view than VIEW_HIGH (folded to half of it), to make a short replay fold
   readonly deadline?: Duration.Input; // 2 hours
@@ -130,7 +178,20 @@ export const replay = <R>(o: {
           const failed = yield* logUsage(`${dir}/usage.jsonl`, r);
           if (failed) yield* report(failed);
         });
-      const summarize = yield* o.summarizeFor(o.contender, log, report);
+      const { control } = o;
+      const rawSummarize = yield* o.summarizeFor(o.contender, log, report, control?.hooks(o.contender.name));
+      const summarize: Summarize =
+        control === undefined
+          ? rawSummarize
+          : (job) =>
+              rawSummarize(job).pipe(
+                Effect.tap((line) =>
+                  bytes(line) > NODE
+                    ? control.stop({ bytes: bytes(line), contender: o.contender.name, limit: NODE, node: `${job.l}.${job.i}`, type: "over-limit" }).pipe(Effect.asVoid)
+                    : Effect.void,
+                ),
+                Effect.tapError((error) => control.stop({ contender: o.contender.name, message: error.message, node: `${job.l}.${job.i}`, type: "unbuilt" }).pipe(Effect.asVoid)),
+              );
       const chat = yield* openChat(dir, {
         marks: o.budget === undefined ? undefined : { high: o.budget, low: Math.floor(o.budget / 2) },
         report,
@@ -141,18 +202,29 @@ export const replay = <R>(o: {
       // no session here, and the end waits on every node, not just the view's: tried again as a
       // waiting turn does (src/session.ts), every WAIT_RETRY
       const retrying = chat.retry.pipe(Effect.delay(o.retry ?? WAIT_RETRY), Effect.forever);
-      const finished = yield* Effect.gen(function* () {
+      const work = Effect.gen(function* () {
         for (const m of o.messages) {
           yield* chat.log(m.kind, m.text);
           logged++;
           yield* settle(chat.mem);
         }
         while (unbuiltOf(chat.mem).length > 0) yield* Effect.sleep(o.poll ?? "200 millis");
-      }).pipe(Effect.raceFirst(retrying), Effect.timeoutOption(deadline));
+      }).pipe(Effect.raceFirst(retrying));
+      const timed = work.pipe(
+        Effect.timeoutOption(deadline),
+        Effect.map((result) => (Option.isSome(result) ? ({ type: "complete" } as const) : ({ type: "deadline" } as const))),
+      );
+      const outcome =
+        control === undefined
+          ? yield* timed
+          : yield* timed.pipe(Effect.raceFirst(control.awaitStop.pipe(Effect.map((reason) => ({ reason, type: "stopped" }) as const))));
+      if (outcome.type === "deadline" && control !== undefined)
+        yield* control.stop({ contender: o.contender.name, duration: Duration.format(Duration.fromInputUnsafe(deadline)), type: "deadline" });
       const unbuilt = unbuiltOf(chat.mem);
-      if (Option.isNone(finished))
+      if (outcome.type === "deadline")
         yield* report(`deadline (${Duration.format(Duration.fromInputUnsafe(deadline))}): ${logged} of ${o.messages.length} messages logged, ${unbuilt.length} nodes unbuilt`);
-      return { contender: o.contender, dir, logged, mem: chat.mem, records, reports, unbuilt } satisfies Replayed;
+      else if (outcome.type === "stopped") yield* report(`stopped (${outcome.reason.type}): ${logged} of ${o.messages.length} messages logged, ${unbuilt.length} nodes unbuilt`);
+      return { contender: o.contender, dir, logged, mem: chat.mem, records, reports, stop: control?.snapshot().stop ?? null, unbuilt } satisfies Replayed;
     }),
   );
 
@@ -326,6 +398,74 @@ export const measure = <R>(r: Replayed, all: readonly Message[], o: { readonly q
   });
 export type Measured = Effect.Success<ReturnType<typeof measure>>;
 
+export type ContenderResult<A> = {
+  readonly name: string;
+  readonly status: "complete" | "partial";
+  readonly value: A;
+};
+
+export const runContenders = <A, E, R>(o: {
+  readonly contenders: readonly Contender[];
+  readonly control: BakeoffController;
+  readonly run: (contender: Contender) => Effect.Effect<{ readonly complete: boolean; readonly value: A }, E, R>;
+  readonly persist: (results: readonly ContenderResult<A>[]) => Effect.Effect<void>;
+}): Effect.Effect<readonly ContenderResult<A>[], E, R> =>
+  Effect.gen(function* () {
+    const results: ContenderResult<A>[] = [];
+    for (const contender of o.contenders) {
+      if (o.control.isStopped()) break;
+      const result = yield* o.run(contender);
+      const entry: ContenderResult<A> = {
+        name: contender.name,
+        status: result.complete && o.control.snapshot().stop === null ? "complete" : "partial",
+        value: result.value,
+      };
+      results.push(entry);
+      yield* o.persist(results);
+      if (o.control.isStopped()) {
+        yield* o.persist(results);
+        break;
+      }
+    }
+    return results;
+  });
+
+export type ArtifactContender = ContenderResult<{ readonly metrics: Measured; readonly usageRecords: number }>;
+export type BakeoffArtifact = {
+  readonly version: 1;
+  readonly status: "complete" | "stopped";
+  readonly attempts: { readonly attempted: number; readonly max: number };
+  readonly stop: StopReason | null;
+  readonly requestedContenders: readonly string[];
+  readonly completedContenders: readonly string[];
+  readonly contenders: readonly ArtifactContender[];
+};
+
+export function bakeoffArtifact(requested: readonly Contender[], results: readonly ArtifactContender[], control: BakeoffController): BakeoffArtifact {
+  const snapshot = control.snapshot();
+  return {
+    attempts: { attempted: snapshot.attempts, max: snapshot.maxAttempts },
+    completedContenders: results.filter((r) => r.status === "complete").map((r) => r.name),
+    contenders: results,
+    requestedContenders: requested.map((c) => c.name),
+    status: snapshot.stop === null ? "complete" : "stopped",
+    stop: snapshot.stop,
+    version: 1,
+  };
+}
+
+export function writeArtifact(path: string, artifact: BakeoffArtifact): void {
+  const temporary = `${path}.tmp-${process.pid}`;
+  writeFileSync(temporary, `${JSON.stringify(artifact, null, 2)}\n`);
+  renameSync(temporary, path);
+}
+
+export const modelBuiltNodes = (messages: number): number => {
+  let total = 0;
+  for (let level = messages; level > 0; level = Math.floor(level / 2)) total += level;
+  return total;
+};
+
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
 export const table = (rows: readonly Measured[]) =>
   [
@@ -343,7 +483,7 @@ export const table = (rows: readonly Measured[]) =>
 // a whole number of at least `min`, or null
 const count = (raw: string, min: number) => (/^\d+$/.test(raw) && Number(raw) >= min ? Number(raw) : null);
 const USAGE =
-  "usage: bun dev/bakeoff.ts --from <data dir | LOG.txt> --chain name=chain [--chain …] [--effort medium] [--n 500] [--skip 0] [--kinds user] [--questions 50] [--deadline 120 (minutes)] [--out file.json]";
+  "usage: bun dev/bakeoff.ts --from <data dir | LOG.txt> --chain name=chain [--chain …] --out file.json --max-attempts N [--no-fail-fast] [--effort medium] [--n 500] [--skip 0] [--kinds user] [--questions 50] [--deadline 120 (minutes)]";
 
 const main = Effect.gen(function* () {
   const { values } = parseArgs({
@@ -354,13 +494,26 @@ const main = Effect.gen(function* () {
       from: { type: "string" },
       kinds: { default: "user", type: "string" },
       n: { default: "500", type: "string" },
+      "no-fail-fast": { default: false, type: "boolean" },
+      "max-attempts": { type: "string" },
       out: { type: "string" },
       questions: { default: "50", type: "string" },
       skip: { default: "0", type: "string" },
     },
   });
   const n = count(values.n, 1), skip = count(values.skip, 0), questionCount = count(values.questions, 0), deadline = count(values.deadline, 1);
-  if (values.from === undefined || !existsSync(values.from) || !values.chain?.length || n === null || skip === null || questionCount === null || deadline === null)
+  const maxAttempts = values["max-attempts"] === undefined ? null : count(values["max-attempts"], 1);
+  if (
+    values.from === undefined ||
+    !existsSync(values.from) ||
+    !values.chain?.length ||
+    values.out === undefined ||
+    maxAttempts === null ||
+    n === null ||
+    skip === null ||
+    questionCount === null ||
+    deadline === null
+  )
     return yield* Console.error(USAGE);
   const { chain } = values;
   const contenders = Result.try({ catch: (e) => (e instanceof Error ? e.message : String(e)), try: () => chain.map(parseContender) });
@@ -377,6 +530,13 @@ const main = Effect.gen(function* () {
   if (refused.length > 0) return yield* Console.error(`${refused.join("\n")}\n${USAGE}`);
   const messages = yield* readSource(values.from, n, skip);
   const kinds = values.kinds.split(",").map((k) => Schema.decodeUnknownSync(Schema.Literals(["user", "talk", "tool", "echo", "note"]))(k));
+  const nodesPerContender = modelBuiltNodes(messages.length);
+  const lowerBound = nodesPerContender * canonical.length;
+  for (const contender of canonical) yield* Console.error(`${contender.name}: ${nodesPerContender} model-built nodes`);
+  yield* Console.error(`one-call lower bound: ${lowerBound}; max attempts: ${maxAttempts}`);
+  if (maxAttempts < lowerBound) yield* Console.error(`warning: max attempts ${maxAttempts} is below the one-call lower bound ${lowerBound}`);
+  const control = makeBakeoffController(maxAttempts, !values["no-fail-fast"]);
+  const { out } = values;
   const outside = Layer.mergeAll(SecretsLive, FetchHttpClient.layer);
   const scope = yield* Effect.scope;
   const plan = yield* Effect.cached(Layer.buildWithScope(openAiPlanLayer(settings.openai, { report: (m) => Console.error(m) }).pipe(Layer.provide(outside)), scope).pipe(Effect.map((c) => Context.get(c, OpenAiPlan))));
@@ -387,34 +547,45 @@ const main = Effect.gen(function* () {
   const usagePath = `${HOME}/usage.jsonl`;
   const budget = makeBudget({ monthly: settings.apiKey?.monthlyBudget ?? 0, report: (m) => Console.error(m), usagePath });
   const spend = (r: UsageRecord) => (r.auth === "api-key" ? logUsage(usagePath, r).pipe(Effect.flatMap((e) => (e ? Console.error(e) : Effect.void))) : Effect.void);
-  const rows: Measured[] = [];
-  for (const contender of canonical) {
-    yield* Console.error(`${contender.name}: replaying ${messages.length} messages`);
-    const replayed = yield* replay({
-      contender,
-      deadline: Duration.minutes(deadline),
-      messages,
-      summarizeFor: (c, log, report) =>
-        makeSummarize({
-          apiKeys,
-          budget,
-          log: (r) => budget.note(r).pipe(Effect.andThen(log(r)), Effect.andThen(spend(r))),
-          plan,
-          report,
-          // what a turn sends before its view (docs/optchat.md §4): the system prompt and the
-          // default device's tools; claude-code's turn tools here, with no MCP server to reach
-          gate: makeGate(),
-          instructions: systemPrompt(HOME),
-          placement: Effect.succeed({ cwd: undefined, mcpConfig: JSON.stringify({ mcpServers: {} }), mcpSeen: () => Effect.succeed(false), runner }),
-          tools: toolDefs({ device: settings.defaultDevice, folders: settings.devices[settings.defaultDevice]?.folders ?? [] }),
-          settings: { ...settings, compactor: { ...settings.compactor, byLevel: c.byLevel } },
-        }).pipe(Effect.map((m) => m.summarize)),
-    });
-    for (const r of replayed.reports) yield* Console.error(`${contender.name}: ${r}`);
-    rows.push(yield* measure(replayed, messages, { answerer: lexicalAnswerer, kinds, questions: questionCount }));
-  }
-  yield* Console.log(table(rows));
-  if (values.out !== undefined) writeFileSync(values.out, `${JSON.stringify(rows, null, 2)}\n`);
+  const results = yield* runContenders({
+    contenders: canonical,
+    control,
+    persist: (current: readonly ArtifactContender[]) =>
+      Effect.sync(() => {
+        writeArtifact(out, bakeoffArtifact(canonical, current, control));
+      }),
+    run: (contender) =>
+      Effect.gen(function* () {
+        yield* Console.error(`${contender.name}: replaying ${messages.length} messages`);
+        const replayed = yield* replay({
+          contender,
+          control,
+          deadline: Duration.minutes(deadline),
+          messages,
+          summarizeFor: (c, log, report, attemptHooks) =>
+            makeSummarize({
+              apiKeys,
+              attemptHooks,
+              budget,
+              log: (r) => budget.note(r).pipe(Effect.andThen(log(r)), Effect.andThen(spend(r))),
+              plan,
+              report,
+              gate: makeGate(),
+              instructions: systemPrompt(HOME),
+              placement: Effect.succeed({ cwd: undefined, mcpConfig: JSON.stringify({ mcpServers: {} }), mcpSeen: () => Effect.succeed(false), runner }),
+              tools: toolDefs({ device: settings.defaultDevice, folders: settings.devices[settings.defaultDevice]?.folders ?? [] }),
+              settings: { ...settings, compactor: { ...settings.compactor, byLevel: c.byLevel } },
+            }).pipe(Effect.map((m) => m.summarize)),
+        });
+        for (const message of replayed.reports) yield* Console.error(`${contender.name}: ${message}`);
+        const metrics = yield* measure(replayed, messages, { answerer: lexicalAnswerer, kinds, questions: questionCount });
+        return { complete: replayed.stop === null && replayed.unbuilt.length === 0, value: { metrics, usageRecords: replayed.records.length } };
+      }),
+  });
+  writeArtifact(out, bakeoffArtifact(canonical, results, control));
+  yield* Console.log(table(results.map((result) => result.value.metrics)));
+  const stopped = control.snapshot().stop;
+  if (stopped !== null) return yield* new BakeoffStopped({ reason: stopped });
 });
 
 if (import.meta.main) BunRuntime.runMain(Effect.scoped(main));
