@@ -122,8 +122,7 @@ markdown) and the components' own classes. It replaced the three trial looks of 
 
 **Creative North Star: "The quiet sheet"**
 
-A conversation set on a near-white sheet inside a grey frame, the way Amp sets its transcript: what
-you said in a soft bubble on the right, what came back as plain prose on the left (Claude), and the
+A conversation set on a near-white sheet under a grey band, Amp's two grounds: what you said in a soft bubble on the right, what came back as plain prose on the left (Claude), and the
 work in between as a ledger of one-line rows (T3 Code's work log). The composer is the one object
 with weight. Everything else is hairlines, grey type and space.
 
@@ -132,7 +131,7 @@ at night. It should feel calm enough to live in and dense enough to work in: 15 
 line height beside 13 px chrome. Colour is spent on state, never on decoration.
 
 **Key Characteristics:**
-- Two grounds: a grey frame (`shell`) and a lighter sheet (`sheet`) on wide screens; one ground on a phone.
+- Two grounds: a grey band for the header (`shell`) and a lighter sheet (`sheet`) below it on wide screens; one ground on a phone.
 - Your words in a filled bubble; the model's words with no container at all.
 - Tool calls as single quiet lines that open into one bordered panel.
 - Ink is the primary colour; ivy green is the only accent and marks state.
@@ -161,8 +160,7 @@ dead; ivy is the one accent. Light and dark are the same structure, not two desi
   failed upload, the Stop button's outline.
 
 ### Neutral
-- **Shell** (`oklch(0.963 0.004 150)`; dark `0.155`): the frame around the sheet on wide screens, the
-  header there.
+- **Shell** (`oklch(0.963 0.004 150)`; dark `0.155`): the header band on wide screens.
 - **Sheet** (`oklch(0.992 0.002 150)`; dark `0.185`): where the conversation and every screen sit.
 - **Raised** (white; dark `0.225`): the composer, popovers, the active tab, the tray above the composer.
 - **Bubble** (`oklch(0.945 0.005 150)`; dark `0.265`): your messages.
@@ -178,7 +176,7 @@ dead; ivy is the one accent. Light and dark are the same structure, not two desi
 **The State-Only Rule.** Every colour other than the neutrals and ivy means something: green
 connected, amber held, red failed. If it means nothing, it is grey.
 
-**The Same-Structure Rule.** Dark mode is the light structure with its values inverted: the frame is
+**The Same-Structure Rule.** Dark mode is the light structure with its values inverted: the band is
 darker than the sheet, code is darker still, text is 93%, never pure white on pure black.
 
 ## Typography
@@ -209,9 +207,10 @@ for labels.
 
 - **Column.** The transcript and the composer share one column, 46rem (736 px) wide, with a
   16 px gutter (24 px from `sm`), plus `env(safe-area-inset-*)` on every edge.
-- **Frame.** From 768 px the header sits on the shell and each screen is a sheet inset 8 px from
-  the window's sides and bottom, 18 px radius, a hairline, and a 1 px shadow.
-- **Rhythm.** Rows 12 px apart; a new turn (your message) 24 px; consecutive tool rows 2 px, so a run
+- **Grounds.** From 768 px the header sits on the shell band, a hairline under it, and each screen
+  fills the window below on the sheet, edge to edge. The sheet is not inset or rounded: a rounded
+  sheet would make every bordered thing on it a card in a card.
+- **Rhythm.** Rows 12 px apart (each row keeps 4 × 8 px of room inside for focus rings and hover washes, since a row clips its paint); a new turn (your message) 24 px; consecutive tool rows 2 px, so a run
   of calls reads as one list; a reply 8 px after a tool row. 24 px above the first row, 40 px below
   the last. Screen pages: 24 px top, 20 px between sections.
 - **Header.** 48 px plus the safe area. Tabs as a segmented control on the left; theme (and in the
@@ -229,7 +228,6 @@ raised object (the composer) and for things that float over content.
   1 px top highlight and `0 14px 32px -18px` at 70%): the composer, always paired with a 1 px ring.
 - **Float** (`0 2px 6px -2px oklch(0 0 0 / 8%), 0 12px 32px -12px oklch(0 0 0 / 22%)`): popovers,
   the scroll-to-end button, the context meter's card.
-- **Sheet** (`0 1px 2px oklch(0 0 0 / 4%)`): the screen sheet on wide screens.
 
 ### Named Rules
 **The One Raised Object Rule.** Only the composer is lifted at rest. A card inside a sheet gets a
@@ -238,7 +236,7 @@ hairline, never a shadow.
 ## Shapes
 
 Radii from one base (10 px): 6 (inline code), 8 (buttons, tabs, rows' hover wash), 10 (tool panel,
-tool code), 14 (code blocks, tables, lists of devices, stat strip), 18 (bubbles, the sheet), 22 (the
+tool code), 14 (code blocks, tables, lists of devices, stat strip), 18 (bubbles), 22 (the
 composer), full (send, stop, pickers, chips, the scroll button). The tray attached above the
 composer has 14 px top corners and no bottom edge, so it reads as part of it.
 

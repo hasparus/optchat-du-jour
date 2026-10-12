@@ -105,7 +105,7 @@ export function Memory({ onShowInChat }: { onShowInChat: (i: number) => void }) 
       <div className="flex items-start justify-between gap-2">
         <div>
           <h1 className="text-base font-semibold tracking-tight">Memory</h1>
-          <p className="mt-1 text-ui text-muted-foreground tabular-nums">
+          <p className="mt-1 text-ui text-muted-foreground">
             {data === null ? "Loading…" : `What the model reads each turn: ${data.lines.length} lines, ${kb(data.size)}`}
           </p>
         </div>

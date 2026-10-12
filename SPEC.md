@@ -395,7 +395,7 @@ The chat is built from three layers, all shadcn-registry code copied into the re
 | Layout and scrolling | shadcn's official chat components (June 2026) | `MessageScroller` (anchors on user rows, prepends older history, `scrollToMessage`), `Message`, `Bubble`, `Marker` for tool lines, status and day separators |
 | Rich parts | AI Elements, with its few AI SDK type imports swapped for our own types | `MessageResponse` (streaming markdown via Streamdown), `Tool`, `Terminal`, `Code Block`, `Prompt Input`, `Queue` (messages waiting for the model, each with a take-back while held), `Context` (view size against 128 KB) |
 
-Skipped on purpose: AI Elements' `Conversation` (`MessageScroller` handles prepending and jumping) and `Reasoning` (we never log thinking). The AI SDK itself is not a dependency.
+Also `Shimmer` (the live status line and a running tool's name), ported to CSS so `motion` stays out. Skipped on purpose: AI Elements' `Conversation` (`MessageScroller` handles prepending and jumping) and `Reasoning` (we never log thinking). The AI SDK itself is not a dependency. The look is one visual language, written down in [web/DESIGN.md](./web/DESIGN.md): tokens for light and dark, type, spacing, elevation, motion and the rules per component.
 
 Screens:
 

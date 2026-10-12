@@ -73,7 +73,7 @@ export const ContextTrigger = ({ children, ...props }: ContextTriggerProps) => {
     <PopoverTrigger asChild>
       {children ?? (
         <Button className="rounded-full text-muted-foreground hover:text-foreground" type="button" variant="ghost" {...props}>
-          <span className="font-medium tabular-nums">{percent.format(usedBytes / maxBytes)}</span>
+          <span className="font-medium">{percent.format(usedBytes / maxBytes)}</span>
           <ContextIcon />
         </Button>
       )}

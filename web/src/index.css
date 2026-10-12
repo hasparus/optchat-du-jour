@@ -189,12 +189,6 @@
     @apply bg-background text-foreground;
     caret-color: var(--signal);
   }
-  /* the frame: on a wide screen each screen is a sheet set into a darker frame */
-  @media (min-width: 48rem) {
-    body {
-      @apply bg-shell;
-    }
-  }
   code,
   kbd,
   pre,
@@ -233,8 +227,9 @@
   line-height: 1.65;
   letter-spacing: -0.003em;
 }
+/* a 58ch measure: about 75 characters of this narrow grotesk */
 [data-prose] :is(p, li, blockquote, h1, h2, h3, h4, h5, h6) {
-  max-width: 68ch;
+  max-width: 58ch;
 }
 [data-prose] :is(h1, h2, h3, h4, h5, h6) {
   margin: 1.4em 0 0.4em;
@@ -244,10 +239,10 @@
   text-wrap: balance;
 }
 [data-prose] h1 {
-  font-size: 1.3em;
+  font-size: 1.5em;
 }
 [data-prose] h2 {
-  font-size: 1.15em;
+  font-size: 1.27em;
 }
 [data-prose] :is(h3, h4, h5, h6) {
   font-size: 1em;
@@ -387,20 +382,33 @@
 /* ---------- the transcript's rhythm (DESIGN.md, Spacing) ---------- */
 
 /* rows sit 12 px apart; a new turn (your message) opens 24 px of air above it; a run of tool calls
-   reads as one list, 2 px apart; a status marker keeps 12 px either side */
+   reads as one list, 2 px apart; a status marker keeps 12 px either side. A row is drawn with
+   content-visibility (it clips its paint to its box), so each has 4 px / 8 px of room inside for a
+   focus ring or a hover wash to show, and its margins give that room back. */
+[data-region="chat-content"] > [data-slot="message-scroller-item"] {
+  margin-inline: -0.5rem;
+  padding: 0.25rem 0.5rem;
+}
 [data-region="chat-content"] > * + * {
   margin-top: 0.75rem;
 }
+[data-region="chat-content"] > * + [data-slot="message-scroller-item"],
+[data-region="chat-content"] > [data-slot="message-scroller-item"] + * {
+  margin-top: 0.5rem;
+}
+[data-region="chat-content"] > [data-slot="message-scroller-item"] + [data-slot="message-scroller-item"] {
+  margin-top: 0.25rem;
+}
 [data-region="chat-content"] > * + [data-kind="user"],
 [data-region="chat-content"] > * + [data-kind="note"] {
-  margin-top: 1.5rem;
+  margin-top: 1rem;
 }
 [data-region="chat-content"] > [data-kind="tool"] + [data-kind="tool"] {
-  margin-top: 0.125rem;
+  margin-top: -0.375rem;
 }
 [data-region="chat-content"] > [data-kind="tool"] + [data-kind="talk"],
 [data-region="chat-content"] > [data-kind="talk"] + [data-kind="tool"] {
-  margin-top: 0.5rem;
+  margin-top: 0;
 }
 
 /* ---------- live state ---------- */
