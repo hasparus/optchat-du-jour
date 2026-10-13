@@ -59,6 +59,8 @@ export type BakeoffController = {
   readonly maxAttempts: number;
   readonly failFast: boolean;
   readonly awaitStop: Effect.Effect<StopReason>;
+  readonly diagnostics: () => { readonly count: number; readonly first: StopReason | null };
+  readonly finalizePartial: (contender: string | null) => Effect.Effect<boolean>;
   readonly hooks: (contender: string) => CompactAttemptHooks;
   readonly isStopped: () => boolean;
   readonly snapshot: () => { readonly attempts: number; readonly maxAttempts: number; readonly stop: StopReason | null };
@@ -70,14 +72,26 @@ export function makeBakeoffController(maxAttempts: number, failFast = true): Bak
   const stopped = Deferred.makeUnsafe<StopReason>();
   let attempts = 0;
   let first: StopReason | null = null;
+  let firstDiagnostic: StopReason | null = null;
+  let diagnosticCount = 0;
   let halted = false;
+  const halt = (reason: StopReason): Effect.Effect<boolean> => {
+    if (halted) return Effect.succeed(false);
+    first = reason;
+    halted = true;
+    return Deferred.succeed(stopped, reason);
+  };
   const stop = (reason: StopReason): Effect.Effect<boolean> =>
     Effect.suspend(() => {
-      if ((!failFast && reason.type !== "max-attempts") || halted) return Effect.succeed(false);
-      first ??= reason;
-      halted = true;
-      return Deferred.succeed(stopped, first);
+      if (!failFast && reason.type !== "max-attempts" && reason.type !== "unexpected") {
+        firstDiagnostic ??= reason;
+        diagnosticCount++;
+        return Effect.succeed(false);
+      }
+      return halt(reason);
     });
+  const finalizePartial = (contender: string | null): Effect.Effect<boolean> =>
+    Effect.suspend(() => halt(firstDiagnostic ?? { contender, type: "unexpected" }));
   const hooks = (contender: string): CompactAttemptHooks => ({
     beforeRequest: (_attempt) =>
       Effect.suspend(() => {
@@ -94,7 +108,17 @@ export function makeBakeoffController(maxAttempts: number, failFast = true): Bak
         ? stop({ contender, engine: attempt.engine, node: `${attempt.job.l}.${attempt.job.i}`, type: "usage-limit" }).pipe(Effect.asVoid)
         : Effect.void,
   });
-  return { awaitStop: Deferred.await(stopped), failFast, hooks, isStopped: () => halted, maxAttempts, snapshot: () => ({ attempts, maxAttempts, stop: first }), stop };
+  return {
+    awaitStop: Deferred.await(stopped),
+    diagnostics: () => ({ count: diagnosticCount, first: firstDiagnostic }),
+    failFast,
+    finalizePartial,
+    hooks,
+    isStopped: () => halted,
+    maxAttempts,
+    snapshot: () => ({ attempts, maxAttempts, stop: first }),
+    stop,
+  };
 }
 
 // "name=ref,ref" for one chain at every level, or "name=0:ref,ref;3:ref,ref" per level; each ref
@@ -107,6 +131,8 @@ export function parseContender(spec: string): Contender {
     .split(";")
     .map((part) => {
       const m = /^(\d+):(?=[a-z])/.exec(part);
+      const from = m ? Number(m[1]) : 0;
+      if (!Number.isSafeInteger(from) || from < 0) throw new Error(`--chain ${spec}: levels must be nonnegative safe integers`);
       const refs = (m ? part.slice(m[0].length) : part).split(",").map((r) => {
         const parsed = parseRef(r.trim());
         if (Result.isFailure(parsed)) throw new Error(`--chain ${spec}: ${parsed.failure}`);
@@ -114,10 +140,12 @@ export function parseContender(spec: string): Contender {
       });
       const [first, ...rest] = refs;
       if (first === undefined) throw new Error(`--chain ${spec}: an empty chain`);
-      return { chain: [first, ...rest] as const, from: m ? Number(m[1]) : 0 };
+      return { chain: [first, ...rest] as const, from };
     });
   const [head, ...tail] = byLevel;
   if (head?.from !== 0) throw new Error(`--chain ${spec}: the first chain must start at level 0`);
+  for (let index = 1; index < byLevel.length; index++)
+    if ((byLevel[index - 1]?.from ?? 0) >= (byLevel[index]?.from ?? 0)) throw new Error(`--chain ${spec}: levels must strictly increase`);
   return { byLevel: [head, ...tail], name: spec.slice(0, eq) };
 }
 
@@ -144,6 +172,7 @@ export type Replayed = {
   readonly reports: readonly string[];
   readonly logged: number; // messages logged before the deadline
   readonly unbuilt: readonly string[]; // nodes ("l.i") still unbuilt when the replay ended
+  readonly diagnostic: StopReason | null;
   readonly stop: StopReason | null;
 };
 
@@ -184,6 +213,7 @@ export const replay = <R>(o: {
           if (failed) yield* report(failed);
         });
       const { control } = o;
+      const diagnosticsBefore = control?.diagnostics().count ?? 0;
       const rawSummarize = yield* o.summarizeFor(o.contender, log, report, control?.hooks(o.contender.name));
       const summarize: Summarize =
         control === undefined
@@ -229,7 +259,18 @@ export const replay = <R>(o: {
       if (outcome.type === "deadline")
         yield* report(`deadline (${Duration.format(Duration.fromInputUnsafe(deadline))}): ${logged} of ${o.messages.length} messages logged, ${unbuilt.length} nodes unbuilt`);
       else if (outcome.type === "stopped") yield* report(`stopped (${outcome.reason.type}): ${logged} of ${o.messages.length} messages logged, ${unbuilt.length} nodes unbuilt`);
-      return { contender: o.contender, dir, logged, mem: chat.mem, records, reports, stop: control?.snapshot().stop ?? null, unbuilt } satisfies Replayed;
+      const diagnostics = control?.diagnostics();
+      return {
+        contender: o.contender,
+        diagnostic: diagnostics !== undefined && diagnostics.count > diagnosticsBefore ? diagnostics.first : null,
+        dir,
+        logged,
+        mem: chat.mem,
+        records,
+        reports,
+        stop: control?.snapshot().stop ?? null,
+        unbuilt,
+      } satisfies Replayed;
     }),
   );
 
@@ -435,6 +476,11 @@ export const runContenders = <A, E, R>(o: {
       yield* persist;
       if (o.control.isStopped()) break;
     }
+    const partial = results.find((result) => result.status === "partial");
+    if (partial !== undefined && !o.control.isStopped()) {
+      yield* o.control.finalizePartial(partial.name);
+      yield* persist;
+    }
     return results;
   }).pipe(
     Effect.onExit((exit) =>
@@ -523,9 +569,9 @@ export const USAGE =
 export function outputPathFromArgv(argv: readonly string[]): string | null {
   let discovered: string | null = null;
   for (let index = 0; index < argv.length; index++) {
-    if (argv[index] !== "--out") continue;
-    const candidate = argv[index + 1];
-    if (candidate !== undefined && candidate.length > 0 && !candidate.startsWith("--")) discovered = candidate;
+    const option = argv[index];
+    const candidate = option === "--out" ? argv[index + 1] : option?.startsWith("--out=") ? option.slice("--out=".length) : undefined;
+    if (candidate !== undefined && candidate.length > 0 && (option !== "--out" || !candidate.startsWith("-"))) discovered = candidate;
   }
   return discovered;
 }
@@ -680,7 +726,7 @@ export const runBakeoffCli = (argv: readonly string[]) =>
               });
               if (replayed.stop === null && replayed.reports.length > 0) yield* Console.error(diagnosticCountText(replayed.reports.length));
               else if (replayed.stop !== null) yield* Console.error(controlledStopText(replayed.stop));
-              const complete = replayed.stop === null && replayed.unbuilt.length === 0;
+              const complete = replayed.stop === null && replayed.diagnostic === null && replayed.unbuilt.length === 0;
               if (!complete) return { complete, value: { metrics: null, usageRecords: null } };
               const metrics = yield* measure(replayed, messages, { answerer: lexicalAnswerer, kinds, questions: questionCount });
               return { complete, value: { metrics, usageRecords: replayed.records.length } };

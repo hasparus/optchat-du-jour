@@ -108,6 +108,9 @@ test("a chain spec names its levels, and the first starts at 0", () => {
     [3, [["openai-plan", "gpt-6.1-sol"]]],
   ]);
   expect(() => parseContender("x=2:claude-code:sonnet")).toThrow();
+  expect(() => parseContender("x=0:claude-code:sonnet;0:openai-plan:gpt-6")).toThrow("levels must strictly increase");
+  expect(() => parseContender("x=0:claude-code:sonnet;3:openai-plan:gpt-6;2:claude-code:opus")).toThrow("levels must strictly increase");
+  expect(() => parseContender("x=0:claude-code:sonnet;9007199254740992:openai-plan:gpt-6")).toThrow("levels must be nonnegative safe integers");
   expect(() => parseContender("x=gpt-6")).toThrow();
   expect(() => parseContender("x=api-key:claude-sonnet")).toThrow("must be api-key:anthropic/<model> or api-key:openai/<model>"); // api-key names its provider
   expect(parseContender("k=api-key:anthropic/claude-sonnet").byLevel[0].chain).toEqual([{ engine: "api-key", model: "claude-sonnet", provider: "anthropic", ref: "api-key:anthropic/claude-sonnet" }]);
@@ -303,6 +306,7 @@ test("explicit non-fail-fast mode retains legacy over-limit replay behavior", as
   );
   expect(control.snapshot().stop).toBeNull();
   expect(control.isStopped()).toBe(false);
+  expect(r.diagnostic).toEqual({ bytes: 513, contender: "diagnostic", limit: 512, node: "0.0", type: "over-limit" });
   expect(r.unbuilt).toEqual([]);
   expect(overLimit(r.mem)).toBe(1);
 });
@@ -407,24 +411,69 @@ test("non-fail-fast diagnostics do not replace a later authoritative cap", async
   });
 });
 
-test("a parse error replaces a stale discovered output and fails the CLI effect", async () => {
-  const dir = mkdtempSync(`${tmpdir()}/bake-parse-`);
+test("non-fail-fast runs later contenders, then promotes the first diagnostic and fails", async () => {
+  const contenders = [parseContender("deadline=openai-plan:fake"), parseContender("later=openai-plan:fake")];
+  const control = makeBakeoffController(10, false);
+  const dir = mkdtempSync(`${tmpdir()}/bake-diagnostic-`);
   const path = `${dir}/result.json`;
-  writeFileSync(path, '{"stale":"PRIVATE-STALE-SENTINEL"}\n');
+  const started: string[] = [];
+  const exit = await Effect.runPromiseExit(
+    Effect.gen(function* () {
+      const results = yield* runContenders({
+        contenders,
+        control,
+        initial: () => ({ metrics: null, usageRecords: null }),
+        persist: (current: readonly ArtifactContender[]) =>
+          Effect.sync(() => {
+            writeArtifact(path, bakeoffArtifact(contenders, current, control));
+          }),
+        run: (contender) =>
+          Effect.gen(function* () {
+            started.push(contender.name);
+            if (contender.name === "deadline") {
+              yield* control.stop({ contender: contender.name, duration: "1 ms", type: "deadline" });
+              return { complete: false, value: { metrics: null, usageRecords: null } };
+            }
+            return { complete: true, value: { metrics: null, usageRecords: 0 } };
+          }),
+      });
+      const stopped = control.snapshot().stop;
+      if (stopped !== null) return yield* new BakeoffStopped({ reason: stopped });
+      return results;
+    }),
+  );
+  expect(started).toEqual(["deadline", "later"]);
+  expect(exit._tag).toBe("Failure");
+  const artifact: unknown = JSON.parse(readFileSync(path, "utf8"));
+  expect(artifact).toMatchObject({
+    completedContenders: ["later"],
+    contenders: [{ name: "deadline", status: "partial" }, { name: "later", status: "complete" }],
+    status: "stopped",
+    stop: { contender: "deadline", duration: "1 ms", type: "deadline" },
+  });
+});
+
+test("a parse error replaces a stale discovered output for both accepted out forms and fails", async () => {
   const output: string[] = [];
   const diagnostic = spyOn(console, "error").mockImplementation((...parts) => void output.push(parts.join(" ")));
   try {
-    const exit = await Effect.runPromiseExit(runBakeoffCli(["--out", path, "--bogus"]));
-    expect(exit._tag).toBe("Failure");
-    const artifact: unknown = JSON.parse(readFileSync(path, "utf8"));
-    expect(artifact).toMatchObject({
-      attempts: { attempted: 0, max: 0 },
-      requestedContenders: [],
-      status: "stopped",
-      stop: { contender: null, type: "unexpected" },
-      version: 1,
-    });
-    expect(JSON.stringify(artifact)).not.toContain("PRIVATE-STALE-SENTINEL");
+    for (const form of ["separate", "equals"] as const) {
+      const dir = mkdtempSync(`${tmpdir()}/bake-parse-`);
+      const path = `${dir}/result.json`;
+      writeFileSync(path, '{"stale":"PRIVATE-STALE-SENTINEL"}\n');
+      const argv = form === "separate" ? ["--out", path, "--bogus"] : [`--out=${path}`, "--bogus"];
+      const exit = await Effect.runPromiseExit(runBakeoffCli(argv));
+      expect(exit._tag).toBe("Failure");
+      const artifact: unknown = JSON.parse(readFileSync(path, "utf8"));
+      expect(artifact).toMatchObject({
+        attempts: { attempted: 0, max: 0 },
+        requestedContenders: [],
+        status: "stopped",
+        stop: { contender: null, type: "unexpected" },
+        version: 1,
+      });
+      expect(JSON.stringify(artifact)).not.toContain("PRIVATE-STALE-SENTINEL");
+    }
     expect(output.join("\n")).not.toContain("bogus");
   } finally {
     diagnostic.mockRestore();
@@ -443,6 +492,8 @@ test("setup rejection paths fail instead of returning successful console effects
     ["--out", out, "--max-attempts", "2"],
     ["--out", out, "--max-attempts", "2", "--from", `${dir}/missing`, "--chain", "one=openai-plan:fake"],
     [...base.slice(0, -1), "invalid"],
+    [...base.slice(0, -1), "one=0:openai-plan:fake;0:claude-code:sonnet"],
+    [...base.slice(0, -1), "one=0:openai-plan:fake;9007199254740992:claude-code:sonnet"],
     [...base, "--effort", "PRIVATE-INVALID-EFFORT"],
     [...base.slice(0, -1), "one=openai-plan:fake,openai-plan:fake"],
     [...base, "--chain", "one=claude-code:sonnet"],
