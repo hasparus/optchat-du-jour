@@ -1,7 +1,7 @@
 // dev/bakeoff.ts with fake compactors only: one that keeps the user's words, one that paraphrases
 // them away. The measures must tell the two apart, and the retry count must come out of the
 // usage records alone.
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { Deferred, Effect, Fiber } from "effect";
 import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,7 +16,7 @@ import {
   bakeoffArtifact,
   type Contender,
   controlledStopText,
-  type Measured,
+  diagnosticCountText,
   type Message,
   lexicalAnswerer,
   makeBakeoffController,
@@ -25,6 +25,7 @@ import {
   overLimit,
   parseContender,
   replay,
+  runBakeoffCli,
   runContenders,
   writeArtifact,
 } from "../dev/bakeoff.ts";
@@ -146,26 +147,6 @@ test("tries are counted per node across failed calls and failovers; a replay tha
 
 const oneJob: Job = { ctx: [], i: 0, l: 0, msg: { date: "", i: 0, kind: "user", size: 600, text: "x".repeat(600) } };
 const fakeAttempt = { attempt: 1, auth: "chatgpt-pro", engine: "openai-plan", failoverFrom: null, job: oneJob } as const;
-
-const emptyMeasured = (contender: string): Measured => ({
-  contender,
-  cost: {
-    callsPerMessage: 0,
-    cold: 0,
-    dollarsPerMessage: 0,
-    failovers: 0,
-    tokensPerMessage: { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 },
-  },
-  dir: "fake",
-  findability: { asked: 0, found: 0, share: 0 },
-  messages: 0,
-  nodes: 0,
-  overLimit: 0,
-  reports: 0,
-  tries: { max: 0, mean: 0, nodes: 0, p95: 0 },
-  unbuilt: 0,
-  wordsKept: [],
-});
 
 test("the process-wide controller permits exactly N concurrent attempts", async () => {
   const control = makeBakeoffController(7);
@@ -292,7 +273,7 @@ test("a controlled stop writes an atomic, parseable versioned partial artifact",
   const hooks = control.hooks(contender.name);
   await Effect.runPromise(hooks.beforeRequest(fakeAttempt));
   await Effect.runPromise(Effect.result(hooks.beforeRequest(fakeAttempt)));
-  const results: ArtifactContender[] = [{ name: contender.name, status: "partial", value: { metrics: emptyMeasured(contender.name), usageRecords: 0 } }];
+  const results: ArtifactContender[] = [{ name: contender.name, status: "partial", value: { metrics: null, usageRecords: null } }];
   const artifact = bakeoffArtifact([contender], results, control);
   const dir = mkdtempSync(`${tmpdir()}/bake-artifact-`);
   const path = `${dir}/result.json`;
@@ -336,7 +317,7 @@ test("a defect replaces a stale artifact with one stopped partial contender", as
     runContenders({
       contenders: [contender],
       control,
-      initial: (current) => ({ metrics: null, usageRecords: current.name.length }),
+      initial: () => ({ metrics: null, usageRecords: null }),
       persist: (results: readonly ArtifactContender[]) =>
         Effect.sync(() => {
           writeArtifact(path, bakeoffArtifact([contender], results, control));
@@ -365,19 +346,24 @@ test("interrupting a contender finalizes its current partial artifact", async ()
     runContenders({
       contenders: [contender],
       control,
-      initial: () => ({ metrics: null, usageRecords: 0 }),
+      initial: () => ({ metrics: null, usageRecords: null }),
       persist: (results: readonly ArtifactContender[]) =>
         Effect.sync(() => {
           writeArtifact(path, bakeoffArtifact([contender], results, control));
         }),
-      run: () => Deferred.succeed(started, null).pipe(Effect.andThen(Effect.never)),
+      run: () =>
+        control.hooks(contender.name).beforeRequest(fakeAttempt).pipe(
+          Effect.andThen(Deferred.succeed(started, null)),
+          Effect.andThen(Effect.never),
+        ),
     }),
   );
   await Effect.runPromise(Deferred.await(started));
   await Effect.runPromise(Fiber.interrupt(fiber));
   const artifact: unknown = JSON.parse(readFileSync(path, "utf8"));
   expect(artifact).toMatchObject({
-    contenders: [{ name: "interrupt", status: "partial", value: { metrics: null } }],
+    attempts: { attempted: 1, max: 10 },
+    contenders: [{ name: "interrupt", status: "partial", value: { metrics: null, usageRecords: null } }],
     status: "stopped",
     stop: { contender: "interrupt", type: "unexpected" },
     version: 1,
@@ -400,7 +386,7 @@ test("unbuilt stop artifacts and controlled output never expose compactor errors
   );
   const reason = replayed.stop;
   expect(reason).toEqual({ contender: "broken", node: "0.0", type: "unbuilt" });
-  const artifact = bakeoffArtifact([contender], [{ name: contender.name, status: "partial", value: { metrics: null, usageRecords: 0 } }], control);
+  const artifact = bakeoffArtifact([contender], [{ name: contender.name, status: "partial", value: { metrics: null, usageRecords: null } }], control);
   expect(JSON.stringify(artifact)).not.toContain(sentinel);
   expect(reason === null ? "" : controlledStopText(reason)).not.toContain(sentinel);
   expect(reason === null ? "" : String(new BakeoffStopped({ reason }))).not.toContain(sentinel);
@@ -419,6 +405,101 @@ test("non-fail-fast diagnostics do not replace a later authoritative cap", async
     maxAttempts: 1,
     stop: { attempted: 1, contender: "diagnostic", max: 1, type: "max-attempts" },
   });
+});
+
+test("a parse error replaces a stale discovered output and fails the CLI effect", async () => {
+  const dir = mkdtempSync(`${tmpdir()}/bake-parse-`);
+  const path = `${dir}/result.json`;
+  writeFileSync(path, '{"stale":"PRIVATE-STALE-SENTINEL"}\n');
+  const output: string[] = [];
+  const diagnostic = spyOn(console, "error").mockImplementation((...parts) => void output.push(parts.join(" ")));
+  try {
+    const exit = await Effect.runPromiseExit(runBakeoffCli(["--out", path, "--bogus"]));
+    expect(exit._tag).toBe("Failure");
+    const artifact: unknown = JSON.parse(readFileSync(path, "utf8"));
+    expect(artifact).toMatchObject({
+      attempts: { attempted: 0, max: 0 },
+      requestedContenders: [],
+      status: "stopped",
+      stop: { contender: null, type: "unexpected" },
+      version: 1,
+    });
+    expect(JSON.stringify(artifact)).not.toContain("PRIVATE-STALE-SENTINEL");
+    expect(output.join("\n")).not.toContain("bogus");
+  } finally {
+    diagnostic.mockRestore();
+  }
+});
+
+test("setup rejection paths fail instead of returning successful console effects", async () => {
+  const dir = mkdtempSync(`${tmpdir()}/bake-setup-`);
+  const source = `${dir}/source.txt`;
+  const out = `${dir}/result.json`;
+  writeFileSync(source, "");
+  const base = ["--out", out, "--max-attempts", "2", "--from", source, "--chain", "one=openai-plan:fake"];
+  const cases: readonly (readonly string[])[] = [
+    [],
+    ["--out", out],
+    ["--out", out, "--max-attempts", "2"],
+    ["--out", out, "--max-attempts", "2", "--from", `${dir}/missing`, "--chain", "one=openai-plan:fake"],
+    [...base.slice(0, -1), "invalid"],
+    [...base, "--effort", "PRIVATE-INVALID-EFFORT"],
+    [...base.slice(0, -1), "one=openai-plan:fake,openai-plan:fake"],
+    [...base, "--chain", "one=claude-code:sonnet"],
+    [...base, "--kinds", "user,user"],
+    [...base, "--kinds", "PRIVATE-INVALID-KIND"],
+    [...base, "--n", "0"],
+    [...base, "--questions", "-1"],
+  ];
+  const output: string[] = [];
+  const diagnostic = spyOn(console, "error").mockImplementation((...parts) => void output.push(parts.join(" ")));
+  try {
+    for (const argv of cases) {
+      const exit = await Effect.runPromiseExit(runBakeoffCli(argv));
+      expect(exit._tag).toBe("Failure");
+    }
+    expect(output.join("\n")).not.toContain("PRIVATE-INVALID");
+  } finally {
+    diagnostic.mockRestore();
+  }
+});
+
+test("provider refusal reports stay out of artifacts and controlled diagnostics", async () => {
+  const sentinel = "PRIVATE-PROVIDER-REFUSAL-SENTINEL";
+  const contender = parseContender("refusal=openai-plan:fake");
+  const control = makeBakeoffController(4);
+  await Effect.runPromise(control.hooks(contender.name).beforeRequest(fakeAttempt));
+  const replayed = await Effect.runPromise(
+    replay({
+      budget: 100_000,
+      contender,
+      control,
+      messages: [{ kind: "user", text: "x".repeat(600) }],
+      poll: "1 millis",
+      summarizeFor: (_current, _log, report) =>
+        Effect.succeed(() => report(sentinel).pipe(Effect.andThen(Effect.fail(new CompactError({ message: sentinel }))))),
+    }),
+  );
+  const artifact = bakeoffArtifact(
+    [contender],
+    [{ name: contender.name, status: "partial", value: { metrics: null, usageRecords: null } }],
+    control,
+  );
+  const controlled = `${diagnosticCountText(replayed.reports.length)}\n${controlledStopText(replayed.stop!)}`;
+  expect(control.snapshot().attempts).toBe(1);
+  expect(JSON.stringify(artifact)).not.toContain(sentinel);
+  expect(controlled).not.toContain(sentinel);
+});
+
+test("an unfinished artifact without a stop is running, never complete", () => {
+  const contender = parseContender("pending=openai-plan:fake");
+  const artifact = bakeoffArtifact(
+    [contender],
+    [{ name: contender.name, status: "partial", value: { metrics: null, usageRecords: null } }],
+    makeBakeoffController(2),
+  );
+  expect(artifact.status).toBe("running");
+  expect(artifact.completedContenders).toEqual([]);
 });
 
 test("the preflight lower bound counts the complete requested tree", () => {

@@ -20,7 +20,7 @@ import { ApiKeys, apiKeysLayer } from "../src/apikey/clients.ts";
 import { openChat } from "../src/chat.ts";
 import { LocalRunner, Runner } from "../src/claude/process.ts";
 import type { Summarize } from "../src/compactor.ts";
-import { Effort, NODE, type Settings, WAIT_RETRY, atRoleEffort, duplicateRefs, isEffort, loadSettings, parseRef } from "../src/config.ts";
+import { NODE, type Settings, WAIT_RETRY, atRoleEffort, duplicateRefs, isEffort, loadSettings, parseRef } from "../src/config.ts";
 import { parseOptmem } from "../src/import.ts";
 import { zoom } from "../src/mcp.ts";
 import { OpenAiPlan, openAiPlanLayer } from "../src/openai/responses.ts";
@@ -50,8 +50,10 @@ export type StopReason =
   | { readonly type: "unexpected"; readonly contender: string | null };
 
 export class BakeoffStopped extends Data.TaggedError("BakeoffStopped")<{ readonly reason: StopReason }> {}
+export class BakeoffCliError extends Data.TaggedError("BakeoffCliError")<{ readonly phase: "run" | "setup" }> {}
 
 export const controlledStopText = (reason: StopReason): string => `bake-off stopped: ${reason.type}`;
+export const diagnosticCountText = (count: number): string => `bake-off diagnostics: ${count}`;
 
 export type BakeoffController = {
   readonly maxAttempts: number;
@@ -446,10 +448,10 @@ export const runContenders = <A, E, R>(o: {
   );
 };
 
-export type ArtifactContender = ContenderResult<{ readonly metrics: Measured | null; readonly usageRecords: number }>;
+export type ArtifactContender = ContenderResult<{ readonly metrics: Measured | null; readonly usageRecords: number | null }>;
 export type BakeoffArtifact = {
   readonly version: 1;
-  readonly status: "complete" | "stopped";
+  readonly status: "complete" | "running" | "stopped";
   readonly attempts: { readonly attempted: number; readonly max: number };
   readonly stop: StopReason | null;
   readonly requestedContenders: readonly string[];
@@ -474,7 +476,12 @@ export function bakeoffArtifact(requested: readonly Contender[], results: readon
     completedContenders: results.filter((r) => r.status === "complete").map((r) => r.name),
     contenders: results,
     requestedContenders: requested.map((c) => c.name),
-    status: snapshot.stop === null ? "complete" : "stopped",
+    status:
+      snapshot.stop === null
+        ? results.length === requested.length && results.every((result) => result.status === "complete")
+          ? "complete"
+          : "running"
+        : "stopped",
     stop: snapshot.stop,
     version: 1,
   };
@@ -506,145 +513,203 @@ export const table = (rows: readonly Measured[]) =>
 // ---------------------------------------------------------------------------------------------
 // The command: real engines, from this repo's optchat.config.ts
 
-// a whole number of at least `min`, or null
-const count = (raw: string, min: number) => (/^\d+$/.test(raw) && Number(raw) >= min ? Number(raw) : null);
-const USAGE =
+const count = (raw: string, min: number) => {
+  const value = Number(raw);
+  return /^\d+$/.test(raw) && Number.isSafeInteger(value) && value >= min ? value : null;
+};
+export const USAGE =
   "usage: bun dev/bakeoff.ts --from <data dir | LOG.txt> --chain name=chain [--chain …] --out file.json --max-attempts N [--no-fail-fast] [--effort medium] [--n 500] [--skip 0] [--kinds user] [--questions 50] [--deadline 120 (minutes)]";
 
-const main = Effect.gen(function* () {
-  const { values } = parseArgs({
-    options: {
-      chain: { multiple: true, type: "string" },
-      deadline: { default: "120", type: "string" }, // minutes per contender
-      effort: { type: "string" }, // the default effort of entries without their own; else compactor.effort
-      from: { type: "string" },
-      kinds: { default: "user", type: "string" },
-      n: { default: "500", type: "string" },
-      "no-fail-fast": { default: false, type: "boolean" },
-      "max-attempts": { type: "string" },
-      out: { type: "string" },
-      questions: { default: "50", type: "string" },
-      skip: { default: "0", type: "string" },
-    },
-  });
-  const n = count(values.n, 1), skip = count(values.skip, 0), questionCount = count(values.questions, 0), deadline = count(values.deadline, 1);
-  const maxAttempts = values["max-attempts"] === undefined ? null : count(values["max-attempts"], 1);
-  const safety =
-    values.out === undefined || maxAttempts === null
-      ? null
-      : { control: makeBakeoffController(maxAttempts, !values["no-fail-fast"]), maxAttempts, out: values.out };
-  if (safety !== null)
-    writeArtifact(
-      safety.out,
-      initialArtifact(
-        (values.chain ?? []).map((spec) => spec.slice(0, Math.max(0, spec.indexOf("="))) || "invalid"),
-        safety.maxAttempts,
-      ),
-    );
-  if (
-    values.from === undefined ||
-    !existsSync(values.from) ||
-    !values.chain?.length ||
-    safety === null ||
-    n === null ||
-    skip === null ||
-    questionCount === null ||
-    deadline === null
-  )
-    return yield* Console.error(USAGE);
-  const { chain } = values;
-  const { control, out } = safety;
-  const contenders = Result.try({ catch: (e) => (e instanceof Error ? e.message : String(e)), try: () => chain.map(parseContender) });
-  if (Result.isFailure(contenders)) return yield* Console.error(`${contenders.failure}\n${USAGE}`);
-  const root = new URL("..", import.meta.url).pathname;
-  const loaded = yield* loadSettings(Bun.env.OPTCHAT_CONFIG ?? `${root}optchat.config.ts`);
-  const effort = values.effort ?? loaded.compactor.effort;
-  if (!isEffort(effort)) return yield* Console.error(`--effort ${effort}: one of ${Effort.literals.join(", ")}\n${USAGE}`);
-  const settings = { ...loaded, compactor: { ...loaded.compactor, effort } };
-  // a contender's chains are read as the config's: an effort its model can't take was refused with
-  // the ref, an entry at --effort is its bare ref, and one engine named twice in a chain is refused
-  const canonical = contenders.success.map((c) => ({ ...c, byLevel: Arr.map(c.byLevel, (b) => ({ ...b, chain: atRoleEffort(b.chain, effort) })) }));
-  const refused = canonical.flatMap((c) => c.byLevel.flatMap((b) => duplicateRefs(`${c.name}, from level ${b.from}`, b.chain, effort)));
-  if (refused.length > 0) return yield* Console.error(`${refused.join("\n")}\n${USAGE}`);
-  const messages = yield* readSource(values.from, n, skip);
-  const kinds = values.kinds.split(",").map((k) => Schema.decodeUnknownSync(Schema.Literals(["user", "talk", "tool", "echo", "note"]))(k));
-  const nodesPerContender = modelBuiltNodes(messages.length);
-  const lowerBound = nodesPerContender * canonical.length;
-  for (const contender of canonical) yield* Console.error(`${contender.name}: ${nodesPerContender} model-built nodes`);
-  yield* Console.error(`one-call lower bound: ${lowerBound}; max attempts: ${safety.maxAttempts}`);
-  if (safety.maxAttempts < lowerBound) yield* Console.error(`warning: max attempts ${safety.maxAttempts} is below the one-call lower bound ${lowerBound}`);
-  let latest: readonly ArtifactContender[] = [];
-  const execute = Effect.scoped(
-    Effect.gen(function* () {
-      const outside = Layer.mergeAll(SecretsLive, FetchHttpClient.layer);
-      const scope = yield* Effect.scope;
-      const plan = yield* Effect.cached(Layer.buildWithScope(openAiPlanLayer(settings.openai, { report: (m) => Console.error(m) }).pipe(Layer.provide(outside)), scope).pipe(Effect.map((c) => Context.get(c, OpenAiPlan))));
-      const apiKeys = yield* Effect.cached(Layer.buildWithScope(apiKeysLayer(settings.apiKey).pipe(Layer.provide(outside)), scope).pipe(Effect.map((c) => Context.get(c, ApiKeys))));
-      const runner = Context.get(yield* Layer.build(LocalRunner.pipe(Layer.provide(BunServices.layer))), Runner);
-      const usagePath = `${HOME}/usage.jsonl`;
-      const budget = makeBudget({ monthly: settings.apiKey?.monthlyBudget ?? 0, report: (m) => Console.error(m), usagePath });
-      const spend = (r: UsageRecord) => (r.auth === "api-key" ? logUsage(usagePath, r).pipe(Effect.flatMap((e) => (e ? Console.error(e) : Effect.void))) : Effect.void);
-      const results = yield* runContenders({
-        contenders: canonical,
-        control,
-        initial: () => ({ metrics: null, usageRecords: 0 }),
-        persist: (current: readonly ArtifactContender[]) =>
-          Effect.sync(() => {
-            latest = [...current];
-            writeArtifact(out, bakeoffArtifact(canonical, latest, control));
-          }),
-        run: (contender) =>
-          Effect.gen(function* () {
-            yield* Console.error(`${contender.name}: replaying ${messages.length} messages`);
-            const replayed = yield* replay({
-              contender,
-              control,
-              deadline: Duration.minutes(deadline),
-              messages,
-              summarizeFor: (c, log, report, attemptHooks) =>
-                makeSummarize({
-                  apiKeys,
-                  attemptHooks,
-                  budget,
-                  log: (r) => budget.note(r).pipe(Effect.andThen(log(r)), Effect.andThen(spend(r))),
-                  plan,
-                  report,
-                  gate: makeGate(),
-                  instructions: systemPrompt(HOME),
-                  placement: Effect.succeed({ cwd: undefined, mcpConfig: JSON.stringify({ mcpServers: {} }), mcpSeen: () => Effect.succeed(false), runner }),
-                  tools: toolDefs({ device: settings.defaultDevice, folders: settings.devices[settings.defaultDevice]?.folders ?? [] }),
-                  settings: { ...settings, compactor: { ...settings.compactor, byLevel: c.byLevel } },
-                }).pipe(Effect.map((m) => m.summarize)),
-            });
-            if (replayed.stop === null && replayed.reports.length > 0) yield* Console.error(`${contender.name}: ${replayed.reports.length} compactor diagnostics`);
-            else if (replayed.stop !== null) yield* Console.error(`${contender.name}: stopped (${replayed.stop.type})`);
-            const metrics = yield* measure(replayed, messages, { answerer: lexicalAnswerer, kinds, questions: questionCount });
-            return { complete: replayed.stop === null && replayed.unbuilt.length === 0, value: { metrics, usageRecords: replayed.records.length } };
-          }),
-      });
-      writeArtifact(out, bakeoffArtifact(canonical, results, control));
-      yield* Console.log(table(results.flatMap((result) => (result.value.metrics === null ? [] : [result.value.metrics]))));
-      const stopped = control.snapshot().stop;
-      if (stopped !== null) {
-        yield* Console.error(controlledStopText(stopped));
-        return yield* new BakeoffStopped({ reason: stopped });
-      }
-    }),
-  );
-  return yield* execute.pipe(
-    Effect.onExit((exit) =>
-      Exit.isSuccess(exit)
-        ? Effect.void
-        : control.stop({ contender: null, type: "unexpected" }).pipe(
-            Effect.andThen(
-              Effect.sync(() => {
-                writeArtifact(out, bakeoffArtifact(canonical, latest, control));
-              }),
-            ),
-            Effect.asVoid,
-          ),
-    ),
-  );
-});
+export function outputPathFromArgv(argv: readonly string[]): string | null {
+  let discovered: string | null = null;
+  for (let index = 0; index < argv.length; index++) {
+    if (argv[index] !== "--out") continue;
+    const candidate = argv[index + 1];
+    if (candidate !== undefined && candidate.length > 0 && !candidate.startsWith("--")) discovered = candidate;
+  }
+  return discovered;
+}
 
-if (import.meta.main) BunRuntime.runMain(Effect.scoped(main));
+const maxAttemptsFromArgv = (argv: readonly string[]) => {
+  for (let index = 0; index < argv.length; index++) if (argv[index] === "--max-attempts") return count(argv[index + 1] ?? "", 1) ?? 0;
+  return 0;
+};
+
+const setupArtifact = (maxAttempts: number): BakeoffArtifact => initialArtifact([], maxAttempts);
+
+export const runBakeoffCli = (argv: readonly string[]) =>
+  Effect.gen(function* () {
+    const discoveredOut = outputPathFromArgv(argv);
+    const discoveredMax = maxAttemptsFromArgv(argv);
+    if (discoveredOut !== null)
+      yield* Effect.try({
+        catch: () => new BakeoffCliError({ phase: "setup" }),
+        try: () => {
+          writeArtifact(discoveredOut, setupArtifact(discoveredMax));
+        },
+      });
+
+    const rejectSetup = () =>
+      Effect.gen(function* () {
+        if (discoveredOut !== null)
+          yield* Effect.try(() => {
+            writeArtifact(discoveredOut, setupArtifact(discoveredMax));
+          }).pipe(Effect.catch(() => Effect.void));
+        yield* Console.error(USAGE);
+        return yield* new BakeoffCliError({ phase: "setup" });
+      });
+
+    const parsed = yield* Effect.try({
+      catch: () => new BakeoffCliError({ phase: "setup" }),
+      try: () =>
+        parseArgs({
+          args: [...argv],
+          options: {
+            chain: { multiple: true, type: "string" },
+            deadline: { default: "120", type: "string" },
+            effort: { type: "string" },
+            from: { type: "string" },
+            kinds: { default: "user", type: "string" },
+            n: { default: "500", type: "string" },
+            "no-fail-fast": { default: false, type: "boolean" },
+            "max-attempts": { type: "string" },
+            out: { type: "string" },
+            questions: { default: "50", type: "string" },
+            skip: { default: "0", type: "string" },
+          },
+          strict: true,
+        }),
+    }).pipe(Effect.catch(() => rejectSetup()));
+    const { values } = parsed;
+    const n = count(values.n, 1), skip = count(values.skip, 0), questionCount = count(values.questions, 0), deadline = count(values.deadline, 1);
+    const maxAttempts = values["max-attempts"] === undefined ? null : count(values["max-attempts"], 1);
+    if (
+      values.out === undefined ||
+      values.out !== discoveredOut ||
+      values.from === undefined ||
+      !existsSync(values.from) ||
+      !values.chain?.length ||
+      maxAttempts === null ||
+      n === null ||
+      skip === null ||
+      questionCount === null ||
+      deadline === null
+    )
+      return yield* rejectSetup();
+
+    const { chain, out } = values;
+    const parsedContenders = Result.try({ catch: () => null, try: () => chain.map(parseContender) });
+    if (Result.isFailure(parsedContenders)) return yield* rejectSetup();
+    if (new Set(parsedContenders.success.map((contender) => contender.name)).size !== parsedContenders.success.length) return yield* rejectSetup();
+
+    const root = new URL("..", import.meta.url).pathname;
+    const loaded = yield* loadSettings(Bun.env.OPTCHAT_CONFIG ?? `${root}optchat.config.ts`).pipe(Effect.catchCause(() => rejectSetup()));
+    const effort = values.effort ?? loaded.compactor.effort;
+    if (!isEffort(effort)) return yield* rejectSetup();
+    const settings = { ...loaded, compactor: { ...loaded.compactor, effort } };
+    const canonicalResult = Result.try({
+      catch: () => null,
+      try: () => parsedContenders.success.map((contender) => ({ ...contender, byLevel: Arr.map(contender.byLevel, (level) => ({ ...level, chain: atRoleEffort(level.chain, effort) })) })),
+    });
+    if (Result.isFailure(canonicalResult)) return yield* rejectSetup();
+    const canonical = canonicalResult.success;
+    const refused = canonical.flatMap((contender) => contender.byLevel.flatMap((level) => duplicateRefs(`${contender.name}, from level ${level.from}`, level.chain, effort)));
+    if (refused.length > 0) return yield* rejectSetup();
+
+    const kindsResult = Result.try({
+      catch: () => null,
+      try: () => values.kinds.split(",").map((kind) => Schema.decodeUnknownSync(Schema.Literals(["user", "talk", "tool", "echo", "note"]))(kind)),
+    });
+    if (Result.isFailure(kindsResult) || new Set(kindsResult.success).size !== kindsResult.success.length) return yield* rejectSetup();
+    const kinds = kindsResult.success;
+    const messages = yield* readSource(values.from, n, skip).pipe(Effect.catchCause(() => rejectSetup()));
+    const control = makeBakeoffController(maxAttempts, !values["no-fail-fast"]);
+    yield* Effect.try(() => {
+      writeArtifact(out, bakeoffArtifact(canonical, [], control));
+    }).pipe(Effect.catch(() => rejectSetup()));
+
+    const nodesPerContender = modelBuiltNodes(messages.length);
+    const lowerBound = nodesPerContender * canonical.length;
+    yield* Console.error(`bake-off setup: ${canonical.length} contenders, ${nodesPerContender} model-built nodes each`);
+    yield* Console.error(`bake-off limits: ${lowerBound} one-call lower bound, ${maxAttempts} max attempts`);
+    if (maxAttempts < lowerBound) yield* Console.error("bake-off warning: max attempts are below the one-call lower bound");
+
+    let latest: readonly ArtifactContender[] = [];
+    const execute = Effect.scoped(
+      Effect.gen(function* () {
+        const outside = Layer.mergeAll(SecretsLive, FetchHttpClient.layer);
+        const scope = yield* Effect.scope;
+        const plan = yield* Effect.cached(Layer.buildWithScope(openAiPlanLayer(settings.openai, { report: () => Effect.void }).pipe(Layer.provide(outside)), scope).pipe(Effect.map((context) => Context.get(context, OpenAiPlan))));
+        const apiKeys = yield* Effect.cached(Layer.buildWithScope(apiKeysLayer(settings.apiKey).pipe(Layer.provide(outside)), scope).pipe(Effect.map((context) => Context.get(context, ApiKeys))));
+        const runner = Context.get(yield* Layer.build(LocalRunner.pipe(Layer.provide(BunServices.layer))), Runner);
+        const usagePath = `${HOME}/usage.jsonl`;
+        const budget = makeBudget({ monthly: settings.apiKey?.monthlyBudget ?? 0, report: () => Effect.void, usagePath });
+        const spend = (record: UsageRecord) =>
+          record.auth === "api-key" ? logUsage(usagePath, record).pipe(Effect.asVoid) : Effect.void;
+        const results = yield* runContenders({
+          contenders: canonical,
+          control,
+          initial: () => ({ metrics: null, usageRecords: null }),
+          persist: (current: readonly ArtifactContender[]) =>
+            Effect.sync(() => {
+              latest = [...current];
+              writeArtifact(out, bakeoffArtifact(canonical, latest, control));
+            }),
+          run: (contender) =>
+            Effect.gen(function* () {
+              yield* Console.error(`bake-off: replaying ${messages.length} messages`);
+              const replayed = yield* replay({
+                contender,
+                control,
+                deadline: Duration.minutes(deadline),
+                messages,
+                summarizeFor: (current, log, report, attemptHooks) =>
+                  makeSummarize({
+                    apiKeys,
+                    attemptHooks,
+                    budget,
+                    gate: makeGate(),
+                    instructions: systemPrompt(HOME),
+                    log: (record) => budget.note(record).pipe(Effect.andThen(log(record)), Effect.andThen(spend(record))),
+                    placement: Effect.succeed({ cwd: undefined, mcpConfig: JSON.stringify({ mcpServers: {} }), mcpSeen: () => Effect.succeed(false), runner }),
+                    plan,
+                    report,
+                    settings: { ...settings, compactor: { ...settings.compactor, byLevel: current.byLevel } },
+                    tools: toolDefs({ device: settings.defaultDevice, folders: settings.devices[settings.defaultDevice]?.folders ?? [] }),
+                  }).pipe(Effect.map((made) => made.summarize)),
+              });
+              if (replayed.stop === null && replayed.reports.length > 0) yield* Console.error(diagnosticCountText(replayed.reports.length));
+              else if (replayed.stop !== null) yield* Console.error(controlledStopText(replayed.stop));
+              const complete = replayed.stop === null && replayed.unbuilt.length === 0;
+              if (!complete) return { complete, value: { metrics: null, usageRecords: null } };
+              const metrics = yield* measure(replayed, messages, { answerer: lexicalAnswerer, kinds, questions: questionCount });
+              return { complete, value: { metrics, usageRecords: replayed.records.length } };
+            }),
+        });
+        writeArtifact(out, bakeoffArtifact(canonical, results, control));
+        yield* Console.log(table(results.flatMap((result) => (result.value.metrics === null ? [] : [result.value.metrics]))));
+        const stopped = control.snapshot().stop;
+        if (stopped !== null) {
+          yield* Console.error(controlledStopText(stopped));
+          return yield* new BakeoffStopped({ reason: stopped });
+        }
+      }),
+    );
+    return yield* execute.pipe(
+      Effect.onExit((exit) =>
+        Exit.isSuccess(exit)
+          ? Effect.void
+          : control.stop({ contender: null, type: "unexpected" }).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  writeArtifact(out, bakeoffArtifact(canonical, latest, control));
+                }),
+              ),
+              Effect.asVoid,
+            ),
+      ),
+      Effect.catchCause(() => Effect.fail(new BakeoffCliError({ phase: "run" }))),
+    );
+  });
+
+if (import.meta.main) BunRuntime.runMain(Effect.scoped(runBakeoffCli(Bun.argv.slice(2))));
