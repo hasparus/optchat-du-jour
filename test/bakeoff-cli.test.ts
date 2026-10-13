@@ -1,6 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { dirname, delimiter } from "node:path";
 import { decodeArtifact } from "../dev/bakeoff-artifact.ts";
 import { DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 
@@ -14,8 +15,8 @@ writeFileSync(config, `export default ${JSON.stringify({
   master: { chain: ["claude-code:sonnet"], effort: "medium", permissionMode: "bypassPermissions" }, openai: DEFAULT_ENDPOINTS,
 })};\n`);
 const invoke = async (argv: string[], env: Record<string, string> = {}) => {
-  const child = Bun.spawn(["mise", "exec", "bun@1.4.2", "--", "bun", cli, ...argv], {
-    env: { ...process.env, TMPDIR: dir, OPTCHAT_CONFIG: config, OPTCHAT_HOME: `${dir}/home-does-not-exist`, OPTCHAT_SECRETS: `${dir}/secret-does-not-exist`, OPTCHAT_CLAUDE: new URL("no-claude", import.meta.url).pathname, ...env },
+  const child = Bun.spawn([process.execPath, cli, ...argv], {
+    env: { ...process.env, PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}`, TMPDIR: dir, OPTCHAT_CONFIG: config, OPTCHAT_HOME: `${dir}/home-does-not-exist`, OPTCHAT_SECRETS: `${dir}/secret-does-not-exist`, OPTCHAT_CLAUDE: new URL("no-claude", import.meta.url).pathname, ...env },
     stderr: "pipe", stdout: "pipe",
   });
   const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
@@ -48,6 +49,19 @@ test("subprocess invalid settings/options use fixed redacted errors and leave ou
     expect(result.stderr).toBe("bake-off setup failed (details redacted); use --help\n");
     expect(readFileSync(out, "utf8")).toBe("PRIVATE-EXISTING-OUTPUT");
   }
+});
+
+test("subprocess rejects overwriting directory-source history before publication", async () => {
+  const source = `${dir}/data`;
+  mkdirSync(`${source}/chat/main`, { recursive: true });
+  const history = `${source}/chat/main/2026-01-01.jsonl`;
+  const sentinel = '{"text":"PRIVATE-HISTORY"}\n';
+  writeFileSync(history, sentinel);
+  const result = await invoke(["--from", source, "--out", history, "--overwrite", "--chain", "one=claude-code:sonnet", "--max-requests", "1"]);
+  expect(result.code).toBe(2);
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toBe("bake-off setup failed (details redacted); use --help\n");
+  expect(readFileSync(history, "utf8")).toBe(sentinel);
 });
 
 test("offline executable --no-fail-fast exits nonzero even when a later contender succeeds", async () => {

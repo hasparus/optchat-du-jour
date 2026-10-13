@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, linkSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 import { parseSettings } from "../src/config.ts";
@@ -66,6 +66,27 @@ test("level-chain validation is retained", () => {
   expect(() => parseContender("x=0:claude-code:sonnet;0:openai-plan:gpt-6")).toThrow("levels must strictly increase");
   expect(() => parseContender("x=0:claude-code:sonnet;3:openai-plan:gpt-6;2:claude-code:opus")).toThrow("levels must strictly increase");
   expect(() => parseContender("x=0:claude-code:sonnet;9007199254740992:openai-plan:gpt-6")).toThrow("levels must be nonnegative safe integers");
+});
+
+test("directory source descendants and symlinked parents cannot become output", () => {
+  const dir = mkdtempSync(`${tmpdir()}/bake-directory-`);
+  try {
+    const source = `${dir}/source`;
+    mkdirSync(`${source}/chat/main`, { recursive: true });
+    const history = `${source}/chat/main/2026-01-01.jsonl`;
+    writeFileSync(history, "PRIVATE-HISTORY");
+    symlinkSync(source, `${dir}/alias`);
+    symlinkSync(history, `${dir}/history-alias`);
+    const outputs = [history, `${source}/chat/main/2026-01-02.jsonl`, `${dir}/alias/chat/main/2026-01-03.jsonl`, `${dir}/history-alias`];
+    for (const output of outputs) {
+      expect(sameSourceAndOutput(source, output)).toBe(true);
+      expect(() => parseBakeoffOptions(["--from", source, "--out", output, "--overwrite", "--chain", "one=claude-code:sonnet", "--max-requests", "1"], settings, { sourceExists: existsSync, outputExists: existsSync })).toThrow();
+    }
+    expect(readFileSync(history, "utf8")).toBe("PRIVATE-HISTORY");
+    expect(sameSourceAndOutput(source, `${dir}/source-sibling.json`)).toBe(false);
+  } finally {
+    rmSync(dir, { force: true, recursive: true });
+  }
 });
 
 test("canonical, symlink, and hardlink source aliases are rejected even with overwrite", () => {

@@ -70,7 +70,7 @@ test("two processes racing initial publication produce exactly one exclusive win
     const initial = artifact({ active: { type: "none" }, contenders: [], type: "running" });
     const module = new URL("../dev/bakeoff-artifact.ts", import.meta.url).pathname;
     const code = `import { createArtifact } from ${JSON.stringify(module)}; try { createArtifact(${JSON.stringify(path)}, ${JSON.stringify(initial)}); } catch { process.exitCode = 3; }`;
-    const children = [0, 1].map(() => Bun.spawn(["mise", "exec", "bun@1.4.2", "--", "bun", "--eval", code], { stdout: "pipe", stderr: "pipe" }));
+    const children = [0, 1].map(() => Bun.spawn([process.execPath, "--eval", code], { stdout: "pipe", stderr: "pipe" }));
     const exits = await Promise.all(children.map(async (child) => child.exited));
     expect(exits.sort((a, b) => a - b)).toEqual([0, 3]);
     expect(decodeArtifact(JSON.parse(readFileSync(path, "utf8")))).toEqual(initial);

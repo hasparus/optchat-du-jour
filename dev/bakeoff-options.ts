@@ -1,6 +1,6 @@
 import { Array as Arr, Data, Result, Schema } from "effect";
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 import { atRoleEffort, duplicateRefs, isEffort, parseRef, type Settings } from "../src/config.ts";
 import { Kind } from "../src/records.ts";
@@ -118,8 +118,10 @@ export const sameSourceAndOutput = (source: string, output: string): boolean => 
   const outputExists = existsSync(output);
   const outputReal = outputExists ? realpathSync(output) : resolve(realpathSync(dirname(output)), basename(output));
   if (sourceReal === outputReal) return true;
-  if (!outputExists) return false;
   const sourceStat = statSync(sourceReal);
+  const withinSource = relative(sourceReal, outputReal);
+  if (sourceStat.isDirectory() && !isAbsolute(withinSource) && withinSource !== ".." && !withinSource.startsWith(`..${sep}`)) return true;
+  if (!outputExists) return false;
   const outputStat = statSync(outputReal);
   return sourceStat.dev === outputStat.dev && sourceStat.ino === outputStat.ino;
 };
