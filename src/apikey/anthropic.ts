@@ -12,6 +12,7 @@
 import { Effect, Option, Schema, Stream } from "effect";
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
+import { admitRequest } from "../engines/request-admission.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
 import { isPicture } from "../media/part.ts";
 import type { ToolDef } from "../tools/files.ts";
@@ -317,6 +318,7 @@ export const makeMessages = (o: { readonly base: string; readonly key: Effect.Ef
           HttpClientRequest.accept("text/event-stream"),
           HttpClientRequest.bodyText(requestBody(ask), "application/json"),
         );
+        yield* admitRequest();
         const res = yield* http.execute(req);
         if (res.status !== 200) {
           const raw = yield* res.text;

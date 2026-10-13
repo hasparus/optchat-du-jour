@@ -64,7 +64,10 @@ function shortest(tries: readonly string[]): string {
 }
 
 // One try: the first message (attempt 1), or the retry text that answers the line before it.
-export type Try = { readonly attempt: number; readonly retry: { readonly line: string; readonly text: string } | null };
+export type Try = {
+  readonly attempt: number;
+  readonly retry: { readonly line: string; readonly text: string } | null;
+};
 export type Answer = { readonly text: string; readonly usage: Tokens; readonly model: string | null; readonly dollars?: number };
 
 // The size retries (docs/optchat.md §4 "The size"), for any engine: ask, log what the try cost, and retry in the same
