@@ -12,7 +12,7 @@ import { type Spawn, Runner, makeClaude } from "../src/claude/process.ts";
 import type { Job } from "../src/compactor.ts";
 import { failover, watchChain } from "../src/engines/chain.ts";
 import { UsageLimit } from "../src/engines/errors.ts";
-import { RequestAdmission, RequestNotAdmitted, type RequestMetadata } from "../src/engines/request-admission.ts";
+import { EngineExecutionPolicy, RequestNotAdmitted } from "../src/engines/request-admission.ts";
 import { Credentials, SECRET, encodeCredentials, login } from "../src/openai/auth.ts";
 import { type Endpoints, DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 import { OpenAiPlan, openAiPlanLayer, readStream } from "../src/openai/responses.ts";
@@ -32,14 +32,15 @@ import { fakeOpenAi } from "./fake-openai.ts";
 
 const fake = fakeOpenAi();
 const cappedAdmission = (max: number) => {
-  const seen: RequestMetadata[] = [];
+  const seen: number[] = [];
   return {
     seen,
     service: {
-      authorize: (metadata: RequestMetadata) =>
+      onFailure: () => Effect.succeed("continue" as const),
+      authorize: () =>
         Effect.suspend(() => {
           if (seen.length >= max) return Effect.fail(new RequestNotAdmitted({ reason: "max-authorized-requests" }));
-          seen.push(metadata);
+          seen.push(seen.length + 1);
           return Effect.void;
         }),
     },
@@ -568,12 +569,12 @@ test("each Responses breakpoint fallback POST is admitted at the boundary", asyn
   fake.state.requests = 0;
   fake.state.seen.length = 0;
   const result = await Effect.runPromise(
-    Effect.exit(compact(markedJob, null).pipe(Effect.provideService(RequestAdmission, admission.service))),
+    Effect.exit(compact(markedJob, null).pipe(Effect.provideService(EngineExecutionPolicy, admission.service))),
   );
   expect(result._tag).toBe("Failure");
   expect(fake.state.requests).toBe(1);
   expect(fake.state.seen).toHaveLength(1);
-  expect(admission.seen).toEqual([{ model: "gpt-6.1-sol", transport: "openai-responses" }]);
+  expect(admission.seen).toEqual([1]);
   fake.state.refuseBreakpoints = false;
 });
 
@@ -587,12 +588,12 @@ test("the Responses POST retried after a 401 requires another admission", async 
   fake.state.access = "revoked-on-server";
   fake.state.requests = 0;
   const result = await Effect.runPromise(
-    Effect.exit(service.respond({ input: [{ parts: ["refresh"], role: "user" }], instructions: "x", model: "gpt-6.1-sol" }).pipe(Effect.provideService(RequestAdmission, admission.service))),
+    Effect.exit(service.respond({ input: [{ parts: ["refresh"], role: "user" }], instructions: "x", model: "gpt-6.1-sol" }).pipe(Effect.provideService(EngineExecutionPolicy, admission.service))),
   );
   expect(result._tag).toBe("Failure");
   expect(fake.state.requests).toBe(1);
   expect(fake.state.refreshes).toBe(refreshes + 1);
-  expect(admission.seen).toEqual([{ model: "gpt-6.1-sol", transport: "openai-responses" }]);
+  expect(admission.seen).toEqual([1]);
 });
 
 const respondWith = (layer: Layer.Layer<OpenAiPlan>) => (text: string) =>

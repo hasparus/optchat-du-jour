@@ -26,7 +26,7 @@ Everything is built and tested against fakes. Each check below needs a real logi
 - [ ] Does the compactor fit the ChatGPT Pro weekly limit alongside Codex work? (SPEC Usage and cost tracking)
 - [x] One real compactor call on the plan route, with `instructions` seen on the wire (SPEC M3)
 - [ ] Luna's level-0 quality: retries per node, how much of the user's wording survives (SPEC M3)
-- [x] Before another real bake-off, enforce a process-wide request cap and stop all contenders on the first over-limit, unbuilt, quota, or deadline result; the harness now meters each transport POST or Claude send before it leaves, cancels active work, gates later contenders, and atomically writes a redacted partial artifact on every exit (SPEC M3).
+- [x] Before another real bake-off, enforce one run-wide authorized-request cap at every transport POST or Claude send. Contender-local policy closes failures after spent usage accounting; fail-fast gates later contenders, while `--no-fail-fast` continues within the remaining cap. V2 running/terminal artifacts persist compact progress and explicit privacy-safe metrics; incomplete runs exit nonzero, scratch data is scoped, and setup validation cannot overwrite source aliases (SPEC M3).
 - [ ] The bake-off: `dev/bakeoff.ts` over ~500 real messages for Luna, Sol, Haiku at xhigh, Sonnet and a split; set the level cutoff only after a successful bounded pilot (SPEC M3).
 
 ## API keys

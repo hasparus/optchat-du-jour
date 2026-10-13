@@ -29,10 +29,6 @@ export const EngineExecutionPolicy = Context.Reference<EngineExecutionPolicyServ
   defaultValue: () => allowAndContinue,
 });
 
-// Compatibility name for callers that provide the policy. There is still only one service.
-export const RequestAdmission = EngineExecutionPolicy;
-export type RequestAdmissionService = EngineExecutionPolicyService;
-
 export const admitRequest = (): Effect.Effect<void> =>
   Effect.flatMap(EngineExecutionPolicy, (policy) => policy.authorize()).pipe(
     Effect.catchTag("RequestNotAdmitted", () => Effect.interrupt),

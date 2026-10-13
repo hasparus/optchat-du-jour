@@ -1,10 +1,10 @@
-import { Schema } from "effect";
+import { Data, Schema } from "effect";
 import { closeSync, fsyncSync, linkSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 const Count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const PositiveCount = Schema.Int.check(Schema.isGreaterThan(0));
-const Name = Schema.String.check(Schema.isMaxLength(100));
+const Name = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100));
 const Detail = Schema.String.check(Schema.isMaxLength(300));
 const FiniteNonnegative = Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0));
 const Share = FiniteNonnegative.check(Schema.isLessThanOrEqualTo(1));
@@ -79,7 +79,7 @@ export type ContenderOutcome = typeof ContenderOutcomeSchema.Type;
 
 export const GlobalAbortSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("max-authorized-requests") }),
-  Schema.Struct({ type: Schema.Literal("fail-fast"), contender: Name, reason: DiagnosticReasonSchema }),
+  Schema.Struct({ type: Schema.Literal("fail-fast"), contender: Name }),
   Schema.Struct({ type: Schema.Literal("unexpected"), contender: Schema.optional(Name) }),
 ]);
 export type GlobalAbort = typeof GlobalAbortSchema.Type;
@@ -101,7 +101,6 @@ const RunOutcomeSchema = Schema.Union([
 ]);
 export type RunOutcome = typeof RunOutcomeSchema.Type;
 
-const sameReason = (a: DiagnosticReason, b: DiagnosticReason) => JSON.stringify(a) === JSON.stringify(b);
 const usageOf = (contender: ContenderOutcome) => contender.type === "complete" ? contender.usageRecords : contender.progress.usageRecords;
 
 export const BakeoffArtifactSchema = Schema.Struct({
@@ -119,21 +118,19 @@ export const BakeoffArtifactSchema = Schema.Struct({
     const completedUsage = outcome.contenders.reduce((sum, contender) => sum + usageOf(contender), 0);
     const activeUsage = outcome.type === "aborted" && outcome.active.type === "interrupted" ? outcome.active.progress.usageRecords : 0;
     if (completedUsage + activeUsage > artifact.requests.authorized) return "usage records exceed authorized requests";
-    if (outcome.type === "running") {
-      if (outcome.active.type === "active" && outcome.active.name !== artifact.requestedNames[names.length]) return "active contender is out of order";
-    }
-    if (outcome.type === "complete") {
-      if (names.length !== artifact.requestedNames.length) return "incomplete complete outcome";
-    }
+    if (outcome.type === "running" && outcome.active.type === "active" && outcome.active.name !== artifact.requestedNames[names.length]) return "active contender is out of order";
+    if (outcome.type === "complete" && names.length !== artifact.requestedNames.length) return "incomplete complete outcome";
     if (outcome.type === "completed-with-failures") {
       if (names.length !== artifact.requestedNames.length) return "incomplete completed outcome";
       if (!outcome.contenders.some((contender) => contender.type === "failed")) return "failure outcome has no failure";
     }
     if (outcome.type === "aborted") {
       if (outcome.abort.type === "max-authorized-requests" && artifact.requests.authorized !== artifact.requests.max) return "request cap abort is inconsistent";
+      if (outcome.abort.type === "unexpected" && outcome.active.type === "interrupted") return "unexpected progress must be unavailable";
+      if (outcome.abort.type !== "unexpected" && outcome.active.type === "unavailable") return "expected abort requires known progress";
       if (outcome.abort.type === "fail-fast") {
-        const failed = outcome.contenders.find((contender) => contender.name === outcome.abort.contender);
-        if (failed?.type !== "failed" || !sameReason(failed.reason, outcome.abort.reason)) return "fail-fast does not reference its failed contender";
+        const failed = outcome.contenders.at(-1);
+        if (failed?.type !== "failed" || failed.name !== outcome.abort.contender || outcome.active.type !== "none") return "fail-fast does not reference its failed contender";
       }
       if (outcome.active.type === "interrupted" && outcome.active.name !== artifact.requestedNames[names.length]) return "active contender is out of order";
       if (outcome.active.type === "unavailable" && outcome.active.name !== undefined && outcome.active.name !== artifact.requestedNames[names.length]) return "unavailable contender is out of order";
@@ -158,44 +155,47 @@ const syncDirectory = (path: string) => {
     closeSync(fd);
   }
 };
+const cleanup = (run: () => void) => {
+  try { run(); } catch { return; }
+};
 const writeSyncedTemporary = (path: string, encoded: string) => {
   const temporary = temporaryPath(path);
   const fd = openSync(temporary, "wx", 0o600);
   try {
     writeFileSync(fd, encoded);
     fsyncSync(fd);
-  } catch (error) {
     closeSync(fd);
-    unlinkSync(temporary);
+    return temporary;
+  } catch (error) {
+    cleanup(() => { closeSync(fd); });
+    cleanup(() => { unlinkSync(temporary); });
     throw error;
   }
-  closeSync(fd);
-  return temporary;
+};
+
+export class ArtifactWriteError extends Data.TaggedError("ArtifactWriteError")<{ readonly published: boolean }> {}
+
+const publishArtifact = (path: string, artifact: BakeoffArtifact, replace: boolean): void => {
+  let temporary: string | undefined;
+  let published = false;
+  try {
+    temporary = writeSyncedTemporary(path, encodeArtifact(artifact));
+    if (replace) renameSync(temporary, path);
+    else linkSync(temporary, path);
+    published = true;
+    syncDirectory(path);
+  } catch {
+    throw new ArtifactWriteError({ published });
+  } finally {
+    if (temporary !== undefined) {
+      const pathToRemove = temporary;
+      cleanup(() => { unlinkSync(pathToRemove); });
+    }
+  }
 };
 
 /** Atomically publishes a complete file and never replaces an existing destination. */
-export function createArtifact(path: string, artifact: BakeoffArtifact): void {
-  const temporary = writeSyncedTemporary(path, encodeArtifact(artifact));
-  try {
-    linkSync(temporary, path);
-    syncDirectory(path);
-  } finally {
-    unlinkSync(temporary);
-  }
-}
+export const createArtifact = (path: string, artifact: BakeoffArtifact): void => { publishArtifact(path, artifact, false); };
 
 /** Atomically replaces an artifact after its complete temporary file is durable. */
-export function writeArtifact(path: string, artifact: BakeoffArtifact): void {
-  const temporary = writeSyncedTemporary(path, encodeArtifact(artifact));
-  try {
-    renameSync(temporary, path);
-    syncDirectory(path);
-  } catch (error) {
-    try {
-      unlinkSync(temporary);
-    } catch {
-      // rename already consumed it, or cleanup cannot improve the original failure
-    }
-    throw error;
-  }
-}
+export const writeArtifact = (path: string, artifact: BakeoffArtifact): void => { publishArtifact(path, artifact, true); };

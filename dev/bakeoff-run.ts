@@ -5,19 +5,17 @@ import type {
   ContenderOutcome,
   DiagnosticReason,
   GlobalAbort,
-  Metrics,
   Progress,
   RunOutcome,
 } from "./bakeoff-artifact.ts";
 
-export type { CompleteContender, ContenderOutcome, DiagnosticReason, FailedContender, GlobalAbort, Metrics, Progress, RunOutcome } from "./bakeoff-artifact.ts";
-
-export type TerminalSignal =
+type TerminalSignal =
   | { readonly type: "contender"; readonly reason: DiagnosticReason }
   | { readonly type: "global"; readonly abort: GlobalAbort };
 
 export type ContenderControl = {
   readonly policy: EngineExecutionPolicyService;
+  readonly abortUnexpected: Effect.Effect<boolean>;
   readonly fail: (reason: DiagnosticReason) => Effect.Effect<boolean>;
   readonly awaitTerminal: Effect.Effect<TerminalSignal>;
   readonly reason: () => DiagnosticReason | undefined;
@@ -32,7 +30,7 @@ export type RunControl = {
 
 export type GlobalRunResult = {
   readonly type: "global-abort";
-  readonly abort: GlobalAbort;
+  readonly abort: Extract<GlobalAbort, { readonly type: "max-authorized-requests" }>;
   readonly progress: Progress;
 };
 export type ContenderRunResult = ContenderOutcome | GlobalRunResult;
@@ -57,8 +55,9 @@ export const makeRunControl = (maxRequests: number, failFast = true): RunControl
       Effect.suspend(() => {
         if (globalAbort !== undefined || localReason !== undefined) return Effect.succeed(false);
         localReason = reason;
-        return Deferred.succeed(localSignal, reason).pipe(
-          Effect.tap(() => failFast ? abort({ contender: name, reason, type: "fail-fast" }) : Effect.void),
+        return (failFast ? abort({ contender: name, type: "fail-fast" }) : Effect.void).pipe(
+          Effect.andThen(Deferred.succeed(localSignal, reason)),
+          Effect.uninterruptible,
         );
       });
     const policy: EngineExecutionPolicyService = {
@@ -83,6 +82,7 @@ export const makeRunControl = (maxRequests: number, failFast = true): RunControl
           : Effect.succeed("continue" as const),
     };
     return {
+      abortUnexpected: abort({ contender: name, type: "unexpected" }),
       awaitTerminal: Effect.raceFirst(
         Deferred.await(localSignal).pipe(Effect.map((reason): TerminalSignal => ({ reason, type: "contender" }))),
         Deferred.await(globalSignal).pipe(Effect.map((next): TerminalSignal => ({ abort: next, type: "global" }))),
@@ -119,7 +119,7 @@ export const runContenders = <C extends { readonly name: string }, E, R>(o: {
     abort,
     active: active === undefined
       ? { type: "none" }
-      : knownProgress === undefined
+      : abort.type === "unexpected" || knownProgress === undefined
         ? { name: active.name, type: "unavailable" }
         : { name: active.name, progress: knownProgress, type: "interrupted" },
     contenders: [...outcomes],
@@ -146,18 +146,18 @@ export const runContenders = <C extends { readonly name: string }, E, R>(o: {
       if (o.control.globalAbort() !== undefined) break;
     }
     const abort = o.control.globalAbort();
-    const outcome: RunOutcome = abort !== undefined
-      ? aborted(abort)
-      : outcomes.some((item) => item.type === "failed")
+    const outcome: RunOutcome = abort === undefined
+      ? outcomes.some((item) => item.type === "failed")
         ? { contenders: [...outcomes], type: "completed-with-failures" }
-        : { contenders: outcomes.filter((item): item is Extract<ContenderOutcome, { readonly type: "complete" }> => item.type === "complete"), type: "complete" };
+        : { contenders: outcomes.filter((item): item is Extract<ContenderOutcome, { readonly type: "complete" }> => item.type === "complete"), type: "complete" }
+      : aborted(abort);
     yield* o.persist(outcome);
     return outcome;
   }).pipe(
     Effect.onExit((exit) => {
       if (Exit.isSuccess(exit)) return Effect.void;
       return o.control.abortUnexpected(active?.name).pipe(
-        Effect.andThen(Effect.suspend(() => o.persist(aborted(o.control.globalAbort() ?? { contender: active?.name, type: "unexpected" })))),
+        Effect.andThen(Effect.suspend(() => o.persist(aborted({ contender: active?.name, type: "unexpected" })))),
         Effect.ignore,
       );
     }),

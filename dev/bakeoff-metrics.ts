@@ -139,7 +139,6 @@ export const measure = <R>(replayed: CompleteReplay, all: readonly Message[], op
       wordsKept: wordsKept(replayed.mem, [0, 2, 3], kinds),
     } satisfies Metrics;
   });
-export type Measured = Metrics;
 
 export const modelBuiltNodes = (messages: number): number => {
   let total = 0;

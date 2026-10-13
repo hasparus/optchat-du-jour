@@ -11,7 +11,7 @@ export class BakeoffOptionsError extends Data.TaggedError("BakeoffOptionsError")
 
 export const USAGE =
   "usage: bun dev/bakeoff.ts --from <data dir | LOG.txt> --chain name=chain [--chain …] --out file.json --max-requests N [--no-fail-fast] [--overwrite] [--effort medium] [--n 500] [--skip 0] [--kinds user] [--questions 50] [--deadline 120 (minutes)]";
-export const HELP = `${USAGE}\n\nRuns contenders sequentially with a single global authorized-request cap.\n--no-fail-fast continues with the next contender after a contender-local failure.\nArtifacts use V2 running, complete, completed-with-failures, and aborted outcomes.`;
+export const HELP = `${USAGE}\n\nRuns contenders sequentially with a single global authorized-request cap.\n--no-fail-fast continues with the next contender after a contender-local failure.\nArtifacts use V2 running, complete, completed-with-failures, and aborted outcomes.\nOnly complete exits 0; local failures and global aborts exit 1, invalid setup exits 2.\nEvery Responses POST (including fallback/401 retry), Messages POST, and Claude send is authorized immediately before dispatch.\nSource aliases cannot be overwritten. Metrics exclude corpus/output text and temporary paths; replay scratch data is removed.`;
 
 export function parseContender(spec: string): Contender {
   const eq = spec.indexOf("=");
@@ -85,7 +85,7 @@ export function parseBakeoffCommand(argv: readonly string[]): BakeoffCommand {
       },
       strict: true,
     });
-    const parsed = values as ParsedValues;
+    const parsed: ParsedValues = values;
     return parsed.help ? { type: "help" } : { type: "run", values: parsed };
   } catch {
     throw new BakeoffOptionsError();
@@ -126,7 +126,7 @@ export const sameSourceAndOutput = (source: string, output: string): boolean => 
 
 export function resolveBakeoffOptions(command: Extract<BakeoffCommand, { readonly type: "run" }>, loaded: Settings, files: BakeoffFiles): BakeoffOptions {
   try {
-    const values = command.values;
+    const { values } = command;
     const maxRequests = values["max-requests"] === undefined ? undefined : count(values["max-requests"], 1);
     const messageCount = count(values.n, 1);
     const skip = count(values.skip, 0);
@@ -143,7 +143,7 @@ export function resolveBakeoffOptions(command: Extract<BakeoffCommand, { readonl
       questionCount === undefined ||
       deadlineMinutes === undefined ||
       (files.outputExists(values.out) && !values.overwrite) ||
-      (files.sameFile?.(values.from, values.out) ?? (() => { try { return sameSourceAndOutput(values.from!, values.out!); } catch { return false; } })())
+      (files.sameFile ?? sameSourceAndOutput)(values.from, values.out)
     ) throw new BakeoffOptionsError();
 
     const contenders = values.chain.map(parseContender);
@@ -178,11 +178,4 @@ export function resolveBakeoffOptions(command: Extract<BakeoffCommand, { readonl
     if (error instanceof BakeoffOptionsError) throw error;
     throw new BakeoffOptionsError();
   }
-}
-
-/** Test/programmatic convenience; CLI code uses parseBakeoffCommand and resolveBakeoffOptions separately. */
-export function parseBakeoffOptions(argv: readonly string[], loaded: Settings, files: BakeoffFiles): BakeoffOptions {
-  const command = parseBakeoffCommand(argv);
-  if (command.type === "help") throw new BakeoffOptionsError();
-  return resolveBakeoffOptions(command, loaded, files);
 }

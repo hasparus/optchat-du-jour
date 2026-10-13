@@ -27,7 +27,7 @@ export const makeSummarize = (o: CompactorNeeds) =>
                   ref,
                   run: (from: string | null) =>
                     run(job, from).pipe(
-                      Effect.catchAll((error) =>
+                      Effect.catch((error) =>
                         directEngineFailure({ coord: { i: job.i, l: job.l }, error, ref }).pipe(
                           Effect.flatMap((directive) => directive === "stop" ? Effect.interrupt : Effect.fail(error)),
                         ),

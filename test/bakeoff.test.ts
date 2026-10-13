@@ -3,18 +3,15 @@ import { Effect } from "effect";
 import type { Job } from "../src/compactor.ts";
 import type { Contender } from "../dev/bakeoff-options.ts";
 import { bytes } from "../src/tree.ts";
-import { RequestAdmission, admitRequest } from "../src/engines/request-admission.ts";
+import { admitRequest } from "../src/engines/request-admission.ts";
 import type { UsageRecord } from "../src/usage.ts";
 import {
   type CompleteReplay,
   type Message,
   type Replayed,
-  lexicalAnswerer,
-  measure,
-  modelBuiltNodes,
-  overLimit,
   replay,
-} from "../dev/bakeoff.ts";
+} from "../dev/bakeoff-replay.ts";
+import { lexicalAnswerer, measure, modelBuiltNodes, overLimit } from "../dev/bakeoff-metrics.ts";
 import { parseContender } from "../dev/bakeoff-options.ts";
 import { makeRunControl } from "../dev/bakeoff-run.ts";
 
@@ -108,11 +105,11 @@ test("the global authorization cap interrupts replay authoritatively", async () 
       poll: "1 millis",
       summarizeFor: () =>
         Effect.succeed(() =>
-          admitRequest({ model: "fake", transport: "openai-responses" }).pipe(
+          admitRequest().pipe(
             Effect.andThen(Effect.sync(() => (boundary++, "talk: short"))),
           ),
         ),
-    }).pipe(Effect.provideService(RequestAdmission, run.admission)),
+    }),
   );
   expect(boundary).toBe(1);
   expect(replayed.type).toBe("failed");

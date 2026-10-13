@@ -1,4 +1,4 @@
-import { Context, Duration, Effect, Option } from "effect";
+import { Cause, Context, Duration, Effect, Option } from "effect";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type { Summarize } from "../src/compactor.ts";
@@ -12,7 +12,8 @@ import { built, bytes, type Mem, nodes } from "../src/tree.ts";
 import { type UsageRecord, logUsage } from "../src/usage.ts";
 import { settle } from "../src/view.ts";
 import type { Contender } from "./bakeoff-options.ts";
-import type { ContenderControl, DiagnosticReason, GlobalAbort, Progress } from "./bakeoff-run.ts";
+import type { DiagnosticReason, GlobalAbort, Progress } from "./bakeoff-artifact.ts";
+import type { ContenderControl } from "./bakeoff-run.ts";
 import { makeRunControl } from "./bakeoff-run.ts";
 
 export type Message = { readonly kind: Kind; readonly text: string };
@@ -27,7 +28,7 @@ type ReplayBase = {
 export type CompleteReplay = ReplayBase & { readonly type: "complete"; readonly logged: number };
 export type FailedReplay = ReplayBase & {
   readonly type: "failed";
-  readonly failure: { readonly type: "diagnostic"; readonly reason: DiagnosticReason } | { readonly type: "global"; readonly abort: GlobalAbort };
+  readonly failure: { readonly type: "diagnostic"; readonly reason: DiagnosticReason } | { readonly type: "global"; readonly abort: Extract<GlobalAbort, { readonly type: "max-authorized-requests" }> };
   readonly progress: Progress;
 };
 export type Replayed = CompleteReplay | FailedReplay;
@@ -66,11 +67,11 @@ export const replay = <R>(o: {
     Effect.gen(function* () {
       const dir = yield* Effect.acquireRelease(
         Effect.sync(() => mkdtempSync(`${tmpdir()}/bake-`)),
-        (path) => Effect.sync(() => rmSync(path, { force: true, recursive: true })),
+        (path) => Effect.sync(() => { rmSync(path, { force: true, recursive: true }); }),
       );
       const records: Logged[] = [];
       let reportCount = 0;
-      const report = (_message: string) => Effect.sync(() => void reportCount++);
+      const report = (_message: string) => Effect.sync(() => { reportCount++; });
       const log = (record: UsageRecord) =>
         Effect.gen(function* () {
           records.push({ ...record, node: yield* CurrentNode });
@@ -79,7 +80,8 @@ export const replay = <R>(o: {
         });
       const raw = yield* o.summarizeFor(o.contender, log, report);
       const summarize: Summarize = (job) =>
-        raw(job).pipe(
+        Effect.suspend(() => raw(job)).pipe(
+          Effect.tapCause((cause) => Cause.hasDies(cause) ? control.abortUnexpected : Effect.void),
           Effect.flatMap((line) =>
             bytes(line) > NODE
               ? control.fail({ bytes: bytes(line), coord: { i: job.i, l: job.l }, limit: NODE, type: "over-limit" }).pipe(Effect.andThen(Effect.interrupt))
@@ -91,34 +93,38 @@ export const replay = <R>(o: {
               : Effect.void,
           ),
         );
-      const chat = yield* openChat(dir, {
-        marks: o.budget === undefined ? undefined : { high: o.budget, low: Math.floor(o.budget / 2) },
-        report,
-        summarize: (job) => summarize(job).pipe(Effect.provideService(CurrentNode, `${job.l}.${job.i}`)),
-      });
-      let logged = 0;
-      const retrying = chat.retry.pipe(Effect.delay(o.retry ?? WAIT_RETRY), Effect.forever);
-      const work = Effect.gen(function* () {
-        for (const message of o.messages) {
-          yield* chat.log(message.kind, message.text);
-          logged++;
-          yield* settle(chat.mem);
-        }
-        while (unbuiltCount(chat.mem) > 0) yield* Effect.sleep(o.poll ?? "200 millis");
-      }).pipe(Effect.raceFirst(retrying));
-      const deadline = o.deadline ?? "2 hours";
-      const terminal = yield* Effect.race(
-        work.pipe(
-          Effect.timeoutOption(deadline),
-          Effect.map((result) => Option.isSome(result) ? ({ type: "complete" } as const) : ({ type: "deadline" } as const)),
-        ),
-        control.awaitTerminal,
-      );
-      if (terminal.type === "deadline")
-        yield* control.fail({ duration: Duration.format(Duration.fromInputUnsafe(deadline)).slice(0, 100), type: "deadline" });
+      const { chat, logged, terminal } = yield* Effect.scoped(Effect.gen(function* () {
+        const chat = yield* openChat(dir, {
+          marks: o.budget === undefined ? undefined : { high: o.budget, low: Math.floor(o.budget / 2) },
+          report,
+          summarize: (job) => summarize(job).pipe(Effect.provideService(CurrentNode, `${job.l}.${job.i}`)),
+        });
+        let logged = 0;
+        const retrying = chat.retry.pipe(Effect.delay(o.retry ?? WAIT_RETRY), Effect.forever);
+        const work = Effect.gen(function* () {
+          for (const message of o.messages) {
+            yield* chat.log(message.kind, message.text);
+            logged++;
+            yield* settle(chat.mem);
+          }
+          while (unbuiltCount(chat.mem) > 0) yield* Effect.sleep(o.poll ?? "200 millis");
+        }).pipe(Effect.raceFirst(retrying));
+        const deadline = o.deadline ?? "2 hours";
+        const terminal = yield* Effect.race(
+          work.pipe(
+            Effect.timeoutOption(deadline),
+            Effect.map((result) => Option.isSome(result) ? ({ type: "complete" } as const) : ({ type: "deadline" } as const)),
+          ),
+          control.awaitTerminal,
+        );
+        if (terminal.type === "deadline")
+          yield* control.fail({ duration: Duration.format(Duration.fromInputUnsafe(deadline)).slice(0, 100), type: "deadline" });
+        return { chat, logged, terminal };
+      }));
+      if (terminal.type === "global" && terminal.abort.type === "unexpected") return yield* Effect.die("bake-off replay failed");
       const unbuiltNodeCount = unbuiltCount(chat.mem);
       const progress: Progress = { loggedMessages: logged, requestedMessages: o.messages.length, unbuiltNodeCount, usageRecords: records.length };
-      if (terminal.type === "global")
+      if (terminal.type === "global" && terminal.abort.type === "max-authorized-requests")
         return { contender: o.contender, failure: { abort: terminal.abort, type: "global" }, mem: chat.mem, progress, records, reportCount, type: "failed" } satisfies FailedReplay;
       const reason = control.reason();
       if (terminal.type !== "complete" || reason !== undefined || unbuiltNodeCount > 0) {

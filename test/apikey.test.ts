@@ -16,7 +16,7 @@ import { memorySecrets } from "../src/secrets.ts";
 import { newMsg } from "../src/store.ts";
 import { type EngineNeeds, providerOf } from "../src/engines/registry.ts";
 import { makeGate } from "../src/engines/inflight.ts";
-import { RequestAdmission, RequestNotAdmitted, type RequestMetadata } from "../src/engines/request-admission.ts";
+import { EngineExecutionPolicy, RequestNotAdmitted } from "../src/engines/request-admission.ts";
 import { apiKeyCompactor } from "../src/summarize/api-key.ts";
 import { apiKeyProvider } from "../src/providers/api-key.ts";
 import type { ToolBox } from "../src/tools/box.ts";
@@ -150,21 +150,22 @@ test("Anthropic gets our cache layout: 5-minute marks on the system prompt, the 
 
 test("each Anthropic Messages POST is admitted at the boundary", async () => {
   const r = rig(5, `${dir}/anthropic-cap.jsonl`);
-  const seen: RequestMetadata[] = [];
+  const seen: number[] = [];
   const admission = {
-    authorize: (metadata: RequestMetadata) =>
+    onFailure: () => Effect.succeed("continue" as const),
+      authorize: () =>
       Effect.suspend(() => {
         if (seen.length > 0) return Effect.fail(new RequestNotAdmitted({ reason: "max-authorized-requests" }));
-        seen.push(metadata);
+        seen.push(seen.length + 1);
         return Effect.void;
       }),
   };
   fake.state.seen.length = 0;
   fake.state.script = [{ text: `user: ${"x".repeat(600)}` }, { text: "user: fits" }];
-  const result = await Effect.runPromise(Effect.exit(r.compact(job).pipe(Effect.provideService(RequestAdmission, admission))));
+  const result = await Effect.runPromise(Effect.exit(r.compact(job).pipe(Effect.provideService(EngineExecutionPolicy, admission))));
   expect(result._tag).toBe("Failure");
   expect(fake.state.seen).toHaveLength(1);
-  expect(seen).toEqual([{ model: API_KEY.model, transport: "anthropic-messages" }]);
+  expect(seen).toEqual([1]);
 });
 
 // an api-key compactor record from `date` that cost `dollars`
