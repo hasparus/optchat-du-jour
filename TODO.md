@@ -56,6 +56,9 @@ Then on the phone, which no CI can check:
 - [ ] The build compiles and signs on EAS at all (Expo SDK 57, react-native-webview 13.16.1; nothing native was compiled here), and the non-interactive submit finds the key EAS keeps.
 - [ ] First launch: the address check passes over Tailscale (`/api/devices` answers 200), and a wrong login gets the 403 message.
 - [ ] Keyboard: the composer sits right on top of it, and nothing jumps when it opens or closes. Risk of a double adjustment: KeyboardAvoidingView shrinks the WebView while WKWebView may also inset or scroll its own scroll view for the same keyboard; if the page jumps, drop one (e.g. `scrollEnabled={false}` on the WebView, or no KeyboardAvoidingView). With `hideKeyboardAccessoryView` there is no Done button: check that tapping the chat dismisses the keyboard. Safe areas at the notch and the home indicator.
+- [ ] "+" → Add context sheet: "Photos & videos" and "Camera" open the picker from the sheet (the tap's user gesture must reach the hidden input in WKWebView), and the sheet closes.
+- [ ] The composer's glass: backdrop blur renders and stays smooth while scrolling; text over a photo or code block stays readable.
+- [ ] VoiceOver: a reply's Copy and Raw, collapsed behind a tap, can still be reached and activated.
 - [ ] Camera and photo attach from the composer, a video's sound; the permission prompts show their strings, and the page gets the mic and camera with no second WebKit prompt.
 - [ ] Back from the background after a few seconds, after a minute and after hours: the link reconnects at once (WKWebView fires `visibilitychange`; past 30 s an "open" socket is replaced), no white page; the failure screen retries by itself.
 - [ ] Links in a reply open in the Safari sheet, `mailto:` in Mail; an attachment opens full size in the sheet, and the app stays on its page (the top frame only ever holds the server's `/`).
