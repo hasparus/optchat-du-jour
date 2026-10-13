@@ -9,7 +9,7 @@ export const runBakeoffCli = (argv: readonly string[]) => Effect.gen(function* (
     yield* Console.log(HELP);
     return 0;
   }
-  const { executeBakeoff } = yield* Effect.promise(() => import("./bakeoff-live.ts"));
+  const { executeBakeoff } = yield* Effect.promise(async () => import("./bakeoff-live.ts"));
   return yield* executeBakeoff(command);
 }).pipe(Effect.catchCause(() => Console.error("bake-off setup failed (details redacted); use --help").pipe(Effect.as(2))));
 
