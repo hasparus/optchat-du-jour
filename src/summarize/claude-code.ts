@@ -11,9 +11,10 @@ import type { Job } from "../compactor.ts";
 import { CALL_TIMEOUT } from "../config.ts";
 import { type DeviceOffline, type EngineError, fromResult, ModelError } from "../engines/errors.ts";
 import { type Gate, prefixKey } from "../engines/inflight.ts";
+import { admitRequest } from "../engines/request-admission.ts";
 import type { Placement } from "../turn/claude-code.ts";
 import { tokensOf, type UsageRecord } from "../usage.ts";
-import { type CompactAttemptHooks, type Try, contextBlocks, sizeRetries, task } from "./step.ts";
+import { type Try, contextBlocks, sizeRetries, task } from "./step.ts";
 
 export type CompactorOptions = {
   readonly model: string;
@@ -28,7 +29,6 @@ export type CompactorOptions = {
   readonly tools: readonly string[];
   readonly placement: Effect.Effect<Placement, DeviceOffline>;
   readonly gate: Gate; // waits on a call writing the same marked prefix (docs/optchat.md §3.3)
-  readonly attemptHooks?: CompactAttemptHooks;
 };
 
 // The user message of a call (layout A): the context pieces (step.ts), then the task. Two marks
@@ -97,7 +97,7 @@ export const claudeCodeCompactor = (o: CompactorOptions) => {
           });
           const ask = (t: Try) =>
             Effect.gen(function* () {
-              yield* t.beforeRequest;
+              yield* admitRequest({ model: o.model, transport: "claude" });
               yield* claude.send(t.retry === null ? first : [{ text: t.retry.text, type: "text" }]);
               const result = yield* answer;
               const usage = tokensOf(result.usage), model = claude.model() ?? null;
@@ -105,7 +105,7 @@ export const claudeCodeCompactor = (o: CompactorOptions) => {
                 return yield* fromResult(result.result ?? `the call ended with ${result.subtype ?? "an error"}`, result.stop_reason, { model, usage });
               return { model, text: result.result ?? "", usage };
             });
-          return yield* sizeRetries({ ask, auth: "claude-max", device: o.device, effort: o.effort, engine: "claude-code", failoverFrom, hooks: o.attemptHooks, job, log: o.log });
+          return yield* sizeRetries({ ask, auth: "claude-max", device: o.device, effort: o.effort, engine: "claude-code", failoverFrom, job, log: o.log });
         }).pipe(Effect.scoped), // the process ends with the node
       );
     }).pipe(

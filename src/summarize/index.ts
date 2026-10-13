@@ -20,7 +20,17 @@ export const makeSummarize = (o: CompactorNeeds) =>
       failover(
         chainFor(o.settings, job.l).flatMap(({ ref }) => {
           const run = engines.get(ref);
-          return run ? [{ ref, run: (from: string | null) => run(job, from) }] : [];
+          return run
+            ? [
+                {
+                  ref,
+                  run: (from: string | null) =>
+                    run(job, from).pipe(
+                      Effect.tapError((error) => o.onEngineFailure?.({ coord: { i: job.i, l: job.l }, error, ref }) ?? Effect.void),
+                    ),
+                },
+              ]
+            : [];
         }),
         watch,
       ).pipe(Effect.mapError((e) => new CompactError({ message: e.message })));

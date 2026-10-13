@@ -9,12 +9,12 @@ import { openChat } from "../src/chat.ts";
 import { CompactError, type Job } from "../src/compactor.ts";
 import { MASTER_TOOLS } from "../src/config.ts";
 import { makeGate, type Gate } from "../src/engines/inflight.ts";
+import { RequestAdmission, RequestNotAdmitted, type RequestMetadata } from "../src/engines/request-admission.ts";
 import { mcpConfig } from "../src/mcp.ts";
 import { newMsg } from "../src/store.ts";
 import { warmRunner } from "../src/claude/warm.ts";
 import { blocks, claudeCodeCompactor, compactSpawn, markedPrefix } from "../src/summarize/claude-code.ts";
-import { type CompactAttemptHooks, retryText, task } from "../src/summarize/step.ts";
-import { makeBakeoffController } from "../dev/bakeoff.ts";
+import { retryText, task } from "../src/summarize/step.ts";
 import { built, getNode } from "../src/tree.ts";
 import type { Placement } from "../src/turn/claude-code.ts";
 import type { UsageRecord } from "../src/usage.ts";
@@ -32,12 +32,10 @@ const compactor = (o: {
   readonly timeout?: Duration.Input;
   readonly gate?: Gate;
   readonly placement?: Effect.Effect<Placement>;
-  readonly attemptHooks?: CompactAttemptHooks;
 }) =>
   Effect.gen(function* () {
     const runner = yield* Runner;
     return claudeCodeCompactor({
-      attemptHooks: o.attemptHooks,
       effort: "medium",
       gate: o.gate ?? makeGate(),
       instructions: "SYSTEM",
@@ -175,19 +173,27 @@ test("a line over 512 bytes is retried in the same call with docs/optchat.md §4
   ]);
 });
 
-test("cap 1 permits one Claude send and blocks the size retry", async () => {
+test("each Claude send is admitted at the boundary", async () => {
   const over = `talk: ${"x".repeat(594)}`;
   const f = scripted({ compact: [[[{ text: over }], [{ text: "talk: must not be sent" }]]] });
-  const control = makeBakeoffController(1);
+  const seen: RequestMetadata[] = [];
+  const admission = {
+    authorize: (metadata: RequestMetadata) =>
+      Effect.suspend(() => {
+        if (seen.length > 0) return Effect.fail(new RequestNotAdmitted({ reason: "max-authorized-requests" }));
+        seen.push(metadata);
+        return Effect.void;
+      }),
+  };
   await run(
     f,
     Effect.gen(function* () {
-      const summarize = yield* compactor({ attemptHooks: control.hooks("claude"), ttl: "1h" });
-      expect((yield* Effect.result(summarize({ ctx: [], i: 0, l: 0, msg: newMsg(0, "user", long(900)) })))._tag).toBe("Failure");
+      const summarize = yield* compactor({ ttl: "1h" });
+      expect((yield* Effect.exit(summarize({ ctx: [], i: 0, l: 0, msg: newMsg(0, "user", long(900)) }).pipe(Effect.provideService(RequestAdmission, admission))))._tag).toBe("Failure");
     }),
   );
   expect(f.of("compact")[0]?.ins).toHaveLength(1);
-  expect(control.snapshot()).toMatchObject({ attempts: 1, stop: { type: "max-attempts" } });
+  expect(seen).toEqual([{ model: "sonnet", transport: "claude" }]);
 });
 
 test("an empty answer to a size retry ends the call with the shortest line before it", async () => {

@@ -54,7 +54,6 @@ export const responsesProvider = (o: {
       if (o.before) yield* o.before;
       const { onItem } = c;
       const reply = yield* o.respond({
-        beforeRequest: c.beforeRequest,
         effort: o.effort,
         input: c.history.flatMap(turnOf),
         instructions: c.instructions,

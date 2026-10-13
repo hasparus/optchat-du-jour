@@ -67,21 +67,8 @@ function shortest(tries: readonly string[]): string {
 export type Try = {
   readonly attempt: number;
   readonly retry: { readonly line: string; readonly text: string } | null;
-  readonly beforeRequest: Effect.Effect<void, EngineError>;
 };
 export type Answer = { readonly text: string; readonly usage: Tokens; readonly model: string | null; readonly dollars?: number };
-
-export type CompactAttempt = {
-  readonly attempt: number;
-  readonly auth: UsageRecord["auth"];
-  readonly engine: UsageRecord["engine"];
-  readonly failoverFrom: string | null;
-  readonly job: Job;
-};
-export type CompactAttemptHooks = {
-  readonly beforeRequest: (attempt: CompactAttempt) => Effect.Effect<void, EngineError>;
-  readonly onFailure: (attempt: CompactAttempt, error: EngineError) => Effect.Effect<void>;
-};
 
 // The size retries (docs/optchat.md §4 "The size"), for any engine: ask, log what the try cost, and retry in the same
 // conversation until the line fits or TRIES are spent; the shortest try wins. Every try that
@@ -95,7 +82,6 @@ export const sizeRetries = (o: {
   readonly effort: string | undefined; // what the engine asks for, for the records
   readonly log: (record: UsageRecord) => Effect.Effect<void>;
   readonly ask: (t: Try) => Effect.Effect<Answer, EngineError>;
-  readonly hooks?: CompactAttemptHooks;
 }): Effect.Effect<string, EngineError> =>
   Effect.gen(function* () {
     const tries: string[] = [];
@@ -123,14 +109,8 @@ export const sizeRetries = (o: {
           };
           yield* o.log(dollars === undefined ? line : { ...line, dollars });
         });
-      const metadata: CompactAttempt = { attempt, auth: o.auth, engine: o.engine, failoverFrom: o.failoverFrom, job: o.job };
-      const beforeRequest = o.hooks?.beforeRequest(metadata) ?? Effect.void;
-      const answer: Answer = yield* o.ask({ attempt, beforeRequest, retry }).pipe(
-        Effect.tapError((e) =>
-          (o.hooks === undefined ? Effect.void : o.hooks.onFailure(metadata, e)).pipe(
-            Effect.andThen(e._tag !== "DeviceOffline" && e.spent !== undefined ? record(e.spent.usage, e.spent.model, e.spent.dollars) : Effect.void),
-          ),
-        ),
+      const answer: Answer = yield* o.ask({ attempt, retry }).pipe(
+        Effect.tapError((e) => (e._tag !== "DeviceOffline" && e.spent !== undefined ? record(e.spent.usage, e.spent.model, e.spent.dollars) : Effect.void)),
       );
       yield* record(answer.usage, answer.model, answer.dollars);
       const line = answer.text.trim();

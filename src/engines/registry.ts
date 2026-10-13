@@ -16,7 +16,6 @@ import type { OpenAiPlan } from "../openai/responses.ts";
 import { apiKeyCompactor } from "../summarize/api-key.ts";
 import { claudeCodeCompactor } from "../summarize/claude-code.ts";
 import { openAiPlanCompactor } from "../summarize/openai-plan.ts";
-import type { CompactAttemptHooks } from "../summarize/step.ts";
 import { type Placement, claudeCodeTurn } from "../turn/claude-code.ts";
 import type { TurnEngine } from "../turn/engine.ts";
 import { toolLoop } from "../turn/loop.ts";
@@ -52,7 +51,13 @@ export type CompactorNeeds = EngineNeeds & {
   readonly tools: readonly ToolDef[];
   readonly placement: Effect.Effect<Placement, DeviceOffline>;
   readonly gate: Gate;
-  readonly attemptHooks?: CompactAttemptHooks;
+  readonly onEngineFailure?: (failure: EngineFailure) => Effect.Effect<void>;
+};
+
+export type EngineFailure = {
+  readonly coord: { readonly l: number; readonly i: number };
+  readonly ref: string;
+  readonly error: EngineError;
 };
 
 // a turn engine's needs: the one system prompt (docs/optchat.md §5), where each device's claude runs (E7),
@@ -81,13 +86,12 @@ export const compactorEngine = (ref: Ref, o: CompactorNeeds): Effect.Effect<Comp
           placement: o.placement,
           tools: o.settings.master.tools ?? MASTER_TOOLS,
           ttl: o.settings.cache.claudeCodeTtl,
-          attemptHooks: o.attemptHooks,
         }),
       );
     case "openai-plan":
-      return Effect.map(o.plan, (plan) => openAiPlanCompactor({ attemptHooks: o.attemptHooks, device: o.device, effort, gate, instructions, log: o.log, model: ref.model, plan, tools }));
+      return Effect.map(o.plan, (plan) => openAiPlanCompactor({ device: o.device, effort, gate, instructions, log: o.log, model: ref.model, plan, tools }));
     case "api-key":
-      return Effect.map(providerOf(ref, o, effort), (provider) => apiKeyCompactor({ attemptHooks: o.attemptHooks, device: o.device, effort, gate, instructions, log: o.log, model: ref.model, provider, tools }));
+      return Effect.map(providerOf(ref, o, effort), (provider) => apiKeyCompactor({ device: o.device, effort, gate, instructions, log: o.log, model: ref.model, provider, tools }));
   }
 };
 

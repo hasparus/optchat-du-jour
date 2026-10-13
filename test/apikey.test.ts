@@ -16,9 +16,8 @@ import { memorySecrets } from "../src/secrets.ts";
 import { newMsg } from "../src/store.ts";
 import { type EngineNeeds, providerOf } from "../src/engines/registry.ts";
 import { makeGate } from "../src/engines/inflight.ts";
+import { RequestAdmission, RequestNotAdmitted, type RequestMetadata } from "../src/engines/request-admission.ts";
 import { apiKeyCompactor } from "../src/summarize/api-key.ts";
-import type { CompactAttemptHooks } from "../src/summarize/step.ts";
-import { makeBakeoffController } from "../dev/bakeoff.ts";
 import { apiKeyProvider } from "../src/providers/api-key.ts";
 import type { ToolBox } from "../src/tools/box.ts";
 import type { TurnEvents, TurnInput } from "../src/turn/engine.ts";
@@ -62,7 +61,7 @@ const clients = Effect.runSync(
 const READ = { description: "Read a file", name: "Read", parameters: { properties: { file_path: { type: "string" } }, type: "object" } };
 
 // a compactor engine whose records go through the budget into usage.jsonl, as the server's do
-const rig = (monthly: number, usagePath: string, attemptHooks?: CompactAttemptHooks) => {
+const rig = (monthly: number, usagePath: string) => {
   const reports: string[] = [], records: UsageRecord[] = [];
   const budget = makeBudget({ monthly, report: (m) => Effect.sync(() => void reports.push(m)), usagePath });
   const log = (r: UsageRecord) =>
@@ -72,7 +71,7 @@ const rig = (monthly: number, usagePath: string, attemptHooks?: CompactAttemptHo
     );
   const needs: EngineNeeds = { apiKeys: Effect.succeed(clients), budget, log, plan: Effect.never, report: () => Effect.void, settings: settings(monthly) };
   const provider = Effect.runSync(providerOf(API_KEY, needs, "medium"));
-  const compact = apiKeyCompactor({ attemptHooks, effort: "medium", gate: makeGate(), instructions: "SYSTEM", log, model: API_KEY.model, provider, tools: [READ] });
+  const compact = apiKeyCompactor({ effort: "medium", gate: makeGate(), instructions: "SYSTEM", log, model: API_KEY.model, provider, tools: [READ] });
   return { budget, compact, records, reports };
 };
 
@@ -149,15 +148,23 @@ test("Anthropic gets our cache layout: 5-minute marks on the system prompt, the 
   expect([turn?.tool_choice?.type, last?.tool_choice?.type]).toEqual(["auto", "none"]);
 });
 
-test("cap 1 permits one Anthropic Messages POST and blocks the size retry", async () => {
-  const control = makeBakeoffController(1);
-  const r = rig(5, `${dir}/anthropic-cap.jsonl`, control.hooks("anthropic"));
+test("each Anthropic Messages POST is admitted at the boundary", async () => {
+  const r = rig(5, `${dir}/anthropic-cap.jsonl`);
+  const seen: RequestMetadata[] = [];
+  const admission = {
+    authorize: (metadata: RequestMetadata) =>
+      Effect.suspend(() => {
+        if (seen.length > 0) return Effect.fail(new RequestNotAdmitted({ reason: "max-authorized-requests" }));
+        seen.push(metadata);
+        return Effect.void;
+      }),
+  };
   fake.state.seen.length = 0;
   fake.state.script = [{ text: `user: ${"x".repeat(600)}` }, { text: "user: fits" }];
-  const result = await Effect.runPromise(Effect.result(r.compact(job)));
+  const result = await Effect.runPromise(Effect.exit(r.compact(job).pipe(Effect.provideService(RequestAdmission, admission))));
   expect(result._tag).toBe("Failure");
   expect(fake.state.seen).toHaveLength(1);
-  expect(control.snapshot()).toMatchObject({ attempts: 1, stop: { type: "max-attempts" } });
+  expect(seen).toEqual([{ model: API_KEY.model, transport: "anthropic-messages" }]);
 });
 
 // an api-key compactor record from `date` that cost `dollars`

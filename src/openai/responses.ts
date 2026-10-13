@@ -17,6 +17,7 @@
 import { Context, Data, Effect, Layer, Option, Schema, Stream } from "effect";
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
+import { admitRequest } from "../engines/request-admission.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
 import { isPicture, type Part } from "../media/part.ts";
 import { wireJson } from "../text.ts";
@@ -54,7 +55,6 @@ export type Ask<E extends Tagged = never> = {
   readonly onThinking?: (tokens: number) => Effect.Effect<void>; // the size of the reasoning streamed so far
   readonly onOut?: (out: Out) => Effect.Effect<void, E>; // each item of `output` as it completes
   readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
-  readonly beforeRequest?: Effect.Effect<void, EngineError>;
 };
 export type Reply = { readonly text: string; readonly usage: Usage; readonly model: string; readonly output: readonly Out[] };
 export type Respond = <E extends Tagged = never>(ask: Ask<E>) => Effect.Effect<Reply, EngineError | E>;
@@ -287,7 +287,7 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
         HttpClientRequest.accept("text/event-stream"),
         HttpClientRequest.bodyText(body(ask, marked), "application/json"),
       );
-      return (ask.beforeRequest ?? Effect.void).pipe(Effect.andThen(http.execute(request)));
+      return admitRequest({ model: ask.model, transport: "openai-responses" }).pipe(Effect.andThen(http.execute(request)));
     };
     // A model that refuses the breakpoints (a 400 naming the field) gets the same request again
     // without them, and none from then on, which the user hears once, rather than failing every

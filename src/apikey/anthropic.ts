@@ -12,6 +12,7 @@
 import { Effect, Option, Schema, Stream } from "effect";
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
+import { admitRequest } from "../engines/request-admission.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
 import { isPicture } from "../media/part.ts";
 import type { ToolDef } from "../tools/files.ts";
@@ -40,7 +41,6 @@ export type MessagesAsk<E extends Tagged = never> = {
   readonly onThinking?: (tokens: number) => Effect.Effect<void>; // the size of the thought so far
   readonly onItem?: (item: Item) => Effect.Effect<void, E>; // each block as it completes, in order
   readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
-  readonly beforeRequest?: Effect.Effect<void, EngineError>;
 };
 // `writes` splits the cache writes by TTL when the API says how; `stop` is the API's stop_reason
 export type MessagesReply = {
@@ -318,7 +318,7 @@ export const makeMessages = (o: { readonly base: string; readonly key: Effect.Ef
           HttpClientRequest.accept("text/event-stream"),
           HttpClientRequest.bodyText(requestBody(ask), "application/json"),
         );
-        if (ask.beforeRequest !== undefined) yield* ask.beforeRequest;
+        yield* admitRequest({ model: ask.model, transport: "anthropic-messages" });
         const res = yield* http.execute(req);
         if (res.status !== 200) {
           const raw = yield* res.text;
