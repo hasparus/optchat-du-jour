@@ -107,13 +107,16 @@ const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
   });
 
 // a stream-json user event carrying one tool_result, as parseEvent decodes it
-const resultEvent = (flag: { readonly is_error?: boolean }) =>
+const resultEvent = (flag: { readonly is_error?: boolean | string | null }) =>
   Option.getOrThrow(parseEvent(JSON.stringify({ message: { content: [{ content: "x", tool_use_id: "toolu_1", type: "tool_result", ...flag }], role: "user" }, type: "user" })));
 
 test("Claude Code's is_error is decoded from a tool_result, and left out when the block has none", () => {
   expect(resultEvent({ is_error: true })).toMatchObject({ message: { content: [{ is_error: true, type: "tool_result" }] }, type: "user" });
   expect(resultEvent({ is_error: false })).toMatchObject({ message: { content: [{ is_error: false, type: "tool_result" }] }, type: "user" });
   expect(JSON.stringify(resultEvent({}))).not.toContain("is_error");
+  // a malformed flag never fails the block: its text and tool_use_id survive
+  for (const is_error of [null, "true"])
+    expect(resultEvent({ is_error })).toMatchObject({ message: { content: [{ content: "x", is_error, tool_use_id: "toolu_1", type: "tool_result" }] }, type: "user" });
 });
 
 test("a failed tool's echo keeps Claude Code's error flag on its log line, written only when true; the view reads as before (E28)", async () => {
@@ -130,6 +133,30 @@ test("a failed tool's echo keeps Claude Code's error flag on its log line, writt
       ],
     ],
   });
+  // a flag that isn't a boolean: the echo keeps its text and reads as not failed
+  const malformed = scripted({
+    turn: [
+      [
+        { tool: { input: { command: "a" }, name: "Bash" } },
+        { is_error: null, toolResult: "out a" },
+        { tool: { input: { command: "b" }, name: "Bash" } },
+        { is_error: "true", toolResult: "out b" },
+        { text: "Done." },
+      ],
+    ],
+  });
+  await run(
+    malformed,
+    Effect.gen(function* () {
+      const r = yield* rig(malformed);
+      yield* r.session.input("try");
+      yield* r.finished(1);
+      expect(r.chat.mem.root.filter((m) => m.kind === "echo").map((m) => [m.text, m.error])).toEqual([
+        ["out a", undefined],
+        ["out b", undefined],
+      ]);
+    }),
+  );
   await run(
     f,
     Effect.gen(function* () {

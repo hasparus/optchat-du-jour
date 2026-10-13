@@ -80,7 +80,9 @@ const isText = (b: AssistantBlock): b is TextBlock => b.type === "text" && "text
 const isToolUse = (b: AssistantBlock): b is ToolUseBlock => b.type === "tool_use" && "name" in b && typeof b.name === "string";
 const isPlainUser = (c: UserContent): c is string => typeof c === "string";
 const isPlainResult = (c: NonNullable<ResultContent>): c is string => typeof c === "string";
-const isToolResult = (b: Exclude<UserContent, string>[number]): b is ToolResult => b.type === "tool_result";
+// A block that decoded as a tool_result has its fields; one only OtherBlock let through has none
+// but `type` (the schema keeps nothing else), and its echo is logged empty, as it always was.
+const isToolResult = (b: Exclude<UserContent, string>[number]): b is ToolResult => b.type === "tool_result" && ("content" in b || "is_error" in b);
 
 // the text of a tool result: its text parts, one per line; anything else by its type, e.g. [image]
 const resultText = (content: ResultContent) => {
@@ -152,10 +154,14 @@ export function makeMapper(out: TurnEvents, passed: Mid[], mcp: (status: string)
     if (e.isReplay) return onReplay();
     const { content } = e.message;
     if (isPlainUser(content)) return Effect.void;
-    // the echo keeps Claude Code's error flag for clients (E28); what the model reads is the text
+    // the echo keeps Claude Code's error flag for clients (E28), only a literal true; what the model reads is the text
     return Effect.forEach(
       content,
-      (block) => (isToolResult(block) ? out.log("echo", cap(resultText(block.content)), { error: block.is_error === true }) : Effect.void),
+      (block) => {
+        if (block.type !== "tool_result") return Effect.void;
+        const result = isToolResult(block) ? block : undefined;
+        return out.log("echo", cap(resultText(result?.content)), { error: result?.is_error === true });
+      },
       { discard: true },
     );
   };

@@ -12,8 +12,10 @@ const ToolCall = Schema.Struct({
 });
 
 // An echo whose tool failed (E28): server/agui.ts puts `metadata: {error: true}` on its tool
-// message and its TOOL_CALL_RESULT. Other keys of AG-UI's open metadata are ignored.
-const ToolMetadata = Schema.Struct({ error: Schema.optional(Schema.Boolean) });
+// message and its TOOL_CALL_RESULT. Other keys of AG-UI's open metadata are ignored, and `error` is
+// taken as any value, read as failed only when it is `true` (log.ts): a malformed one never costs
+// the frame its message.
+const ToolMetadata = Schema.Struct({ error: Schema.optional(Schema.Unknown) });
 
 // server/agui.ts toMessages: user and note entries are user messages (a note is named "note"),
 // talk and tool entries assistant messages, echo entries tool messages

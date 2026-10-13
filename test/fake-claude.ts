@@ -25,7 +25,8 @@
 //   {tool: {name, input}}         a tool_use block: its content_block_start, then the assistant block
 //   {toolResult: "...", is_error?}  the user event carrying that tool's result; is_error: true
 //                                 marks it failed, as Claude Code does (a Bash exit code, a
-//                                 <tool_use_error>); left out of the block otherwise
+//                                 <tool_use_error>); any other JSON value goes out as given, to
+//                                 test a malformed one; left out of the block when unset
 //   {waitInput: true}             wait until a message arrives that no reply or take used yet
 //   {take: true}                  wait for such a message and take it now: its replay event
 //   {result: {text?, is_error?, stop_reason?, subtype?, usage?}}
@@ -65,7 +66,7 @@ const Action = Schema.Union([
   Schema.Struct({ synthetic: Schema.String }),
   Schema.Struct({ thinking: Schema.Number }),
   Schema.Struct({ tool: Schema.Struct({ input: Schema.Json, name: Schema.String }) }),
-  Schema.Struct({ toolResult: Schema.String, is_error: Schema.optional(Schema.Boolean) }),
+  Schema.Struct({ toolResult: Schema.String, is_error: Schema.optional(Schema.Json) }),
   Schema.Struct({ waitInput: Schema.Literal(true) }),
   Schema.Struct({ take: Schema.Literal(true) }),
   Schema.Struct({

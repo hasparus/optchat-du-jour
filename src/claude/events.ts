@@ -62,12 +62,14 @@ export const SYNTHETIC = "<synthetic>";
 
 const ResultPart = Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String) });
 // `is_error`: Claude Code's own word that the call failed (a Bash exit code other than 0, a
-// <tool_use_error>, an MCP result with isError); left out when it worked
+// <tool_use_error>, an MCP result with isError); left out when it worked. Taken as any value and
+// read as failed only when it is `true`: a malformed one (null, "true") must not fail the block,
+// which would leave it as {type} and log its output as "".
 export const ToolResultBlock = Schema.Struct({
   type: Schema.Literal("tool_result"),
   tool_use_id: Schema.optional(Schema.String),
   content: Schema.optional(Schema.Union([Schema.String, Schema.Array(ResultPart)])),
-  is_error: Schema.optional(Schema.Boolean),
+  is_error: Schema.optional(Schema.Unknown),
 });
 
 export const User = Schema.Struct({

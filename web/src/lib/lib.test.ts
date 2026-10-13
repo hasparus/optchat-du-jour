@@ -665,6 +665,20 @@ describe("an echo's error flag, from the log line to the row", () => {
     expect(failedRows(log)).toEqual(expected);
     expect([...log.items.values()].every((item) => item.live === (item.i > 0))).toBe(true);
   });
+  test("a malformed flag never drops the message: it reads as not failed", () => {
+    const frames = [null, "true", 1].map((error) => ({
+      messages: [
+        { id: "0", role: "assistant", toolCalls: [{ function: { arguments: "{}", name: "Bash" }, id: "t0", type: "function" }] },
+        { content: "out", id: "1", metadata: { error }, role: "tool", toolCallId: "t0" },
+      ],
+      type: EventType.MESSAGES_SNAPSHOT,
+    }));
+    for (const log of decoded(frames).map((e) => play(emptyLog, e))) {
+      expect(entryRows(visible(log)).map((r) => (r.kind === "tool" ? [r.output, r.failed] : null))).toEqual([["out", false]]);
+    }
+    const live = decoded([{ content: "out", messageId: "1", metadata: { error: "true" }, role: "tool", toolCallId: "t0", type: EventType.TOOL_CALL_RESULT }]);
+    expect(play(emptyLog, ...live).items.get(1)).toEqual({ i: 1, kind: "echo", live: true, text: "out" });
+  });
   test("a page of /api/messages carries it", () => {
     const body = JSON.stringify(Schema.encodeSync(MessagesPage)({ entries, total: entries.length }));
     const page = Schema.decodeUnknownSync(Schema.fromJsonString(MessagesPage))(body);
