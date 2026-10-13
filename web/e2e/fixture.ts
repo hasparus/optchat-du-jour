@@ -161,6 +161,17 @@ export async function open(page: Page) {
   await expect(page.getByRole("img", { name: "connection open" })).toBeVisible();
 }
 
+// a file attached the way a person does it: the composer's +, then "Photos & videos" in its Add
+// context sheet, then the browser's file chooser
+export async function attach(page: Page, file: { readonly name: string; readonly mimeType: string; readonly buffer: Buffer }) {
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Add context" }).click();
+  await page.getByRole("dialog", { name: "Add context" }).getByRole("button", { name: /Photos & videos/ }).click();
+  const picker = await chooser;
+  await picker.setFiles(file);
+  await expect(page.getByRole("dialog", { name: "Add context" })).toBeHidden();
+}
+
 export async function send(page: Page, text: string) {
   await page.getByLabel("Message").fill(text);
   await page.getByLabel("Message").press("Enter");

@@ -3,7 +3,7 @@
 import { Schema } from "effect";
 import sharp from "sharp";
 import { CHANGE_SERVER, shellScript } from "../../mobile/src/bridge.ts";
-import { answered, expect, expectShowsLog, open, REPLY, send, test } from "./fixture";
+import { answered, attach, expect, expectShowsLog, open, REPLY, send, test } from "./fixture";
 
 test("a message gets a reply that streams in, after its tool call", async ({ page, server }) => {
   await open(page);
@@ -194,7 +194,7 @@ test("an attached photo is uploaded, sent, shown in the chat with its marker, an
   const photo = await sharp({ create: { background: "#3a7", channels: 3, height: 480, width: 640 } })
     .png()
     .toBuffer();
-  await page.getByLabel("Attach: files").setInputFiles({ buffer: photo, mimeType: "image/png", name: "board.png" });
+  await attach(page, { buffer: photo, mimeType: "image/png", name: "board.png" });
   await expect(page.getByTestId("attachment")).toHaveAttribute("data-state", "done");
   await page.getByLabel("Message").fill("what is on the board?");
   await page.getByRole("button", { name: "Send" }).click();

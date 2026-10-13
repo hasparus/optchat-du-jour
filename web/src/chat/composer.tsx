@@ -10,7 +10,7 @@
 // message; stop is beside them, and with nothing to send, send is stop.
 import {
   PromptInput,
-  PromptInputAttach,
+  PromptInputFileInput,
   PromptInputAttachment,
   PromptInputAttachments,
   PromptInputBody,
@@ -30,6 +30,7 @@ import { cn } from "@/lib/utils";
 import type { Device, FollowUp, SessionState } from "@wire";
 import { ListEndIcon, ZapIcon } from "lucide-react";
 import { type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
+import { AddContext, addContextChoices } from "./add-context";
 import { CompactSelect, FollowUps, ModelPicker } from "./pickers";
 import { useAttachments } from "./use-attachments";
 
@@ -72,6 +73,11 @@ export function Composer({ link, session, state, busy, open, devices, device, on
   const followUp = state?.followUp ?? "steer";
   const other: FollowUp = followUp === "steer" ? "queue" : "steer";
   const content = text.trim() !== "" || tray.items.length > 0;
+  // the second send button shows: a narrow footer has to make room for it
+  const crowded = running && !elsewhere && content;
+  // the hidden pickers the "+" sheet opens (./add-context.tsx)
+  const library = useRef<HTMLInputElement>(null);
+  const camera = useRef<HTMLInputElement>(null);
 
   // the draft as it stands, kept for a reload: the text and the uploads that finished
   const readyKey = tray.ready.map((a) => a.sha).join(",");
@@ -220,45 +226,42 @@ export function Composer({ link, session, state, busy, open, devices, device, on
       </PromptInputBody>
       <PromptInputFooter>
         <PromptInputTools>
-          <PromptInputAttach accept="image/*,video/*" label="Attach" onFiles={tray.add} />
-          {/* on a narrow screen with the second send button showing, the camera makes room: the
-              attach button's own picker offers the camera there too (iOS, Android) */}
-          <PromptInputAttach
-            accept="image/*"
-            capture="environment"
-            className={cn("rounded-full text-muted-foreground hover:text-foreground", running && !elsewhere && content && "max-[419px]:hidden")}
-            label="Take a photo"
-            onFiles={tray.add}
-          />
-          {devices.length > 1 && (
-            <CompactSelect
-              label="Device"
-              onChange={(e) => {
-                onDevice(e.currentTarget.value);
-              }}
-              shown={picked ?? "device"}
-              title="Where the next turn runs"
-              value={picked ?? ""}
-            >
-              {devices.map((d) => (
-                <option key={d.name} value={d.name}>
-                  {d.name}
-                </option>
-              ))}
-            </CompactSelect>
-          )}
+          <PromptInputFileInput accept="image/*,video/*" label="Attach" onFiles={tray.add} ref={library} />
+          <PromptInputFileInput accept="image/*" capture="environment" label="Take a photo" onFiles={tray.add} ref={camera} />
+          <AddContext choices={addContextChoices(library, camera, touch)} />
           {state && model !== null && <ModelPicker model={model} onModel={onModel} state={state} />}
+          {devices.length > 1 && (
+            // on a narrow screen with the second send button showing, the device makes room: it
+            // is for the next turn, and comes back when the draft is sent
+            <span className={cn("contents", crowded && "max-[419px]:hidden")}>
+              <CompactSelect
+                label="Device"
+                onChange={(e) => {
+                  onDevice(e.currentTarget.value);
+                }}
+                shown={picked ?? "device"}
+                title="Where the next turn runs"
+                value={picked ?? ""}
+              >
+                {devices.map((d) => (
+                  <option key={d.name} value={d.name}>
+                    {d.name}
+                  </option>
+                ))}
+              </CompactSelect>
+            </span>
+          )}
           {state && <FollowUps followUp={state.followUp} link={link} />}
         </PromptInputTools>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          {running && !elsewhere && content && (
+          {crowded && (
             <InputGroupButton
               aria-label={otherLabel}
               disabled={blocked !== null}
               onClick={() => {
                 send(other);
               }}
-              className="h-8 rounded-full px-3 text-ui text-foreground hairline-strong hover:bg-accent pointer-coarse:h-10"
+              className="h-9 rounded-full bg-soft px-3 text-ui text-foreground hover:bg-soft-strong max-[399px]:w-9 max-[399px]:px-0 pointer-coarse:h-10 max-[399px]:pointer-coarse:w-10"
               size="sm"
               title={`${otherLabel} (Ctrl/⌘+Enter)`}
               variant="ghost"

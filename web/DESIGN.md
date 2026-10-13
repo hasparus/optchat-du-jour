@@ -27,6 +27,7 @@ colors:
   dark-code-ground: "oklch(0.16 0.004 150)"
   dark-ivy: "oklch(0.8 0.12 158)"
   dark-red: "oklch(0.7 0.17 25)"
+  shimmer-mask-rest: "rgb(0 0 0 / 65%)"
 typography:
   heading:
     fontFamily: "Schibsted Grotesk Variable, Schibsted Grotesk Fallback, -apple-system, system-ui, sans-serif"
@@ -263,9 +264,13 @@ composer has 14 px top corners and no bottom edge, so it reads as part of it.
 - **Note:** the same bubble, outlined with a dashed strong hairline, muted text, a small "Note" label
   with a pen icon above.
 - **Reply:** no container. Read type, markdown styled by `[data-prose]` in `index.css`. Under it,
-  Copy and Raw (28 px ghost icons, 40 px on touch), shown on hover or focus with a mouse, always on
-  a touch screen. Raw is there from the first token (SPEC: rendering never hides what the model
-  wrote); Copy waits for the whole reply. While a reply streams a circle caret marks its end.
+  Copy and Raw (28 px ghost icons, 40 px on touch), always reachable: with a mouse, hover or focus
+  shows them; on a touch screen they wait behind a tap on the reply, as in a messaging app. A tap
+  shows that reply's actions and hides any other reply's; a tap outside it, or scrolling it out of
+  view, hides them; a tap on a link or a button in it, or one that ends a text selection, toggles
+  nothing. Hidden, they stay in the page (collapsed), so focus from a keyboard or a screen reader
+  opens them. Raw is there from the first token (SPEC: rendering never hides what the model wrote);
+  Copy waits for the whole reply. While a reply streams a circle caret marks its end.
 
 ### Tool calls (signature)
 - **Line:** 28 px tall (40 px on touch), a 14 px icon for the kind of tool (terminal, file, pencil,
@@ -282,13 +287,37 @@ composer has 14 px top corners and no bottom edge, so it reads as part of it.
   as logged, highlighted) and "Output" or "Error" with a copy button, separated by a hairline.
 
 ### Composer
-- **Surface:** raised, 22 px radius, a 1 px strong-hairline ring and the Raised shadow. With the text
-  focused the ring turns ivy at 65% with a 4 px ivy halo at 14%; a dragged file does the same.
+Modelled on Claude's app: a soft, translucent card with round controls.
+
+- **Surface** (`composer-surface` in `index.css`): 28 px radius. Its ground is the raised colour at
+  80% (`--composer-ground`), over a 16 px backdrop blur saturated to 150%, so what scrolls under it
+  shows through softly. Where the browser has no backdrop-filter, or the reader asked for less
+  transparency (`prefers-reduced-transparency`), the ground is opaque. The border is a 1 px ring
+  drawn as a box-shadow (`--composer-ring`: ink at 13%, dark white at 11%), never a CSS border. A
+  sheen lights the top edge: a 1 px inset highlight (`--composer-sheen`: white at 95%, dark 10%)
+  and a fill fading from white at 70% (dark 4%) to nothing by 44 px (`--composer-sheen-fill`).
+  Under it, the Raised drop. With the text focused the ring turns ivy at 65% with a 4 px ivy halo
+  at 14%; a dragged file does the same, stronger.
+- **Floating:** the dock floats over the end of the transcript, which scrolls on under it. The
+  content keeps `--dock-h` clear below its last row. A fade runs from clear 24 px above the dock
+  to the sheet at 80% by 3rem and solid at the bottom, so what passes under the composer is soft
+  and its text stays legible. Measured with a code block under it and no blur at all, the worst
+  case: ink 12.6:1, the placeholder 5.7:1 (light) and 5.8:1 (dark).
 - **Text:** Read type, 52 px tall at rest, grows to 12rem or 40% of the viewport.
-- **Footer:** attach and camera (32 px round ghost icons), then the device and model pickers and the
-  follow-up mode as round ghost pills (13 px, muted, ink on hover), then send at the right: a 32 px
-  ink circle with an arrow (40 px on touch), muted fill when disabled. While a turn runs: the other
-  way to send as an outlined pill, and Stop as a red-outlined circle with a filled square.
+- **Controls:** at the left, "+" (a 36 px soft circle, 40 px on touch), then the model as a soft pill
+  (36 px, the name in ink and the effort, when the server's engine label names one, in muted grey,
+  over the phone's own select), then the device and the follow-up mode as quiet pills (muted, ink
+  on hover). At the right, send: a 36 px ink circle with an arrow (40 px on touch), a soft circle
+  with a muted arrow when there is nothing to send. While a turn runs: the other way to send as a
+  soft pill (icon only under 400 px), and Stop as an ink square on a soft circle. Under 420 px,
+  with that second button showing, the device picker makes room. No microphone: the phone's
+  keyboard dictates.
+- **Add context:** "+" opens it. On a touch screen it is a sheet from the bottom edge (28 px top
+  corners, a grabber, a title, a close button); with a mouse, a 256 px popover over the "+". Both
+  trap focus, close on Escape or a tap outside and give focus back to "+". The choices are rows
+  with a 36 px soft icon tile, a label and a muted hint: "Photos & videos" (the library or files,
+  images and videos, several at once) and, on a touch screen, "Camera" (`capture`, the rear
+  camera). A choice opens the composer's own hidden picker from the tap, then closes the sheet.
 - **Tray:** what belongs to the composer sits in a tray attached to its top edge, inset 10 px: the
   held banner (amber ground) and the queue of waiting messages, separated by a hairline.
 - **Status:** above it, one 12 px line: a breathing ivy dot and the shimmering status while a turn

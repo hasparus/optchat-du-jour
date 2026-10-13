@@ -7,7 +7,7 @@ import { extendTailwindMerge } from "tailwind-merge";
 
 const twMerge = extendTailwindMerge({
   extend: {
-    classGroups: { shadow: ["shadow-raised", "shadow-float", "shadow-lift", "hairline", "hairline-strong"] },
+    classGroups: { shadow: ["shadow-float", "shadow-lift", "hairline", "hairline-strong"] },
     theme: { text: ["2xs", "ui", "read"] },
   },
 });

@@ -3,7 +3,7 @@
 // picker (this page's own: each message names its model), and the resume after a usage limit.
 // 360 px wide, like the other specs.
 import type { Page } from "@playwright/test";
-import { answered, expect, expectShowsLog, open, REPLY, send, SOL_REPLY, test } from "./fixture";
+import { answered, attach, expect, expectShowsLog, open, REPLY, send, SOL_REPLY, test } from "./fixture";
 
 const box = (page: Page) => page.getByLabel("Message");
 
@@ -19,7 +19,7 @@ test("a draft survives a reload: its text and its uploaded photo", async ({ page
   await open(page);
   await box(page).fill("a thought to finish later");
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
-  await page.getByLabel("Attach: files").setInputFiles({ buffer: png, mimeType: "image/png", name: "dot.png" });
+  await attach(page, { buffer: png, mimeType: "image/png", name: "dot.png" });
   await expect(page.getByTestId("attachment")).toHaveAttribute("data-state", "done");
   await page.reload();
   await expect(page.getByRole("img", { name: "connection open" })).toBeVisible();

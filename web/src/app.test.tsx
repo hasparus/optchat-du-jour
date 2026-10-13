@@ -339,6 +339,63 @@ const filesOf = (...files: File[]) => {
 };
 const Parts = Schema.Array(Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String), source: Schema.optional(Schema.Struct({ type: Schema.String, value: Schema.String })) }));
 
+test("the composer's + opens Add context; a choice opens its picker from the tap and closes", async () => {
+  start();
+  await screen.findByText("what is in the repo?");
+  const library = screen.getByLabelText("Attach: files");
+  let opened = 0;
+  library.addEventListener("click", () => {
+    opened++;
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Add context" }));
+  const sheet = await screen.findByRole("dialog", { name: "Add context" });
+  // with a mouse (this test's pointer): the library; the camera is a touch screen's
+  expect(within(sheet).getByRole("button", { name: /Photos & videos/ })).toBeTruthy();
+  expect(within(sheet).queryByRole("button", { name: /Camera/ })).toBeNull();
+  fireEvent.click(within(sheet).getByRole("button", { name: /Photos & videos/ }));
+  expect(opened).toBe(1);
+  await waitFor(() => {
+    expect(screen.queryByRole("dialog", { name: "Add context" })).toBeNull();
+  });
+  // Escape closes it too
+  fireEvent.click(screen.getByRole("button", { name: "Add context" }));
+  await screen.findByRole("dialog", { name: "Add context" });
+  fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+  await waitFor(() => {
+    expect(screen.queryByRole("dialog", { name: "Add context" })).toBeNull();
+  });
+});
+
+test("a tap on a reply shows its actions and hides another's; a tap on a link in it, or outside, doesn't keep them", async () => {
+  start([
+    { kind: "user", text: "two answers" },
+    { kind: "talk", text: "First, see [the docs](https://example.com)." },
+    { kind: "talk", text: "Second." },
+  ]);
+  const firstText = await screen.findByText(/First, see/);
+  const first = firstText.closest("[data-reply]");
+  const second = screen.getByText("Second.").closest("[data-reply]");
+  if (!(first instanceof HTMLElement) || !(second instanceof HTMLElement)) throw new Error("no replies");
+  fireEvent.click(screen.getByText(/First, see/));
+  expect(first.dataset.actions).toBe("shown");
+  fireEvent.click(screen.getByText("Second."));
+  expect([first.dataset.actions, second.dataset.actions]).toEqual([undefined, "shown"]);
+  fireEvent.click(screen.getByText("Second."));
+  expect(second.dataset.actions).toBeUndefined(); // a second tap hides them
+  // a link (Streamdown draws it as its link-safety button) is not that tap
+  const link = screen.getByText("the docs");
+  expect(link.closest("a, button")).not.toBeNull();
+  fireEvent.click(link);
+  expect(first.dataset.actions).toBeUndefined();
+  fireEvent.click(screen.getByText(/First, see/));
+  fireEvent.pointerDown(document.body);
+  await waitFor(() => {
+    expect(first.dataset.actions).toBeUndefined(); // a tap outside
+  });
+  // Raw is in the actions of every reply, shown or not: reachable by focus
+  expect(within(first).getByRole("button", { name: "Show raw text" })).toBeTruthy();
+});
+
 test("attach, paste and drop fill the tray; send waits for the uploads, names each by digest, and the logged message shows its thumbnails", async () => {
   const uploads = fakeUploads();
   const { play, server } = start(LOG, 0, uploads.uploader);
@@ -592,9 +649,12 @@ test("while a turn runs: send follows the follow-up setting, the other button an
   expect(box().getAttribute("placeholder")).toBe("Queue a follow-up");
   type("queued one");
   expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy(); // stopping doesn't need the draft cleared
-  // beside send's filled arrow, stop is outlined in the destructive color, so the two never look alike
-  expect(screen.getByRole("button", { name: "Stop" }).className).toContain("text-destructive");
-  expect(screen.getByRole("button", { name: "Send" }).className).not.toContain("text-destructive");
+  // beside send's filled ink circle and arrow, stop is a filled square on a soft circle, so the two
+  // never look alike
+  expect(screen.getByRole("button", { name: "Stop" }).querySelector(".lucide-square")).not.toBeNull();
+  expect(screen.getByRole("button", { name: "Stop" }).className).toContain("bg-soft");
+  expect(screen.getByRole("button", { name: "Send" }).querySelector(".lucide-arrow-up")).not.toBeNull();
+  expect(screen.getByRole("button", { name: "Send" }).className).toContain("bg-primary");
   fireEvent.click(screen.getByRole("button", { name: "Send" }));
   type("right now");
   fireEvent.click(screen.getByRole("button", { name: "Send now" }));
@@ -681,7 +741,9 @@ test("one model at two efforts reads apart: the picker, a queued message and the
   ];
   play(state({ engines }));
   fireEvent.change(screen.getByLabelText("Model"), { target: { value: "claude-code:opus@xhigh" } });
-  expect(within(screen.getByTestId("model-picker")).getByText("Opus · xhigh")).toBeTruthy();
+  // the pill: the model's name in ink, its effort beside it in muted grey
+  expect(within(screen.getByTestId("model-picker")).getByText("Opus")).toBeTruthy();
+  expect(within(screen.getByTestId("model-picker")).getByText("xhigh").className).toContain("text-muted-foreground");
   play(state({ engine: "claude-code:opus@xhigh", pending: [{ clientId: "a", engine: "claude-code:opus", queued: true, text: "for opus" }], phase: "running" }));
   const opus = await screen.findByTestId("queue-engine");
   expect(opus.textContent).toBe("Opus");

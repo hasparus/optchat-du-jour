@@ -38,7 +38,7 @@ import type { Uploader } from "@/lib/attach";
 import { loadModel, saveModel } from "@/lib/draft";
 import { Composer } from "./composer";
 import { shortLabel } from "./pickers";
-import { ChatRow } from "./row";
+import { ChatRow, ReplyActions } from "./row";
 import { useStickToEnd } from "./use-stick-to-end";
 
 // an engine of the master's chain by the label its picker shows (with its effort, src/wire.ts
@@ -255,7 +255,8 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
   const toEnd = useCallback(() => {
     scrollToEnd({ behavior: "auto" });
   }, [scrollToEnd]);
-  useStickToEnd(dock, atEnd && !busy && target === null, toEnd);
+  const root = useRef<HTMLDivElement>(null);
+  useStickToEnd(dock, root, atEnd && !busy && target === null, toEnd);
 
   // one older page, prepended: true while there may be more, null when it couldn't be read
   const loadOlder = useCallback(async () => {
@@ -301,7 +302,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
   const picked = device ?? state.state?.device ?? devices.find((d) => d.local)?.name ?? null;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 flex-1 flex-col" ref={root}>
       <MessageScroller className="min-h-0 flex-1">
         {/* The sentinel and the "earlier" button sit outside the content: the scroller reads its
             content's first child to keep the view still when older rows are prepended, and opens
@@ -321,33 +322,42 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
             </div>
           )}
           {empty && <EmptyChat />}
-          <MessageScrollerContent className="mx-auto w-full max-w-184 gap-0 px-4 pt-6 pb-10 sm:px-6" data-region="chat-content">
-            {placed.above.map((m) => (
-              <StatusRow key={`k${m.key}`} marker={m} />
-            ))}
-            {rows.map((row, k) => (
-              <Fragment key={row.key}>
-                <MessageScrollerItem data-kind={row.kind} data-log-index={row.id} messageId={row.key} scrollAnchor={row.kind === "user"}>
-                  <ChatRow
-                    row={row}
-                    streaming={row.key === draftKey}
-                    toolState={row.kind === "tool" ? toolStateOf(row, busy, row.key === lastTool) : "done"}
-                  />
-                </MessageScrollerItem>
-                {placed.after.get(k)?.map((m) => (
-                  <StatusRow key={`k${m.key}`} marker={m} />
-                ))}
-              </Fragment>
-            ))}
-          </MessageScrollerContent>
+          {/* the dock floats over the transcript's end; the content keeps its height clear below
+              the last row (--dock-h, set by useStickToEnd) */}
+          <ReplyActions>
+            <MessageScrollerContent className="mx-auto w-full max-w-184 gap-0 px-4 pt-6 pb-[calc(var(--dock-h,9rem)+1.5rem)] sm:px-6" data-region="chat-content">
+              {placed.above.map((m) => (
+                <StatusRow key={`k${m.key}`} marker={m} />
+              ))}
+              {rows.map((row, k) => (
+                <Fragment key={row.key}>
+                  <MessageScrollerItem data-kind={row.kind} data-log-index={row.id} messageId={row.key} scrollAnchor={row.kind === "user"}>
+                    <ChatRow
+                      row={row}
+                      streaming={row.key === draftKey}
+                      toolState={row.kind === "tool" ? toolStateOf(row, busy, row.key === lastTool) : "done"}
+                    />
+                  </MessageScrollerItem>
+                  {placed.after.get(k)?.map((m) => (
+                    <StatusRow key={`k${m.key}`} marker={m} />
+                  ))}
+                </Fragment>
+              ))}
+            </MessageScrollerContent>
+          </ReplyActions>
         </MessageScrollerViewport>
-        <MessageScrollerButton className="size-9 rounded-full border-0 bg-raised text-foreground shadow-float hover:bg-raised hover:text-foreground data-[direction=end]:bottom-3" />
+        <MessageScrollerButton className="size-9 rounded-full border-0 bg-raised text-foreground shadow-float hover:bg-raised hover:text-foreground data-[direction=end]:bottom-[calc(var(--dock-h,9rem)+0.75rem)]" />
       </MessageScroller>
 
+      {/* The dock floats over the end of the transcript, which scrolls on under the composer's
+          translucent surface: a fade from clear (24 px above it) to the sheet at 80% by the
+          composer's top and solid at the bottom keeps what passes under it soft and the text on it
+          legible (DESIGN.md, Composer). Only its controls take pointer events. */}
       <div
-        className="relative mx-auto w-full max-w-184 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] before:pointer-events-none before:absolute before:inset-x-0 before:-top-6 before:h-6 before:bg-linear-to-b before:from-transparent before:to-background sm:px-4 sm:pb-[max(1rem,env(safe-area-inset-bottom))]"
+        className="pointer-events-none absolute inset-x-0 bottom-0 z-10 before:absolute before:inset-x-0 before:-top-6 before:bottom-0 before:bg-[linear-gradient(to_bottom,transparent,color-mix(in_oklch,var(--background)_80%,transparent)_3rem,var(--background))]"
         ref={dock}
       >
+      <div className="pointer-events-auto relative mx-auto w-full max-w-184 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-4 sm:pb-[max(1rem,env(safe-area-inset-bottom))]">
         {line !== null && (
           <div className="flex h-7 items-center gap-2 px-3 text-xs" data-testid="status" role="status">
             {busy ? (
@@ -405,6 +415,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
           state={state.state}
           uploader={uploader}
         />
+      </div>
       </div>
     </div>
   );

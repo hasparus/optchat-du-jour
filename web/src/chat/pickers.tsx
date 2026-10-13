@@ -6,7 +6,7 @@ import type { Link } from "@/lib/connection";
 import { cn } from "@/lib/utils";
 import type { FollowUp, SessionState } from "@wire";
 import { ChevronDownIcon, SlidersHorizontalIcon } from "lucide-react";
-import type { ComponentProps } from "react";
+import type { ComponentProps, ReactNode } from "react";
 
 // What a message sent mid-run does, in a popover off the tools; its trigger names the behavior
 // (on a narrow screen without its icon), so the mode is never hidden.
@@ -20,7 +20,7 @@ export function FollowUps({ link, followUp }: { readonly link: Link; readonly fo
       <PopoverTrigger asChild>
         <InputGroupButton
           aria-label={`Follow-ups: ${followUp}`}
-          className="h-7 rounded-full px-2.5 text-ui font-medium text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground pointer-coarse:h-10"
+          className="h-9 rounded-full px-2.5 text-ui font-medium text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground pointer-coarse:h-10"
           size="xs"
           title="What a message sent while a turn runs does"
           variant="ghost"
@@ -60,26 +60,41 @@ export function FollowUps({ link, followUp }: { readonly link: Link; readonly fo
 // (Claude Code, xhigh)" → "Opus · xhigh": what the closed picker shows on a phone's narrow footer,
 // and a queued message names; the options say it all. An effort stays, or one model at two
 // efforts would read the same.
-export const shortLabel = (label: string) => {
+export type LabelParts = { readonly name: string; readonly effort: string | null };
+export const labelParts = (label: string): LabelParts => {
   const [, name = label, effort] = /^(.*) \([^(),]*(?:, ([^(),]+))?\)$/.exec(label) ?? [];
-  return `${name.replace(/^Claude /, "")}${effort === undefined ? "" : ` · ${effort}`}`;
+  return { effort: effort ?? null, name: name.replace(/^Claude /, "") };
+};
+export const shortLabel = (label: string) => {
+  const { name, effort } = labelParts(label);
+  return `${name}${effort === null ? "" : ` · ${effort}`}`;
 };
 
 // A native select (the phone's own picker) laid over a compact label, so a picker in the footer
-// takes the width of its value, not of its longest option
-// `down`: what is shown can't take a turn now: a small mark beside it (the title says why)
-type CompactSelectProps = ComponentProps<"select"> & { readonly label: string; readonly shown: string; readonly testId?: string; readonly down?: boolean };
+// takes the width of its value, not of its longest option. `pill`: the model, a soft-filled pill as
+// in Claude's composer; otherwise a quiet one (the device). `down`: what is shown can't take a turn
+// now: a small mark beside it (the title says why)
+type CompactSelectProps = ComponentProps<"select"> & {
+  readonly label: string;
+  readonly shown: ReactNode;
+  readonly testId?: string;
+  readonly down?: boolean;
+  readonly pill?: boolean;
+};
 
-export function CompactSelect({ label, shown, title, testId, down = false, children, ...props }: CompactSelectProps) {
+export function CompactSelect({ label, shown, title, testId, down = false, pill = false, children, ...props }: CompactSelectProps) {
   return (
     <span
-      className="relative flex h-7 max-w-32 min-w-0 items-center gap-1 rounded-full px-2.5 text-ui font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground has-[select:focus-visible]:outline-2 has-[select:focus-visible]:outline-offset-2 has-[select:focus-visible]:outline-(--focus) pointer-coarse:h-10 pointer-coarse:px-2"
+      className={cn(
+        "relative flex min-w-0 items-center gap-1 rounded-full text-ui font-medium transition-colors has-[select:focus-visible]:outline-2 has-[select:focus-visible]:outline-offset-2 has-[select:focus-visible]:outline-(--focus) pointer-coarse:h-10",
+        pill ? "h-9 max-w-44 bg-soft px-3.5 text-foreground hover:bg-soft-strong" : "h-9 max-w-32 px-2.5 text-muted-foreground hover:bg-accent hover:text-foreground pointer-coarse:px-2",
+      )}
       data-testid={testId}
       title={title}
     >
       {down && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-destructive" data-testid="picker-down" />}
-      <span className="truncate">{shown}</span>
-      <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-70" />
+      <span className="flex min-w-0 items-baseline gap-1.5 truncate">{shown}</span>
+      {!pill && <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-70" />}
       <select aria-label={label} className="absolute inset-0 cursor-pointer opacity-0" {...props}>
         {children}
       </select>
@@ -93,14 +108,22 @@ export function CompactSelect({ label, shown, title, testId, down = false, child
 // is disabled with why, unless it is the one picked, which then shows a small down mark.
 export function ModelPicker({ model, onModel, state }: { readonly model: string; readonly onModel: (ref: string) => void; readonly state: SessionState }) {
   const current = state.engines.find((e) => e.ref === model);
+  // the name in ink, the effort (when the server's label names one) in muted grey
+  const { name, effort } = labelParts(current?.label ?? model);
   return (
     <CompactSelect
+      pill
       down={current !== undefined && current.down !== null}
       label="Model"
       onChange={(e) => {
         onModel(e.currentTarget.value);
       }}
-      shown={shortLabel(current?.label ?? model)}
+      shown={
+        <>
+          <span className="truncate">{name}</span>
+          {effort !== null && <span className="shrink-0 text-muted-foreground">{effort}</span>}
+        </>
+      }
       testId="model-picker"
       title={current ? `${current.label}: your next messages${current.down === null ? "" : ` (unavailable: ${current.down})`}` : undefined}
       value={model}
