@@ -29,28 +29,28 @@ colors:
   dark-red: "oklch(0.7 0.17 25)"
 typography:
   heading:
-    fontFamily: "Schibsted Grotesk Variable, -apple-system, system-ui, sans-serif"
-    fontSize: "1.25rem"
+    fontFamily: "Schibsted Grotesk Variable, Schibsted Grotesk Fallback, -apple-system, system-ui, sans-serif"
+    fontSize: "1.40625rem"
     fontWeight: 600
     lineHeight: 1.3
     letterSpacing: "-0.012em"
   read:
-    fontFamily: "Schibsted Grotesk Variable, -apple-system, system-ui, sans-serif"
+    fontFamily: "Schibsted Grotesk Variable, Schibsted Grotesk Fallback, -apple-system, system-ui, sans-serif"
     fontSize: "0.9375rem"
     fontWeight: 400
     lineHeight: 1.65
   ui:
-    fontFamily: "Schibsted Grotesk Variable, -apple-system, system-ui, sans-serif"
+    fontFamily: "Schibsted Grotesk Variable, Schibsted Grotesk Fallback, -apple-system, system-ui, sans-serif"
     fontSize: "0.8125rem"
     fontWeight: 500
     lineHeight: 1.25rem
   meta:
-    fontFamily: "Schibsted Grotesk Variable, -apple-system, system-ui, sans-serif"
+    fontFamily: "Schibsted Grotesk Variable, Schibsted Grotesk Fallback, -apple-system, system-ui, sans-serif"
     fontSize: "0.6875rem"
     fontWeight: 500
     lineHeight: 1rem
   code:
-    fontFamily: "Commit Mono, ui-monospace, SF Mono, Menlo, monospace"
+    fontFamily: "Commit Mono, Commit Mono Fallback, ui-monospace, SF Mono, Menlo, monospace"
     fontSize: "0.8125rem"
     fontWeight: 400
     lineHeight: 1.6
@@ -115,8 +115,9 @@ components:
 # Design System: optchat
 
 The web UI (`web/`) has one look, defined here and implemented in `src/index.css` (tokens, base,
-markdown) and the components' own classes. It replaced the three trial looks of the UI audit
-(`?variant=a|b|c`). Sources and measurements behind it are in the design notes of PR #29.
+markdown, the `hairline` and `shimmer-text` utilities, the shadow tokens) and the components' own
+classes; the segmented control is `components/ui/segmented.tsx`. Sources and measurements behind it
+are in the design notes of PR #29.
 
 ## Overview
 
@@ -166,8 +167,9 @@ dead; ivy is the one accent. Light and dark are the same structure, not two desi
 - **Bubble** (`oklch(0.945 0.005 150)`; dark `0.265`): your messages.
 - **Code ground** (`oklch(0.975 0.003 150)`; dark `0.16`, darker than the sheet): code blocks and the
   tool panel.
-- **Ink muted** (`oklch(0.5 0.009 150)`; dark `0.7`): secondary text, tool lines, metadata. 5.8:1 on
-  the muted fill in light, 6.4:1 in dark.
+- **Ink muted** (`oklch(0.5 0.009 150)`; dark `0.7`): secondary text, tool lines, metadata. In light
+  5.84:1 on the sheet and 5.29:1 on the muted fill; in dark 5.91:1 on the muted fill (6.99:1 on the
+  sheet).
 - **Hairline** (ink at 10%; dark white at 9%) and **strong hairline** (16% / 14%): every border.
 
 ### Named Rules
@@ -182,16 +184,24 @@ darker than the sheet, code is darker still, text is 93%, never pure white on pu
 ## Typography
 
 **Body Font:** Schibsted Grotesk (variable, 400-900, self-hosted, OFL), falling back to the platform UI face.
-**Mono Font:** Commit Mono (400, self-hosted, OFL), falling back to `ui-monospace`.
+**Mono Font:** Commit Mono (400 only, self-hosted, OFL), falling back to `ui-monospace`. There is no
+bold mono: code inside bold text stays at 400 (`font-synthesis-weight: none`), and nothing sets mono
+in a heavier weight.
+
+Until each face loads, a local face scaled to its metrics stands in ("Schibsted Grotesk Fallback"
+over Arial, "Commit Mono Fallback" over Menlo, in `src/fonts.css`), and `index.html` preloads the
+two latin files every screen needs first, so the swap moves nothing.
 
 **Character:** a crisp newspaper grotesk, slightly narrow, confident at 13 px and easy at 15 px, with
 a neutral mono close in spirit to Amp's Berkeley Mono. One family carries prose, labels and data.
 
 ### Hierarchy
-- **Heading** (600, 1.3em of prose / 1rem screen titles, 1.3, -0.012em): headings in replies and the
-  title of each screen ("Memory", "Stats", "Devices"). Balanced wrapping.
+- **Heading** (600, 1.3, -0.012em, balanced wrapping): in replies h1 at 1.5em, h2 at 1.27em, h3 to
+  h6 at 1em, set apart by weight. Each size step is at least 1.25× the one below it.
+- **Screen title** (600, 1rem): the title of each screen ("Memory", "Stats", "Devices").
 - **Read** (400, 15 px, 16 px on a touch screen, 1.65): your messages, replies, memory summaries, the
-  composer's text. Replies keep a 68ch measure.
+  composer's text. Replies keep a 58ch measure: about 75 characters of this narrow face (68ch came
+  out at 88).
 - **UI** (500, 13 px, 20 px): tabs, pickers, tool lines, buttons, table text.
 - **Meta** (500, 11 px, 16 px): section labels in the tool panel, the queue header, the shortcut hint.
 - **Code** (400, 12-13 px, 1.6): code blocks, tool inputs and outputs, paths, model ids.
@@ -210,9 +220,13 @@ for labels.
 - **Grounds.** From 768 px the header sits on the shell band, a hairline under it, and each screen
   fills the window below on the sheet, edge to edge. The sheet is not inset or rounded: a rounded
   sheet would make every bordered thing on it a card in a card.
-- **Rhythm.** Rows 12 px apart (each row keeps 4 × 8 px of room inside for focus rings and hover washes, since a row clips its paint); a new turn (your message) 24 px; consecutive tool rows 2 px, so a run
-  of calls reads as one list; a reply 8 px after a tool row. 24 px above the first row, 40 px below
-  the last. Screen pages: 24 px top, 20 px between sections.
+- **Rhythm** (the visible gap between rows). Rows 12 px apart; a status marker 12 px from the rows
+  either side; a new turn (your message) 24 px; consecutive tool rows 2 px, so a run of calls reads
+  as one list; a reply and a tool row 8 px. A row is drawn with `content-visibility`, which clips
+  its paint to its box, so each row keeps 4 px above and below and 8 px either side inside it, for a
+  focus ring or a hover wash, and its margins give that room back (`index.css`, the transcript's
+  rhythm). The content has 24 px above the first row and 40 px below the last. Screen pages: 24 px
+  top, 20 px between sections.
 - **Header.** 48 px plus the safe area. Tabs as a segmented control on the left; theme (and in the
   iOS app, server) at the right.
 - **Phone.** 390 px: one ground, a hairline under the header, the composer docked at the bottom with
@@ -249,8 +263,9 @@ composer has 14 px top corners and no bottom edge, so it reads as part of it.
 - **Note:** the same bubble, outlined with a dashed strong hairline, muted text, a small "Note" label
   with a pen icon above.
 - **Reply:** no container. Read type, markdown styled by `[data-prose]` in `index.css`. Under it,
-  Copy and Raw (28 px ghost icons), shown on hover or focus with a mouse, always on a touch screen;
-  hidden while it streams, when a circle caret marks the end.
+  Copy and Raw (28 px ghost icons, 40 px on touch), shown on hover or focus with a mouse, always on
+  a touch screen. Raw is there from the first token (SPEC: rendering never hides what the model
+  wrote); Copy waits for the whole reply. While a reply streams a circle caret marks its end.
 
 ### Tool calls (signature)
 - **Line:** 28 px tall (40 px on touch), a 14 px icon for the kind of tool (terminal, file, pencil,
@@ -258,8 +273,11 @@ composer has 14 px top corners and no bottom edge, so it reads as part of it.
   muted, truncated: the command, the file, the pattern, a memory node as `id+n`. A hover wash bleeds
   8 px past the text on both sides; a chevron appears on hover and turns when open.
 - **States:** running: the icon breathes and the name shimmers. Done: nothing (the norm, "Completed"
-  for screen readers). No output: "No output" in muted 12 px. Failed (the output starts with a
-  non-zero exit code, `<tool_use_error>` or `Error:`): red icon and "Failed".
+  for screen readers). No output: "No output" in muted 12 px. Failed: red icon and "Failed", when
+  the output begins with a non-zero `Exit code`, `<tool_use_error>`, `Error:`, or our own
+  `not run:`. That is a guess from the text (an echo carries no error flag, `lib/rows.ts`
+  toolFailed): an output that begins "Error:" from a call that worked reads as failed too. The
+  output itself always shows as logged.
 - **Open:** one panel indented under the name: code ground, 10 px radius, hairline; "Input" (the JSON
   as logged, highlighted) and "Output" or "Error" with a copy button, separated by a hairline.
 
@@ -278,8 +296,10 @@ composer has 14 px top corners and no bottom edge, so it reads as part of it.
 - **Hint:** under it, centred, 11 px muted: the shortcuts on a keyboard, or why send is off.
 
 ### Navigation
-- **Tabs:** a segmented control of text tabs (13 px, 500). Active: raised fill, ink text, a hairline
-  ring and a 1 px shadow. Inactive: muted, hover wash. On a phone they share the row evenly.
+- **Segmented control** (`components/ui/segmented.tsx`): text choices (13 px, 500), 28 px tall,
+  40 px on touch. Chosen: raised fill, ink text and the `lift` shadow (a hairline ring and 1 px).
+  Others: muted, ink on hover. The app's tabs sit bare on the header band (with a hover wash) and
+  share the row evenly on a phone; the Stats toggles sit in a muted well.
 - **Connection:** an 8 px dot before the tabs, green with a soft halo when connected, breathing grey
   otherwise; a title says which.
 
@@ -303,8 +323,8 @@ composer has 14 px top corners and no bottom edge, so it reads as part of it.
 
 ## Motion
 
-150-200 ms for state; `cubic-bezier(0.22, 1, 0.36, 1)` for anything that moves in, `cubic-bezier(0.32,
-0.72, 0, 1)` for drawers. Live state is told by small motion: a 2.2 s shimmer over status text and a
+150-200 ms for state; `cubic-bezier(0.22, 1, 0.36, 1)` (`--ease-fluid`) for anything that moves in.
+Live state is told by small motion: a 2.2 s shimmer over status text and a
 running tool's name, a 1.6 s breathing dot. Buttons press to 95-97%. A tool panel fades and slides
 1 px in. No entrance choreography on load. Under `prefers-reduced-motion` every animation and
 transition stops; state still reads from text and colour (the shimmer becomes plain muted text).
@@ -315,7 +335,11 @@ transition stops; state still reads from text and colour (the shimmer becomes pl
 - **Do** put new colours through the tokens in `src/index.css`, in both themes, and check them at 4.5:1 for text.
 - **Do** keep tool calls to one line until opened, and say only the states worth reading.
 - **Do** attach anything about the next message (held, queued, an approval later) to the composer's tray.
-- **Do** keep hit targets at 40 px on touch (`pointer-coarse:`), 28-32 px with a mouse.
+- **Do** keep hit targets at 40 px on touch, 28-32 px with a mouse. The `icon-sm` size of Button
+  and InputGroupButton, the segmented control, the queue's header and the pickers carry the touch
+  size themselves (`pointer-coarse:`).
+- **Do** draw a hairline with the `hairline` (or `hairline-strong`) utility, and raised or floating
+  things with `shadow-raised`, `shadow-float` and `shadow-lift`, never a one-off shadow.
 - **Do** theme browser surfaces: selection, caret, scrollbars and focus rings come from the palette.
 
 ### Don't:
@@ -323,5 +347,7 @@ transition stops; state still reads from text and colour (the shimmer becomes pl
 - **Don't** colour the primary button; ink is the primary.
 - **Don't** box things inside the sheet with shadows; use a hairline.
 - **Don't** use mono for anything that isn't code, a command, a path, an id or output.
-- **Don't** add a second accent, gradients, glass, or a coloured side border.
+- **Don't** add a second accent, glass, a coloured side border, or a gradient as decoration. Two
+  gradients do jobs and are the only ones: the fade that lets the transcript run under the
+  composer's dock, and the mask that sweeps a sheen over live status (`shimmer-text`: solid ink, never gradient-filled text).
 - **Don't** set text you read or type under 16 px on a touch screen.

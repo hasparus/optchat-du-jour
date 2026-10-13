@@ -3,8 +3,10 @@
 // after it is the output (SPEC "Web UI", Chat). There are no approvals here. Drawn as a work-log
 // line (DESIGN.md, Tool calls): an icon for the kind of tool, its name and what it was called on,
 // and only the states worth reading: running, failed, no output. "Completed" is the norm, said only
-// to a screen reader. Open, the input as logged and the output sit in one panel under the line.
+// to a screen reader. Open, the input as logged and the output sit in one panel under the line. How
+// a row reads (its state, name, summary) is decided in lib/rows.ts; this file only draws it.
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { TOOL_STATE_LABELS, toolName, type ToolState } from "@/lib/rows";
 import { cn } from "@/lib/utils";
 import {
   BotIcon,
@@ -25,15 +27,9 @@ import type { ComponentProps, ReactNode } from "react";
 import { CodeBlock } from "./code-block";
 import { Shimmer } from "./shimmer";
 
-// running: no echo yet; done: the echo is in; ended: the turn ended without one; error: the echo
-// says the call failed (rows.ts toolFailed)
-export type ToolState = "running" | "done" | "ended" | "error";
+export type ToolProps = ComponentProps<typeof Collapsible>;
 
-export type ToolProps = ComponentProps<typeof Collapsible> & { readonly state: ToolState };
-
-export const Tool = ({ className, state, ...props }: ToolProps) => (
-  <Collapsible className={cn("group/tool w-full", className)} data-slot="tool" data-tool-state={state} {...props} />
-);
+export const Tool = ({ className, ...props }: ToolProps) => <Collapsible className={cn("group/tool w-full", className)} data-slot="tool" {...props} />;
 
 const ICONS = new Map<string, LucideIcon>(Object.entries({
   Agent: BotIcon,
@@ -52,20 +48,11 @@ const ICONS = new Map<string, LucideIcon>(Object.entries({
   date: CalendarIcon,
   zoom: ScanSearchIcon,
 }));
-// an MCP tool comes as mcp__<server>__<name>
-const baseName = (name: string) => name.split("__").at(-1) ?? name;
-export const toolIcon = (name: string): LucideIcon => ICONS.get(baseName(name)) ?? WrenchIcon;
-
-const statusLabels = {
-  done: "Completed",
-  ended: "No output",
-  error: "Failed",
-  running: "Running",
-} satisfies Record<ToolState, string>;
+const toolIcon = (name: string): LucideIcon => ICONS.get(toolName(name)) ?? WrenchIcon;
 
 export type ToolHeaderProps = ComponentProps<typeof CollapsibleTrigger> & {
   readonly name: string;
-  // what it was called on, one line (row.tsx toolSummary)
+  // what it was called on, one line (lib/rows.ts toolSummary)
   readonly detail: string;
   readonly state: ToolState;
 };
@@ -90,19 +77,19 @@ export const ToolHeader = ({ className, name, detail, state, ...props }: ToolHea
       </span>
       <span className="relative flex min-w-0 flex-1 items-baseline gap-2">
         {state === "running" ? (
-          <Shimmer className="shrink-0 font-medium">{baseName(name)}</Shimmer>
+          <Shimmer className="shrink-0 font-medium">{toolName(name)}</Shimmer>
         ) : (
-          <span className="shrink-0 font-medium text-foreground/85">{baseName(name)}</span>
+          <span className="shrink-0 font-medium text-foreground/85">{toolName(name)}</span>
         )}
         {detail !== "" && <span className="min-w-0 truncate font-mono text-xs">{detail}</span>}
       </span>
       {state === "error" || state === "ended" ? (
         <span className={cn("relative shrink-0 text-xs", state === "error" ? "font-medium text-destructive" : "text-muted-foreground")} data-slot="tool-status">
-          {statusLabels[state]}
+          {TOOL_STATE_LABELS[state]}
         </span>
       ) : (
         <span className="sr-only" data-slot="tool-status">
-          {statusLabels[state]}
+          {TOOL_STATE_LABELS[state]}
         </span>
       )}
       <ChevronRightIcon
@@ -125,9 +112,7 @@ export const ToolContent = ({ className, ...props }: ToolContentProps) => (
   />
 );
 
-const SectionLabel = ({ children, tone }: { readonly children: ReactNode; readonly tone?: "error" }) => (
-  <h4 className={cn("text-2xs font-medium text-muted-foreground", tone === "error" && "text-destructive")}>{children}</h4>
-);
+const SectionLabel = ({ children }: { readonly children: ReactNode }) => <h4 className="text-2xs font-medium text-muted-foreground">{children}</h4>;
 
 export type ToolInputProps = ComponentProps<"div"> & {
   // the input exactly as logged: highlighted, never re-serialised
@@ -145,13 +130,10 @@ export const ToolInput = ({ className, input, ...props }: ToolInputProps) => (
 
 export type ToolOutputProps = ComponentProps<"div"> & {
   readonly output: ReactNode;
-  readonly failed?: boolean;
 };
 
-export const ToolOutput = ({ className, output, failed = false, ...props }: ToolOutputProps) => (
-  <div className={cn("border-t first:border-t-0", className)} data-state={failed ? "error" : undefined} {...props}>
+export const ToolOutput = ({ className, output, ...props }: ToolOutputProps) => (
+  <div className={cn("border-t first:border-t-0", className)} {...props}>
     {output}
   </div>
 );
-
-export { SectionLabel as ToolSectionLabel };

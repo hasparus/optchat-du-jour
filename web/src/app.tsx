@@ -2,6 +2,7 @@
 // another tab is open, so its log and the live turn are there when you come back. One /ws link
 // for the whole page.
 import { Button } from "@/components/ui/button";
+import { segmentedItem, segmentedList } from "@/components/ui/segmented";
 import { MessageScrollerProvider } from "@/components/ui/message-scroller";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
@@ -70,7 +71,7 @@ function ThemeToggle() {
     syncThemeColor();
   };
   return (
-    <Button aria-label={dark ? "Light theme" : "Dark theme"} className="text-muted-foreground hover:text-foreground pointer-coarse:size-10" onClick={toggle} size="icon-sm" variant="ghost">
+    <Button aria-label={dark ? "Light theme" : "Dark theme"} className="text-muted-foreground hover:text-foreground" onClick={toggle} size="icon-sm" variant="ghost">
       {dark ? <SunIcon /> : <MoonIcon />}
     </Button>
   );
@@ -81,7 +82,7 @@ function ChangeServer() {
   const shell = nativeShell();
   if (shell === undefined) return null;
   return (
-    <Button aria-label="Change server" className="text-muted-foreground hover:text-foreground pointer-coarse:size-10" onClick={shell.changeServer} size="icon-sm" variant="ghost">
+    <Button aria-label="Change server" className="text-muted-foreground hover:text-foreground" onClick={shell.changeServer} size="icon-sm" variant="ghost">
       <ServerIcon />
     </Button>
   );
@@ -107,7 +108,6 @@ export function App({ link, session, uploader }: { link: Link; session: SessionS
       >
         <header
           className="flex h-[calc(3rem+env(safe-area-inset-top))] shrink-0 items-center gap-2 border-b bg-background pt-[env(safe-area-inset-top)] pr-[max(0.5rem,env(safe-area-inset-right))] pl-[max(0.75rem,env(safe-area-inset-left))] md:bg-shell md:pr-3 md:pl-4"
-          data-slot="app-header"
         >
           <span className="hidden items-center gap-2 pr-3 text-ui font-semibold tracking-tight md:flex">optchat</span>
           <span
@@ -119,10 +119,10 @@ export function App({ link, session, uploader }: { link: Link; session: SessionS
             role="img"
             title={state.status === "open" ? "Connected" : state.status === "connecting" ? "Connecting…" : "Disconnected, reconnecting…"}
           />
-          <TabsList className="h-8 min-w-0 flex-1 justify-start gap-0.5 bg-transparent p-0 md:flex-none pointer-coarse:h-10">
+          <TabsList className={cn(segmentedList({ ground: "bare" }), "h-auto min-w-0 flex-1 justify-start md:flex-none")}>
             {TABS.map((t) => (
               <TabsTrigger
-                className="h-full flex-1 rounded-md px-2.5 text-ui font-medium capitalize text-muted-foreground hover:bg-accent hover:text-foreground data-[state=active]:bg-raised data-[state=active]:text-foreground data-[state=active]:shadow-[0_0_0_1px_var(--border),0_1px_2px_oklch(0_0_0/6%)] md:flex-none dark:data-[state=active]:border-transparent dark:data-[state=active]:bg-raised"
+                className={cn(segmentedItem, "h-8 flex-1 border-0 hover:bg-accent md:flex-none dark:data-[state=active]:bg-raised")}
                 key={t}
                 value={t}
               >

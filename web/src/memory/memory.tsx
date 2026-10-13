@@ -76,7 +76,7 @@ function Zoom({ at, onOpen, onBack, onShow }: { at: At; onOpen: (next: At) => vo
             {data.children.map((c) => (
               <li key={`${c.l}:${c.i}`}>
                 <button
-                  className="w-full rounded-lg px-3 py-2.5 text-left shadow-[inset_0_0_0_1px_var(--border)] transition-colors hover:bg-accent"
+                  className="w-full rounded-lg px-3 py-2.5 text-left hairline transition-colors hover:bg-accent"
                   data-testid="zoom-child"
                   onClick={() => {
                     onOpen({ i: c.i, l: c.l });
@@ -118,7 +118,7 @@ export function Memory({ onShowInChat }: { onShowInChat: (i: number) => void }) 
               </ContextContent>
             </Context>
           )}
-          <Button aria-label="Reload" className="text-muted-foreground hover:text-foreground pointer-coarse:size-10" onClick={reload} size="icon-sm" variant="ghost">
+          <Button aria-label="Reload" className="text-muted-foreground hover:text-foreground" onClick={reload} size="icon-sm" variant="ghost">
             <RefreshCwIcon />
           </Button>
         </div>

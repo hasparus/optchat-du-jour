@@ -12,7 +12,10 @@ function pageColor(): string | null {
   if (!ctx) return null;
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, 1, 1);
-  const [r = 0, g = 0, b = 0] = ctx.getImageData(0, 0, 1, 1).data;
+  const [r = 0, g = 0, b = 0, a = 0] = ctx.getImageData(0, 0, 1, 1).data;
+  // nothing painted (a canvas that draws nothing, or a background it could not parse): no colour
+  // rather than a black status bar
+  if (a === 0) return null;
   return `#${[r, g, b].map((x) => x.toString(16).padStart(2, "0")).join("")}`;
 }
 

@@ -7,7 +7,7 @@ import { openLink, STALE_MS, wakeOnReturn } from "./connection";
 import { sentKey } from "./draft";
 import { applyEvent, applyPage, emptyLog, hole, type Log, MAX_HELD, tip, trimHeld, visible, withDraft } from "./log";
 import type { Inbound } from "./protocol";
-import { chatRows, entryRows, rowFor, rowIndexFor, toolFailed, toolSummary } from "./rows";
+import { chatRows, entryRows, rowFor, rowIndexFor, toolFailed, toolStateOf, toolSummary } from "./rows";
 import { makeSession, queued, type Session, UNSENT } from "./session";
 import { buckets, byModel, periodOf, totals } from "./stats";
 
@@ -601,9 +601,23 @@ describe("a tool call's one line", () => {
     expect(toolFailed("Exit code 1\n\nsrc/x.ts:1 error")).toBe(true);
     expect(toolFailed("<tool_use_error>File does not exist.</tool_use_error>")).toBe(true);
     expect(toolFailed("Error: ENOENT")).toBe(true);
+    expect(toolFailed("not run: cancelled")).toBe(true); // our turn loop's own (src/turn/loop.ts)
+    expect(toolFailed("not run: this turn used its 8 requests")).toBe(true);
     expect(toolFailed("Exit code 0")).toBe(false);
     expect(toolFailed("notes.md\nrepo")).toBe(false);
     expect(toolFailed("an Error: further down")).toBe(false);
-    expect(toolFailed(null)).toBe(false);
+    expect(toolFailed("error: lowercase is a program's own output")).toBe(false);
+  });
+  test("a known false positive: output that begins with Error: from a call that worked", () => {
+    // `grep -h Error: log.txt` succeeds and prints matching lines; the echo can't tell, so the
+    // row reads as failed while its output is shown as logged
+    expect(toolFailed("Error: disk quota exceeded (from log.txt, line 3)")).toBe(true);
+  });
+  test("a tool row's state: done or failed once answered, running only while it is the turn's newest", () => {
+    expect(toolStateOf({ output: "ok" }, true, true)).toBe("done");
+    expect(toolStateOf({ output: "Exit code 2" }, false, false)).toBe("error");
+    expect(toolStateOf({ output: null }, true, true)).toBe("running");
+    expect(toolStateOf({ output: null }, true, false)).toBe("ended");
+    expect(toolStateOf({ output: null }, false, true)).toBe("ended");
   });
 });

@@ -3,13 +3,12 @@
 // the failovers. This
 // replaces `optchat stats`. Charts are shadcn's (recharts); every one has a legend or a title for
 // its one series, and the numbers are in the table below them too.
-import { Button } from "@/components/ui/button";
+import { Segmented, SegmentedButton } from "@/components/ui/segmented";
 import { type ChartConfig, ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { api } from "@/lib/api";
 import { type Bucket, buckets, byModel, ENGINES, type Period, ranOn, ROLES, type Split, total, totals } from "@/lib/stats";
 import { useApi } from "@/lib/use-api";
 import { Bar, BarChart, CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
-import { cn } from "@/lib/utils";
 import { type ReactNode, useState } from "react";
 
 const compact = new Intl.NumberFormat("en-US", { notation: "compact" });
@@ -36,43 +35,37 @@ function Figure({ label, value }: { label: string; value: string }) {
 
 function Toggle<A extends string>({ value, options, onChange, label }: { value: A; options: readonly A[]; onChange: (a: A) => void; label: string }) {
   return (
-    <div aria-label={label} className="inline-flex rounded-lg bg-muted p-0.5" role="group">
+    <Segmented aria-label={label}>
       {options.map((o) => (
-        <Button
-          aria-pressed={o === value}
+        <SegmentedButton
           key={o}
           onClick={() => {
             onChange(o);
           }}
-          className={cn(
-            "h-7 rounded-md px-2.5 text-ui capitalize pointer-coarse:h-9",
-            o === value ? "bg-raised text-foreground shadow-[0_0_0_1px_var(--border),0_1px_2px_oklch(0_0_0/6%)] hover:bg-raised" : "text-muted-foreground hover:bg-transparent hover:text-foreground",
-          )}
-          size="xs"
-          variant="ghost"
+          pressed={o === value}
         >
           {o}
-        </Button>
+        </SegmentedButton>
       ))}
-    </div>
+    </Segmented>
   );
 }
 
 function Stacked({ title, data, field, names }: { title: string; data: readonly Bucket[]; field: "calls" | "tokens"; names: readonly string[] }) {
   return (
     <ChartSection title={title}>
-        <ChartContainer className="aspect-auto h-48 w-full" config={seriesConfig(names)}>
-          <BarChart data={[...data]}>
-            <CartesianGrid vertical={false} />
-            <XAxis dataKey="period" tickLine={false} />
-            <YAxis allowDecimals={field === "tokens"} tickFormatter={(v: number) => compact.format(v)} tickLine={false} width={36} />
-            <ChartTooltip content={<ChartTooltipContent />} />
-            <ChartLegend content={<ChartLegendContent />} />
-            {names.map((n) => (
-              <Bar dataKey={`${field}.${n}`} fill={`var(--color-${n})`} key={n} name={n} radius={2} stackId="a" stroke="var(--background)" strokeWidth={2} />
-            ))}
-          </BarChart>
-        </ChartContainer>
+      <ChartContainer className="aspect-auto h-48 w-full" config={seriesConfig(names)}>
+        <BarChart data={[...data]}>
+          <CartesianGrid vertical={false} />
+          <XAxis dataKey="period" tickLine={false} />
+          <YAxis allowDecimals={field === "tokens"} tickFormatter={(v: number) => compact.format(v)} tickLine={false} width={36} />
+          <ChartTooltip content={<ChartTooltipContent />} />
+          <ChartLegend content={<ChartLegendContent />} />
+          {names.map((n) => (
+            <Bar dataKey={`${field}.${n}`} fill={`var(--color-${n})`} key={n} name={n} radius={2} stackId="a" stroke="var(--background)" strokeWidth={2} />
+          ))}
+        </BarChart>
+      </ChartContainer>
     </ChartSection>
   );
 }
@@ -123,28 +116,28 @@ export function Stats() {
           <Stacked data={rows} field="calls" names={names} title={`Calls per ${period}, by ${split}`} />
           <Stacked data={rows} field="tokens" names={names} title={`Tokens per ${period}, by ${split}`} />
           <ChartSection title={`Cache hit rate per ${period}`}>
-              <ChartContainer className="aspect-auto h-40 w-full" config={hitConfig}>
-                <LineChart data={rows.map((r) => ({ hitRate: r.hitRate, period: r.period }))}>
-                  <CartesianGrid vertical={false} />
-                  <XAxis dataKey="period" tickLine={false} />
-                  <YAxis domain={[0, 1]} tickFormatter={(v: number) => pct(v)} tickLine={false} width={36} />
-                  <ChartTooltip content={<ChartTooltipContent valueFormatter={pct} />} />
-                  <Line dataKey="hitRate" dot={{ r: 3, strokeWidth: 0, fill: "var(--color-hitRate)" }} stroke="var(--color-hitRate)" strokeWidth={2} type="monotone" />
-                </LineChart>
-              </ChartContainer>
+            <ChartContainer className="aspect-auto h-40 w-full" config={hitConfig}>
+              <LineChart data={rows.map((r) => ({ hitRate: r.hitRate, period: r.period }))}>
+                <CartesianGrid vertical={false} />
+                <XAxis dataKey="period" tickLine={false} />
+                <YAxis domain={[0, 1]} tickFormatter={(v: number) => pct(v)} tickLine={false} width={36} />
+                <ChartTooltip content={<ChartTooltipContent valueFormatter={pct} />} />
+                <Line dataKey="hitRate" dot={{ r: 3, strokeWidth: 0, fill: "var(--color-hitRate)" }} stroke="var(--color-hitRate)" strokeWidth={2} type="monotone" />
+              </LineChart>
+            </ChartContainer>
           </ChartSection>
           <ChartSection title={`Cold and warm turns per ${period}`}>
-              <ChartContainer className="aspect-auto h-40 w-full" config={coldConfig}>
-                <BarChart data={rows.map((r) => ({ cold: r.cold, period: r.period, warm: r.warm }))}>
-                  <CartesianGrid vertical={false} />
-                  <XAxis dataKey="period" tickLine={false} />
-                  <YAxis allowDecimals={false} tickLine={false} width={36} />
-                  <ChartTooltip content={<ChartTooltipContent />} />
-                  <ChartLegend content={<ChartLegendContent />} />
-                  <Bar dataKey="warm" fill="var(--color-warm)" radius={2} stackId="t" stroke="var(--background)" strokeWidth={2} />
-                  <Bar dataKey="cold" fill="var(--color-cold)" radius={2} stackId="t" stroke="var(--background)" strokeWidth={2} />
-                </BarChart>
-              </ChartContainer>
+            <ChartContainer className="aspect-auto h-40 w-full" config={coldConfig}>
+              <BarChart data={rows.map((r) => ({ cold: r.cold, period: r.period, warm: r.warm }))}>
+                <CartesianGrid vertical={false} />
+                <XAxis dataKey="period" tickLine={false} />
+                <YAxis allowDecimals={false} tickLine={false} width={36} />
+                <ChartTooltip content={<ChartTooltipContent />} />
+                <ChartLegend content={<ChartLegendContent />} />
+                <Bar dataKey="warm" fill="var(--color-warm)" radius={2} stackId="t" stroke="var(--background)" strokeWidth={2} />
+                <Bar dataKey="cold" fill="var(--color-cold)" radius={2} stackId="t" stroke="var(--background)" strokeWidth={2} />
+              </BarChart>
+            </ChartContainer>
           </ChartSection>
           <table className="w-full text-ui tabular-nums [&_td]:border-t [&_td]:py-1.5 [&_th]:pb-1.5">
             <caption className="border-t pt-4 pb-3 text-left font-medium">Per {period}</caption>

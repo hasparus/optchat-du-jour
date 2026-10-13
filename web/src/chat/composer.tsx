@@ -258,7 +258,7 @@ export function Composer({ link, session, state, busy, open, devices, device, on
               onClick={() => {
                 send(other);
               }}
-              className="h-8 rounded-full px-3 text-ui text-foreground shadow-[inset_0_0_0_1px_var(--input)] hover:bg-accent pointer-coarse:h-10"
+              className="h-8 rounded-full px-3 text-ui text-foreground hairline-strong hover:bg-accent pointer-coarse:h-10"
               size="sm"
               title={`${otherLabel} (Ctrl/⌘+Enter)`}
               variant="ghost"

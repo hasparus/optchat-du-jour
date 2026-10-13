@@ -1,9 +1,8 @@
 // AI Elements' Terminal (elements.ai-sdk.dev registry): a tool's output as a terminal. Used for
 // `echo` entries (SPEC "Web UI", Chat), inside a tool call's panel, so it takes the panel's ground
 // and tokens rather than the registry's always-black zinc (DESIGN.md, Tool calls). The clear button
-// is left out: the log is append-only. The
-// registry's ansi-to-react is too: its CommonJS default export doesn't survive Vite's build, so
-// escape sequences are dropped instead of drawn as colours.
+// is left out: the log is append-only. The registry's ansi-to-react is too: its CommonJS default
+// export doesn't survive Vite's build, so escape sequences are dropped instead of drawn as colours.
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { CheckIcon, CopyIcon } from "lucide-react";
@@ -80,9 +79,9 @@ export const TerminalCopyButton = ({ timeout = 2000, children, className, ...pro
   return (
     <Button
       aria-label="Copy output"
-      className={cn("size-7 shrink-0 text-muted-foreground hover:text-foreground pointer-coarse:size-10", className)}
+      className={cn("size-7 shrink-0 text-muted-foreground hover:text-foreground", className)}
       onClick={() => void copy()}
-      size="icon"
+      size="icon-sm"
       variant="ghost"
       {...props}
     >

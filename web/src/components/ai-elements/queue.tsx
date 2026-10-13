@@ -61,7 +61,7 @@ export const QueueSectionTrigger = ({ children, className, ...props }: QueueSect
   <CollapsibleTrigger asChild>
     <button
       className={cn(
-        "group flex min-h-7 w-full items-center justify-between rounded-md text-left text-2xs font-medium text-muted-foreground transition-colors hover:text-foreground pointer-coarse:min-h-9",
+        "group flex min-h-7 w-full items-center justify-between rounded-md text-left text-2xs font-medium text-muted-foreground transition-colors hover:text-foreground pointer-coarse:min-h-10",
         className,
       )}
       type="button"

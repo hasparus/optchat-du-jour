@@ -71,7 +71,7 @@ export const PromptInput = ({ className, onSubmit, canSubmit = (text) => text.tr
         className={cn(
           // the one raised object on the page (DESIGN.md, Composer): a hairline ring and a soft drop,
           // the ring turning to the accent while the text has focus or a file is dragged over
-          "relative z-10 overflow-hidden rounded-3xl border-0 bg-raised shadow-[0_0_0_1px_var(--input),var(--elevation-raised)] transition-shadow duration-150 dark:bg-raised",
+          "relative z-10 overflow-hidden rounded-3xl border-0 bg-raised shadow-raised transition-shadow duration-150 dark:bg-raised",
           "has-[[data-slot=input-group-control]:focus-visible]:shadow-[0_0_0_1px_color-mix(in_oklch,var(--signal)_65%,transparent),0_0_0_4px_color-mix(in_oklch,var(--signal)_14%,transparent),var(--elevation-raised)] has-[[data-slot=input-group-control]:focus-visible]:ring-0",
           dragging && "shadow-[0_0_0_1.5px_var(--signal),0_0_0_5px_color-mix(in_oklch,var(--signal)_16%,transparent),var(--elevation-raised)]",
         )}
@@ -146,8 +146,8 @@ export const PromptInputAttachment = ({ name, kind, preview, progress, done, err
     <div className="relative w-16 shrink-0" data-state={error ? "error" : done ? "done" : "uploading"} data-testid="attachment">
       <div
         className={cn(
-          "relative flex size-16 items-center justify-center overflow-hidden rounded-xl bg-muted text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)]",
-          error && "shadow-[inset_0_0_0_1.5px_var(--destructive)]",
+          "relative flex size-16 items-center justify-center overflow-hidden rounded-xl bg-muted text-muted-foreground",
+          error ? "shadow-[inset_0_0_0_1.5px_var(--destructive)]" : "hairline",
         )}
       >
         {kind === "image" && !broken ? (

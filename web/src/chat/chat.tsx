@@ -28,17 +28,18 @@ import {
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import type { Link } from "@/lib/connection";
 import { visible } from "@/lib/log";
-import { chatRows, entryRows, type Row, rowFor, rowIndexFor, toolFailed } from "@/lib/rows";
+import { chatRows, entryRows, type Row, rowFor, rowIndexFor, toolStateOf } from "@/lib/rows";
 import { type Marker as StatusMarker, type Queued, queued, type Session, type SessionStore } from "@/lib/session";
 import { canonicalRef, type Device, engineLabel, type SessionState, shortSha } from "@wire";
 import { cn } from "@/lib/utils";
-import { AlertCircleIcon, ArrowDownIcon, FilmIcon, InfoIcon, TriangleAlertIcon, Undo2Icon } from "lucide-react";
+import { AlertCircleIcon, FilmIcon, InfoIcon, TriangleAlertIcon, Undo2Icon } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Uploader } from "@/lib/attach";
 import { loadModel, saveModel } from "@/lib/draft";
 import { Composer } from "./composer";
 import { shortLabel } from "./pickers";
 import { ChatRow } from "./row";
+import { useStickToEnd } from "./use-stick-to-end";
 
 // an engine of the master's chain by the label its picker shows (with its effort, src/wire.ts
 // engineLabel), else as its ref reads
@@ -117,7 +118,7 @@ function Waiting({ q, asking, model, state, onTakeBack }: { readonly q: Queued; 
         {(q.where !== "failed" || other !== null) && (
           <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-2xs text-muted-foreground">
             {other !== null && (
-              <span className="shrink-0 rounded-sm px-1 font-medium text-foreground shadow-[inset_0_0_0_1px_var(--input)]" data-testid="queue-engine" title={`for ${other}`}>
+              <span className="shrink-0 rounded-sm px-1 font-medium text-foreground hairline-strong" data-testid="queue-engine" title={`for ${other}`}>
                 {shortLabel(other)}
               </span>
             )}
@@ -229,28 +230,6 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
     if (kept !== null && kept !== chosen && engines?.some((e) => e.ref === kept)) onModel(kept);
   }, [kept, chosen, engines, onModel]);
   const { scrollToEnd, scrollToMessage } = useMessageScroller();
-  // A web font that lands after the chat opened at its newest row reflows the rows above and
-  // leaves the view short of the end. In the first seconds, before the reader has scrolled, the
-  // view follows the end again as each font loads.
-  const touched = useRef(false);
-  useEffect(() => {
-    const fonts = "fonts" in document ? document.fonts : null;
-    if (!fonts) return;
-    const settle = () => {
-      if (!touched.current) scrollToEnd({ behavior: "auto" });
-    };
-    fonts.addEventListener("loadingdone", settle);
-    const stop = setTimeout(() => {
-      fonts.removeEventListener("loadingdone", settle);
-    }, 4000);
-    return () => {
-      clearTimeout(stop);
-      fonts.removeEventListener("loadingdone", settle);
-    };
-  }, [scrollToEnd]);
-  const touch = () => {
-    touched.current = true;
-  };
   // at the newest end (nothing more to scroll to): the store may drop what is far out of sight
   const atEnd = !useMessageScrollerScrollable().end;
   useEffect(() => {
@@ -270,27 +249,13 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
   const waiting = queued(state);
   const line = status(state);
   // the server says the log is empty: a first visit, not a page still loading
-  const empty = state.state !== null && rows.length === 0 && state.markers.length === 0 && first === 0;
-  // The composer grows with an attachment tray or a longer draft, and the chat's view shrinks by
-  // as much: a reader who was at the newest row stays there. Not while a turn runs: the scroller
-  // then holds the sent message at the top, and following the end would undo that.
+  const empty = state.state !== null && rows.length === 0 && state.markers.length === 0;
+  // a reader at the newest row stays there as the dock grows (./use-stick-to-end.ts)
   const dock = useRef<HTMLDivElement>(null);
-  const follow = useRef(false);
-  follow.current = atEnd && !busy;
-  useEffect(() => {
-    const el = dock.current?.querySelector("form");
-    if (!el || !("ResizeObserver" in globalThis)) return;
-    let height = el.offsetHeight;
-    const ro = new ResizeObserver(() => {
-      const now = el.offsetHeight;
-      if (now > height && follow.current) scrollToEnd({ behavior: "auto" });
-      height = now;
-    });
-    ro.observe(el);
-    return () => {
-      ro.disconnect();
-    };
+  const toEnd = useCallback(() => {
+    scrollToEnd({ behavior: "auto" });
   }, [scrollToEnd]);
+  useStickToEnd(dock, atEnd && !busy && target === null, toEnd);
 
   // one older page, prepended: true while there may be more, null when it couldn't be read
   const loadOlder = useCallback(async () => {
@@ -341,12 +306,12 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
         {/* The sentinel and the "earlier" button sit outside the content: the scroller reads its
             content's first child to keep the view still when older rows are prepended, and opens
             at the newest row only when the first rows arrive into an empty content. */}
-        <MessageScrollerViewport aria-label="Chat" className="relative" onKeyDown={touch} onTouchMove={touch} onWheel={touch} preserveScrollOnPrepend>
+        <MessageScrollerViewport aria-label="Chat" className="relative" preserveScrollOnPrepend>
           <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-px" ref={top} />
           {first > 0 && (
-            <div className="flex justify-center pt-4" data-slot="chat-earlier">
+            <div className="flex justify-center pt-4">
               <button
-                className="min-h-8 rounded-full px-3 text-xs text-muted-foreground shadow-[inset_0_0_0_1px_var(--border)] transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60 pointer-coarse:min-h-10"
+                className="min-h-8 rounded-full px-3 text-xs text-muted-foreground hairline transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60 pointer-coarse:min-h-10"
                 disabled={loading}
                 onClick={() => void loadOlder()}
                 type="button"
@@ -366,7 +331,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
                   <ChatRow
                     row={row}
                     streaming={row.key === draftKey}
-                    toolState={row.kind === "tool" && row.output !== null ? (toolFailed(row.output) ? "error" : "done") : busy && row.key === lastTool ? "running" : "ended"}
+                    toolState={row.kind === "tool" ? toolStateOf(row, busy, row.key === lastTool) : "done"}
                   />
                 </MessageScrollerItem>
                 {placed.after.get(k)?.map((m) => (
@@ -376,15 +341,11 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
             ))}
           </MessageScrollerContent>
         </MessageScrollerViewport>
-        <MessageScrollerButton className="size-9 rounded-full border-0 bg-raised text-foreground shadow-[0_0_0_1px_var(--border),var(--elevation-float)] hover:bg-raised hover:text-foreground data-[direction=end]:bottom-3 pointer-coarse:size-10">
-          <ArrowDownIcon className="size-4" />
-          <span className="sr-only">Scroll to end</span>
-        </MessageScrollerButton>
+        <MessageScrollerButton className="size-9 rounded-full border-0 bg-raised text-foreground shadow-float hover:bg-raised hover:text-foreground data-[direction=end]:bottom-3" />
       </MessageScroller>
 
       <div
         className="relative mx-auto w-full max-w-184 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] before:pointer-events-none before:absolute before:inset-x-0 before:-top-6 before:h-6 before:bg-linear-to-b before:from-transparent before:to-background sm:px-4 sm:pb-[max(1rem,env(safe-area-inset-bottom))]"
-        data-slot="chat-dock"
         ref={dock}
       >
         {line !== null && (
@@ -400,7 +361,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
           </div>
         )}
         {(state.state?.phase === "needs-model" || waiting.length > 0) && (
-          <div className="mx-2.5 -mb-px overflow-hidden rounded-t-xl border border-b-0 bg-raised [&>*+*]:border-t" data-slot="composer-tray">
+          <div className="mx-2.5 -mb-px overflow-hidden rounded-t-xl border border-b-0 bg-raised [&>*+*]:border-t">
             {state.state?.phase === "needs-model" && <NeedsModel onModel={onModel} session={session} state={state.state} />}
             {waiting.length > 0 && (
               <Queue data-testid="queue">

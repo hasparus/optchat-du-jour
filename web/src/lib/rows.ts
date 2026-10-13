@@ -67,12 +67,35 @@ export function rowIndexFor(rows: readonly Row[], i: number): number {
 // the row to scroll to for log index i: the last one starting at or before it
 export const rowFor = (rows: readonly Row[], i: number) => rows.findLast((r) => r.id <= i) ?? rows[0];
 
-// Whether a tool's output says the call failed. The log keeps the output's text only (an echo has no
-// error flag), so this reads what Claude Code's tools write when they fail: a Bash exit code other
-// than 0, a <tool_use_error> wrapper, or an "Error:" first line. Used for how the row looks, never
-// for what it shows: the output is there as logged either way.
-const FAILED = /^\s*(?:Exit code [1-9]\d*\b|<tool_use_error>|Error:|error:)/;
-export const toolFailed = (output: string | null) => output !== null && FAILED.test(output);
+// ---- how a tool row reads (components/ai-elements/tool.tsx draws it) ----
+
+// running: no echo yet and the turn goes on; done: the echo is in; ended: the turn ended without
+// one; error: the echo says the call failed (toolFailed)
+export type ToolState = "running" | "done" | "ended" | "error";
+
+export const TOOL_STATE_LABELS = {
+  done: "Completed",
+  ended: "No output",
+  error: "Failed",
+  running: "Running",
+} satisfies Record<ToolState, string>;
+
+// Whether a tool's output says the call failed. The log keeps an echo's text only (it has no error
+// flag), so this is a presentational guess (SPEC "Web UI") from how failures begin: a Bash exit
+// code other than 0 and a <tool_use_error> wrapper (Claude Code), an "Error:" first line, and
+// `not run: <why>`, which our own turn loop logs for a call it never ran (src/turn/loop.ts). An
+// output that begins "Error:" but came from a call that worked reads as failed too: a known false
+// positive. It changes how the row looks, never what it shows: the output is there as logged.
+const FAILED = /^\s*(?:Exit code [1-9]\d*\b|<tool_use_error>|Error:|not run: )/;
+export const toolFailed = (output: string) => FAILED.test(output);
+
+// A tool row's state: `busy` is whether a turn runs or waits, `last` whether this is the newest
+// tool row (only the newest can still be running)
+export const toolStateOf = (row: Pick<ToolRow, "output">, busy: boolean, last: boolean): ToolState =>
+  row.output === null ? (busy && last ? "running" : "ended") : toolFailed(row.output) ? "error" : "done";
+
+// an MCP tool comes as mcp__<server>__<name>; the row names it by <name>
+export const toolName = (name: string) => name.split("__").at(-1) ?? name;
 
 const oneLine = (s: string, max = 120) => {
   const flat = s.replaceAll(/\s+/g, " ").trim();

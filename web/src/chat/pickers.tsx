@@ -29,15 +29,15 @@ export function FollowUps({ link, followUp }: { readonly link: Link; readonly fo
           <span className="capitalize">{followUp}</span>
         </InputGroupButton>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-72 space-y-3 rounded-xl border-0 p-3 text-ui shadow-[0_0_0_1px_var(--border),var(--elevation-float)]">
+      <PopoverContent align="start" className="w-72 space-y-3 rounded-xl border-0 p-3 text-ui shadow-float">
         <p className="font-medium">A message sent while a turn runs</p>
         <div className="grid grid-cols-2 gap-1.5">
           {choices.map((c) => (
             <button
               aria-pressed={followUp === c.value}
               className={cn(
-                "rounded-lg px-2.5 py-2 text-left shadow-[inset_0_0_0_1px_var(--border)] transition-[background-color,box-shadow] active:scale-[0.98]",
-                followUp === c.value ? "bg-signal/8 shadow-[inset_0_0_0_1.5px_var(--signal)]" : "hover:bg-accent",
+                "rounded-lg px-2.5 py-2 text-left transition-[background-color,box-shadow] active:scale-[0.98]",
+                followUp === c.value ? "bg-signal/8 shadow-[inset_0_0_0_1.5px_var(--signal)]" : "hairline hover:bg-accent",
               )}
               key={c.value}
               onClick={() => {

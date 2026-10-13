@@ -4,10 +4,10 @@
 // one work-log line with its input and output collapsed under it.
 import { MessageAction, MessageActions, MessageResponse } from "@/components/ai-elements/message";
 import { Terminal } from "@/components/ai-elements/terminal";
-import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput, type ToolState } from "@/components/ai-elements/tool";
+import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from "@/components/ai-elements/tool";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Message, MessageContent, MessageHeader } from "@/components/ui/message";
-import { type Row, toolSummary } from "@/lib/rows";
+import { type Row, type ToolState, toolSummary } from "@/lib/rows";
 import { splitMarkers } from "@wire";
 import { CheckIcon, CodeIcon, CopyIcon, NotebookPenIcon, TextIcon } from "lucide-react";
 import { Component, memo, type ReactNode, useEffect, useRef, useState } from "react";
@@ -24,7 +24,7 @@ function CopyAction({ text }: { text: string }) {
   );
   return (
     <MessageAction
-      className="size-7 text-muted-foreground hover:text-foreground pointer-coarse:size-10 [&_svg]:size-3.5"
+      className="size-7 text-muted-foreground hover:text-foreground [&_svg]:size-3.5"
       label={copied ? "Copied" : "Copy"}
       onClick={() => {
         navigator.clipboard.writeText(text).then(
@@ -62,21 +62,20 @@ function Reply({ text, streaming }: { text: string; streaming: boolean }) {
             )}
           </BubbleContent>
         </Bubble>
-        {!streaming && (
-          <MessageActions className="-ml-1.5 gap-0.5">
-            <CopyAction text={text} />
-            <MessageAction
-              aria-pressed={raw}
-              className="size-7 text-muted-foreground hover:text-foreground aria-pressed:bg-accent aria-pressed:text-foreground pointer-coarse:size-10 [&_svg]:size-3.5"
-              label={raw ? "Show rendered" : "Show raw text"}
-              onClick={() => {
-                setRaw(!raw);
-              }}
-            >
-              {raw ? <TextIcon /> : <CodeIcon />}
-            </MessageAction>
-          </MessageActions>
-        )}
+        {/* the raw toggle is there from the first token (SPEC "Web UI"); copy waits for the whole reply */}
+        <MessageActions className="-ml-1.5 gap-0.5">
+          {!streaming && <CopyAction text={text} />}
+          <MessageAction
+            aria-pressed={raw}
+            className="size-7 text-muted-foreground hover:text-foreground aria-pressed:bg-accent aria-pressed:text-foreground [&_svg]:size-3.5"
+            label={raw ? "Show rendered" : "Show raw text"}
+            onClick={() => {
+              setRaw(!raw);
+            }}
+          >
+            {raw ? <TextIcon /> : <CodeIcon />}
+          </MessageAction>
+        </MessageActions>
       </MessageContent>
     </Message>
   );
@@ -164,12 +163,12 @@ function RowView({ row, streaming, toolState }: { row: Row; streaming: boolean; 
       return <Reply streaming={streaming} text={row.text} />;
     case "tool":
       return (
-        <Tool state={toolState}>
+        <Tool>
           <ToolHeader detail={toolSummary(row.args)} name={row.name} state={toolState} />
           <ToolContent>
             {row.args !== "" && <ToolInput input={row.args} />}
             {row.output !== null && (
-              <ToolOutput failed={toolState === "error"} output={<Terminal output={row.output} title={toolState === "error" ? <span className="text-destructive">Error</span> : undefined} />} />
+              <ToolOutput output={<Terminal output={row.output} title={toolState === "error" ? <span className="text-destructive">Error</span> : undefined} />} />
             )}
           </ToolContent>
         </Tool>
