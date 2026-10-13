@@ -318,7 +318,7 @@ export const makeMessages = (o: { readonly base: string; readonly key: Effect.Ef
           HttpClientRequest.accept("text/event-stream"),
           HttpClientRequest.bodyText(requestBody(ask), "application/json"),
         );
-        yield* admitRequest({ model: ask.model, transport: "anthropic-messages" });
+        yield* admitRequest();
         const res = yield* http.execute(req);
         if (res.status !== 200) {
           const raw = yield* res.text;

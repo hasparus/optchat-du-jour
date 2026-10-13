@@ -51,13 +51,6 @@ export type CompactorNeeds = EngineNeeds & {
   readonly tools: readonly ToolDef[];
   readonly placement: Effect.Effect<Placement, DeviceOffline>;
   readonly gate: Gate;
-  readonly onEngineFailure?: (failure: EngineFailure) => Effect.Effect<void>;
-};
-
-export type EngineFailure = {
-  readonly coord: { readonly l: number; readonly i: number };
-  readonly ref: string;
-  readonly error: EngineError;
 };
 
 // a turn engine's needs: the one system prompt (docs/optchat.md §5), where each device's claude runs (E7),

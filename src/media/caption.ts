@@ -66,7 +66,7 @@ const claudeCodeCaption = (model: string, effort: string | undefined, o: Caption
       const started = Date.now();
       const claude = yield* o.runner.spawn({ args, env: { DISABLE_PROMPT_CACHING: "1" } }).pipe(Effect.mapError((e) => new ModelError({ message: e.message })));
       const { picture } = input;
-      yield* admitRequest({ model, transport: "claude" });
+      yield* admitRequest();
       yield* claude.send([
         { source: { data: picture.data, media_type: picture.mime, type: "base64" }, type: "image" },
         { text: askOf(input), type: "text" },

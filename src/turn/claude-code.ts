@@ -295,7 +295,7 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
         // (D2), and its mark at the request's end finds priming's within the 20-block lookback;
         // the new messages' pictures; the new messages, a blank line apart (ref §5.1), and after a
         // failover what came before
-        yield* admitRequest({ model: o.model, transport: "claude" });
+        yield* admitRequest();
         yield* claude.send([...viewBlocks(input.view).blocks.map(text), ...input.media.map(block), text(openingText(input))]);
 
         // Mid-run messages go to stdin as they are offered (after a failover, first the ones the
@@ -306,7 +306,7 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
           Effect.flatMap((m) =>
             Effect.suspend(() => {
               passed.push(m);
-              return admitRequest({ model: o.model, transport: "claude" }).pipe(Effect.andThen(claude.send([...m.media.map(block), text(m.text)])));
+              return admitRequest().pipe(Effect.andThen(claude.send([...m.media.map(block), text(m.text)])));
             }),
           ),
           Effect.forever,
@@ -342,7 +342,7 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
           .spawn(primeSpawn(placement))
           .pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(new ModelError({ message: e.message })))); // DeviceOffline: priming skips quietly
         const started = yield* Clock.currentTimeMillis;
-        yield* admitRequest({ model: o.model, transport: "claude" });
+        yield* admitRequest();
         yield* claude.send([...primeBlocks(view, o.primeTtl), text("ok")]);
         // priming is often the first call after the server starts: a transport that fails shows here first
         const mcp = mcpWatch(device, placement);

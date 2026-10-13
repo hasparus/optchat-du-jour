@@ -287,7 +287,7 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
         HttpClientRequest.accept("text/event-stream"),
         HttpClientRequest.bodyText(body(ask, marked), "application/json"),
       );
-      return admitRequest({ model: ask.model, transport: "openai-responses" }).pipe(Effect.andThen(http.execute(request)));
+      return admitRequest().pipe(Effect.andThen(http.execute(request)));
     };
     // A model that refuses the breakpoints (a 400 naming the field) gets the same request again
     // without them, and none from then on, which the user hears once, rather than failing every

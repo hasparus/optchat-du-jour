@@ -1,58 +1,41 @@
 import { Deferred, Effect, Exit } from "effect";
-import type { RequestAdmissionService } from "../src/engines/request-admission.ts";
+import type { EngineExecutionPolicyService } from "../src/engines/request-admission.ts";
 import { RequestNotAdmitted } from "../src/engines/request-admission.ts";
+import type {
+  ContenderOutcome,
+  DiagnosticReason,
+  GlobalAbort,
+  Metrics,
+  Progress,
+  RunOutcome,
+} from "./bakeoff-artifact.ts";
 
-export type Coord = { readonly l: number; readonly i: number };
-export type DiagnosticReason =
-  | { readonly type: "usage-limit"; readonly contender: string; readonly engine: string; readonly coord: Coord }
-  | { readonly type: "over-limit"; readonly contender: string; readonly coord: Coord; readonly bytes: number; readonly limit: number }
-  | { readonly type: "unbuilt"; readonly contender: string; readonly coord: Coord }
-  | { readonly type: "deadline"; readonly contender: string; readonly duration: string };
-
-export type Progress = {
-  readonly loggedMessages: number;
-  readonly requestedMessages: number;
-  readonly unbuiltNodes: readonly string[];
-  readonly usageRecords: number;
-};
-
-export type CompleteContender<M> = { readonly type: "complete"; readonly name: string; readonly metrics: M; readonly usageRecords: number };
-export type FailedContender = { readonly type: "failed"; readonly name: string; readonly reason: DiagnosticReason; readonly progress: Progress };
-export type ContenderOutcome<M> = CompleteContender<M> | FailedContender;
-
-export type GlobalAbort =
-  | { readonly type: "max-authorized-requests"; readonly authorized: number; readonly max: number }
-  | { readonly type: "fail-fast"; readonly contender: string; readonly reason: DiagnosticReason }
-  | { readonly type: "unexpected"; readonly contender?: string | undefined };
-
-export type ActiveProgress =
-  | { readonly type: "none" }
-  | { readonly type: "interrupted"; readonly name: string; readonly progress: Progress };
-
-export type RunOutcome<M> =
-  | { readonly type: "complete"; readonly contenders: readonly CompleteContender<M>[] }
-  | { readonly type: "completed-with-failures"; readonly contenders: readonly ContenderOutcome<M>[] }
-  | { readonly type: "aborted"; readonly abort: GlobalAbort; readonly contenders: readonly ContenderOutcome<M>[]; readonly active: ActiveProgress };
+export type { CompleteContender, ContenderOutcome, DiagnosticReason, FailedContender, GlobalAbort, Metrics, Progress, RunOutcome } from "./bakeoff-artifact.ts";
 
 export type TerminalSignal =
   | { readonly type: "contender"; readonly reason: DiagnosticReason }
   | { readonly type: "global"; readonly abort: GlobalAbort };
 
 export type ContenderControl = {
-  readonly name: string;
+  readonly policy: EngineExecutionPolicyService;
   readonly fail: (reason: DiagnosticReason) => Effect.Effect<boolean>;
   readonly awaitTerminal: Effect.Effect<TerminalSignal>;
   readonly reason: () => DiagnosticReason | undefined;
 };
 
 export type RunControl = {
-  readonly admission: RequestAdmissionService;
   readonly begin: (name: string) => ContenderControl;
   readonly abortUnexpected: (contender?: string) => Effect.Effect<boolean>;
-  readonly awaitGlobal: Effect.Effect<GlobalAbort>;
   readonly globalAbort: () => GlobalAbort | undefined;
   readonly snapshot: () => { readonly authorizedRequests: number; readonly maxRequests: number };
 };
+
+export type GlobalRunResult = {
+  readonly type: "global-abort";
+  readonly abort: GlobalAbort;
+  readonly progress: Progress;
+};
+export type ContenderRunResult = ContenderOutcome | GlobalRunResult;
 
 export const makeRunControl = (maxRequests: number, failFast = true): RunControl => {
   if (!Number.isSafeInteger(maxRequests) || maxRequests < 1) throw new Error("maxRequests must be a positive safe integer");
@@ -67,96 +50,116 @@ export const makeRunControl = (maxRequests: number, failFast = true): RunControl
       return Deferred.succeed(globalSignal, next);
     });
 
-  const admission: RequestAdmissionService = {
-    authorize: () =>
-      Effect.suspend(() => {
-        if (globalAbort !== undefined) return Effect.fail(new RequestNotAdmitted({ reason: "max-authorized-requests" }));
-        if (authorizedRequests >= maxRequests) {
-          const capped: GlobalAbort = { authorized: authorizedRequests, max: maxRequests, type: "max-authorized-requests" };
-          return abort(capped).pipe(Effect.andThen(Effect.fail(new RequestNotAdmitted({ reason: "max-authorized-requests" }))));
-        }
-        authorizedRequests++;
-        return Effect.void;
-      }),
-  };
-
   const begin = (name: string): ContenderControl => {
     const localSignal = Deferred.makeUnsafe<DiagnosticReason>();
     let localReason: DiagnosticReason | undefined;
     const fail = (reason: DiagnosticReason): Effect.Effect<boolean> =>
       Effect.suspend(() => {
-        if (localReason !== undefined || globalAbort !== undefined) return Effect.succeed(false);
+        if (globalAbort !== undefined || localReason !== undefined) return Effect.succeed(false);
         localReason = reason;
         return Deferred.succeed(localSignal, reason).pipe(
-          Effect.tap(() => (failFast ? abort({ contender: name, reason, type: "fail-fast" }) : Effect.void)),
+          Effect.tap(() => failFast ? abort({ contender: name, reason, type: "fail-fast" }) : Effect.void),
         );
       });
+    const policy: EngineExecutionPolicyService = {
+      authorize: () =>
+        Effect.suspend(() => {
+          // Ordering is intentional: a global abort dominates a local closure, while a local
+          // closure never consumes another request or creates a new global abort.
+          if (globalAbort !== undefined) return Effect.fail(new RequestNotAdmitted({ reason: "global-abort" }));
+          if (localReason !== undefined) return Effect.fail(new RequestNotAdmitted({ reason: "closed" }));
+          if (authorizedRequests >= maxRequests) {
+            const capped: GlobalAbort = { type: "max-authorized-requests" };
+            return abort(capped).pipe(
+              Effect.andThen(Effect.fail(new RequestNotAdmitted({ reason: "max-authorized-requests" }))),
+            );
+          }
+          authorizedRequests++;
+          return Effect.void;
+        }),
+      onFailure: (failure) =>
+        failure.error._tag === "UsageLimit"
+          ? fail({ coord: failure.coord, engine: failure.ref.slice(0, 100), type: "usage-limit" }).pipe(Effect.as("stop" as const))
+          : Effect.succeed("continue" as const),
+    };
     return {
       awaitTerminal: Effect.raceFirst(
         Deferred.await(localSignal).pipe(Effect.map((reason): TerminalSignal => ({ reason, type: "contender" }))),
-        Deferred.await(globalSignal).pipe(Effect.map((abort): TerminalSignal => ({ abort, type: "global" }))),
+        Deferred.await(globalSignal).pipe(Effect.map((next): TerminalSignal => ({ abort: next, type: "global" }))),
       ),
       fail,
-      name,
+      policy,
       reason: () => localReason,
     };
   };
 
   return {
     abortUnexpected: (contender) => abort({ contender, type: "unexpected" }),
-    admission,
-    awaitGlobal: Deferred.await(globalSignal),
     begin,
     globalAbort: () => globalAbort,
     snapshot: () => ({ authorizedRequests, maxRequests }),
   };
 };
 
-export const runContenders = <C extends { readonly name: string }, M, E, R>(o: {
+export const runContenders = <C extends { readonly name: string }, E, R>(o: {
   readonly contenders: readonly C[];
   readonly control: RunControl;
-  readonly run: (contender: C, local: ContenderControl) => Effect.Effect<ContenderOutcome<M>, E, R>;
-  readonly persist: (outcome: RunOutcome<M>) => Effect.Effect<void>;
-  readonly interruptedProgress: (contender: C) => Progress;
-}): Effect.Effect<RunOutcome<M>, E, R> => {
-  const outcomes: ContenderOutcome<M>[] = [];
+  readonly run: (contender: C, local: ContenderControl) => Effect.Effect<ContenderRunResult, E, R>;
+  readonly persist: (outcome: RunOutcome) => Effect.Effect<void>;
+}): Effect.Effect<RunOutcome, E, R> => {
+  const outcomes: ContenderOutcome[] = [];
   let active: C | undefined;
-  const aborted = (abort: GlobalAbort): RunOutcome<M> => ({
+  let knownProgress: Progress | undefined;
+  const running = (): RunOutcome => ({
+    active: active === undefined ? { type: "none" } : { name: active.name, type: "active" },
+    contenders: [...outcomes],
+    type: "running",
+  });
+  const aborted = (abort: GlobalAbort): RunOutcome => ({
     abort,
-    active: active === undefined ? { type: "none" } : { name: active.name, progress: o.interruptedProgress(active), type: "interrupted" },
+    active: active === undefined
+      ? { type: "none" }
+      : knownProgress === undefined
+        ? { name: active.name, type: "unavailable" }
+        : { name: active.name, progress: knownProgress, type: "interrupted" },
     contenders: [...outcomes],
     type: "aborted",
   });
-  const currentOutcome = (finished: boolean): RunOutcome<M> => {
-    const abort = o.control.globalAbort();
-    if (abort !== undefined) return aborted(abort);
-    if (!finished) return aborted({ contender: active?.name, type: "unexpected" });
-    if (outcomes.some((outcome) => outcome.type === "failed")) return { contenders: [...outcomes], type: "completed-with-failures" };
-    const complete = outcomes.filter((outcome): outcome is CompleteContender<M> => outcome.type === "complete");
-    return { contenders: complete, type: "complete" };
-  };
 
   return Effect.gen(function* () {
+    yield* o.persist(running());
     for (const contender of o.contenders) {
       if (o.control.globalAbort() !== undefined) break;
       active = contender;
-      const outcome = yield* o.run(contender, o.control.begin(contender.name));
-      outcomes.push(outcome);
+      knownProgress = undefined;
+      yield* o.persist(running());
+      const result = yield* o.run(contender, o.control.begin(contender.name));
+      if (result.type === "global-abort") {
+        knownProgress = result.progress;
+        const outcome = aborted(result.abort);
+        yield* o.persist(outcome);
+        return outcome;
+      }
+      outcomes.push(result);
       active = undefined;
-      yield* o.persist(currentOutcome(false));
+      yield* o.persist(running());
       if (o.control.globalAbort() !== undefined) break;
     }
-    const result = currentOutcome(true);
-    yield* o.persist(result);
-    return result;
+    const abort = o.control.globalAbort();
+    const outcome: RunOutcome = abort !== undefined
+      ? aborted(abort)
+      : outcomes.some((item) => item.type === "failed")
+        ? { contenders: [...outcomes], type: "completed-with-failures" }
+        : { contenders: outcomes.filter((item): item is Extract<ContenderOutcome, { readonly type: "complete" }> => item.type === "complete"), type: "complete" };
+    yield* o.persist(outcome);
+    return outcome;
   }).pipe(
-    Effect.onExit((exit) =>
-      Exit.isSuccess(exit)
-        ? Effect.void
-        : o.control.abortUnexpected(active?.name).pipe(
-            Effect.andThen(Effect.suspend(() => o.persist(currentOutcome(false)))),
-            Effect.asVoid,
-          ),
-    ),
+    Effect.onExit((exit) => {
+      if (Exit.isSuccess(exit)) return Effect.void;
+      return o.control.abortUnexpected(active?.name).pipe(
+        Effect.andThen(Effect.suspend(() => o.persist(aborted(o.control.globalAbort() ?? { contender: active?.name, type: "unexpected" })))),
+        Effect.ignore,
+      );
+    }),
   );
 };
