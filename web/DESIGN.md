@@ -239,10 +239,14 @@ Flat by default; depth comes from the two grounds and hairlines. Shadows are res
 raised object (the composer) and for things that float over content.
 
 ### Shadow Vocabulary
-- **Raised** (`0 1px 2px oklch(0 0 0 / 4%), 0 12px 28px -18px oklch(0 0 0 / 32%)`; dark: an inset
-  1 px top highlight and `0 14px 32px -18px` at 70%): the composer, always paired with a 1 px ring.
-- **Float** (`0 2px 6px -2px oklch(0 0 0 / 8%), 0 12px 32px -12px oklch(0 0 0 / 22%)`): popovers,
-  the scroll-to-end button, the context meter's card.
+- **Raised** (`--elevation-raised`: `0 1px 2px oklch(0 0 0 / 4%), 0 12px 28px -18px oklch(0 0 0 /
+  32%)`; dark: an inset 1 px top highlight and `0 14px 32px -18px` at 70%): the composer's drop,
+  under its ring and sheen (`composer-surface`, Components).
+- **Float** (`shadow-float`: a 1 px hairline ring over `0 2px 6px -2px oklch(0 0 0 / 8%), 0 12px
+  32px -12px oklch(0 0 0 / 22%)`): popovers, the Add context sheet, the scroll-to-end button, the
+  context meter's card.
+- **Lift** (`shadow-lift`: a hairline ring and `0 1px 2px` at 6%): the chosen item of a segmented
+  control.
 
 ### Named Rules
 **The One Raised Object Rule.** Only the composer is lifted at rest. A card inside a sheet gets a
@@ -265,7 +269,8 @@ composer has 14 px top corners and no bottom edge, so it reads as part of it.
   with a pen icon above.
 - **Reply:** no container. Read type, markdown styled by `[data-prose]` in `index.css`. Under it,
   Copy and Raw (28 px ghost icons, 40 px on touch), always reachable: with a mouse, hover or focus
-  shows them; on a touch screen they wait behind a tap on the reply, as in a messaging app. A tap
+  shows them; on a touch screen they wait behind a tap on the reply, as in a messaging app (one
+  listener on the transcript hears touch and pen taps; a reply has no click handler of its own). A tap
   shows that reply's actions and hides any other reply's; a tap outside it, or scrolling it out of
   view, hides them; a tap on a link or a button in it, or one that ends a text selection, toggles
   nothing. Hidden, they stay in the page (collapsed), so focus from a keyboard or a screen reader
@@ -299,7 +304,8 @@ Modelled on Claude's app: a soft, translucent card with round controls.
   Under it, the Raised drop. With the text focused the ring turns ivy at 65% with a 4 px ivy halo
   at 14%; a dragged file does the same, stronger.
 - **Floating:** the dock floats over the end of the transcript, which scrolls on under it. The
-  content keeps `--dock-h` clear below its last row. A fade runs from clear 24 px above the dock
+  content keeps `--dock-h` clear below its last row, and the scroller's `scroll-padding-bottom` is
+  `--dock-h` too, so focus never leaves a control under the dock (WCAG 2.2, 2.4.11). A fade runs from clear 24 px above the dock
   to the sheet at 80% by 3rem and solid at the bottom, so what passes under the composer is soft
   and its text stays legible. Measured with a code block under it and no blur at all, the worst
   case: ink 12.6:1, the placeholder 5.7:1 (light) and 5.8:1 (dark).
@@ -313,8 +319,10 @@ Modelled on Claude's app: a soft, translucent card with round controls.
   with that second button showing, the device picker makes room. No microphone: the phone's
   keyboard dictates.
 - **Add context:** "+" opens it. On a touch screen it is a sheet from the bottom edge (28 px top
-  corners, a grabber, a title, a close button); with a mouse, a 256 px popover over the "+". Both
-  trap focus, close on Escape or a tap outside and give focus back to "+". The choices are rows
+  corners, a grabber, a title, a 40 px close button); with a mouse, a 256 px popover over the "+",
+  but only when there is more than one choice: a mouse has no camera choice, so there "+" opens
+  the photos-and-videos picker itself. Sheet and popover trap focus, close on Escape or a tap
+  outside and give focus back to "+". The choices are rows
   with a 36 px soft icon tile, a label and a muted hint: "Photos & videos" (the library or files,
   images and videos, several at once) and, on a touch screen, "Camera" (`capture`, the rear
   camera). A choice opens the composer's own hidden picker from the tap, then closes the sheet.
@@ -368,7 +376,8 @@ transition stops; state still reads from text and colour (the shimmer becomes pl
   and InputGroupButton, the segmented control, the queue's header and the pickers carry the touch
   size themselves (`pointer-coarse:`).
 - **Do** draw a hairline with the `hairline` (or `hairline-strong`) utility, and raised or floating
-  things with `shadow-raised`, `shadow-float` and `shadow-lift`, never a one-off shadow.
+  things with `composer-surface` (the composer only), `shadow-float` and `shadow-lift`, never a
+  one-off shadow.
 - **Do** theme browser surfaces: selection, caret, scrollbars and focus rings come from the palette.
 
 ### Don't:
@@ -376,7 +385,9 @@ transition stops; state still reads from text and colour (the shimmer becomes pl
 - **Don't** colour the primary button; ink is the primary.
 - **Don't** box things inside the sheet with shadows; use a hairline.
 - **Don't** use mono for anything that isn't code, a command, a path, an id or output.
-- **Don't** add a second accent, glass, a coloured side border, or a gradient as decoration. Two
-  gradients do jobs and are the only ones: the fade that lets the transcript run under the
-  composer's dock, and the mask that sweeps a sheen over live status (`shimmer-text`: solid ink, never gradient-filled text).
+- **Don't** add a second accent, a coloured side border, or glass or a gradient as decoration. The
+  composer is the one glass surface (a blur behind it, so the transcript runs on underneath), and
+  three gradients do jobs and are the only ones: the fade under the composer's dock, the composer's
+  top sheen, and the mask that sweeps a sheen over live status (`shimmer-text`: solid ink, never
+  gradient-filled text).
 - **Don't** set text you read or type under 16 px on a touch screen.

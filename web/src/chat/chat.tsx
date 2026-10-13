@@ -307,7 +307,9 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
         {/* The sentinel and the "earlier" button sit outside the content: the scroller reads its
             content's first child to keep the view still when older rows are prepended, and opens
             at the newest row only when the first rows arrive into an empty content. */}
-        <MessageScrollerViewport aria-label="Chat" className="relative" preserveScrollOnPrepend>
+        {/* focus and scroll-into-view stop short of the floating dock (WCAG 2.4.11: a focused control
+            is never hidden under it) */}
+        <MessageScrollerViewport aria-label="Chat" className="relative scroll-pb-(--dock-h)" preserveScrollOnPrepend>
           <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-px" ref={top} />
           {first > 0 && (
             <div className="flex justify-center pt-4">
@@ -355,6 +357,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
           legible (DESIGN.md, Composer). Only its controls take pointer events. */}
       <div
         className="pointer-events-none absolute inset-x-0 bottom-0 z-10 before:absolute before:inset-x-0 before:-top-6 before:bottom-0 before:bg-[linear-gradient(to_bottom,transparent,color-mix(in_oklch,var(--background)_80%,transparent)_3rem,var(--background))]"
+        data-testid="dock"
         ref={dock}
       >
       <div className="pointer-events-auto relative mx-auto w-full max-w-184 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-4 sm:pb-[max(1rem,env(safe-area-inset-bottom))]">

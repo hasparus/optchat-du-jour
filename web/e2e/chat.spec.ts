@@ -3,7 +3,7 @@
 import { Schema } from "effect";
 import sharp from "sharp";
 import { CHANGE_SERVER, shellScript } from "../../mobile/src/bridge.ts";
-import { answered, attach, expect, expectShowsLog, open, REPLY, send, test } from "./fixture";
+import { answered, attach, clearOfDock, expect, expectShowsLog, open, REPLY, send, test } from "./fixture";
 
 test("a message gets a reply that streams in, after its tool call", async ({ page, server }) => {
   await open(page);
@@ -83,9 +83,12 @@ test("cancel stops the turn; the next message gets its own bubble", async ({ pag
 test.describe("a long log", () => {
   test.use({ seeded: 300 });
 
-  test("the chat opens at its newest message, not at the oldest one loaded", async ({ page }) => {
+  test("the chat opens at its newest message, not at the oldest one loaded, clear of the composer", async ({ page }) => {
     await open(page);
-    await expect(page.getByText("m299", { exact: true })).toBeInViewport();
+    const newest = page.getByText("m299", { exact: true });
+    await expect(newest).toBeInViewport();
+    // in view and not under the floating dock: its bottom is above the dock's top
+    await expect.poll(async () => clearOfDock(page, newest)).toBeGreaterThanOrEqual(0);
   });
 
   test("a reconnect with older history loaded leaves no gap", async ({ page, server }) => {
@@ -106,6 +109,33 @@ test.describe("a long log", () => {
     await server.restart(250);
     await expect(page.getByText("m569", { exact: true })).toBeAttached({ timeout: 15_000 });
     await expectShowsLog(page, server, "indexes");
+  });
+});
+
+test.describe("a log with history above", () => {
+  test.use({ seeded: 40 }); // room to scroll the first turn's row down under the dock
+
+  test("a control reached by keyboard is never left under the floating dock (WCAG 2.4.11)", async ({ page }) => {
+    await open(page);
+    for (const text of ["first question", "second question"]) {
+      await send(page, text);
+      await answered(page, text);
+    }
+    // the first turn's tool row, scrolled to sit under the composer
+    const tool = page.locator('[data-slot="tool"]').first().locator('[data-slot="collapsible-trigger"]');
+    const chat = page.getByRole("region", { name: "Chat" });
+    await chat.evaluate((viewport) => {
+      const row = viewport.querySelector('[data-slot="tool"] [data-slot="collapsible-trigger"]');
+      const dock = document.querySelector('[data-testid="dock"]');
+      if (!row || !dock) throw new Error("no tool row or dock");
+      viewport.scrollTop += row.getBoundingClientRect().top - (dock.getBoundingClientRect().top + 16);
+    });
+    await expect.poll(async () => clearOfDock(page, tool)).toBeLessThan(0);
+    // Tab from the chat region lands on it: the browser scrolls it clear of the dock
+    await chat.focus();
+    await page.keyboard.press("Tab");
+    await expect(tool).toBeFocused();
+    await expect.poll(async () => clearOfDock(page, tool)).toBeGreaterThanOrEqual(0);
   });
 });
 

@@ -10,7 +10,7 @@ import { Message, MessageContent, MessageHeader } from "@/components/ui/message"
 import { type Row, type ToolState, toolSummary } from "@/lib/rows";
 import { splitMarkers } from "@wire";
 import { CheckIcon, CodeIcon, CopyIcon, NotebookPenIcon, TextIcon } from "lucide-react";
-import { Component, createContext, memo, type MouseEvent, type ReactNode, use, useEffect, useMemo, useRef, useState } from "react";
+import { Component, createContext, memo, type ReactNode, use, useEffect, useMemo, useRef, useState } from "react";
 
 // copy the reply as written; the check stays a moment
 function CopyAction({ text }: { text: string }) {
@@ -49,19 +49,36 @@ function CopyAction({ text }: { text: string }) {
 // On a touch screen a reply's actions wait behind a tap, as in a messaging app (DESIGN.md, Messages):
 // tapping a reply shows its row of actions and hides any other reply's; a tap outside it, or
 // scrolling it out of view, hides it again. A tap on a link or a button in it, or one that ends a
-// text selection, is not that tap. With a mouse nothing changes: hover or focus shows the actions
-// (index.css). The actions stay in the page either way, so a keyboard or a screen reader reaches
-// them, and focus shows them.
-type ReplyActionsState = { readonly open: string | null; readonly setOpen: (key: string | null) => void };
-const ReplyActionsContext = createContext<ReplyActionsState>({
-  open: null,
-  setOpen: () => {
-    // outside a ReplyActions there is nothing to show
-  },
-});
+// text selection, is not that tap. One listener for the whole transcript hears taps (touch and pen
+// pointers only: a mouse keeps hover and focus, index.css), so a reply has no click handler a
+// screen reader would announce as something to activate. The actions stay in the page either way,
+// so a keyboard or a screen reader reaches them, and focus shows them.
+type ReplyActionsState = { readonly open: string | null };
+const ReplyActionsContext = createContext<ReplyActionsState>({ open: null });
+
+// what a tap must not toggle: a link, a control, the actions themselves
+const INTERACTIVE = "a, button, input, select, textarea, summary, [role='button'], [data-slot='message-actions']";
 
 export function ReplyActions({ children }: { readonly children: ReactNode }) {
   const [open, setOpen] = useState<string | null>(null);
+  // a tap on a reply (pointerup of a touch or a pen; a drag that scrolls ends in pointercancel)
+  useEffect(() => {
+    const tapped = (e: PointerEvent) => {
+      if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
+      if (!(e.target instanceof Element)) return;
+      const reply = e.target.closest<HTMLElement>("[data-reply]");
+      if (!reply || e.target.closest(INTERACTIVE)) return;
+      const selection = getSelection();
+      if (selection && !selection.isCollapsed && reply.contains(selection.anchorNode)) return; // a selection, not a tap
+      const id = reply.dataset.reply ?? null;
+      setOpen((now) => (now === id ? null : id));
+    };
+    document.addEventListener("pointerup", tapped);
+    return () => {
+      document.removeEventListener("pointerup", tapped);
+    };
+  }, []);
+  // shown: a tap anywhere else, or the reply leaving the view, hides them
   useEffect(() => {
     if (open === null) return;
     const shown = document.querySelector(`[data-reply="${CSS.escape(open)}"]`);
@@ -78,25 +95,15 @@ export function ReplyActions({ children }: { readonly children: ReactNode }) {
       gone?.disconnect();
     };
   }, [open]);
-  const value = useMemo(() => ({ open, setOpen }), [open]);
+  const value = useMemo(() => ({ open }), [open]);
   return <ReplyActionsContext value={value}>{children}</ReplyActionsContext>;
 }
 
-// what a tap must not toggle: a link, a control, the actions themselves
-const INTERACTIVE = "a, button, input, select, textarea, summary, [role='button'], [data-slot='message-actions']";
-
 function Reply({ id, text, streaming }: { id: string; text: string; streaming: boolean }) {
   const [raw, setRaw] = useState(false);
-  const actions = use(ReplyActionsContext);
-  const shown = actions.open === id;
-  const tap = (e: MouseEvent<HTMLDivElement>) => {
-    if (e.target instanceof Element && e.target.closest(INTERACTIVE)) return;
-    const selection = getSelection();
-    if (selection && !selection.isCollapsed && e.currentTarget.contains(selection.anchorNode)) return; // a selection, not a tap
-    actions.setOpen(shown ? null : id);
-  };
+  const shown = use(ReplyActionsContext).open === id;
   return (
-    <Message align="start" data-actions={shown ? "shown" : undefined} data-reply={id} onClick={tap}>
+    <Message align="start" data-actions={shown ? "shown" : undefined} data-reply={id}>
       <MessageContent className="gap-1.5">
         <Bubble className="max-w-full" variant="ghost">
           <BubbleContent className="w-full text-read" data-prose="">

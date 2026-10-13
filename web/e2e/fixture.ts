@@ -2,7 +2,7 @@
 // leans on what another one logged. A test can seed the log before the server starts, and restart
 // the server with more logged while it was down (a phone that slept through it).
 import { MessagesPage } from "@wire";
-import { type Page, expect, test as base } from "@playwright/test";
+import { type Locator, type Page, expect, test as base } from "@playwright/test";
 import { Schema } from "effect";
 import { type ChildProcess, spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -161,15 +161,21 @@ export async function open(page: Page) {
   await expect(page.getByRole("img", { name: "connection open" })).toBeVisible();
 }
 
-// a file attached the way a person does it: the composer's +, then "Photos & videos" in its Add
-// context sheet, then the browser's file chooser
+// how far above the floating dock's top edge an element's bottom is (negative: under the dock); a
+// row can be "in the viewport" and still sit under the composer, so the e2e checks this instead
+export async function clearOfDock(page: Page, element: Locator): Promise<number> {
+  const [box, dock] = await Promise.all([element.boundingBox(), page.getByTestId("dock").boundingBox()]);
+  return box && dock ? dock.y - (box.y + box.height) : Number.NEGATIVE_INFINITY;
+}
+
+// a file attached the way a person does it: the composer's +, then the browser's file chooser. These
+// tests run with a mouse, where the + opens its one picker itself; on a touch screen it opens the
+// Add context sheet (app.test.tsx covers that)
 export async function attach(page: Page, file: { readonly name: string; readonly mimeType: string; readonly buffer: Buffer }) {
   const chooser = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Add context" }).click();
-  await page.getByRole("dialog", { name: "Add context" }).getByRole("button", { name: /Photos & videos/ }).click();
   const picker = await chooser;
   await picker.setFiles(file);
-  await expect(page.getByRole("dialog", { name: "Add context" })).toBeHidden();
 }
 
 export async function send(page: Page, text: string) {

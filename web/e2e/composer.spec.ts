@@ -147,3 +147,23 @@ test.describe("a spent Claude plan", () => {
     await expectShowsLog(page, server);
   });
 });
+
+test.describe("on a touch screen", () => {
+  test.use({ hasTouch: true, isMobile: true });
+
+  test("+ opens the Add context sheet; Photos & videos opens the file chooser, the photo lands in the tray, and focus goes back to +", async ({ page }) => {
+    await open(page);
+    const plus = page.getByRole("button", { name: "Add context" });
+    await plus.click();
+    const sheet = page.getByRole("dialog", { name: "Add context" });
+    await expect(sheet.getByRole("button", { name: /Camera/ })).toBeVisible();
+    const chooser = page.waitForEvent("filechooser");
+    await sheet.getByRole("button", { name: /Photos & videos/ }).click();
+    const picker = await chooser;
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+    await picker.setFiles({ buffer: png, mimeType: "image/png", name: "dot.png" });
+    await expect(sheet).toBeHidden();
+    await expect(page.getByTestId("attachment")).toHaveAttribute("data-state", "done");
+    await expect(plus).toBeFocused();
+  });
+});

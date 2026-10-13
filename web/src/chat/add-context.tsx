@@ -1,7 +1,8 @@
 // The composer's "+" (DESIGN.md, Composer): one round button that opens "Add context", the ways to
 // attach something to the next message. On a touch screen it is a sheet from the bottom edge; with a
 // mouse, a popover over the button. Both trap focus, close on Escape or a tap outside, and return
-// focus to the "+". A choice opens its file picker from the tap itself (iOS opens a picker only
+// focus to the "+". With one choice only (a mouse has no camera choice) the "+" opens that choice's
+// picker itself: a menu of one is a click wasted. A choice opens its file picker from the tap itself (iOS opens a picker only
 // inside the gesture), then closes. The pickers are the composer's own hidden inputs
 // (PromptInputFileInput): photos and videos from the library or files, and the camera where the
 // device has one, exactly as the two buttons this replaces did.
@@ -10,7 +11,7 @@ import { InputGroupButton } from "@/components/ui/input-group";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { CameraIcon, ImagesIcon, type LucideIcon, PlusIcon } from "lucide-react";
-import { type RefObject, useId, useState } from "react";
+import { type ComponentProps, type RefObject, useId, useState } from "react";
 
 export type AddContextChoice = {
   readonly id: string;
@@ -55,6 +56,16 @@ function Choices({ choices, onChosen }: { readonly choices: readonly AddContextC
   );
 }
 
+// the "+": a soft circle, 36 px (40 on touch); props pass through, so a sheet or popover trigger
+// can wrap it
+function Plus(props: ComponentProps<typeof InputGroupButton>) {
+  return (
+    <InputGroupButton aria-label="Add context" className="bg-soft text-foreground hover:bg-soft-strong data-[state=open]:bg-soft-strong" size="icon-md" variant="ghost" {...props}>
+      <PlusIcon className="size-4.5" strokeWidth={1.75} />
+    </InputGroupButton>
+  );
+}
+
 export function AddContext({ choices }: { readonly choices: readonly AddContextChoice[] }) {
   const [open, setOpen] = useState(false);
   const touch = useCoarsePointer();
@@ -62,11 +73,18 @@ export function AddContext({ choices }: { readonly choices: readonly AddContextC
   const close = () => {
     setOpen(false);
   };
-  const plus = (
-    <InputGroupButton aria-haspopup="dialog" aria-label="Add context" className="bg-soft text-foreground hover:bg-soft-strong data-[state=open]:bg-soft-strong" size="icon-md" title="Add context" variant="ghost">
-      <PlusIcon className="size-4.5" strokeWidth={1.75} />
-    </InputGroupButton>
-  );
+  const plus = <Plus title="Add context" />;
+  const [only] = choices;
+  if (!touch && only !== undefined && choices.length === 1) {
+    return (
+      <Plus
+        onClick={() => {
+          only.input.current?.click();
+        }}
+        title={`Add context: ${only.label.toLowerCase()}`}
+      />
+    );
+  }
   if (touch) {
     return (
       <Sheet onOpenChange={setOpen} open={open}>

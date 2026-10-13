@@ -339,32 +339,68 @@ const filesOf = (...files: File[]) => {
 };
 const Parts = Schema.Array(Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String), source: Schema.optional(Schema.Struct({ type: Schema.String, value: Schema.String })) }));
 
-test("the composer's + opens Add context; a choice opens its picker from the tap and closes", async () => {
+// a touch screen for the length of `body`: (pointer: coarse) matches
+async function onTouchScreen(body: () => Promise<void>) {
+  const realMatch = globalThis.matchMedia;
+  globalThis.matchMedia = (query: string) => {
+    const list = realMatch(query);
+    Object.defineProperty(list, "matches", { value: query === "(pointer: coarse)" });
+    return list;
+  };
+  try {
+    await body();
+  } finally {
+    globalThis.matchMedia = realMatch;
+  }
+}
+
+// how many times a hidden file input was opened
+const opens = (input: HTMLElement) => {
+  const count = { n: 0 };
+  input.addEventListener("click", () => {
+    count.n++;
+  });
+  return count;
+};
+
+test("with a mouse the composer's + opens the one picker it has (photos and videos) itself", async () => {
   start();
   await screen.findByText("what is in the repo?");
-  const library = screen.getByLabelText("Attach: files");
-  let opened = 0;
-  library.addEventListener("click", () => {
-    opened++;
-  });
+  const library = opens(screen.getByLabelText("Attach: files"));
   fireEvent.click(screen.getByRole("button", { name: "Add context" }));
-  const sheet = await screen.findByRole("dialog", { name: "Add context" });
-  // with a mouse (this test's pointer): the library; the camera is a touch screen's
-  expect(within(sheet).getByRole("button", { name: /Photos & videos/ })).toBeTruthy();
-  expect(within(sheet).queryByRole("button", { name: /Camera/ })).toBeNull();
-  fireEvent.click(within(sheet).getByRole("button", { name: /Photos & videos/ }));
-  expect(opened).toBe(1);
-  await waitFor(() => {
-    expect(screen.queryByRole("dialog", { name: "Add context" })).toBeNull();
-  });
-  // Escape closes it too
-  fireEvent.click(screen.getByRole("button", { name: "Add context" }));
-  await screen.findByRole("dialog", { name: "Add context" });
-  fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
-  await waitFor(() => {
-    expect(screen.queryByRole("dialog", { name: "Add context" })).toBeNull();
+  expect(library.n).toBe(1);
+  expect(screen.queryByRole("dialog", { name: "Add context" })).toBeNull();
+});
+
+test("on a touch screen + opens the Add context sheet; a choice opens its picker from the tap and closes; Escape closes and focus goes back to +", async () => {
+  await onTouchScreen(async () => {
+    start();
+    await screen.findByText("what is in the repo?");
+    const library = opens(screen.getByLabelText("Attach: files"));
+    const camera = opens(screen.getByLabelText("Take a photo: files"));
+    const plus = screen.getByRole("button", { name: "Add context" });
+    fireEvent.click(plus);
+    const sheet = await screen.findByRole("dialog", { name: "Add context" });
+    fireEvent.click(within(sheet).getByRole("button", { name: /Camera/ }));
+    expect([library.n, camera.n]).toEqual([0, 1]);
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Add context" })).toBeNull();
+    });
+    fireEvent.click(plus);
+    const again = await screen.findByRole("dialog", { name: "Add context" });
+    expect(within(again).getByRole("button", { name: /Photos & videos/ })).toBeTruthy();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Add context" })).toBeNull();
+    });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(plus); // focus back on the +
+    });
   });
 });
+
+// a finger lifted from an element
+const tap = (el: Element) => fireEvent.pointerUp(el, { pointerType: "touch" });
 
 test("a tap on a reply shows its actions and hides another's; a tap on a link in it, or outside, doesn't keep them", async () => {
   start([
@@ -376,18 +412,21 @@ test("a tap on a reply shows its actions and hides another's; a tap on a link in
   const first = firstText.closest("[data-reply]");
   const second = screen.getByText("Second.").closest("[data-reply]");
   if (!(first instanceof HTMLElement) || !(second instanceof HTMLElement)) throw new Error("no replies");
-  fireEvent.click(screen.getByText(/First, see/));
+  fireEvent.pointerUp(screen.getByText(/First, see/), { pointerType: "mouse" });
+  expect(first.dataset.actions).toBeUndefined(); // a mouse keeps hover and focus
+  tap(screen.getByText(/First, see/));
   expect(first.dataset.actions).toBe("shown");
-  fireEvent.click(screen.getByText("Second."));
+  tap(screen.getByText("Second."));
   expect([first.dataset.actions, second.dataset.actions]).toEqual([undefined, "shown"]);
-  fireEvent.click(screen.getByText("Second."));
+  tap(screen.getByText("Second."));
   expect(second.dataset.actions).toBeUndefined(); // a second tap hides them
+  expect(first.getAttribute("role")).toBeNull(); // nothing to activate: no click handler on a reply
   // a link (Streamdown draws it as its link-safety button) is not that tap
   const link = screen.getByText("the docs");
   expect(link.closest("a, button")).not.toBeNull();
-  fireEvent.click(link);
+  tap(link);
   expect(first.dataset.actions).toBeUndefined();
-  fireEvent.click(screen.getByText(/First, see/));
+  tap(screen.getByText(/First, see/));
   fireEvent.pointerDown(document.body);
   await waitFor(() => {
     expect(first.dataset.actions).toBeUndefined(); // a tap outside
