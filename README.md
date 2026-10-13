@@ -18,9 +18,10 @@ one endless chat whose history is its memory, kept as a binary summary tree.
 
 ## Run
 
-You need Bun, ffmpeg, the `claude` CLI logged in on each machine that runs turns, and Tailscale.
-Edit `optchat.config.ts` first: `devices`, `defaultDevice`, `allowedLogins` (your Tailscale login)
-and, if turns run on another machine, `server.publicUrl`.
+You need Bun, ffmpeg (for video), the `claude` CLI logged in on each machine that runs turns, and
+Tailscale. Edit `optchat.config.ts` first: `devices`, `defaultDevice`, `allowedLogins` (your
+Tailscale login; an empty list refuses everyone) and `server.publicUrl`, the
+`https://<machine>.<tailnet>.ts.net` address `tailscale serve` gives you.
 
 ```sh
 bun install
@@ -49,7 +50,7 @@ bun run lint:effect   # Effect diagnostics
 bun run lint:design   # Impeccable's design detector over web/
 bun run test          # never calls a real model
 bun run parity        # REF=<shitty-optchat checkout>
-bun run proofs        # the Bend kernel's laws
+bun run proofs        # the Bend kernel's laws (needs bend: sh kernel/install-bend.sh)
 cd web && bun run e2e # Playwright against the real server and a fake claude
 cd web && bun run dev
 cd mobile && bun install && bun run check
