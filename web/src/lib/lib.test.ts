@@ -1,13 +1,15 @@
 // The client's own logic: the link, the log, the session store, rows and stats. No DOM needed.
 import { EventType } from "@ag-ui/core";
-import type { Kind, UsageRecord } from "@wire";
+import { type Kind, MessagesPage, Msg, type UsageRecord } from "@wire";
+import { Option, Schema } from "effect";
+import { openStream } from "../../../server/agui.ts";
 import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { ack, type Entry, fakeServer, IDLE, parseSent, said, snapshot, state } from "../test/fixture";
 import { openLink, STALE_MS, wakeOnReturn } from "./connection";
 import { sentKey } from "./draft";
 import { applyEvent, applyPage, emptyLog, hole, type Log, MAX_HELD, tip, trimHeld, visible, withDraft } from "./log";
-import type { Inbound } from "./protocol";
-import { chatRows, entryRows, rowFor, rowIndexFor, toolFailed, toolStateOf, toolSummary } from "./rows";
+import { type Inbound, parseFrame } from "./protocol";
+import { chatRows, entryRows, rowFor, rowIndexFor, toolStateOf, toolSummary } from "./rows";
 import { makeSession, queued, type Session, UNSENT } from "./session";
 import { buckets, byModel, periodOf, totals } from "./stats";
 
@@ -597,27 +599,75 @@ describe("a tool call's one line", () => {
     expect(toolSummary("not json\n  at all")).toBe("not json at all");
     expect(toolSummary("")).toBe("");
   });
-  test("says a call failed only from what its output starts with", () => {
-    expect(toolFailed("Exit code 1\n\nsrc/x.ts:1 error")).toBe(true);
-    expect(toolFailed("<tool_use_error>File does not exist.</tool_use_error>")).toBe(true);
-    expect(toolFailed("Error: ENOENT")).toBe(true);
-    expect(toolFailed("not run: cancelled")).toBe(true); // our turn loop's own (src/turn/loop.ts)
-    expect(toolFailed("not run: this turn used its 8 requests")).toBe(true);
-    expect(toolFailed("Exit code 0")).toBe(false);
-    expect(toolFailed("notes.md\nrepo")).toBe(false);
-    expect(toolFailed("an Error: further down")).toBe(false);
-    expect(toolFailed("error: lowercase is a program's own output")).toBe(false);
-  });
-  test("a known false positive: output that begins with Error: from a call that worked", () => {
-    // `grep -h Error: log.txt` succeeds and prints matching lines; the echo can't tell, so the
-    // row reads as failed while its output is shown as logged
-    expect(toolFailed("Error: disk quota exceeded (from log.txt, line 3)")).toBe(true);
+  test("says a call failed only when its echo is flagged, whatever the output starts with", () => {
+    const rows = entryRows([
+      { i: 0, kind: "tool", text: 'Bash {"command":"bun run lint"}' },
+      { error: true, i: 1, kind: "echo", text: "src/x.ts:1:1 lint error" },
+      // looks like a failure, isn't flagged: an echo from before the flag, or a grep for "Error:"
+      { i: 2, kind: "tool", text: 'Bash {"command":"grep -h Error: log.txt"}' },
+      { i: 3, kind: "echo", text: "Error: disk quota exceeded (from log.txt, line 3)" },
+      { i: 4, kind: "tool", text: 'Bash {"command":"false"}' },
+      { i: 5, kind: "echo", text: "Exit code 1" },
+      // an echo with no tool before it keeps its flag too
+      { error: true, i: 7, kind: "echo", text: "not run: cancelled" },
+    ]);
+    expect(rows.map((r) => (r.kind === "tool" ? [r.id, r.failed] : [r.id]))).toEqual([
+      [0, true],
+      [2, false],
+      [4, false],
+      [7, true],
+    ]);
+    expect(rows.map((r) => (r.kind === "tool" ? toolStateOf(r, false, false) : null))).toEqual(["error", "done", "done", "error"]);
   });
   test("a tool row's state: done or failed once answered, running only while it is the turn's newest", () => {
-    expect(toolStateOf({ output: "ok" }, true, true)).toBe("done");
-    expect(toolStateOf({ output: "Exit code 2" }, false, false)).toBe("error");
-    expect(toolStateOf({ output: null }, true, true)).toBe("running");
-    expect(toolStateOf({ output: null }, true, false)).toBe("ended");
-    expect(toolStateOf({ output: null }, false, true)).toBe("ended");
+    expect(toolStateOf({ failed: false, output: "ok" }, true, true)).toBe("done");
+    expect(toolStateOf({ failed: true, output: "Exit code 2" }, false, false)).toBe("error");
+    expect(toolStateOf({ failed: false, output: "Exit code 2" }, false, false)).toBe("done");
+    expect(toolStateOf({ failed: false, output: null }, true, true)).toBe("running");
+    expect(toolStateOf({ failed: false, output: null }, true, false)).toBe("ended");
+    expect(toolStateOf({ failed: false, output: null }, false, true)).toBe("ended");
+  });
+});
+
+// each tool row as `id failed state`
+const failedRows = (log: Log) => entryRows(visible(log)).flatMap((r) => (r.kind === "tool" ? [`${r.id} ${r.failed} ${toolStateOf(r, false, false)}`] : []));
+// events as this client gets them: written as JSON, decoded as a frame
+const decoded = (events: readonly unknown[]) => events.map((e) => Option.getOrThrow(parseFrame(JSON.stringify(e))));
+
+// E28 end to end without a socket: log lines as the server writes them (one flagged, one from
+// before the flag), through server/agui.ts and /api/messages' schema, decoded as this client decodes
+// a frame or a page, to rows
+describe("an echo's error flag, from the log line to the row", () => {
+  const date = "2026-10-05T10:00:00.000Z";
+  const lines = [
+    { date, i: 0, kind: "user", size: 10, text: "look" },
+    { date, device: "mini", i: 1, kind: "tool", size: 30, text: 'Read {"file_path":"gone.md"}' },
+    { date, device: "mini", error: true, i: 2, kind: "echo", size: 26, text: "File does not exist." },
+    { date, i: 3, kind: "tool", size: 30, text: 'Bash {"command":"false"}' },
+    { date, i: 4, kind: "echo", size: 17, text: "Exit code 1" },
+  ].map((record) => JSON.stringify(record));
+  // the loader's decode (src/store.ts): a line without the flag reads as it always did
+  const entries = lines.map((line) => ({ ...Schema.decodeUnknownSync(Schema.fromJsonString(Msg))(line), size: 0 }));
+  const expected = ["1 true error", "3 false done"];
+
+  test("the decoder keeps it, and leaves it out where the line has none", () => {
+    expect(entries[2]?.error).toBe(true);
+    expect("error" in (entries[4] ?? {})).toBe(false);
+  });
+  test("a snapshot carries it", () => {
+    const { first } = openStream({ entries, live: null, state: IDLE, thread: "mini", window: 50 });
+    expect(failedRows(play(emptyLog, ...decoded(first)))).toEqual(expected);
+  });
+  test("live events carry it", () => {
+    const { first, translate } = openStream({ entries: entries.slice(0, 1), live: null, state: IDLE, thread: "mini", window: 50 });
+    const live = entries.slice(1).flatMap((e) => translate({ entry: e, runId: "1", type: "logged" }));
+    const log = play(emptyLog, ...decoded(first), ...decoded(live));
+    expect(failedRows(log)).toEqual(expected);
+    expect([...log.items.values()].every((item) => item.live === (item.i > 0))).toBe(true);
+  });
+  test("a page of /api/messages carries it", () => {
+    const body = JSON.stringify(Schema.encodeSync(MessagesPage)({ entries, total: entries.length }));
+    const page = Schema.decodeUnknownSync(Schema.fromJsonString(MessagesPage))(body);
+    expect(failedRows(applyPage(emptyLog, page.entries))).toEqual(expected);
   });
 });

@@ -20,6 +20,7 @@ import { memorySecrets } from "../src/secrets.ts";
 import { makeSession, type SessionEvent, type SessionMedia } from "../src/session.ts";
 import { task } from "../src/summarize/step.ts";
 import { BLIND, type Mid, type TurnEngine, type TurnEvents, type TurnInput } from "../src/turn/engine.ts";
+import { toolOk } from "../src/tools/files.ts";
 import { toolLoop } from "../src/turn/loop.ts";
 import { type Asset, type ImageAsset, markerOf, NOT_DESCRIBED, shortSha } from "../src/wire.ts";
 import { fakeAnthropic } from "./fake-anthropic.ts";
@@ -97,7 +98,7 @@ const loopOn = (ref: ApiKeyRef) =>
     instructions: "MASTER",
     provider: apiKeyProvider({ budget: makeBudget({ monthly: 5, report: () => Effect.void, usagePath: `${tmpdir()}/oc-vision-usage-${crypto.randomUUID()}.jsonl` }), clients, ref, settings }),
     ref: ref.ref,
-    toolsFor: () => ({ defs: [], run: () => Effect.succeed("") }),
+    toolsFor: () => ({ defs: [], run: () => Effect.succeed(toolOk("")) }),
     vision: true,
   });
 

@@ -26,6 +26,7 @@ import { openAiPlanCompactor } from "../src/summarize/openai-plan.ts";
 import type { Mid, TurnEvents, TurnInput } from "../src/turn/engine.ts";
 import { toolLoop } from "../src/turn/loop.ts";
 import { bytes } from "../src/tree.ts";
+import { toolOk } from "../src/tools/files.ts";
 import type { UsageRecord } from "../src/usage.ts";
 import { fakeOpenAi } from "./fake-openai.ts";
 
@@ -433,7 +434,7 @@ test("a tool loop on the Responses API keeps its reasoning: sent back encrypted 
     }).pipe(Effect.provide(plan(e, secrets))),
   );
   const provider = responsesProvider({ auth: "chatgpt-pro", effort: "high", engine: "openai-plan", model: "gpt-6.1-sol", respond });
-  const tools = { defs: [{ description: "Read a file", name: "Read", parameters: { properties: { file_path: { type: "string" } }, type: "object" } }], run: () => Effect.succeed("file text") };
+  const tools = { defs: [{ description: "Read a file", name: "Read", parameters: { properties: { file_path: { type: "string" } }, type: "object" } }], run: () => Effect.succeed(toolOk("file text")) };
   const engine = toolLoop({ instructions: "MASTER", provider, ref: "openai-plan:gpt-6.1-sol", toolsFor: () => tools, vision: false });
   // a message sent while the first request runs: offered from the second round on
   let rounds = 0;
@@ -491,7 +492,7 @@ test("openai-plan: a turn of our tool loop and a compaction send the same instru
     }).pipe(Effect.provide(plan(e, secrets))),
   );
   const provider = responsesProvider({ auth: "chatgpt-pro", effort: "high", engine: "openai-plan", model: "gpt-6.1-sol", respond });
-  const engine = toolLoop({ instructions: "SYSTEM", provider, ref: "openai-plan:gpt-6.1-sol", toolsFor: () => ({ defs: [READ], run: () => Effect.succeed("") }), vision: false });
+  const engine = toolLoop({ instructions: "SYSTEM", provider, ref: "openai-plan:gpt-6.1-sol", toolsFor: () => ({ defs: [READ], run: () => Effect.succeed(toolOk("")) }), vision: false });
   const compact = openAiPlanCompactor({ ...compactorBase, effort: "medium", log: () => Effect.void, model: "gpt-6.1-sol", plan: { respond } });
   const out: TurnEvents = { info: () => Effect.void, log: () => Effect.void, text: () => Effect.void, thinking: () => Effect.void, took: () => Effect.void, usage: () => Effect.void };
   fake.state.seen.length = 0;

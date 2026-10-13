@@ -4,19 +4,21 @@
 // `claude`, and every fake a test started must be gone when it ends.
 import { expect, test } from "bun:test";
 import { type AGUIEvent, EventType } from "@ag-ui/core";
-import { type Duration, Effect, Fiber, PubSub } from "effect";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { type Duration, Effect, Fiber, Option, PubSub, Schema } from "effect";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { openChat } from "../src/chat.ts";
 import { ClaudeError, Runner, type Spawn } from "../src/claude/process.ts";
 import { type WarmOptions, warmRunner } from "../src/claude/warm.ts";
 import { MASTER_TOOLS } from "../src/config.ts";
 import { type McpSeen, mcpConfig, mcpTransports } from "../src/mcp.ts";
 import { makeSession, noMedia, type SessionEvent } from "../src/session.ts";
-import { openStream } from "../server/agui.ts";
+import { openStream, toMessages } from "../server/agui.ts";
+import { parseEvent } from "../src/claude/events.ts";
+import { PLACEHOLDER, render } from "../src/view.ts";
 import { newMsg } from "../src/store.ts";
 import { makeGate, type Gate } from "../src/engines/inflight.ts";
 import { claudeCodeCompactor } from "../src/summarize/claude-code.ts";
-import { dayOf } from "../src/tree.ts";
+import { dayOf, entry, msgText } from "../src/tree.ts";
 import { cap } from "../src/cap.ts";
 import { claudeCodeTurn, masterArgs, type Placement, primeBlocks } from "../src/turn/claude-code.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
@@ -103,6 +105,69 @@ const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
     const infos = () => events.flatMap((e) => (e.type === "info" ? [e.message] : []));
     return { chat, events, finished, infos, log, options, other, reports, session, usage };
   });
+
+// a stream-json user event carrying one tool_result, as parseEvent decodes it
+const resultEvent = (flag: { readonly is_error?: boolean }) =>
+  Option.getOrThrow(parseEvent(JSON.stringify({ message: { content: [{ content: "x", tool_use_id: "toolu_1", type: "tool_result", ...flag }], role: "user" }, type: "user" })));
+
+test("Claude Code's is_error is decoded from a tool_result, and left out when the block has none", () => {
+  expect(resultEvent({ is_error: true })).toMatchObject({ message: { content: [{ is_error: true, type: "tool_result" }] }, type: "user" });
+  expect(resultEvent({ is_error: false })).toMatchObject({ message: { content: [{ is_error: false, type: "tool_result" }] }, type: "user" });
+  expect(JSON.stringify(resultEvent({}))).not.toContain("is_error");
+});
+
+test("a failed tool's echo keeps Claude Code's error flag on its log line, written only when true; the view reads as before (E28)", async () => {
+  const f = scripted({
+    turn: [
+      [
+        { tool: { input: { command: "false" }, name: "Bash" } },
+        { is_error: true, toolResult: "Exit code 1" },
+        { tool: { input: { command: "ls" }, name: "Bash" } },
+        { is_error: false, toolResult: "notes.md" },
+        { tool: { input: { command: "pwd" }, name: "Bash" } },
+        { toolResult: "/home" },
+        { text: "Done." },
+      ],
+    ],
+  });
+  await run(
+    f,
+    Effect.gen(function* () {
+      const r = yield* rig(f);
+      yield* r.session.input("try");
+      yield* r.finished(1);
+      expect(r.chat.mem.root.filter((m) => m.kind === "echo").map((m) => [m.text, m.error])).toEqual([
+        ["Exit code 1", true],
+        ["notes.md", undefined],
+        ["/home", undefined],
+      ]);
+      // on disk: the flag after the reference's keys and `device`; an echo that worked is the line it always was
+      const folder = `${r.chat.dir}/chat/main`;
+      const lines = readdirSync(folder).flatMap((name) => readFileSync(`${folder}/${name}`, "utf8").split("\n").filter((l) => l !== ""));
+      const keys = lines.map((l) => Object.keys(Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)))(l)).join(","));
+      expect(keys).toEqual([
+        "i,kind,text,size,date,device",
+        "i,kind,text,size,date,device",
+        "i,kind,text,size,date,device,error",
+        "i,kind,text,size,date,device",
+        "i,kind,text,size,date,device",
+        "i,kind,text,size,date,device",
+        "i,kind,text,size,date,device",
+        "i,kind,text,size,date,device",
+      ]);
+      expect(lines[2]).toEndWith('"device":"mini","error":true}');
+      // the model's side: the view (each message its own free line here) and a node's source show kind and text only
+      yield* until("the view is built", () => !render(r.chat.mem).includes(PLACEHOLDER));
+      expect(render(r.chat.mem)).toContain("2+1|echo: Exit code 1\n");
+      expect(msgText(entry(r.chat.mem, 2))).toBe("echo: Exit code 1");
+      // a client is told: the tool message and the live result carry it, the others don't
+      const toolMessages = toMessages(r.chat.mem.root).filter((m) => m.role === "tool");
+      expect(toolMessages.map((m) => ("metadata" in m ? m.metadata : undefined))).toEqual([{ error: true }, undefined, undefined]);
+      const results = r.events.flatMap((e) => (e.type === "logged" && e.entry.kind === "echo" ? [e.entry.error] : []));
+      expect(results).toEqual([true, undefined, undefined]);
+    }),
+  );
+});
 
 test("a turn's stream becomes the log in order: talk, tool, a capped echo; thinking only as its size", async () => {
   const output = `a\n${"x".repeat(40_000)}\nz`;

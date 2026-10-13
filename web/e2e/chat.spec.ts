@@ -3,7 +3,7 @@
 import { Schema } from "effect";
 import sharp from "sharp";
 import { CHANGE_SERVER, shellScript } from "../../mobile/src/bridge.ts";
-import { answered, attach, clearOfDock, expect, expectShowsLog, open, REPLY, send, test } from "./fixture";
+import { answered, attach, clearOfDock, expect, expectShowsLog, open, REPLY, send, test, TOOL_ERROR } from "./fixture";
 
 test("a message gets a reply that streams in, after its tool call", async ({ page, server }) => {
   await open(page);
@@ -20,6 +20,36 @@ test("a message gets a reply that streams in, after its tool call", async ({ pag
   await expect(page.getByText('{"command":"ls"}', { exact: true })).toBeVisible();
   await expect(page.getByText("notes.md")).toBeVisible();
   await expectShowsLog(page, server);
+});
+
+test("a tool that worked says nothing aloud but Completed", async ({ page }) => {
+  await open(page);
+  await send(page, "hello there");
+  await answered(page, "hello there");
+  const status = page.locator('[data-slot="tool"] [data-slot="tool-status"]');
+  await expect(status).toHaveText("Completed");
+  await expect(page.getByText("Failed")).toHaveCount(0);
+});
+
+test.describe("a tool call that fails", () => {
+  test.use({ toolError: true });
+  test("reads as Failed from the flag the server logged, live and after a reload, with its output as logged", async ({ page, server }) => {
+    await open(page);
+    await send(page, "list it");
+    const row = page.locator('[data-slot="tool"]').filter({ hasText: "Bash" });
+    // the output itself says nothing of a failure (TOOL_ERROR): only Claude Code's is_error does
+    await expect(row.locator('[data-slot="tool-status"]')).toHaveText("Failed");
+    await answered(page, "list it");
+    const logged = await server.log();
+    expect(logged.filter((e) => e.kind === "echo")).toMatchObject([{ error: true, text: TOOL_ERROR }]);
+    await row.getByText(/^Bash/).click();
+    await expect(row.getByText(TOOL_ERROR)).toBeVisible();
+    // the snapshot a fresh page gets carries it too
+    await page.reload();
+    await expect(page.getByRole("img", { name: "connection open" })).toBeVisible();
+    await expect(page.locator('[data-slot="tool"]').filter({ hasText: "Bash" }).locator('[data-slot="tool-status"]')).toHaveText("Failed");
+    await expectShowsLog(page, server);
+  });
 });
 
 test("a turn started on one page streams into another", async ({ browser, server }) => {

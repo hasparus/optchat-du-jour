@@ -135,10 +135,17 @@ const search = (job: GrepJob) =>
     }); // interrupted: the timeout, a cancelled turn
   });
 
-export type FileTools = (name: string, input: Schema.Json) => Effect.Effect<string>;
+// A tool's answer: `text`, what the model reads, and `error`, whether the call failed. The flag
+// goes on the echo for clients (E28) and never to the model, which reads why in the text.
+export type ToolOutput = { readonly text: string; readonly error: boolean };
+export const toolOk = (text: string): ToolOutput => ({ error: false, text });
+export const toolError = (text: string): ToolOutput => ({ error: true, text });
+
+export type FileTools = (name: string, input: Schema.Json) => Effect.Effect<ToolOutput>;
 
 // The tools for one device's folders (as configured, `~` being this machine's home). Every
-// failure is the tool's answer, as text: the model reads it and carries on.
+// failure is the tool's answer, as text starting "Error:" and flagged: the model reads it and
+// carries on.
 export const makeFileTools = (folders: readonly string[], o: { readonly timeout?: Duration.Input } = {}) =>
   Effect.gen(function* () {
     const timeout = o.timeout ?? TOOL_TIMEOUT;
@@ -225,7 +232,8 @@ export const makeFileTools = (folders: readonly string[], o: { readonly timeout?
       };
       return call().pipe(
         Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.fail(new Refused({ message: `${name} took longer than ${Duration.format(Duration.fromInputUnsafe(timeout))}` })) }),
-        Effect.catch((error) => Effect.succeed(`Error: ${error.message}`)),
+        Effect.map(toolOk),
+        Effect.catch((error) => Effect.succeed(toolError(`Error: ${error.message}`))),
       );
     };
     return run;

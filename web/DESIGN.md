@@ -284,10 +284,9 @@ composer has 14 px top corners and no bottom edge, so it reads as part of it.
   8 px past the text on both sides; a chevron appears on hover and turns when open.
 - **States:** running: the icon breathes and the name shimmers. Done: nothing (the norm, "Completed"
   for screen readers). No output: "No output" in muted 12 px. Failed: red icon and "Failed", when
-  the output begins with a non-zero `Exit code`, `<tool_use_error>`, `Error:`, or our own
-  `not run:`. That is a guess from the text (an echo carries no error flag, `lib/rows.ts`
-  toolFailed): an output that begins "Error:" from a call that worked reads as failed too. The
-  output itself always shows as logged.
+  the echo carries the log's error flag (Claude Code's `is_error`, or our tool loop's own; SPEC
+  E28, `lib/rows.ts` toolStateOf), and only then: never guessed from what the output says, so an
+  echo logged before the flag existed reads as done. The output itself always shows as logged.
 - **Open:** one panel indented under the name: code ground, 10 px radius, hairline; "Input" (the JSON
   as logged, highlighted) and "Output" or "Error" with a copy button, separated by a hairline.
 

@@ -8,13 +8,22 @@ import { type Draft, draftItem, type Item, withDraft } from "./log.ts";
 
 export type Row =
   | { readonly kind: "user" | "note" | "talk"; readonly key: string; readonly id: number; readonly text: string }
-  | { readonly kind: "tool"; readonly key: string; readonly id: number; readonly name: string; readonly args: string; readonly output: string | null };
+  | {
+      readonly kind: "tool";
+      readonly key: string;
+      readonly id: number;
+      readonly name: string;
+      readonly args: string;
+      readonly output: string | null;
+      // the echo is flagged: the tool said it failed (E28)
+      readonly failed: boolean;
+    };
 
 type ToolRow = Extract<Row, { kind: "tool" }>;
 
 // An echo answers the nearest tool call before it that has no answer yet, as server/agui.ts pairs
 // them (a mid-run message can come between); one with none, or across a hole, stands alone.
-export function entryRows(entries: readonly Pick<Item, "i" | "kind" | "text">[]): Row[] {
+export function entryRows(entries: readonly Pick<Item, "error" | "i" | "kind" | "text">[]): Row[] {
   const out: Row[] = [];
   let open: number | null = null; // where in `out` the unanswered tool row is
   let prev: number | null = null;
@@ -30,12 +39,13 @@ export function entryRows(entries: readonly Pick<Item, "i" | "kind" | "text">[])
         break;
       case "tool":
         open = out.length;
-        out.push({ id: e.i, key, kind: "tool", output: null, ...splitTool(e.text) });
+        out.push({ failed: false, id: e.i, key, kind: "tool", output: null, ...splitTool(e.text) });
         break;
       case "echo": {
         const tool = open === null ? undefined : out[open];
-        if (open !== null && tool?.kind === "tool") out[open] = { ...tool, output: e.text } satisfies ToolRow;
-        else out.push({ args: "", id: e.i, key, kind: "tool", name: "output", output: e.text });
+        const failed = e.error === true;
+        if (open !== null && tool?.kind === "tool") out[open] = { ...tool, failed, output: e.text } satisfies ToolRow;
+        else out.push({ args: "", failed, id: e.i, key, kind: "tool", name: "output", output: e.text });
         open = null;
         break;
       }
@@ -70,7 +80,7 @@ export const rowFor = (rows: readonly Row[], i: number) => rows.findLast((r) => 
 // ---- how a tool row reads (components/ai-elements/tool.tsx draws it) ----
 
 // running: no echo yet and the turn goes on; done: the echo is in; ended: the turn ended without
-// one; error: the echo says the call failed (toolFailed)
+// one; error: the echo is flagged failed
 export type ToolState = "running" | "done" | "ended" | "error";
 
 export const TOOL_STATE_LABELS = {
@@ -80,19 +90,12 @@ export const TOOL_STATE_LABELS = {
   running: "Running",
 } satisfies Record<ToolState, string>;
 
-// Whether a tool's output says the call failed. The log keeps an echo's text only (it has no error
-// flag), so this is a presentational guess (SPEC "Web UI") from how failures begin: a Bash exit
-// code other than 0 and a <tool_use_error> wrapper (Claude Code), an "Error:" first line, and
-// `not run: <why>`, which our own turn loop logs for a call it never ran (src/turn/loop.ts). An
-// output that begins "Error:" but came from a call that worked reads as failed too: a known false
-// positive. It changes how the row looks, never what it shows: the output is there as logged.
-const FAILED = /^\s*(?:Exit code [1-9]\d*\b|<tool_use_error>|Error:|not run: )/;
-export const toolFailed = (output: string) => FAILED.test(output);
-
 // A tool row's state: `busy` is whether a turn runs or waits, `last` whether this is the newest
-// tool row (only the newest can still be running)
-export const toolStateOf = (row: Pick<ToolRow, "output">, busy: boolean, last: boolean): ToolState =>
-  row.output === null ? (busy && last ? "running" : "ended") : toolFailed(row.output) ? "error" : "done";
+// tool row (only the newest can still be running). Failed comes from the echo's flag alone (SPEC
+// "Web UI", E28), never from what the output says: an echo logged without one, including every
+// echo from before the flag existed, reads as done.
+export const toolStateOf = (row: Pick<ToolRow, "failed" | "output">, busy: boolean, last: boolean): ToolState =>
+  row.output === null ? (busy && last ? "running" : "ended") : row.failed ? "error" : "done";
 
 // an MCP tool comes as mcp__<server>__<name>; the row names it by <name>
 export const toolName = (name: string) => name.split("__").at(-1) ?? name;

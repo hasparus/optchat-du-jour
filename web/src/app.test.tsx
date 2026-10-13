@@ -89,24 +89,36 @@ test("the snapshot shows the log: messages, a collapsed tool call, markdown with
   expect(screen.getByText("Two things: **notes** and a repo.")).toBeTruthy();
 });
 
-test("a tool call whose output says it failed reads as Failed, and its output stays as logged", async () => {
-  start([
+test("a tool call reads as Failed when its echo is flagged, not from its output, which stays as logged", async () => {
+  const { play } = start([
     { kind: "user", text: "lint it" },
     { kind: "tool", text: 'Bash {"command":"bun run lint"}' },
-    { kind: "echo", text: "Exit code 1\n\nsrc/x.ts:1:1 error" },
-    { kind: "tool", text: 'Read {"file_path":"notes.md"}' },
-    { kind: "echo", text: "# notes" },
+    { error: true, kind: "echo", text: "src/x.ts:1:1 lint complaint" },
+    // looks like a failure, but the log doesn't say so: an echo from before the flag
+    { kind: "tool", text: 'Bash {"command":"grep -h Error: log.txt"}' },
+    { kind: "echo", text: "Error: disk quota exceeded" },
   ]);
   const failed = await screen.findByText("Failed");
   const row = failed.closest('[data-slot="tool"]');
   expect(row?.textContent).toContain("bun run lint"); // the line names the command
-  expect(screen.getAllByText("Failed")).toHaveLength(1); // the Read that worked says nothing aloud but "Completed"
+  expect(screen.getAllByText("Failed")).toHaveLength(1); // the grep says nothing aloud but "Completed"
   expect(screen.getByText("Completed")).toBeTruthy();
   fireEvent.click(screen.getByText("bun run lint"));
   await waitFor(() => {
-    expect(row?.textContent).toContain("src/x.ts:1:1 error");
+    expect(row?.textContent).toContain("src/x.ts:1:1 lint complaint");
   });
   expect(row?.textContent).toContain("Error"); // the output's header
+  // a live result carries the flag too
+  play(
+    { parentMessageId: "5", toolCallId: "t5", toolCallName: "Read", type: EventType.TOOL_CALL_START },
+    { delta: '{"file_path":"gone.md"}', toolCallId: "t5", type: EventType.TOOL_CALL_ARGS },
+    { toolCallId: "t5", type: EventType.TOOL_CALL_END },
+    { content: "File does not exist.", messageId: "6", metadata: { error: true }, role: "tool", toolCallId: "t5", type: EventType.TOOL_CALL_RESULT },
+  );
+  await waitFor(() => {
+    expect(screen.getAllByText("Failed")).toHaveLength(2);
+  });
+  expect(screen.getAllByText("Failed")[1]?.closest('[data-slot="tool"]')?.textContent).toContain("gone.md");
 });
 
 const CODE: Entry[] = [{ kind: "talk", text: "Here:\n\n```ts\nconst x = 1;\n```" }];

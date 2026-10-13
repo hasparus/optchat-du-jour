@@ -11,6 +11,10 @@ const ToolCall = Schema.Struct({
   function: Schema.Struct({ name: Schema.String, arguments: Schema.String }),
 });
 
+// An echo whose tool failed (E28): server/agui.ts puts `metadata: {error: true}` on its tool
+// message and its TOOL_CALL_RESULT. Other keys of AG-UI's open metadata are ignored.
+const ToolMetadata = Schema.Struct({ error: Schema.optional(Schema.Boolean) });
+
 // server/agui.ts toMessages: user and note entries are user messages (a note is named "note"),
 // talk and tool entries assistant messages, echo entries tool messages
 export const Message = Schema.Union([
@@ -21,7 +25,13 @@ export const Message = Schema.Union([
     content: Schema.optional(Schema.String),
     toolCalls: Schema.optional(Schema.Array(ToolCall)),
   }),
-  Schema.Struct({ id: Schema.String, role: Schema.Literal("tool"), content: Schema.String, toolCallId: Schema.String }),
+  Schema.Struct({
+    id: Schema.String,
+    role: Schema.Literal("tool"),
+    content: Schema.String,
+    toolCallId: Schema.String,
+    metadata: Schema.optional(ToolMetadata),
+  }),
 ]);
 export type Message = typeof Message.Type;
 
@@ -59,6 +69,7 @@ export const Inbound = Schema.Union([
     toolCallId: Schema.String,
     content: Schema.String,
     role: Schema.optional(Schema.Literal("tool")),
+    metadata: Schema.optional(ToolMetadata),
   }),
   Schema.Struct({ type: Schema.Literal(EventType.CUSTOM), name: Schema.Literal("info"), value: Schema.String }),
   Schema.Struct({ type: Schema.Literal(EventType.CUSTOM), name: Schema.Literal("thinking"), value: Schema.Struct({ tokens: Schema.Number }) }),

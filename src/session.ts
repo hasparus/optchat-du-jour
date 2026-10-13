@@ -7,7 +7,7 @@
 import { Cause, Deferred, type Duration, Effect, Exit, Fiber, FiberSet, Option, PubSub, Queue, type Scope } from "effect";
 import type { Choices } from "./choices.ts";
 import { PRIME_IDLE, WAIT_RETRY } from "./config.ts";
-import type { Chat } from "./chat.ts";
+import type { Chat, LogExtra } from "./chat.ts";
 import type { DownList } from "./engines/chain.ts";
 import type { EngineError } from "./engines/errors.ts";
 import type { StoreError } from "./store.ts";
@@ -195,8 +195,9 @@ export const makeSession = (o: {
 
     // A write and its bookkeeping are one step a cancel cannot split: an entry in the log is
     // always known to the session, never half-told.
-    const log = (kind: Entry["kind"], text: string, on: string | null) =>
-      chat.log(kind, text, on ? { device: on } : {}).pipe(
+    // `error` is written only when true (E28), so an entry without it is the line it always was
+    const log = (kind: Entry["kind"], text: string, on: string | null, error = false) =>
+      chat.log(kind, text, extraOf(on, error)).pipe(
         Effect.tap(() =>
           Effect.sync(() => {
             if (current) current.reply = null; // the streamed text is logged now, or was left behind
@@ -206,8 +207,8 @@ export const makeSession = (o: {
       );
     const published = (runId: string | null) => (entry: Entry) => publish({ entry, runId, type: "logged" });
     // an entry of the turn's engine: written and published, or neither is cut short by a cancel
-    const logPublished = (kind: Entry["kind"], text: string, runId: string | null, on: string | null) =>
-      log(kind, text, on).pipe(Effect.flatMap(published(runId)), Effect.uninterruptible);
+    const logPublished = (kind: Entry["kind"], text: string, runId: string | null, on: string | null, error = false) =>
+      log(kind, text, on, error).pipe(Effect.flatMap(published(runId)), Effect.uninterruptible);
 
     const scope = yield* Effect.scope;
 
@@ -463,7 +464,7 @@ export const makeSession = (o: {
         steerIn(accepting); // came in while the captions or the log were awaited
         const out: TurnEvents = {
           info,
-          log: (kind, text) => logPublished(kind, text, runId, on),
+          log: (kind, text, flags) => logPublished(kind, text, runId, on, kind === "echo" && flags?.error === true),
           text: (delta) => stream(delta, runId),
           thinking: (tokens) => publish({ runId, tokens, type: "thinking" }),
           // the call passed this one to the model: logged now; a second report finds it gone (taken once)
@@ -649,6 +650,15 @@ export const makeSession = (o: {
 
 // A message's text as the log keeps it: what was typed, then a marker line per attachment with
 // its caption (SPEC "Media")
+// what a log line carries after the reference's keys (src/chat.ts): where its turn ran, and on an
+// echo whose tool failed, `error` (E28); each only when set
+const extraOf = (on: string | null, error: boolean) => {
+  const extra: LogExtra = {};
+  if (on) extra.device = on;
+  if (error) extra.error = true;
+  return extra;
+};
+
 const logText = (m: Incoming, said: readonly string[]) =>
   withMarkers(
     m.text,

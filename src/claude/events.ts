@@ -61,10 +61,13 @@ export const Assistant = Schema.Struct({
 export const SYNTHETIC = "<synthetic>";
 
 const ResultPart = Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String) });
-const ToolResultBlock = Schema.Struct({
+// `is_error`: Claude Code's own word that the call failed (a Bash exit code other than 0, a
+// <tool_use_error>, an MCP result with isError); left out when it worked
+export const ToolResultBlock = Schema.Struct({
   type: Schema.Literal("tool_result"),
   tool_use_id: Schema.optional(Schema.String),
   content: Schema.optional(Schema.Union([Schema.String, Schema.Array(ResultPart)])),
+  is_error: Schema.optional(Schema.Boolean),
 });
 
 export const User = Schema.Struct({

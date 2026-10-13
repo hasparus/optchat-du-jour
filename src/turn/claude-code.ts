@@ -72,13 +72,15 @@ type AssistantBlock = Assistant["message"]["content"][number];
 type TextBlock = Extract<AssistantBlock, { readonly type: "text" }>;
 type ToolUseBlock = Extract<AssistantBlock, { readonly type: "tool_use" }>;
 type UserContent = User["message"]["content"];
-type ResultContent = Extract<Exclude<UserContent, string>[number], { readonly type: "tool_result" }>["content"];
+type ToolResult = Extract<Exclude<UserContent, string>[number], { readonly type: "tool_result" }>;
+type ResultContent = ToolResult["content"];
 
 // the schemas let any other block through as {type}; these tell the ones we log apart
 const isText = (b: AssistantBlock): b is TextBlock => b.type === "text" && "text" in b && typeof b.text === "string";
 const isToolUse = (b: AssistantBlock): b is ToolUseBlock => b.type === "tool_use" && "name" in b && typeof b.name === "string";
 const isPlainUser = (c: UserContent): c is string => typeof c === "string";
 const isPlainResult = (c: NonNullable<ResultContent>): c is string => typeof c === "string";
+const isToolResult = (b: Exclude<UserContent, string>[number]): b is ToolResult => b.type === "tool_result";
 
 // the text of a tool result: its text parts, one per line; anything else by its type, e.g. [image]
 const resultText = (content: ResultContent) => {
@@ -150,9 +152,10 @@ export function makeMapper(out: TurnEvents, passed: Mid[], mcp: (status: string)
     if (e.isReplay) return onReplay();
     const { content } = e.message;
     if (isPlainUser(content)) return Effect.void;
+    // the echo keeps Claude Code's error flag for clients (E28); what the model reads is the text
     return Effect.forEach(
       content,
-      (block) => (block.type === "tool_result" ? out.log("echo", cap(resultText("content" in block ? block.content : undefined))) : Effect.void),
+      (block) => (isToolResult(block) ? out.log("echo", cap(resultText(block.content)), { error: block.is_error === true }) : Effect.void),
       { discard: true },
     );
   };

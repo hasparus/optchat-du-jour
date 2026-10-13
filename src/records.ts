@@ -9,10 +9,14 @@ export type Kind = typeof Kind.Type;
 const Index = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
 // `size` is written but never trusted: the loader recomputes it from the text. `device` says
-// where the turn that logged the entry ran (E7); readers that don't know it ignore it.
+// where the turn that logged the entry ran (E7); `error`, on an echo only, that the tool reported
+// it failed (E28: Claude Code's `is_error`, or our own tool loop's), written only when true, so a
+// line without it reads as before. Both are for clients: no model is shown either, and readers that
+// don't know them ignore them.
 export const Msg = Schema.Struct({
   date: Schema.String,
   device: Schema.optional(Schema.String),
+  error: Schema.optional(Schema.Boolean),
   i: Index,
   kind: Kind,
   size: Schema.optional(Schema.Number),
