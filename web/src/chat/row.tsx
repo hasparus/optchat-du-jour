@@ -3,7 +3,6 @@
 // copy and a raw-text toggle under it (rendering never hides what the model wrote), a tool call as
 // one work-log line with its input and output collapsed under it.
 import { MessageAction, MessageActions, MessageResponse } from "@/components/ai-elements/message";
-import { Terminal } from "@/components/ai-elements/terminal";
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from "@/components/ai-elements/tool";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Message, MessageContent, MessageHeader } from "@/components/ui/message";
@@ -234,9 +233,7 @@ function RowView({ row, streaming, toolState }: { row: Row; streaming: boolean; 
           <ToolHeader detail={toolSummary(row.args)} name={row.name} state={toolState} />
           <ToolContent>
             {row.args !== "" && <ToolInput input={row.args} />}
-            {row.output !== null && (
-              <ToolOutput output={<Terminal output={row.output} title={toolState === "error" ? <span className="text-destructive">Error</span> : undefined} />} />
-            )}
+            {row.output !== null && <ToolOutput failed={toolState === "error"} output={row.output} />}
           </ToolContent>
         </Tool>
       );

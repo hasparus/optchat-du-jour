@@ -4,6 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { segmentedItem, segmentedList } from "@/components/ui/segmented";
 import { MessageScrollerProvider } from "@/components/ui/message-scroller";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import type { Uploader } from "@/lib/attach";
@@ -98,73 +99,75 @@ export function App({ link, session, uploader }: { link: Link; session: SessionS
   }, []);
 
   return (
-    <MessageScrollerProvider>
-      <Tabs
-        className="flex h-dvh flex-col gap-0"
-        onValueChange={(v) => {
-          if (isTab(v)) setTab(v);
-        }}
-        value={tab}
-      >
-        <header
-          className="flex h-[calc(3rem+env(safe-area-inset-top))] shrink-0 items-center gap-2 border-b bg-background pt-[env(safe-area-inset-top)] pr-[max(0.5rem,env(safe-area-inset-right))] pl-[max(0.75rem,env(safe-area-inset-left))] md:bg-shell md:pr-3 md:pl-4"
+    <TooltipProvider delayDuration={400}>
+      <MessageScrollerProvider>
+        <Tabs
+          className="flex h-dvh flex-col gap-0"
+          onValueChange={(v) => {
+            if (isTab(v)) setTab(v);
+          }}
+          value={tab}
         >
-          <span className="hidden items-center gap-2 pr-3 text-ui font-semibold tracking-tight md:flex">optchat</span>
-          <span
-            aria-label={`connection ${state.status}`}
-            className={cn(
-              "size-2 shrink-0 rounded-full md:order-first",
-              state.status === "open" ? "bg-success shadow-[0_0_0_3px_color-mix(in_oklch,var(--success)_18%,transparent)]" : "animate-breathe bg-muted-foreground",
-            )}
-            role="img"
-            title={state.status === "open" ? "Connected" : state.status === "connecting" ? "Connecting…" : "Disconnected, reconnecting…"}
-          />
-          <TabsList className={cn(segmentedList({ ground: "bare" }), "h-auto min-w-0 flex-1 justify-start md:flex-none")}>
-            {TABS.map((t) => (
-              <TabsTrigger
-                className={cn(segmentedItem, "h-8 flex-1 border-0 hover:bg-accent md:flex-none dark:data-[state=active]:bg-raised")}
-                key={t}
-                value={t}
-              >
-                {t}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-          <div className="ml-auto flex items-center gap-0.5">
-            <ChangeServer />
-            <ThemeToggle />
-          </div>
-        </header>
-        <TabsContent className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden" forceMount value="chat">
-          <Chat
-            devices={devices.data ?? []}
-            link={link}
-            onTargetShown={shown}
-            session={session}
-            state={state}
-            target={target}
-            uploader={uploader}
-          />
-        </TabsContent>
-        <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="memory">
-          <Memory
-            onShowInChat={(i) => {
-              setTarget(i);
-              setTab("chat");
-            }}
-          />
-        </TabsContent>
-        <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="stats">
-          <ScreenBoundary>
-            <Suspense fallback={<p className="p-6 text-ui text-muted-foreground">Loading…</p>}>
-              <Stats />
-            </Suspense>
-          </ScreenBoundary>
-        </TabsContent>
-        <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="devices">
-          <Devices />
-        </TabsContent>
-      </Tabs>
-    </MessageScrollerProvider>
+          <header
+            className="flex h-[calc(3rem+env(safe-area-inset-top))] shrink-0 items-center gap-2 border-b bg-background pt-[env(safe-area-inset-top)] pr-[max(0.5rem,env(safe-area-inset-right))] pl-[max(0.75rem,env(safe-area-inset-left))] md:bg-shell md:pr-3 md:pl-4"
+          >
+            <span className="hidden items-center gap-2 pr-3 text-ui font-semibold tracking-tight md:flex">optchat</span>
+            <span
+              aria-label={`connection ${state.status}`}
+              className={cn(
+                "size-2 shrink-0 rounded-full md:order-first",
+                state.status === "open" ? "bg-success shadow-[0_0_0_3px_color-mix(in_oklch,var(--success)_18%,transparent)]" : "animate-breathe bg-muted-foreground",
+              )}
+              role="img"
+              title={state.status === "open" ? "Connected" : state.status === "connecting" ? "Connecting…" : "Disconnected, reconnecting…"}
+            />
+            <TabsList className={cn(segmentedList({ ground: "bare" }), "h-auto min-w-0 flex-1 justify-start md:flex-none")}>
+              {TABS.map((t) => (
+                <TabsTrigger
+                  className={cn(segmentedItem, "h-8 flex-1 border-0 hover:bg-accent md:flex-none dark:data-[state=active]:bg-raised")}
+                  key={t}
+                  value={t}
+                >
+                  {t}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+            <div className="ml-auto flex items-center gap-0.5">
+              <ChangeServer />
+              <ThemeToggle />
+            </div>
+          </header>
+          <TabsContent className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden" forceMount value="chat">
+            <Chat
+              devices={devices.data ?? []}
+              link={link}
+              onTargetShown={shown}
+              session={session}
+              state={state}
+              target={target}
+              uploader={uploader}
+            />
+          </TabsContent>
+          <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="memory">
+            <Memory
+              onShowInChat={(i) => {
+                setTarget(i);
+                setTab("chat");
+              }}
+            />
+          </TabsContent>
+          <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="stats">
+            <ScreenBoundary>
+              <Suspense fallback={<p className="p-6 text-ui text-muted-foreground">Loading…</p>}>
+                <Stats />
+              </Suspense>
+            </ScreenBoundary>
+          </TabsContent>
+          <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="devices">
+            <Devices />
+          </TabsContent>
+        </Tabs>
+      </MessageScrollerProvider>
+    </TooltipProvider>
   );
 }

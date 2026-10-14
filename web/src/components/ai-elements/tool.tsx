@@ -1,17 +1,20 @@
-// AI Elements' Tool (elements.ai-sdk.dev registry): one tool call, collapsed. The AI SDK's tool part
-// types are replaced by ours: a `tool` log entry is a name and its JSON input, and the `echo` entry
-// after it is the output (SPEC "Web UI", Chat). There are no approvals here. Drawn as a work-log
-// line (DESIGN.md, Tool calls): an icon for the kind of tool, its name and what it was called on,
-// and only the states worth reading: running, failed, no output. "Completed" is the norm, said only
-// to a screen reader. Open, the input as logged and the output sit in one panel under the line. How
-// a row reads (its state, name, summary) is decided in lib/rows.ts; this file only draws it.
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+// AI Elements' Tool, rebuilt on shadcn/ui's Trace and Code Block as the October 2026 AI Elements
+// do it (ui.shadcn.com/docs/ai-elements/radix/tool): one tool call is a trace line that expands
+// into its input and output. The AI SDK's tool part types are replaced by ours: a `tool` log entry
+// is a name and its JSON input, and the `echo` entry after it is the output (SPEC "Web UI", Chat).
+// There are no approvals here. The line reads as a work log (DESIGN.md, Tool calls): an icon for
+// the kind of tool, its name and what it was called on, and only the states worth reading:
+// running (the name shimmers), failed (from the flag the server logs, E28) and no output.
+// "Completed" is the norm, said only to a screen reader. How a row reads (its state, name, summary)
+// is decided in lib/rows.ts; this file only draws it.
+import { CodeBlock, CodeBlockActions, CodeBlockContent, CodeBlockCopyButton, CodeBlockHeader, CodeBlockLine, CodeBlockTitle } from "@/components/ui/code-block";
+import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceDescription, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace";
+import { useHighlightedCode } from "@/hooks/use-highlighted-code";
 import { TOOL_STATE_LABELS, toolName, type ToolState } from "@/lib/rows";
 import { cn } from "@/lib/utils";
 import {
   BotIcon,
   CalendarIcon,
-  ChevronRightIcon,
   FileTextIcon,
   GlobeIcon,
   ListChecksIcon,
@@ -22,14 +25,24 @@ import {
   SquareTerminalIcon,
   WrenchIcon,
 } from "lucide-react";
-import type { ComponentProps, ReactNode } from "react";
+import type { ComponentProps } from "react";
 
-import { CodeBlock } from "./code-block";
-import { Shimmer } from "./shimmer";
+// CSI and OSC sequences, and the other C0/C1 controls but newline and tab: a tool's output is shown
+// as text, its escape sequences dropped rather than drawn as colours
+// oxlint-disable-next-line no-control-regex -- matching control characters is the point
+const ESCAPES = /\u001B\[[0-?]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)|[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g;
+export const plainText = (s: string) => s.replaceAll(ESCAPES, "");
 
-export type ToolProps = ComponentProps<typeof Collapsible>;
+export type ToolProps = Omit<ComponentProps<typeof TraceCollapsible>, "open" | "onOpenChange">;
 
-export const Tool = ({ className, ...props }: ToolProps) => <Collapsible className={cn("group/tool w-full", className)} data-slot="tool" {...props} />;
+// a Trace of one line; `data-slot="tool"` names the call (its data-state says whether it is open)
+export const Tool = ({ className, children, ...props }: ToolProps) => (
+  <Trace className="group/tool">
+    <TraceCollapsible className={className} data-slot="tool" {...props}>
+      {children}
+    </TraceCollapsible>
+  </Trace>
+);
 
 const ICONS = new Map<string, LucideIcon>(Object.entries({
   Agent: BotIcon,
@@ -50,90 +63,84 @@ const ICONS = new Map<string, LucideIcon>(Object.entries({
 }));
 const toolIcon = (name: string): LucideIcon => ICONS.get(toolName(name)) ?? WrenchIcon;
 
-export type ToolHeaderProps = ComponentProps<typeof CollapsibleTrigger> & {
+export type ToolHeaderProps = Omit<ComponentProps<typeof TraceCollapsibleTrigger>, "children"> & {
   readonly name: string;
   // what it was called on, one line (lib/rows.ts toolSummary)
   readonly detail: string;
   readonly state: ToolState;
 };
 
+// The trigger is the line itself: Trace's 28 px row (40 px on a touch screen), the chevron after
+// the title. A failed call's line is red and says Failed; one that ended with nothing logged says
+// so, muted; the others name their state to a screen reader only.
 export const ToolHeader = ({ className, name, detail, state, ...props }: ToolHeaderProps) => {
   const Icon = toolIcon(name);
+  const shown = state === "error" || state === "ended";
   return (
-    <CollapsibleTrigger
-      className={cn(
-        "group/tool-header relative flex min-h-7 w-full min-w-0 items-center gap-2 rounded-md text-left text-ui text-muted-foreground transition-colors pointer-coarse:min-h-10",
-        "before:absolute before:-inset-x-2 before:inset-y-0 before:rounded-md before:transition-colors hover:text-foreground hover:before:bg-accent",
-        className,
-      )}
-      {...props}
-    >
-      <span className="relative flex size-4 shrink-0 items-center justify-center">
-        <Icon
-          aria-hidden="true"
-          className={cn("size-3.5", state === "running" && "animate-breathe text-foreground", state === "error" && "text-destructive")}
-          strokeWidth={1.75}
-        />
-      </span>
-      <span className="relative flex min-w-0 flex-1 items-baseline gap-2">
-        {state === "running" ? (
-          <Shimmer className="shrink-0 font-medium">{toolName(name)}</Shimmer>
-        ) : (
-          <span className="shrink-0 font-medium text-foreground/85">{toolName(name)}</span>
-        )}
-        {detail !== "" && <span className="min-w-0 truncate font-mono text-xs">{detail}</span>}
-      </span>
-      {state === "error" || state === "ended" ? (
-        <span className={cn("relative shrink-0 text-xs", state === "error" ? "font-medium text-destructive" : "text-muted-foreground")} data-slot="tool-status">
+    <TraceCollapsibleTrigger className={cn("min-h-7 text-ui pointer-coarse:min-h-10", className)} {...props}>
+      <TraceLine className="text-ui" status={state === "running" ? "running" : state === "error" ? "error" : undefined}>
+        <TraceIcon>
+          <Icon className="size-3.5" strokeWidth={1.75} />
+        </TraceIcon>
+        <TraceTitle>
+          <span className="font-medium text-foreground/85 in-data-[status=error]:text-destructive">{toolName(name)}</span>
+          {detail !== "" && <span className="ml-2 font-mono text-xs">{detail}</span>}
+        </TraceTitle>
+        <TraceDescription className={cn(shown ? "text-xs" : "sr-only", state === "error" ? "font-medium text-destructive" : "text-muted-foreground")} data-slot="tool-status">
           {TOOL_STATE_LABELS[state]}
-        </span>
-      ) : (
-        <span className="sr-only" data-slot="tool-status">
-          {TOOL_STATE_LABELS[state]}
-        </span>
-      )}
-      <ChevronRightIcon
-        aria-hidden="true"
-        className="relative size-3.5 shrink-0 opacity-0 transition-[transform,opacity] duration-150 group-hover/tool-header:opacity-100 group-focus-visible/tool-header:opacity-100 group-data-[state=open]/tool:rotate-90 group-data-[state=open]/tool:opacity-100 pointer-coarse:opacity-60"
-      />
-    </CollapsibleTrigger>
+        </TraceDescription>
+      </TraceLine>
+    </TraceCollapsibleTrigger>
   );
 };
 
-export type ToolContentProps = ComponentProps<typeof CollapsibleContent>;
+export type ToolContentProps = ComponentProps<typeof TraceCollapsibleContent>;
 
-export const ToolContent = ({ className, ...props }: ToolContentProps) => (
-  <CollapsibleContent
-    className={cn(
-      "mt-1 mb-2 ml-6 overflow-hidden rounded-lg border bg-code text-foreground outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-1",
-      className,
-    )}
-    {...props}
-  />
-);
+// open: the input and the output, each a small Code Block, on Trace's indented rule
+export const ToolContent = ({ className, ...props }: ToolContentProps) => <TraceCollapsibleContent className={cn("flex flex-col gap-2", className)} {...props} />;
 
-const SectionLabel = ({ children }: { readonly children: ReactNode }) => <h4 className="text-2xs font-medium text-muted-foreground">{children}</h4>;
-
-export type ToolInputProps = ComponentProps<"div"> & {
+export type ToolInputProps = Omit<ComponentProps<typeof CodeBlock>, "children"> & {
   // the input exactly as logged: highlighted, never re-serialised
   readonly input: string;
 };
 
-export const ToolInput = ({ className, input, ...props }: ToolInputProps) => (
-  <div className={cn("overflow-hidden", className)} {...props}>
-    <div className="flex h-8 items-center px-3">
-      <SectionLabel>Input</SectionLabel>
-    </div>
-    <CodeBlock className="rounded-none border-0 bg-transparent" code={input} language="json" />
-  </div>
-);
-
-export type ToolOutputProps = ComponentProps<"div"> & {
-  readonly output: ReactNode;
+export const ToolInput = ({ className, input, ...props }: ToolInputProps) => {
+  const lines = useHighlightedCode(input, "json");
+  return (
+    <CodeBlock className={cn("bg-code", className)} size="sm" {...props}>
+      <CodeBlockHeader>
+        <CodeBlockTitle className="text-2xs text-muted-foreground">Input</CodeBlockTitle>
+      </CodeBlockHeader>
+      <CodeBlockContent className="max-h-64" wrap>
+        {lines.map((line, index) => (
+          // oxlint-disable-next-line react/no-array-index-key -- a line is its position
+          <CodeBlockLine key={index}>{line}</CodeBlockLine>
+        ))}
+      </CodeBlockContent>
+    </CodeBlock>
+  );
 };
 
-export const ToolOutput = ({ className, output, ...props }: ToolOutputProps) => (
-  <div className={cn("border-t first:border-t-0", className)} {...props}>
-    {output}
-  </div>
-);
+export type ToolOutputProps = Omit<ComponentProps<typeof CodeBlock>, "children"> & {
+  // the `echo` entry's text, as logged
+  readonly output: string;
+  // the call failed (the logged flag): the block is the destructive one, titled Error
+  readonly failed?: boolean;
+};
+
+export const ToolOutput = ({ className, output, failed = false, ...props }: ToolOutputProps) => {
+  const text = plainText(output);
+  return (
+    <CodeBlock className={cn(!failed && "bg-code", className)} size="sm" variant={failed ? "destructive" : "default"} {...props}>
+      <CodeBlockHeader>
+        <CodeBlockTitle className={cn("text-2xs", !failed && "text-muted-foreground")}>{failed ? "Error" : "Output"}</CodeBlockTitle>
+        <CodeBlockActions>
+          <CodeBlockCopyButton aria-label="Copy output" className="text-muted-foreground hover:text-foreground pointer-coarse:size-10" value={text} />
+        </CodeBlockActions>
+      </CodeBlockHeader>
+      <CodeBlockContent className="max-h-64 text-foreground/90" wrap>
+        {text}
+      </CodeBlockContent>
+    </CodeBlock>
+  );
+};

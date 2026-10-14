@@ -152,10 +152,10 @@ test.describe("a log with history above", () => {
       await answered(page, text);
     }
     // the first turn's tool row, scrolled to sit under the composer
-    const tool = page.locator('[data-slot="tool"]').first().locator('[data-slot="collapsible-trigger"]');
+    const tool = page.locator('[data-slot="tool"]').first().locator('[data-slot="trace-collapsible-trigger"]');
     const chat = page.getByRole("region", { name: "Chat" });
     await chat.evaluate((viewport) => {
-      const row = viewport.querySelector('[data-slot="tool"] [data-slot="collapsible-trigger"]');
+      const row = viewport.querySelector('[data-slot="tool"] [data-slot="trace-collapsible-trigger"]');
       const dock = document.querySelector('[data-testid="dock"]');
       if (!row || !dock) throw new Error("no tool row or dock");
       viewport.scrollTop += row.getBoundingClientRect().top - (dock.getBoundingClientRect().top + 16);

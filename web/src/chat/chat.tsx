@@ -95,10 +95,10 @@ function Waiting({ q, asking, model, state, onTakeBack }: { readonly q: Queued; 
   return (
     <QueueItem data-state={q.where} data-testid="queue-item">
       <QueueItemIndicator className={queuedHere ? "border-dashed" : q.where === "sent" ? "animate-breathe border-signal bg-signal" : q.where === "failed" ? "border-destructive bg-destructive" : undefined} />
-      <div className="min-w-0 grow">
+      <span className="block min-w-0 grow">
         {q.text.trim() !== "" && <QueueItemContent>{q.text}</QueueItemContent>}
         {q.media.length > 0 && (
-          <div className="mt-1 flex gap-1" data-testid="queue-media">
+          <span className="mt-1 flex gap-1" data-testid="queue-media">
             {q.media.map((a) =>
               a.kind === "image" ? (
                 <img
@@ -113,24 +113,24 @@ function Waiting({ q, asking, model, state, onTakeBack }: { readonly q: Queued; 
                 </span>
               ),
             )}
-          </div>
+          </span>
         )}
         {(q.where !== "failed" || other !== null) && (
-          <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-2xs text-muted-foreground">
+          <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-2xs text-muted-foreground">
             {other !== null && (
               <span className="shrink-0 rounded-sm px-1 font-medium text-foreground hairline-strong" data-testid="queue-engine" title={`for ${other}`}>
                 {shortLabel(other)}
               </span>
             )}
             {q.where !== "failed" && <span data-testid="queue-where">{queuedHere ? "queued for the next turn" : q.where === "sent" ? "the turn has it" : "sending…"}</span>}
-          </p>
+          </span>
         )}
         {q.error !== null && (
-          <p className="text-xs text-destructive" data-testid="queue-error" role="alert">
+          <span className="block text-xs text-destructive" data-testid="queue-error" role="alert">
             not logged: {q.error}
-          </p>
+          </span>
         )}
-      </div>
+      </span>
       {q.back !== null && (
         <QueueItemAction
           aria-label={`Take back: ${q.text.trim() === "" ? `${q.media.length} attachments` : q.text}`}

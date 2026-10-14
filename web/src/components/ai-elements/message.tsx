@@ -1,8 +1,13 @@
-// AI Elements' Message (elements.ai-sdk.dev registry), cut to the parts we use: MessageResponse,
-// streaming markdown through Streamdown, and the action buttons under a message. The layout
-// pieces (Message, MessageContent) come from shadcn's chat components instead, and the branch
-// switcher is gone: the log has no branches (SPEC "Web UI").
+// AI Elements' Message, as the October 2026 AI Elements build it
+// (ui.shadcn.com/docs/ai-elements/radix/message), cut to the parts we use: MessageResponse,
+// streaming markdown through Streamdown, and the actions under a reply, on shadcn/ui's
+// MessageFooter, each a ghost icon button with its label as its name and in a Tooltip. The layout
+// pieces (Message, MessageContent) come from shadcn's chat components, and the branch switcher is
+// gone: the log has no branches (SPEC "Web UI"). The footer keeps the slot name message-actions:
+// the tap-to-reveal on a touch screen (chat/row.tsx, index.css) finds the row by it.
 import { Button } from "@/components/ui/button";
+import { MessageFooter } from "@/components/ui/message";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { nativeShell } from "@/lib/shell";
 import { cn } from "@/lib/utils";
 import type { CodeHighlighterPlugin } from "@streamdown/code";
@@ -11,12 +16,12 @@ import { memo } from "react";
 import { harden } from "rehype-harden";
 import { defaultRehypePlugins, Streamdown, type StreamdownProps } from "streamdown";
 
-export type MessageActionsProps = ComponentProps<"div">;
+export type MessageActionsProps = ComponentProps<typeof MessageFooter>;
 
 export const MessageActions = ({ className, children, ...props }: MessageActionsProps) => (
-  <div className={cn("flex items-center gap-1", className)} data-slot="message-actions" {...props}>
+  <MessageFooter className={cn("gap-1 px-0", className)} data-slot="message-actions" {...props}>
     {children}
-  </div>
+  </MessageFooter>
 );
 
 export type MessageActionProps = ComponentProps<typeof Button> & {
@@ -24,10 +29,14 @@ export type MessageActionProps = ComponentProps<typeof Button> & {
 };
 
 export const MessageAction = ({ children, label, variant = "ghost", size = "icon-sm", ...props }: MessageActionProps) => (
-  <Button size={size} title={label} type="button" variant={variant} {...props}>
-    {children}
-    <span className="sr-only">{label}</span>
-  </Button>
+  <Tooltip>
+    <TooltipTrigger asChild>
+      <Button aria-label={label} size={size} type="button" variant={variant} {...props}>
+        {children}
+      </Button>
+    </TooltipTrigger>
+    <TooltipContent sideOffset={4}>{label}</TooltipContent>
+  </Tooltip>
 );
 
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;

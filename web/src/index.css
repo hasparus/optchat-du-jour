@@ -79,7 +79,6 @@
 
     --ease-fluid: cubic-bezier(0.22, 1, 0.36, 1);
 
-    --animate-shimmer: oc-shimmer 2.2s linear infinite;
     --animate-breathe: oc-breathe 1.6s ease-in-out infinite;
 }
 
@@ -316,23 +315,6 @@
   box-shadow: inset 0 0 0 1px var(--input);
 }
 
-/* text with a sheen passing over it (components/ai-elements/shimmer.tsx); still and muted for those
-   who asked for no motion */
-@utility shimmer-text {
-  /* solid ink under a moving alpha mask: 65% at rest (5.4:1 on the sheet), full where the sheen is */
-  display: inline-block;
-  color: var(--foreground);
-  mask-image: linear-gradient(90deg, rgb(0 0 0 / 65%) calc(50% - 2.5em), #000, rgb(0 0 0 / 65%) calc(50% + 2.5em));
-  mask-size: 250% 100%;
-  mask-repeat: no-repeat;
-  animation: var(--animate-shimmer);
-  @media (prefers-reduced-motion: reduce) {
-    animation: none;
-    mask-image: none;
-    color: var(--muted-foreground);
-  }
-}
-
 /* ---------- markdown (a reply, through Streamdown) ---------- */
 
 /* the size and line height come from the reply's text-read class */
@@ -525,15 +507,6 @@
 
 /* ---------- live state ---------- */
 
-/* the shimmer-text utility's sweep */
-@keyframes oc-shimmer {
-  from {
-    mask-position: 100% center;
-  }
-  to {
-    mask-position: 0% center;
-  }
-}
 @keyframes oc-breathe {
   0%,
   100% {

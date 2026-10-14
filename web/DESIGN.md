@@ -27,7 +27,6 @@ colors:
   dark-code-ground: "oklch(0.16 0.004 150)"
   dark-ivy: "oklch(0.8 0.12 158)"
   dark-red: "oklch(0.7 0.17 25)"
-  shimmer-mask-rest: "rgb(0 0 0 / 65%)"
 typography:
   heading:
     fontFamily: "Schibsted Grotesk Variable, Schibsted Grotesk Fallback, -apple-system, system-ui, sans-serif"
@@ -116,7 +115,7 @@ components:
 # Design System: optchat
 
 The web UI (`web/`) has one look, defined here and implemented in `src/index.css` (tokens, base,
-markdown, the `hairline` and `shimmer-text` utilities, the shadow tokens) and the components' own
+markdown, the `hairline` and `bare-control` utilities, the shadow tokens) and the components' own
 classes; the segmented control is `components/ui/segmented.tsx`. Sources and measurements behind it
 are in the design notes of PR #29.
 
@@ -261,6 +260,12 @@ composer has 14 px top corners and no bottom edge, so it reads as part of it.
 
 ## Components
 
+shadcn/ui first: the primitives in `components/ui` are the registry's (new-york-v4, and radix-vega
+for Trace, Code Block and Drawer, which new-york-v4 doesn't carry), and the AI Elements wrappers in
+`components/ai-elements` follow the October 2026 patterns built on them. Where ours differ, the
+reason is a behaviour the app needs (a touch target, the iOS WebView, contrast); the list is in the
+PR's registry table.
+
 ### Messages
 - **Yours:** a bubble on the right, `bubble` fill, 18 px radius, 8 × 14 px padding, Read type, max
   85% (80% and 36rem from `sm`). Attachments as rounded thumbnails above it; their marker lines in
@@ -280,17 +285,22 @@ composer has 14 px top corners and no bottom edge, so it reads as part of it.
   Copy waits for the whole reply. While a reply streams a circle caret marks its end.
 
 ### Tool calls (signature)
-- **Line:** 28 px tall (40 px on touch), a 14 px icon for the kind of tool (terminal, file, pencil,
-  search, globe, memory zoom), the tool name in UI weight, then what it was called on in mono 12 px
-  muted, truncated: the command, the file, the pattern, a memory node as `id+n`. A hover wash bleeds
-  8 px past the text on both sides; a chevron appears on hover and turns when open.
-- **States:** running: the icon breathes and the name shimmers. Done: nothing (the norm, "Completed"
-  for screen readers). No output: "No output" in muted 12 px. Failed: red icon and "Failed", when
-  the echo carries the log's error flag (Claude Code's `is_error`, or our tool loop's own; SPEC
-  E28, `lib/rows.ts` toolStateOf), and only then: never guessed from what the output says, so an
-  echo logged before the flag existed reads as done. The output itself always shows as logged.
-- **Open:** one panel indented under the name: code ground, 10 px radius, hairline; "Input" (the JSON
-  as logged, highlighted) and "Output" or "Error" with a copy button, separated by a hairline.
+Built on shadcn/ui's Trace and Code Block (`components/ui/trace.tsx`, `code-block.tsx`; the October
+2026 AI Elements), as the registry's Tool pattern is.
+
+- **Line:** a trace line, 28 px tall (40 px on touch): a 14 px icon for the kind of tool (terminal,
+  file, pencil, search, globe, memory zoom), the tool name in UI weight, then what it was called on
+  in mono 12 px, truncated: the command, the file, the pattern, a memory node as `id+n`. Muted, ink
+  on hover; Trace's chevron follows the title and turns when open.
+- **States:** running: Trace's `running` status, the title under shadcn's `shimmer` sweep. Done:
+  nothing (the norm, "Completed" for screen readers). No output: "No output" in muted 12 px.
+  Failed: Trace's `error` status, the line red and "Failed", when the echo carries the log's error
+  flag (Claude Code's `is_error`, or our tool loop's own; SPEC E28, `lib/rows.ts` toolStateOf), and
+  only then: never guessed from what the output says, so an echo logged before the flag existed
+  reads as done. The output itself always shows as logged.
+- **Open:** under Trace's indented rule, two small Code Blocks: "Input" (the JSON as logged,
+  highlighted with GitHub's high-contrast pair) and "Output" with a copy button, or for a failed
+  call the destructive block titled "Error".
 
 ### Composer
 Modelled on Claude's app: a soft, translucent card with round controls.
@@ -365,10 +375,10 @@ Modelled on Claude's app: a soft, translucent card with round controls.
 ## Motion
 
 150-200 ms for state; `cubic-bezier(0.22, 1, 0.36, 1)` (`--ease-fluid`) for anything that moves in.
-Live state is told by small motion: a 2.2 s shimmer over status text and a
-running tool's name, a 1.6 s breathing dot. Buttons press to 95-97%. A tool panel fades and slides
-1 px in. No entrance choreography on load. Under `prefers-reduced-motion` every animation and
-transition stops; state still reads from text and colour (the shimmer becomes plain muted text).
+Live state is told by small motion: shadcn's `shimmer` (a 2 s sweep, from `shadcn/tailwind.css`)
+over status text and a running tool's title, a 1.6 s breathing dot. Buttons press to 95-97%. A tool line opens with Trace's
+accordion slide. No entrance choreography on load. Under `prefers-reduced-motion` every animation and
+transition stops; state still reads from text and colour (the shimmer stands still in its own colour).
 
 ## Do's and Don'ts
 
@@ -392,6 +402,6 @@ transition stops; state still reads from text and colour (the shimmer becomes pl
 - **Don't** add a second accent, a coloured side border, or glass or a gradient as decoration. The
   composer is the one glass surface (a blur behind it, so the transcript runs on underneath), and
   three gradients do jobs and are the only ones: the fade under the composer's dock, the composer's
-  top sheen, and the mask that sweeps a sheen over live status (`shimmer-text`: solid ink, never
-  gradient-filled text).
+  top sheen, and shadcn's `shimmer` sweeping a highlight over live status (the text at full ink
+  between sweeps).
 - **Don't** set text you read or type under 16 px on a touch screen.
