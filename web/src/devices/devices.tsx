@@ -1,17 +1,29 @@
 // The Devices screen (SPEC "Web UI", Devices; "Multi-machine"): the machines a turn can run on, from
 // the server's config, with their folders. Online state and `claude` versions come with the device
-// runner (M4).
+// runner (M4). What the server is doing with them now is in Background work, which opens from
+// here too: on a phone the header has no room for its button.
+import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
-import { FolderIcon, LaptopIcon } from "lucide-react";
+import { ActivityIcon, FolderIcon, LaptopIcon } from "lucide-react";
 
-export function Devices() {
+export function Devices({ onWork }: { readonly onWork?: () => void }) {
   const { data, error } = useApi(api.devices);
   if (error !== null) return <p className="p-6 text-ui text-destructive">{error}</p>;
   return (
     <div className="mx-auto w-full max-w-2xl px-4 py-6 sm:px-6" data-testid="devices">
-      <h1 className="text-base font-semibold tracking-tight">Devices</h1>
-      <p className="mt-1 text-ui text-muted-foreground">Where a turn can run, and the folders it may work in.</p>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-base font-semibold tracking-tight">Devices</h1>
+          <p className="mt-1 text-ui text-muted-foreground">Where a turn can run, and the folders it may work in.</p>
+        </div>
+        {onWork && (
+          <Button className="shrink-0 pointer-coarse:h-10" onClick={onWork} size="sm" variant="outline">
+            <ActivityIcon />
+            Background work
+          </Button>
+        )}
+      </div>
       <ul className="mt-5 divide-y overflow-hidden rounded-xl border bg-raised">
         {data?.map((d) => (
           <li className="flex gap-3 px-4 py-3.5" key={d.name}>

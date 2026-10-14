@@ -235,6 +235,30 @@ test("after a reconnect the chat is rebuilt from the new snapshot, without dupli
   expect(screen.getByRole("img", { name: "connection open" })).toBeTruthy();
 });
 
+test("an open tool row copies its input and its output as logged, escape sequences and all", async () => {
+  const copied: string[] = [];
+  const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text: string) => void copied.push(text) } });
+  try {
+    start([
+      { kind: "user", text: "colours?" },
+      { kind: "tool", text: 'Bash {"command":"ls --color"}' },
+      { kind: "echo", text: "\u001B[34mnotes.md\u001B[0m" },
+    ]);
+    fireEvent.click(await screen.findByText(/^Bash/));
+    // shown without the escapes
+    await screen.findByText("notes.md");
+    fireEvent.click(await screen.findByRole("button", { name: "Copy input" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy output" }));
+    await waitFor(() => {
+      expect(copied).toEqual(['{"command":"ls --color"}', "\u001B[34mnotes.md\u001B[0m"]);
+    });
+  } finally {
+    if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
+    else Reflect.deleteProperty(navigator, "clipboard");
+  }
+});
+
 // the text of the tool row that is open
 const openTool = () => document.querySelector('[data-slot="tool"][data-state="open"]')?.textContent ?? "";
 
@@ -436,7 +460,7 @@ test("Background work: the running turn (engine, device, time, Stop), held messa
       engine: "claude-code:opus",
       pending: [{ clientId: null, engine: "claude-code:opus", queued: true, text: "and the cron output too" }],
       phase: "running",
-      since: Date.now() - 65_000,
+      elapsed: 65_000,
     }),
   );
   // the status line opens it too

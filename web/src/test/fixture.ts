@@ -29,7 +29,7 @@ export const IDLE: SessionState = {
   viewBytes: 0,
   waiting: 0,
   compactions: [],
-  since: 0,
+  elapsed: 0,
 };
 
 // `error`: an echo the log flags as failed (E28)

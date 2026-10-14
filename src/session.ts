@@ -155,7 +155,10 @@ export const makeSession = (o: {
     let halted: { readonly why: string; readonly upTo: number } | null = null;
 
 
-    // when the phase clients see began: stamped as a state with a new phase is first told
+    // when the phase clients see began, on this server's clock: stamped as a state with a new phase
+    // is first told. Clients get how long it has run (`elapsed`), never this time itself, so a
+    // phone whose clock is off still counts right.
+    const clock = yield* Clock.Clock;
     let since: number | null = null, sincePhase: Phase | null = null;
     const state = (): SessionState => {
       const told: SessionState = {
@@ -178,15 +181,13 @@ export const makeSession = (o: {
         stopped: stalled && { label: master.label(stalled.ref), ref: stalled.ref, why: stalled.why },
         compactions: chat.activity(),
       };
-      return since === null ? told : { ...told, since };
+      return since === null ? told : { ...told, elapsed: Math.max(0, clock.currentTimeMillisUnsafe() - since) };
     };
-    const stamp = Effect.flatMap(Clock.currentTimeMillis, (now) =>
-      Effect.sync(() => {
-        if (phase === sincePhase) return;
-        sincePhase = phase;
-        since = now;
-      }),
-    );
+    const stamp = Effect.sync(() => {
+      if (phase === sincePhase) return;
+      sincePhase = phase;
+      since = clock.currentTimeMillisUnsafe();
+    });
     const tell = Effect.andThen(stamp, Effect.suspend(() => publish({ state: state(), type: "state" })));
     const enter = (p: Phase) => Effect.suspend(() => ((phase = p), tell));
     // an engine's down mark lapsed: clients see it in the state

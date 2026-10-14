@@ -228,7 +228,9 @@ for labels.
   rhythm). The content has 24 px above the first row and 40 px below the last. Screen pages: 24 px
   top, 20 px between sections.
 - **Header.** 48 px plus the safe area. Tabs as a segmented control on the left; theme (and in the
-  iOS app, server) at the right.
+  iOS app, server) at the right, and from 640 px Background work before them. Under 400 px the
+  tabs' padding tightens to 6 px, so at 360 px no two targets overlap (an e2e test checks 360 and
+  390 px, in a browser and in the iOS app).
 - **Phone.** 390 px: one ground, a hairline under the header, the composer docked at the bottom with
   the home-indicator inset; at 360 px nothing scrolls sideways.
 
@@ -260,11 +262,11 @@ composer has 14 px top corners and no bottom edge, so it reads as part of it.
 
 ## Components
 
-shadcn/ui first: the primitives in `components/ui` are the registry's (new-york-v4, and radix-vega
-for Trace, Code Block and Drawer, which new-york-v4 doesn't carry), and the AI Elements wrappers in
-`components/ai-elements` follow the October 2026 patterns built on them. Where ours differ, the
-reason is a behaviour the app needs (a touch target, the iOS WebView, contrast); the list is in the
-PR's registry table.
+shadcn/ui first: the primitives in `components/ui` are the registry's (new-york-v4, Drawer and
+Tooltip included; radix-vega for Trace and Code Block, which new-york-v4 doesn't carry), and the AI
+Elements wrappers in `components/ai-elements` follow the October 2026 patterns built on them. Where
+ours differ, the reason is a behaviour the app needs (a touch target, the iOS WebView, contrast):
+component by component in [REGISTRY.md](./REGISTRY.md).
 
 ### Messages
 - **Yours:** a bubble on the right, `bubble` fill, 18 px radius, 8 × 14 px padding, Read type, max
@@ -352,9 +354,10 @@ Modelled on Claude's app: a soft, translucent card with round controls.
 
 ### Background work
 Modelled on Claude's "Background tasks" sheet: the app's sheet (`components/sheet-drawer.tsx`), from
-the bottom on a phone and from the right as a 384 px side panel on a wide screen, opened from the
-header's activity button (an ivy dot on it while anything runs) or from the running turn's status
-line. Groups of trace lines (shadcn's Trace), each group collapsible with its count: "Running" (the
+the bottom on a phone and from the right as a 384 px side panel on a wide screen. It opens from the
+running turn's status line, from a button on the Devices screen, and, from 640 px up, from the
+header's activity button (an ivy dot on it while anything runs): a phone's header has no room for a
+fifth target beside the tabs, the theme and, in the iOS app, the server button. Groups of trace lines (shadcn's Trace), each group collapsible with its count: "Running" (the
 turn: the engine's short name, then "Turn · on mini, 1 min 05 s", a Stop on a soft circle beside it;
 the compactor, a line per busy level of the tree), "Waiting for a turn" (each held message, its
 take-back beside it) and "Devices" (each runner, connected, offline or refused). A line is a 14 px
@@ -418,6 +421,6 @@ transition stops; state still reads from text and colour (the shimmer stands sti
 - **Don't** add a second accent, a coloured side border, or glass or a gradient as decoration. The
   composer is the one glass surface (a blur behind it, so the transcript runs on underneath), and
   three gradients do jobs and are the only ones: the fade under the composer's dock, the composer's
-  top sheen, and shadcn's `shimmer` sweeping a highlight over live status (the text at full ink
-  between sweeps).
+  top sheen, and shadcn's `shimmer` sweeping ink over live status that rests muted, so every colour
+  of the band stays AA (and plain text where the browser can't mix colours).
 - **Don't** set text you read or type under 16 px on a touch screen.

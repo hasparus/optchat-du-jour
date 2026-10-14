@@ -101,7 +101,7 @@ const rig = (
 const running = (s: { readonly compactions?: readonly { readonly level: number; readonly running: number }[] | undefined }) =>
   (s.compactions ?? []).some((a) => a.level === 0 && a.running > 0);
 
-test("the state tells the compactor's work per level, also when nothing else happens, and when the phase began", async () => {
+test("the state tells the compactor's work per level, also when nothing else happens, and how long the phase has run", async () => {
   await Effect.runPromise(
     Effect.gen(function* () {
       const gate = Deferred.makeUnsafe<true, CompactError>();
@@ -113,18 +113,19 @@ test("the state tells the compactor's work per level, also when nothing else hap
       yield* until("the call", () => running(r.session.state()));
       // clients are told without another event to carry it
       yield* until("told", () => r.events.some((e) => e.type === "state" && running(e.state)));
-      // every state says when its phase began, and a new phase is stamped anew
+      // every state says how long its phase has run, on the server's own clock
       const states = r.events.flatMap((e) => (e.type === "state" ? [e.state] : []));
-      expect(states.every((s) => s.since !== undefined)).toBe(true);
+      expect(states.every((s) => s.elapsed !== undefined && s.elapsed >= 0)).toBe(true);
       yield* Deferred.succeed(gate, true);
       yield* until("built", () => (r.session.state().compactions ?? []).length === 0);
       yield* until("told built", () => r.events.some((e) => e.type === "state" && (e.state.compactions ?? []).length === 0 && e.state.messages > 0));
-      const phases = r.events.flatMap((e) => (e.type === "state" ? [[e.state.phase, e.state.since ?? 0] as const] : []));
+      // within a phase it only grows; a new phase starts again from about nothing
+      const phases = r.events.flatMap((e) => (e.type === "state" ? [[e.state.phase, e.state.elapsed ?? 0] as const] : []));
       for (let k = 1; k < phases.length; k++) {
         const [before, then] = phases[k - 1] ?? ["idle", 0];
-        const [phase, since] = phases[k] ?? ["idle", 0];
-        if (phase === before) expect(since).toBe(then);
-        else expect(since).toBeGreaterThanOrEqual(then);
+        const [phase, ran] = phases[k] ?? ["idle", 0];
+        if (phase === before) expect(ran).toBeGreaterThanOrEqual(then);
+        else expect(ran).toBeLessThan(1000);
       }
     }).pipe(Effect.scoped),
   );

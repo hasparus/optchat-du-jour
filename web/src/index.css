@@ -87,6 +87,10 @@
    button is ink, the text colour. Light is a near-white sheet in a grey frame; dark is a graphite
    sheet in a darker frame, text at 93%, never pure white on pure black. */
 :root {
+    /* shadcn's shimmer (shadcn/tailwind.css) sweeps to ink, over text that rests muted: every
+       colour of the band lies between the two, so the text never falls under AA (muted is 5.7:1 on
+       the sheet). The default highlight, the text colour at 20%, would fade it out mid-sweep. */
+    --shimmer-color: var(--foreground);
     --read-size: 0.9375rem;
     --shell: oklch(0.963 0.004 150);
     --background: oklch(0.992 0.002 150);
@@ -556,6 +560,17 @@
 }
 
 /* no motion for those who asked for none: state is still told by text and colour */
+/* Where the browser can't mix colours (color-mix, relative oklch: Safari before 16.4), shadcn's
+   shimmer would fill the text with an invalid gradient and clip it away: the status would vanish.
+   There it is plain text. */
+@supports not ((color: color-mix(in oklch, red, blue)) and (color: oklch(from red l c h))) {
+  .shimmer {
+    animation: none;
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

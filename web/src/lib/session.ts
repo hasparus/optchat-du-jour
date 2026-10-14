@@ -41,6 +41,8 @@ export type Restored = { readonly key: number; readonly text: string; readonly m
 export type Session = {
   readonly status: LinkStatus;
   readonly state: SessionState | null;
+  // when the state last came in, on this page's clock: `state.elapsed` is as of then
+  readonly stateAt: number;
   readonly log: Log;
   readonly markers: readonly Marker[];
   readonly thinking: boolean;
@@ -59,7 +61,7 @@ const PAGE = 100; // older entries per page
 const MAX_FILL = 500; // a wider hole under the window is dropped, not fetched
 const PROBE = 500; // entries per /api/messages page when looking for messages sent before a reload
 
-const initial: Session = { asking: [], log: emptyLog, markers: [], pending: [], restored: null, state: null, status: "connecting", thinking: false };
+const initial: Session = { asking: [], log: emptyLog, markers: [], pending: [], restored: null, state: null, stateAt: 0, status: "connecting", thinking: false };
 
 // One message that waits for the model, and where it stands: "queued", the server holds it for a
 // later turn; "sent", a turn has it (offered to the running call, or being logged); "sending", the
@@ -172,7 +174,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
   const applyState = (next: Record<string, Schema.Json>) => {
     raw = next;
     const state = parseState(raw);
-    if (Option.isSome(state)) set({ state: state.value });
+    if (Option.isSome(state)) set({ state: state.value, stateAt: Date.now() });
   };
   // The server's word on one of our messages: it is logged, and the user entry follows at once, or
   // it could not be (it stays queued there, and is logged with the next message, unannounced).

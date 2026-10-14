@@ -1,6 +1,14 @@
 import * as React from "react"
 
-import { loadHighlighter } from "@/lib/highlighter"
+import type { loadHighlighter as LoadHighlighter } from "@/lib/highlighter"
+
+// shiki is most of a highlighter's weight: it loads with the first block that asks for it, in its
+// own chunk (assets/lazy/, out of the startup bundle and the service worker's precache), never
+// with the app. Until then a block shows plain text.
+const loadHighlighter: typeof LoadHighlighter = async (language) => {
+  const { loadHighlighter: load } = await import("@/lib/highlighter")
+  return load(language)
+}
 
 export function useHighlightedCode(value: string, language: string) {
   // A trailing newline would render as an extra empty line.

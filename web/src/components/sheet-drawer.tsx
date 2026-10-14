@@ -6,7 +6,7 @@
 import { Drawer, DrawerClose, DrawerContent, DrawerDescription, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer";
 import { cn } from "@/lib/utils";
 import { XIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useRef } from "react";
 
 export type SheetDrawerProps = {
   readonly title: string;
@@ -22,6 +22,9 @@ export type SheetDrawerProps = {
 };
 
 export function SheetDrawer({ title, description, open, onOpenChange, trigger, side = "bottom", testId, className, children }: SheetDrawerProps) {
+  // what had focus when it opened (its trigger, or another control that opened it, like a status
+  // line), given focus back when it closes, if it is still there and shown
+  const opener = useRef<HTMLElement | null>(null);
   return (
     <Drawer direction={side} onOpenChange={onOpenChange} open={open}>
       {trigger !== undefined && <DrawerTrigger asChild>{trigger}</DrawerTrigger>}
@@ -32,6 +35,17 @@ export function SheetDrawer({ title, description, open, onOpenChange, trigger, s
           className,
         )}
         data-testid={testId}
+        onCloseAutoFocus={(e) => {
+          const back = opener.current;
+          opener.current = null;
+          if (back?.isConnected && back.getClientRects().length > 0) {
+            e.preventDefault();
+            back.focus();
+          }
+        }}
+        onOpenAutoFocus={() => {
+          opener.current = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
+        }}
       >
         <DrawerHeader className="flex-row items-center justify-between gap-2 p-2 text-left md:text-left">
           <DrawerTitle className="text-base tracking-tight">{title}</DrawerTitle>

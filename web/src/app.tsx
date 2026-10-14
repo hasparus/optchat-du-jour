@@ -130,7 +130,7 @@ export function App({ link, session, uploader }: { link: Link; session: SessionS
             <TabsList className={cn(segmentedList({ ground: "bare" }), "h-auto min-w-0 flex-1 justify-start md:flex-none")}>
               {TABS.map((t) => (
                 <TabsTrigger
-                  className={cn(segmentedItem, "h-8 flex-1 border-0 hover:bg-accent md:flex-none dark:data-[state=active]:bg-raised")}
+                  className={cn(segmentedItem, "h-8 min-w-0 flex-1 border-0 hover:bg-accent max-[400px]:px-1.5 md:flex-none dark:data-[state=active]:bg-raised")}
                   key={t}
                   value={t}
                 >
@@ -146,7 +146,9 @@ export function App({ link, session, uploader }: { link: Link; session: SessionS
                 open={work}
                 session={session}
                 trigger={
-                  <Button aria-label={busy ? "Background work: busy" : "Background work"} className="relative text-muted-foreground hover:text-foreground" size="icon-sm" variant="ghost">
+                  // on a phone the header has no room for it: the running turn's status line and the
+                  // Devices screen open the sheet there
+                  <Button aria-label={busy ? "Background work: busy" : "Background work"} className="relative text-muted-foreground hover:text-foreground max-sm:hidden" size="icon-sm" variant="ghost">
                     <ActivityIcon />
                     {busy && <span aria-hidden="true" className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-signal" />}
                   </Button>
@@ -184,7 +186,7 @@ export function App({ link, session, uploader }: { link: Link; session: SessionS
             </ScreenBoundary>
           </TabsContent>
           <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="devices">
-            <Devices />
+            <Devices onWork={openWork} />
           </TabsContent>
         </Tabs>
       </MessageScrollerProvider>

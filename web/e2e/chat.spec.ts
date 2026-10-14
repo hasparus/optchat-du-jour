@@ -213,7 +213,6 @@ test("Background work, opened from the status line, shows the running turn and s
   await expect(sheet).toContainText("Nothing is running");
   await sheet.getByRole("button", { name: "Close" }).click();
   await expect(sheet).toBeHidden();
-  await expect(page.getByRole("button", { name: /^Background work/ })).toBeFocused();
 });
 
 test.describe("on a wide screen", () => {
@@ -227,6 +226,7 @@ test.describe("on a wide screen", () => {
     await expect(panel).toContainText("Nothing is running");
     await page.keyboard.press("Escape");
     await expect(panel).toBeHidden();
+    await expect(page.getByRole("button", { name: /^Background work/ })).toBeFocused(); // focus back on what opened it
   });
 });
 
@@ -348,6 +348,42 @@ test("in the iOS app's WebView the header's server button asks the app for its s
   await page.getByRole("button", { name: "Change server" }).click();
   await expect.poll(() => posted).toEqual([CHANGE_SERVER]);
 });
+
+for (const width of [360, 390])
+  for (const shell of [false, true])
+    test.describe(`the header at ${width} px${shell ? " in the iOS app" : " in a browser"}`, () => {
+      test.use({ hasTouch: true, isMobile: true, viewport: { height: 780, width } });
+
+      test("fits: no two of its targets overlap, and Background work opens from Devices", async ({ page }) => {
+        if (shell) await page.addInitScript(`window.ReactNativeWebView = { postMessage: function () {} };\n${shellScript}`);
+        await open(page);
+        const header = page.locator("header");
+        await expect(header.getByRole("tab", { name: "devices" })).toBeVisible();
+        if (shell) await expect(header.getByRole("button", { name: "Change server" })).toBeVisible();
+        const boxes = await header.locator('button, [role="tab"]').evaluateAll((els) =>
+          els
+            .map((el) => ({ name: el.getAttribute("aria-label") ?? el.textContent, r: el.getBoundingClientRect() }))
+            .filter(({ r }) => r.width > 0 && r.height > 0)
+            .map(({ name, r }) => ({ bottom: r.bottom, left: r.left, name, right: r.right, top: r.top })),
+        );
+        expect(boxes.length).toBeGreaterThanOrEqual(5); // four tabs and the theme button, at least
+        for (const [k, a] of boxes.entries())
+          for (const b of boxes.slice(k + 1)) {
+            const overlap = Math.min(a.right, b.right) - Math.max(a.left, b.left) > 0.5 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 0.5;
+            expect(overlap, `${a.name} and ${b.name}`).toBe(false);
+          }
+        for (const b of boxes) expect(b.right, b.name).toBeLessThanOrEqual(width);
+        // on a phone the sheet opens from Devices (and from a running turn's status line)
+        await header.getByRole("tab", { name: "devices" }).click();
+        const entry = page.getByTestId("devices").getByRole("button", { name: "Background work" });
+        await entry.click();
+        const sheet = page.getByRole("dialog", { name: "Background work" });
+        await expect(sheet).toBeVisible();
+        await sheet.getByRole("button", { name: "Close" }).click();
+        await expect(sheet).toBeHidden();
+        await expect(entry).toBeFocused(); // focus back on what opened it
+      });
+    });
 
 test("in a browser there is no server button", async ({ page }) => {
   await open(page);

@@ -35,7 +35,9 @@ const onWidthChange = (changed: () => void) => {
 };
 const useWide = () => useSyncExternalStore(onWidthChange, wide);
 
-// "4 s", "2 min 05 s", "1 h 03 min": how long the turn has run, on the server's clock
+// "4 s", "2 min 05 s", "1 h 03 min": how long the turn has run. The server says how long as of the
+// state it sent (its own clock); this page adds the time since it got that state (its own clock),
+// so the two clocks are never compared
 export const elapsed = (ms: number) => {
   const s = Math.max(0, Math.floor(ms / 1000));
   if (s < 60) return `${s} s`;
@@ -173,7 +175,7 @@ export function BackgroundWork({
                     ? "stopped: needs a model"
                     : turn.phase === "waiting"
                       ? "waiting for summaries"
-                      : `on ${turn.device}${turn.since === undefined ? "" : `, ${elapsed(now - turn.since)}`}`
+                      : `on ${turn.device}${turn.elapsed === undefined ? "" : `, ${elapsed(turn.elapsed + now - s.stateAt)}`}`
                 }
                 status={turn.phase === "needs-model" ? "error" : "running"}
                 testId="work-turn"

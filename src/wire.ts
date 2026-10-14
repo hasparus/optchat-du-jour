@@ -108,8 +108,9 @@ export const SessionState = Schema.Struct({
   // calls running, nodes ready and waiting for a call, nodes whose call failed and wait for the
   // next message. Optional: a server from before it sends none.
   compactions: Schema.optional(Schema.Array(Schema.Struct({ level: Schema.Number, running: Schema.Number, queued: Schema.Number, failed: Schema.Number }))),
-  // when the current phase began, on the server's clock (epoch ms): a running turn's elapsed time
-  since: Schema.optional(Schema.Number),
+  // how long the current phase has run, in ms, as of when this state was made (measured on the
+  // server's own clock, so no two clocks are compared): a client adds the time since it got it
+  elapsed: Schema.optional(Schema.Number),
 });
 export type SessionState = typeof SessionState.Type;
 

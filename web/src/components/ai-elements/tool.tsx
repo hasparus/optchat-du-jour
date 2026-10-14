@@ -110,6 +110,9 @@ export const ToolInput = ({ className, input, ...props }: ToolInputProps) => {
     <CodeBlock className={cn("bg-code", className)} size="sm" {...props}>
       <CodeBlockHeader>
         <CodeBlockTitle className="text-2xs text-muted-foreground">Input</CodeBlockTitle>
+        <CodeBlockActions>
+          <CodeBlockCopyButton aria-label="Copy input" className="text-muted-foreground hover:text-foreground pointer-coarse:size-10" value={input} />
+        </CodeBlockActions>
       </CodeBlockHeader>
       <CodeBlockContent className="max-h-64" wrap>
         {lines.map((line, index) => (
@@ -135,7 +138,8 @@ export const ToolOutput = ({ className, output, failed = false, ...props }: Tool
       <CodeBlockHeader>
         <CodeBlockTitle className={cn("text-2xs", !failed && "text-muted-foreground")}>{failed ? "Error" : "Output"}</CodeBlockTitle>
         <CodeBlockActions>
-          <CodeBlockCopyButton aria-label="Copy output" className="text-muted-foreground hover:text-foreground pointer-coarse:size-10" value={text} />
+          {/* copied as logged, escape sequences and all; only the view drops them */}
+          <CodeBlockCopyButton aria-label="Copy output" className="text-muted-foreground hover:text-foreground pointer-coarse:size-10" value={output} />
         </CodeBlockActions>
       </CodeBlockHeader>
       <CodeBlockContent className="max-h-64 text-foreground/90" wrap>
