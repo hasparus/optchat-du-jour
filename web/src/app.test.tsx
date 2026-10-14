@@ -413,6 +413,46 @@ test("on a touch screen + opens the Add context sheet; a choice opens its picker
   });
 });
 
+test("Background work: the running turn (engine, device, time, Stop), held messages with take-back, the compactor per level, the devices", async () => {
+  const { play, server } = start();
+  await screen.findByText("what is in the repo?");
+  // nothing going on: the header's control is quiet, and the sheet says nothing runs
+  fireEvent.click(screen.getByRole("button", { name: "Background work" }));
+  const quiet = await screen.findByRole("dialog", { name: "Background work" });
+  expect(within(quiet).getByText(/Nothing is running/)).toBeTruthy();
+  expect(within(quiet).getAllByTestId("work-device").map((d) => d.textContent)).toEqual(["miniThis server · connected, Claude Code 2.1.289", "macbookRunner · offline"]);
+  fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+  fireEvent.animationEnd(quiet); // happy-dom runs no animations: the drawer waits for its slide-out's end
+  await waitFor(() => {
+    expect(screen.queryByRole("dialog", { name: "Background work" })).toBeNull();
+  });
+
+  play(
+    state({
+      compactions: [
+        { failed: 0, level: 0, queued: 3, running: 2 },
+        { failed: 1, level: 1, queued: 0, running: 0 },
+      ],
+      engine: "claude-code:opus",
+      pending: [{ clientId: null, engine: "claude-code:opus", queued: true, text: "and the cron output too" }],
+      phase: "running",
+      since: Date.now() - 65_000,
+    }),
+  );
+  // the status line opens it too
+  fireEvent.click(within(screen.getByTestId("status")).getByRole("button"));
+  const sheet = await screen.findByRole("dialog", { name: "Background work" });
+  const turn = within(sheet).getByTestId("work-turn");
+  expect(turn.textContent).toMatch(/^OpusTurn · on mini, 1 min 0[5-9] s$/);
+  expect(within(sheet).getAllByTestId("work-compaction").map((c) => c.textContent)).toEqual([
+    "Summaries of messagesCompactor · 2 running, 3 queued",
+    "Summaries, level 1Compactor · 1 failed, tried again at the next message",
+  ]);
+  expect(within(sheet).getByTestId("work-held").textContent).toBe("and the cron output tooMessage · queued for Opus");
+  fireEvent.click(within(turn).getByRole("button", { name: "Stop the turn" }));
+  expect(server.sent.at(-1)).toBe('{"type":"abort"}');
+});
+
 // a finger lifted from an element
 const tap = (el: Element) => fireEvent.pointerUp(el, { pointerType: "touch" });
 

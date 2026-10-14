@@ -350,6 +350,18 @@ Modelled on Claude's app: a soft, translucent card with round controls.
   runs; muted text for connecting or reconnecting.
 - **Hint:** under it, centred, 11 px muted: the shortcuts on a keyboard, or why send is off.
 
+### Background work
+Modelled on Claude's "Background tasks" sheet: the app's sheet (`components/sheet-drawer.tsx`), from
+the bottom on a phone and from the right as a 384 px side panel on a wide screen, opened from the
+header's activity button (an ivy dot on it while anything runs) or from the running turn's status
+line. Groups of trace lines (shadcn's Trace), each group collapsible with its count: "Running" (the
+turn: the engine's short name, then "Turn · on mini, 1 min 05 s", a Stop on a soft circle beside it;
+the compactor, a line per busy level of the tree), "Waiting for a turn" (each held message, its
+take-back beside it) and "Devices" (each runner, connected, offline or refused). A line is a 14 px
+icon, the title in ink and its kind and state in 12 px muted under it; a failed one is red. Only
+what the server tells: no group without lines, no history of finished work; with nothing running it
+says so in one muted line.
+
 ### Navigation
 - **Segmented control** (`components/ui/segmented.tsx`): text choices (13 px, 500), 28 px tall,
   40 px on touch. Chosen: raised fill, ink text and the `lift` shadow (a hairline ring and 1 px).

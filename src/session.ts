@@ -4,7 +4,7 @@
 // master's chain it is for, and a turn runs on its messages' engine: a usage limit or an offline
 // device stops it until a client resumes it on an engine (E4). Every client sees the same events.
 // Priming runs only while idle, and a turn never waits for it (E17, SPEC "Turn and priming").
-import { Cause, Deferred, type Duration, Effect, Exit, Fiber, FiberSet, Option, PubSub, Queue, type Scope } from "effect";
+import { Cause, Clock, Deferred, type Duration, Effect, Exit, Fiber, FiberSet, Option, PubSub, Queue, type Scope } from "effect";
 import type { Choices } from "./choices.ts";
 import { PRIME_IDLE, WAIT_RETRY } from "./config.ts";
 import type { Chat, LogExtra } from "./chat.ts";
@@ -155,30 +155,47 @@ export const makeSession = (o: {
     let halted: { readonly why: string; readonly upTo: number } | null = null;
 
 
-    const state = (): SessionState => ({
-      budget: chat.mem.marks.high,
-      device,
-      down: o.compactorDown?.now() ?? [],
-      engine,
-      messages: chat.mem.root.length,
-      phase,
-      pending: inbox.map((m) => {
-        const queued = m.state === "held";
-        const one = { clientId: m.clientId, engine: m.engine, queued, text: m.text };
-        return m.media.length > 0 ? { ...one, media: m.media } : one;
+    // when the phase clients see began: stamped as a state with a new phase is first told
+    let since: number | null = null, sincePhase: Phase | null = null;
+    const state = (): SessionState => {
+      const told: SessionState = {
+        budget: chat.mem.marks.high,
+        device,
+        down: o.compactorDown?.now() ?? [],
+        engine,
+        messages: chat.mem.root.length,
+        phase,
+        pending: inbox.map((m) => {
+          const queued = m.state === "held";
+          const one = { clientId: m.clientId, engine: m.engine, queued, text: m.text };
+          return m.media.length > 0 ? { ...one, media: m.media } : one;
+        }),
+        viewBytes: viewSize(chat.mem),
+        waiting: unbuilt(chat.mem),
+        followUp,
+        engines: master.engines(),
+        effort: master.effort,
+        stopped: stalled && { label: master.label(stalled.ref), ref: stalled.ref, why: stalled.why },
+        compactions: chat.activity(),
+      };
+      return since === null ? told : { ...told, since };
+    };
+    const stamp = Effect.flatMap(Clock.currentTimeMillis, (now) =>
+      Effect.sync(() => {
+        if (phase === sincePhase) return;
+        sincePhase = phase;
+        since = now;
       }),
-      viewBytes: viewSize(chat.mem),
-      waiting: unbuilt(chat.mem),
-      followUp,
-      engines: master.engines(),
-      effort: master.effort,
-      stopped: stalled && { label: master.label(stalled.ref), ref: stalled.ref, why: stalled.why },
-    });
-    const tell = Effect.suspend(() => publish({ state: state(), type: "state" }));
+    );
+    const tell = Effect.andThen(stamp, Effect.suspend(() => publish({ state: state(), type: "state" })));
     const enter = (p: Phase) => Effect.suspend(() => ((phase = p), tell));
     // an engine's down mark lapsed: clients see it in the state
     const lapses = yield* PubSub.subscribe(master.changes);
     yield* PubSub.take(lapses).pipe(Effect.andThen(tell), Effect.forever, Effect.forkScoped);
+    // the compactor's work changed (a call started or ended): clients see it in the state, at most
+    // four times a second (the pump's changes slide, so a burst of calls is one tell)
+    const compacting = yield* PubSub.subscribe(chat.changes);
+    yield* PubSub.take(compacting).pipe(Effect.andThen(Effect.sleep("250 millis")), Effect.andThen(tell), Effect.forever, Effect.forkScoped);
     // a compactor engine went down or came back: clients see it in the state (subscribed here, so
     // no change is missed between now and the fiber's start)
     if (o.compactorDown) {

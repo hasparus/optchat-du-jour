@@ -207,10 +207,12 @@ export type ChatProps = {
   // a log index to show (from the Memory screen); done() once it is in view
   readonly target: number | null;
   readonly onTargetShown: () => void;
+  // the running turn's status line was tapped: open Background work
+  readonly onWork?: () => void;
   readonly uploader?: Uploader; // tests replace PUT /api/assets
 };
 
-export function Chat({ link, session, state, devices, target, onTargetShown, uploader }: ChatProps) {
+export function Chat({ link, session, state, devices, target, onTargetShown, onWork, uploader }: ChatProps) {
   const [loading, setLoading] = useState(false);
   const [device, setDevice] = useState<string | null>(null);
   // the model picker: this page's own, kept in localStorage. Before the first state it is sent as
@@ -364,10 +366,16 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
         {line !== null && (
           <div className="flex h-7 items-center gap-2 px-3 text-xs" data-testid="status" role="status">
             {busy ? (
-              <>
+              // a tap on the running turn's line opens Background work (./background-work.tsx)
+              <button
+                className="relative -mx-1 flex min-w-0 cursor-pointer items-center gap-2 rounded-md px-1 text-left after:absolute after:-inset-y-1.5 after:inset-x-0 hover:text-foreground"
+                onClick={onWork}
+                title="Background work"
+                type="button"
+              >
                 <span aria-hidden="true" className="size-1.5 shrink-0 animate-breathe rounded-full bg-signal" />
                 <Shimmer>{line}</Shimmer>
-              </>
+              </button>
             ) : (
               <span className="text-muted-foreground">{line}</span>
             )}

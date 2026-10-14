@@ -199,6 +199,37 @@ test.describe("on a touch screen, with history above", () => {
   });
 });
 
+test("Background work, opened from the status line, shows the running turn and stops it; the devices are there too", async ({ page }) => {
+  await open(page);
+  await send(page, "take your time");
+  const status = page.getByTestId("status");
+  await status.getByRole("button").click();
+  const sheet = page.getByRole("dialog", { name: "Background work" });
+  await expect(sheet).toHaveAttribute("data-vaul-drawer-direction", "bottom"); // a phone: from the bottom edge
+  await expect(sheet.getByTestId("work-turn")).toContainText(/Turn · on mini, \d+ s/);
+  await expect(sheet.getByTestId("work-device").first()).toBeVisible();
+  await sheet.getByRole("button", { name: "Stop the turn" }).click();
+  await expect(sheet.getByTestId("work-turn")).toBeHidden();
+  await expect(sheet).toContainText("Nothing is running");
+  await sheet.getByRole("button", { name: "Close" }).click();
+  await expect(sheet).toBeHidden();
+  await expect(page.getByRole("button", { name: /^Background work/ })).toBeFocused();
+});
+
+test.describe("on a wide screen", () => {
+  test.use({ viewport: { height: 800, width: 1280 } });
+
+  test("Background work is a side panel, opened from the header", async ({ page }) => {
+    await open(page);
+    await page.getByRole("button", { name: /^Background work/ }).click();
+    const panel = page.getByRole("dialog", { name: "Background work" });
+    await expect(panel).toHaveAttribute("data-vaul-drawer-direction", "right");
+    await expect(panel).toContainText("Nothing is running");
+    await page.keyboard.press("Escape");
+    await expect(panel).toBeHidden();
+  });
+});
+
 test("the memory screen zooms into a line and shows it in the chat", async ({ page }) => {
   await open(page);
   await send(page, "remember this");

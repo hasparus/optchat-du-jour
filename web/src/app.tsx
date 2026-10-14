@@ -14,8 +14,9 @@ import { syncThemeColor } from "@/lib/theme";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 import { nativeShell } from "@/lib/shell";
-import { MoonIcon, ServerIcon, SunIcon } from "lucide-react";
+import { ActivityIcon, MoonIcon, ServerIcon, SunIcon } from "lucide-react";
 import { Component, lazy, type ReactNode, Suspense, useCallback, useState, useSyncExternalStore } from "react";
+import { BackgroundWork, busyWith } from "./chat/background-work";
 import { Chat } from "./chat/chat";
 import { Devices } from "./devices/devices";
 import { Memory } from "./memory/memory";
@@ -97,6 +98,11 @@ export function App({ link, session, uploader }: { link: Link; session: SessionS
   const shown = useCallback(() => {
     setTarget(null);
   }, []);
+  const [work, setWork] = useState(false);
+  const openWork = useCallback(() => {
+    setWork(true);
+  }, []);
+  const busy = busyWith(state) > 0;
 
   return (
     <TooltipProvider delayDuration={400}>
@@ -133,6 +139,19 @@ export function App({ link, session, uploader }: { link: Link; session: SessionS
               ))}
             </TabsList>
             <div className="ml-auto flex items-center gap-0.5">
+              <BackgroundWork
+                devices={devices}
+                link={link}
+                onOpenChange={setWork}
+                open={work}
+                session={session}
+                trigger={
+                  <Button aria-label={busy ? "Background work: busy" : "Background work"} className="relative text-muted-foreground hover:text-foreground" size="icon-sm" variant="ghost">
+                    <ActivityIcon />
+                    {busy && <span aria-hidden="true" className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-signal" />}
+                  </Button>
+                }
+              />
               <ChangeServer />
               <ThemeToggle />
             </div>
@@ -142,6 +161,7 @@ export function App({ link, session, uploader }: { link: Link; session: SessionS
               devices={devices.data ?? []}
               link={link}
               onTargetShown={shown}
+              onWork={openWork}
               session={session}
               state={state}
               target={target}
