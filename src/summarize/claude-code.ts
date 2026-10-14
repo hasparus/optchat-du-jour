@@ -11,6 +11,7 @@ import type { Job } from "../compactor.ts";
 import { CALL_TIMEOUT } from "../config.ts";
 import { type DeviceOffline, type EngineError, fromResult, ModelError } from "../engines/errors.ts";
 import { type Gate, prefixKey } from "../engines/inflight.ts";
+import { admitRequest } from "../engines/request-admission.ts";
 import type { Placement } from "../turn/claude-code.ts";
 import { tokensOf, type UsageRecord } from "../usage.ts";
 import { type Try, contextBlocks, sizeRetries, task } from "./step.ts";
@@ -96,6 +97,7 @@ export const claudeCodeCompactor = (o: CompactorOptions) => {
           });
           const ask = (t: Try) =>
             Effect.gen(function* () {
+              yield* admitRequest();
               yield* claude.send(t.retry === null ? first : [{ text: t.retry.text, type: "text" }]);
               const result = yield* answer;
               const usage = tokensOf(result.usage), model = claude.model() ?? null;

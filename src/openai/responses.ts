@@ -17,6 +17,7 @@
 import { Context, Data, Effect, Layer, Option, Schema, Stream } from "effect";
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
+import { admitRequest } from "../engines/request-admission.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
 import { isPicture, type Part } from "../media/part.ts";
 import { wireJson } from "../text.ts";
@@ -280,14 +281,14 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
     const http = yield* HttpClient.HttpClient;
     // the models that refused `prompt_cache_breakpoint`: their requests go without it from then on
     const unmarked = new Set<string>();
-    const post = <E extends Tagged>(ask: Ask<E>, token: string, marked: boolean) =>
-      http.execute(
-        HttpClientRequest.post(`${o.api}/responses`).pipe(
-          HttpClientRequest.bearerToken(token),
-          HttpClientRequest.accept("text/event-stream"),
-          HttpClientRequest.bodyText(body(ask, marked), "application/json"),
-        ),
+    const post = <E extends Tagged>(ask: Ask<E>, token: string, marked: boolean) => {
+      const request = HttpClientRequest.post(`${o.api}/responses`).pipe(
+        HttpClientRequest.bearerToken(token),
+        HttpClientRequest.accept("text/event-stream"),
+        HttpClientRequest.bodyText(body(ask, marked), "application/json"),
       );
+      return admitRequest().pipe(Effect.andThen(http.execute(request)));
+    };
     // A model that refuses the breakpoints (a 400 naming the field) gets the same request again
     // without them, and none from then on, which the user hears once, rather than failing every
     // call; our marks are then off for it.

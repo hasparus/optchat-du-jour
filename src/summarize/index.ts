@@ -5,6 +5,7 @@ import { Effect, PubSub } from "effect";
 import { chainFor } from "../config.ts";
 import { CompactError, type Summarize } from "../compactor.ts";
 import { type Down, type DownList, failover, watchChain } from "../engines/chain.ts";
+import { directEngineFailure } from "../engines/request-admission.ts";
 import { type Compact, type CompactorNeeds, compactorEngine } from "../engines/registry.ts";
 
 export const makeSummarize = (o: CompactorNeeds) =>
@@ -20,7 +21,21 @@ export const makeSummarize = (o: CompactorNeeds) =>
       failover(
         chainFor(o.settings, job.l).flatMap(({ ref }) => {
           const run = engines.get(ref);
-          return run ? [{ ref, run: (from: string | null) => run(job, from) }] : [];
+          return run
+            ? [
+                {
+                  ref,
+                  run: (from: string | null) =>
+                    run(job, from).pipe(
+                      Effect.catch((error) =>
+                        directEngineFailure({ coord: { i: job.i, l: job.l }, error, ref }).pipe(
+                          Effect.flatMap((directive) => directive === "stop" ? Effect.interrupt : Effect.fail(error)),
+                        ),
+                      ),
+                    ),
+                },
+              ]
+            : [];
         }),
         watch,
       ).pipe(Effect.mapError((e) => new CompactError({ message: e.message })));

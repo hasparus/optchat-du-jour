@@ -12,6 +12,7 @@ import { type Spawn, Runner, makeClaude } from "../src/claude/process.ts";
 import type { Job } from "../src/compactor.ts";
 import { failover, watchChain } from "../src/engines/chain.ts";
 import { UsageLimit } from "../src/engines/errors.ts";
+import { EngineExecutionPolicy, RequestNotAdmitted } from "../src/engines/request-admission.ts";
 import { Credentials, SECRET, encodeCredentials, login } from "../src/openai/auth.ts";
 import { type Endpoints, DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 import { OpenAiPlan, openAiPlanLayer, readStream } from "../src/openai/responses.ts";
@@ -31,6 +32,21 @@ import type { UsageRecord } from "../src/usage.ts";
 import { fakeOpenAi } from "./fake-openai.ts";
 
 const fake = fakeOpenAi();
+const cappedAdmission = (max: number) => {
+  const seen: number[] = [];
+  return {
+    seen,
+    service: {
+      onFailure: () => Effect.succeed("continue" as const),
+      authorize: () =>
+        Effect.suspend(() => {
+          if (seen.length >= max) return Effect.fail(new RequestNotAdmitted({ reason: "max-authorized-requests" }));
+          seen.push(seen.length + 1);
+          return Effect.void;
+        }),
+    },
+  };
+};
 afterAll(async () => {
   await fake.server.stop(true);
 });
@@ -538,6 +554,47 @@ test("the compactor on the plan replays its reasoning on a size retry, and a mod
   expect(reports).toHaveLength(1);
   expect(reports[0]).toContain("gpt-6.1-sol refuses prompt_cache_breakpoint");
   fake.state.refuseBreakpoints = false;
+});
+
+test("each Responses breakpoint fallback POST is admitted at the boundary", async () => {
+  const markedJob: Job = { ctx: Array.from({ length: 8 }, (_, k) => `user: marked ${k}`), i: 8, l: 0, msg: newMsg(8, "user", "marked") };
+  const secrets = memorySecrets();
+  const e = await signedIn(secrets);
+  const compact = await Effect.runPromise(
+    Effect.gen(function* () {
+      return openAiPlanCompactor({ ...compactorBase, effort: "medium", log: () => Effect.void, model: "gpt-6.1-sol", plan: yield* OpenAiPlan });
+    }).pipe(Effect.provide(plan(e, secrets))),
+  );
+  const admission = cappedAdmission(1);
+  fake.state.refuseBreakpoints = true;
+  fake.state.requests = 0;
+  fake.state.seen.length = 0;
+  const result = await Effect.runPromise(
+    Effect.exit(compact(markedJob, null).pipe(Effect.provideService(EngineExecutionPolicy, admission.service))),
+  );
+  expect(result._tag).toBe("Failure");
+  expect(fake.state.requests).toBe(1);
+  expect(fake.state.seen).toHaveLength(1);
+  expect(admission.seen).toEqual([1]);
+  fake.state.refuseBreakpoints = false;
+});
+
+test("the Responses POST retried after a 401 requires another admission", async () => {
+  const secrets = memorySecrets();
+  const e = await signedIn(secrets);
+  const service = await Effect.runPromise(Effect.gen(function* () { return yield* OpenAiPlan; }).pipe(Effect.provide(plan(e, secrets))));
+  await Effect.runPromise(service.respond({ input: [{ parts: ["warm"], role: "user" }], instructions: "x", model: "warm" }));
+  const admission = cappedAdmission(1);
+  const { refreshes } = fake.state;
+  fake.state.access = "revoked-on-server";
+  fake.state.requests = 0;
+  const result = await Effect.runPromise(
+    Effect.exit(service.respond({ input: [{ parts: ["refresh"], role: "user" }], instructions: "x", model: "gpt-6.1-sol" }).pipe(Effect.provideService(EngineExecutionPolicy, admission.service))),
+  );
+  expect(result._tag).toBe("Failure");
+  expect(fake.state.requests).toBe(1);
+  expect(fake.state.refreshes).toBe(refreshes + 1);
+  expect(admission.seen).toEqual([1]);
 });
 
 const respondWith = (layer: Layer.Layer<OpenAiPlan>) => (text: string) =>

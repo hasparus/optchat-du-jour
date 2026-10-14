@@ -16,17 +16,18 @@ Everything is built and tested against fakes. Each check below needs a real logi
 
 ## ChatGPT plan
 
-- [ ] `optchat login openai` end to end: callback, refresh, Keychain (SPEC M3).
-- [ ] Model ids the token lists; are `gpt-6-luna` and `gpt-6.1-sol` right? Does the route take `reasoning.effort`? (SPEC M3)
+- [x] `optchat login openai` end to end: callback, refresh, Keychain (SPEC M3).
+- [x] Model ids the token lists: real compactions returned `gpt-6-luna` and `gpt-6.1-sol` (SPEC M3).
 - [ ] Which `reasoning.effort` values the plan route accepts: `xhigh`, `max`? A chain entry may ask for any of `low` to `max`, and OpenAI refs are not checked at load (SPEC Compactor calls, Haiku and effort).
-- [ ] Function tools and `tool_choice` on the plan route (SPEC M5).
+- [x] Function tools and `tool_choice` on the plan route (SPEC M5).
 - [ ] Our Responses cache fields (from the gist's earlier revision; docs/optchat.md has none): `prompt_cache_breakpoint`, `reasoning.encrypted_content`, `reasoning.context` (SPEC M5).
 - [ ] `input_image` and PDFs on the plan route, before `media.planImages` goes on (SPEC Media).
 - [ ] Does prefix caching count against limits at a discount, and stay warm across bursts? (SPEC M3)
 - [ ] Does the compactor fit the ChatGPT Pro weekly limit alongside Codex work? (SPEC Usage and cost tracking)
-- [ ] One real compactor call on the plan route, with `instructions` seen on the wire (SPEC M3)
+- [x] One real compactor call on the plan route, with `instructions` seen on the wire (SPEC M3)
 - [ ] Luna's level-0 quality: retries per node, how much of the user's wording survives (SPEC M3)
-- [ ] The bake-off: `dev/bakeoff.ts` over ~500 real messages for Luna, Sol, Haiku at xhigh, Sonnet and a split; set the level cutoff (SPEC M3).
+- [x] Before another real bake-off, enforce one run-wide authorized-request cap at every transport POST or Claude send. Contender-local policy closes failures after spent usage accounting; fail-fast gates later contenders, while `--no-fail-fast` continues within the remaining cap. V2 running/terminal artifacts persist compact progress and explicit privacy-safe metrics; incomplete runs exit nonzero, scratch data is scoped, and setup validation cannot overwrite source aliases (SPEC M3).
+- [ ] The bake-off: `dev/bakeoff.ts` over ~500 real messages for Luna, Sol, Haiku at xhigh, Sonnet and a split; set the level cutoff only after a successful bounded pilot (SPEC M3).
 
 ## API keys
 
@@ -38,7 +39,7 @@ Everything is built and tested against fakes. Each check below needs a real logi
 
 - [ ] The phone over Tailscale as a PWA: install, reconnect, chat (SPEC M2). The iOS app has its own list below.
 - [ ] A live two-machine run over a real tailnet: one chat edits files on both machines (SPEC M4).
-- [ ] Re-measure latency with real claude after the inline system prompt change, `dev/latency.ts` (SPEC Turn and priming).
+- [x] Re-measure latency with real claude after the inline system prompt change, `dev/latency.ts` (SPEC Turn and priming).
 
 ## iPhone app (TestFlight)
 
