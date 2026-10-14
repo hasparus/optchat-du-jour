@@ -395,6 +395,7 @@ test("on a touch screen + opens the Add context sheet; a choice opens its picker
     const sheet = await screen.findByRole("dialog", { name: "Add context" });
     fireEvent.click(within(sheet).getByRole("button", { name: /Camera/ }));
     expect([library.n, camera.n]).toEqual([0, 1]);
+    fireEvent.animationEnd(sheet); // happy-dom runs no animations: the drawer waits for its slide-out's end
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: "Add context" })).toBeNull();
     });
@@ -402,6 +403,7 @@ test("on a touch screen + opens the Add context sheet; a choice opens its picker
     const again = await screen.findByRole("dialog", { name: "Add context" });
     expect(within(again).getByRole("button", { name: /Photos & videos/ })).toBeTruthy();
     fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    fireEvent.animationEnd(again);
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: "Add context" })).toBeNull();
     });

@@ -332,8 +332,12 @@ Modelled on Claude's app: a soft, translucent card with round controls.
   soft pill (icon only under 400 px), and Stop as an ink square on a soft circle. Under 420 px,
   with that second button showing, the device picker makes room. No microphone: the phone's
   keyboard dictates.
-- **Add context:** "+" opens it. On a touch screen it is a sheet from the bottom edge (28 px top
-  corners, a grabber, a title, a 40 px close button); with a mouse, a 256 px popover over the "+",
+- **Sheets:** the app has one, `components/sheet-drawer.tsx`: shadcn's Drawer on vaul (1.1.2,
+  pinned; vaul is unmaintained since December 2024, kept by choice). From the bottom edge on a
+  phone (24 px top corners, vaul's grabber, a drag down closes it), from the right as a side panel
+  on a wide screen; a title and a 40 px close button, on the raised ground with the Float shadow.
+- **Add context:** "+" opens it. On a touch screen it is the sheet from the bottom edge; with a
+  mouse, a 256 px popover over the "+",
   but only when there is more than one choice: a mouse has no camera choice, so there "+" opens
   the photos-and-videos picker itself. Sheet and popover trap focus, close on Escape or a tap
   outside and give focus back to "+". The choices are rows

@@ -1,14 +1,15 @@
 // The composer's "+" (DESIGN.md, Composer): one round button that opens "Add context", the ways to
 // attach something to the next message. On a touch screen it is a sheet from the bottom edge; with a
-// mouse, a popover over the button. Both trap focus, close on Escape or a tap outside, and return
+// mouse, a popover over the button. The sheet is the app's one (components/sheet-drawer.tsx, shadcn's
+// Drawer on vaul): a drag down closes it too. Both trap focus, close on Escape or a tap outside, and return
 // focus to the "+". With one choice only (a mouse has no camera choice) the "+" opens that choice's
 // picker itself: a menu of one is a click wasted. A choice opens its file picker from the tap itself (iOS opens a picker only
 // inside the gesture), then closes. The pickers are the composer's own hidden inputs
 // (PromptInputFileInput): photos and videos from the library or files, and the camera where the
 // device has one, exactly as the two buttons this replaces did.
 import { useCoarsePointer } from "@/components/ai-elements/prompt-input";
+import { SheetDrawer } from "@/components/sheet-drawer";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { CameraIcon, ImagesIcon, type LucideIcon, PlusIcon } from "lucide-react";
 import { type ComponentProps, type RefObject, useId, useState } from "react";
@@ -88,21 +89,9 @@ export function AddContext({ choices }: { readonly choices: readonly AddContextC
   }
   if (touch) {
     return (
-      <Sheet onOpenChange={setOpen} open={open}>
-        <SheetTrigger asChild>{plus}</SheetTrigger>
-        <SheetContent
-          className="gap-0 rounded-t-3xl border-0 bg-raised px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-float"
-          data-testid="add-context"
-          side="bottom"
-        >
-          <span aria-hidden="true" className="mx-auto mb-1 h-1 w-9 rounded-full bg-soft-strong" />
-          <SheetHeader className="p-2">
-            <SheetTitle className="text-base tracking-tight">Add context</SheetTitle>
-            <SheetDescription className="sr-only">Attach a photo or a video to your next message</SheetDescription>
-          </SheetHeader>
-          <Choices choices={choices} onChosen={close} />
-        </SheetContent>
-      </Sheet>
+      <SheetDrawer description="Attach a photo or a video to your next message" onOpenChange={setOpen} open={open} testId="add-context" title="Add context" trigger={plus}>
+        <Choices choices={choices} onChosen={close} />
+      </SheetDrawer>
     );
   }
   return (
