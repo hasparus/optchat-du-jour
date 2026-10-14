@@ -247,13 +247,13 @@ export const PromptInputTextarea = ({ onKeyDown, className, placeholder = "Messa
 export type PromptInputFooterProps = Omit<ComponentProps<typeof InputGroupAddon>, "align">;
 
 export const PromptInputFooter = ({ className, ...props }: PromptInputFooterProps) => (
-  <InputGroupAddon align="block-end" className={cn("cursor-default justify-between gap-1 px-2 pt-1 pb-2", className)} {...props} />
+  <InputGroupAddon align="block-end" className={cn("cursor-default justify-between gap-1 pt-1 pr-2 pb-2 pl-4", className)} {...props} />
 );
 
 export type PromptInputToolsProps = HTMLAttributes<HTMLDivElement>;
 
 export const PromptInputTools = ({ className, ...props }: PromptInputToolsProps) => (
-  <div className={cn("flex min-w-0 items-center gap-0.5", className)} {...props} />
+  <div className={cn("flex min-w-0 items-center gap-4.5", className)} {...props} />
 );
 
 export type PromptInputSubmitProps = ComponentProps<typeof InputGroupButton>;

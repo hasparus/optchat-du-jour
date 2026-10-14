@@ -273,6 +273,40 @@
   }
 }
 
+/* A bare control in the composer's footer (the +, the model, the device, Steer): an icon or a
+   label with no fill and no padding, muted until hovered or open, then ink; focus draws the ring
+   4 px out. Its touch target is an invisible hit area centred on it, at least 40 × 40 px and 6 px
+   wider than the label each side (::before; a select inside lays itself over the same area), so
+   the footer's 18 px gap keeps neighbouring targets from overlapping. */
+@utility bare-control {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: 0.375rem;
+  color: var(--muted-foreground);
+  transition: color 120ms var(--ease-fluid);
+  &:hover,
+  &[data-state="open"] {
+    color: var(--foreground);
+  }
+  &:focus-visible,
+  &:has(select:focus-visible) {
+    outline: 2px solid var(--focus);
+    outline-offset: 4px;
+  }
+  &::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(calc(100% + 0.75rem), 2.5rem);
+    height: max(100%, 2.5rem);
+    translate: -50% -50%;
+  }
+}
+
 /* a hairline drawn inside the box (it takes no space and survives a fill): the border colour, or the
    input colour for the stronger one */
 @utility hairline {

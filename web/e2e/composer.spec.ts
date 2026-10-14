@@ -151,6 +151,35 @@ test.describe("a spent Claude plan", () => {
 test.describe("on a touch screen", () => {
   test.use({ hasTouch: true, isMobile: true });
 
+  test("the footer's bare controls keep 40 px touch targets that don't overlap", async ({ page }) => {
+    await open(page);
+    await expect(page.getByTestId("model-picker")).toBeVisible();
+    const targets = await page.evaluate(() => {
+      const footer = document.querySelector('[aria-label="Add context"]')?.parentElement;
+      if (!footer) throw new Error("no footer tools");
+      return [...footer.querySelectorAll(".bare-control")].map((el) => {
+        // the hit area: the ::before, or for a picker the select laid over it
+        const select = el.querySelector("select");
+        if (select) {
+          const r = select.getBoundingClientRect();
+          return { height: r.height, left: r.left, right: r.right, width: r.width };
+        }
+        const box = el.getBoundingClientRect();
+        const before = getComputedStyle(el, "::before");
+        const width = Number.parseFloat(before.width);
+        const height = Number.parseFloat(before.height);
+        const centre = box.left + box.width / 2;
+        return { height, left: centre - width / 2, right: centre + width / 2, width };
+      });
+    });
+    expect(targets.length).toBeGreaterThanOrEqual(3); // +, the model, the follow-ups
+    for (const t of targets) {
+      expect(t.width).toBeGreaterThanOrEqual(40);
+      expect(t.height).toBeGreaterThanOrEqual(40);
+    }
+    for (let k = 1; k < targets.length; k++) expect(targets[k]!.left).toBeGreaterThanOrEqual(targets[k - 1]!.right - 0.5);
+  });
+
   test("+ opens the Add context sheet; Photos & videos opens the file chooser, the photo lands in the tray, and focus goes back to +", async ({ page }) => {
     await open(page);
     const plus = page.getByRole("button", { name: "Add context" });

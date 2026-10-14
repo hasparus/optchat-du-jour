@@ -792,9 +792,10 @@ test("one model at two efforts reads apart: the picker, a queued message and the
   ];
   play(state({ engines }));
   fireEvent.change(screen.getByLabelText("Model"), { target: { value: "claude-code:opus@xhigh" } });
-  // the pill: the model's name in ink, its effort beside it in muted grey
+  // the picker: a bare label, the model's name and its effort beside it
   expect(within(screen.getByTestId("model-picker")).getByText("Opus")).toBeTruthy();
-  expect(within(screen.getByTestId("model-picker")).getByText("xhigh").className).toContain("text-muted-foreground");
+  expect(within(screen.getByTestId("model-picker")).getByText("xhigh")).toBeTruthy();
+  expect(screen.getByTestId("model-picker").className).toContain("bare-control");
   play(state({ engine: "claude-code:opus@xhigh", pending: [{ clientId: "a", engine: "claude-code:opus", queued: true, text: "for opus" }], phase: "running" }));
   const opus = await screen.findByTestId("queue-engine");
   expect(opus.textContent).toBe("Opus");

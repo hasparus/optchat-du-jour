@@ -1,6 +1,5 @@
 // The composer's pickers (SPEC "Web UI", Composer): the follow-up setting, the model, and the
 // compact native select both the model and the device picker are.
-import { InputGroupButton } from "@/components/ui/input-group";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { Link } from "@/lib/connection";
 import { cn } from "@/lib/utils";
@@ -18,16 +17,10 @@ export function FollowUps({ link, followUp }: { readonly link: Link; readonly fo
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <InputGroupButton
-          aria-label={`Follow-ups: ${followUp}`}
-          className="h-9 rounded-full px-2.5 text-ui font-medium text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground pointer-coarse:h-10"
-          size="xs"
-          title="What a message sent while a turn runs does"
-          variant="ghost"
-        >
-          <SlidersHorizontalIcon className="hidden size-3.5 min-[400px]:block" />
+        <button aria-label={`Follow-ups: ${followUp}`} className="bare-control shrink-0 cursor-pointer text-ui font-medium" title="What a message sent while a turn runs does" type="button">
+          <SlidersHorizontalIcon aria-hidden="true" className="hidden size-3.5 min-[400px]:block" />
           <span className="capitalize">{followUp}</span>
-        </InputGroupButton>
+        </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-72 space-y-3 rounded-xl border-0 p-3 text-ui shadow-float">
         <p className="font-medium">A message sent while a turn runs</p>
@@ -71,31 +64,30 @@ export const shortLabel = (label: string) => {
 };
 
 // A native select (the phone's own picker) laid over a compact label, so a picker in the footer
-// takes the width of its value, not of its longest option. `pill`: the model, a soft-filled pill as
-// in Claude's composer; otherwise a quiet one (the device). `down`: what is shown can't take a turn
-// now: a small mark beside it (the title says why)
+// takes the width of its value, not of its longest option. A bare label and a chevron, like every
+// control in the footer (bare-control, index.css); the select is laid over the label's invisible
+// 40 px hit area, so the whole target opens it. `wide`: the model, which may take more room than
+// the device. `down`: what is shown can't take a turn now: a small mark beside it (the title says
+// why)
 type CompactSelectProps = ComponentProps<"select"> & {
   readonly label: string;
   readonly shown: ReactNode;
   readonly testId?: string;
   readonly down?: boolean;
-  readonly pill?: boolean;
+  readonly wide?: boolean;
 };
 
-export function CompactSelect({ label, shown, title, testId, down = false, pill = false, children, ...props }: CompactSelectProps) {
+export function CompactSelect({ label, shown, title, testId, down = false, wide = false, children, ...props }: CompactSelectProps) {
   return (
-    <span
-      className={cn(
-        "relative flex min-w-0 items-center gap-1 rounded-full text-ui font-medium transition-colors has-[select:focus-visible]:outline-2 has-[select:focus-visible]:outline-offset-2 has-[select:focus-visible]:outline-(--focus) pointer-coarse:h-10",
-        pill ? "h-9 max-w-44 bg-soft px-3.5 text-foreground hover:bg-soft-strong" : "h-9 max-w-32 px-2.5 text-muted-foreground hover:bg-accent hover:text-foreground pointer-coarse:px-2",
-      )}
-      data-testid={testId}
-      title={title}
-    >
+    <span className={cn("bare-control text-ui font-medium", wide ? "max-w-44" : "max-w-32")} data-testid={testId} title={title}>
       {down && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-destructive" data-testid="picker-down" />}
       <span className="flex min-w-0 items-baseline gap-1.5 truncate">{shown}</span>
-      {!pill && <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-70" />}
-      <select aria-label={label} className="absolute inset-0 cursor-pointer opacity-0" {...props}>
+      <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-70" />
+      <select
+        aria-label={label}
+        className="absolute top-1/2 left-1/2 h-[max(100%,2.5rem)] w-[max(calc(100%+0.75rem),2.5rem)] -translate-1/2 cursor-pointer opacity-0"
+        {...props}
+      >
         {children}
       </select>
     </span>
@@ -108,11 +100,11 @@ export function CompactSelect({ label, shown, title, testId, down = false, pill 
 // is disabled with why, unless it is the one picked, which then shows a small down mark.
 export function ModelPicker({ model, onModel, state }: { readonly model: string; readonly onModel: (ref: string) => void; readonly state: SessionState }) {
   const current = state.engines.find((e) => e.ref === model);
-  // the name in ink, the effort (when the server's label names one) in muted grey
+  // the name, then the effort when the server's label names one
   const { name, effort } = labelParts(current?.label ?? model);
   return (
     <CompactSelect
-      pill
+      wide
       down={current !== undefined && current.down !== null}
       label="Model"
       onChange={(e) => {
@@ -121,7 +113,7 @@ export function ModelPicker({ model, onModel, state }: { readonly model: string;
       shown={
         <>
           <span className="truncate">{name}</span>
-          {effort !== null && <span className="shrink-0 text-muted-foreground">{effort}</span>}
+          {effort !== null && <span className="shrink-0">{effort}</span>}
         </>
       }
       testId="model-picker"

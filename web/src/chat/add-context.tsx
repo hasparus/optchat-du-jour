@@ -7,9 +7,9 @@
 // (PromptInputFileInput): photos and videos from the library or files, and the camera where the
 // device has one, exactly as the two buttons this replaces did.
 import { useCoarsePointer } from "@/components/ai-elements/prompt-input";
-import { InputGroupButton } from "@/components/ui/input-group";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { cn } from "@/lib/utils";
 import { CameraIcon, ImagesIcon, type LucideIcon, PlusIcon } from "lucide-react";
 import { type ComponentProps, type RefObject, useId, useState } from "react";
 
@@ -56,13 +56,14 @@ function Choices({ choices, onChosen }: { readonly choices: readonly AddContextC
   );
 }
 
-// the "+": a soft circle, 36 px (40 on touch); props pass through, so a sheet or popover trigger
-// can wrap it
-function Plus(props: ComponentProps<typeof InputGroupButton>) {
+// the "+": a bare icon, its glyph lined up with the start of the composer's text (the -3 px takes up
+// the icon's own inset), its 40 px target invisible around it (bare-control, index.css); props pass
+// through, so a sheet or popover trigger can wrap it
+function Plus({ className, ...props }: ComponentProps<"button">) {
   return (
-    <InputGroupButton aria-label="Add context" className="bg-soft text-foreground hover:bg-soft-strong data-[state=open]:bg-soft-strong" size="icon-md" variant="ghost" {...props}>
-      <PlusIcon className="size-4.5" strokeWidth={1.75} />
-    </InputGroupButton>
+    <button aria-label="Add context" className={cn("bare-control -ml-0.75 shrink-0 cursor-pointer", className)} type="button" {...props}>
+      <PlusIcon aria-hidden="true" className="size-4.5" strokeWidth={1.75} />
+    </button>
   );
 }
 

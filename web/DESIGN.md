@@ -311,10 +311,13 @@ Modelled on Claude's app: a soft, translucent card with round controls.
   and its text stays legible. Measured with a code block under it and no blur at all, the worst
   case: ink 12.6:1, the placeholder 5.7:1 (light) and 5.8:1 (dark).
 - **Text:** Read type, 52 px tall at rest, grows to 12rem or 40% of the viewport.
-- **Controls:** at the left, "+" (a 36 px soft circle, 40 px on touch), then the model as a soft pill
-  (36 px, the name in ink and the effort, when the server's engine label names one, in muted grey,
-  over the phone's own select), then the device and the follow-up mode as quiet pills (muted, ink
-  on hover). At the right, send: a 36 px ink circle with an arrow (40 px on touch), a soft circle
+- **Controls:** at the left, bare: "+" as an icon, its glyph on the start of the text above it, then
+  the model, the device and the follow-up mode as plain 13 px labels (the model's effort, when the
+  server's engine label names one, beside its name; a chevron on each picker, over the phone's own
+  select). No fill and no padding: muted, ink on hover or while open, the focus ring 4 px out. Each
+  has an invisible hit area of at least 40 × 40 px (the `bare-control` utility's `::before`, or the
+  select laid over the same area), 6 px wider than its label each side; the 18 px gap between them
+  keeps the targets from overlapping. At the right, send: a 36 px ink circle with an arrow (40 px on touch), a soft circle
   with a muted arrow when there is nothing to send. While a turn runs: the other way to send as a
   soft pill (icon only under 400 px), and Stop as an ink square on a soft circle. Under 420 px,
   with that second button showing, the device picker makes room. No microphone: the phone's
