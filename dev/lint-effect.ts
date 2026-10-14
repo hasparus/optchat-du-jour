@@ -1,15 +1,26 @@
 #!/usr/bin/env bun
-// Effect-aware diagnostics (@effect/language-service) over both TypeScript projects, the server's
-// and the web app's: the CLI takes one project per run. Extra arguments go to every run, e.g.
-// `bun run lint:effect -- --format github-actions` in CI. Fails if any project has an error or warning.
-const PROJECTS = ["tsconfig.json", "web/tsconfig.json"];
+export const PROJECTS = ["tsconfig.json", "web/tsconfig.json"];
+export const EXECUTABLE = new URL("../node_modules/.bin/effect-tsgo", import.meta.url).pathname;
 
-let failed = false;
-for (const project of PROJECTS) {
-  const run = Bun.spawnSync(["effect-language-service", "diagnostics", "--project", project, "--strict", "--severity", "error,warning", ...process.argv.slice(2)], {
-    stderr: "inherit",
-    stdout: "inherit",
-  });
-  if (run.exitCode !== 0) failed = true;
+type Spawn = (command: string[]) => { exitCode: number | null; signalCode?: string | null; error?: unknown };
+const spawn: Spawn = (command) => Bun.spawnSync(command, { stderr: "inherit", stdout: "inherit" });
+
+export function diagnosticsCommand(project: string, args: string[]): string[] {
+  return [EXECUTABLE, "diagnostics", "--project", project, "--strict", "--severity", "error,warning", ...args.filter((arg) => arg !== "--")];
 }
-process.exitCode = failed ? 1 : 0;
+
+export function lintEffect(args: string[], run: Spawn = spawn): number {
+  let failed = false;
+  for (const project of PROJECTS) {
+    try {
+      const result = run(diagnosticsCommand(project, args));
+      if (result.exitCode !== 0 || result.signalCode || result.error) failed = true;
+    } catch (error) {
+      process.stderr.write(`Effect diagnostics could not run for ${project}: ${String(error)}\n`);
+      failed = true;
+    }
+  }
+  return failed ? 1 : 0;
+}
+
+if (import.meta.main) process.exitCode = lintEffect(process.argv.slice(2));

@@ -20,7 +20,7 @@ const unsorted = Object.fromEntries(
 
 export default defineConfig({
   extends: [base],
-  ignorePatterns: [...ignorePatterns, "vendor", "kernel/kernel.mjs", ...mobile],
+  ignorePatterns: [...ignorePatterns, "vendor", "repos/**", "kernel/kernel.mjs", ...mobile],
   overrides: [
     ...overrides,
     // a script whose output is its report

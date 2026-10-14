@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -p . && vite build",
-    "typecheck": "tsc -p .",
+    "build": "bun ../node_modules/typescript/bin/tsc -p . && vite build",
+    "typecheck": "bun ../node_modules/typescript/bin/tsc -p .",
     "test": "bun test",
     "e2e": "vite build && playwright test"
   },
