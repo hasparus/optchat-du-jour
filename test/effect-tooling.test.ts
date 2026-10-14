@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { diagnosticsCommand, EXECUTABLE, lintEffect, PROJECTS } from "../dev/lint-effect.ts";
 
 const root = path.resolve(import.meta.dir, "..");
@@ -43,6 +45,19 @@ function assertV4(report: typeof Report.Type): void {
 }
 
 describe("native Effect runner", () => {
+  test("executable resolves to a decoded filesystem path in checkouts with special characters", async () => {
+    const dir = realpathSync(mkdtempSync(path.join(tmpdir(), "effect checkout ü # %-")));
+    try {
+      mkdirSync(path.join(dir, "dev"));
+      const runner = path.join(dir, "dev/lint-effect.ts");
+      copyFileSync(path.join(root, "dev/lint-effect.ts"), runner);
+      const copied = Schema.decodeUnknownSync(Schema.Struct({ EXECUTABLE: Schema.String }))(await import(pathToFileURL(runner).href));
+      expect(copied.EXECUTABLE).toBe(path.join(dir, "node_modules/.bin/effect-tsgo"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("strict error/warning gate and CI arguments apply to both projects", () => {
     const commands: string[][] = [];
     expect(lintEffect(["--", "--format", "github-actions"], (command) => {

@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
+import { fileURLToPath } from "node:url";
+
 export const PROJECTS = ["tsconfig.json", "web/tsconfig.json"];
-export const EXECUTABLE = new URL("../node_modules/.bin/effect-tsgo", import.meta.url).pathname;
+export const EXECUTABLE = fileURLToPath(new URL("../node_modules/.bin/effect-tsgo", import.meta.url));
 
 type Spawn = (command: string[]) => { exitCode: number | null; signalCode?: string | null; error?: unknown };
 const spawn: Spawn = (command) => Bun.spawnSync(command, { stderr: "inherit", stdout: "inherit" });
