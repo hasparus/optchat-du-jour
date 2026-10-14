@@ -10,7 +10,7 @@ import { Message, MessageContent, MessageHeader } from "@/components/ui/message"
 import { type Row, type ToolState, toolSummary } from "@/lib/rows";
 import { splitMarkers } from "@wire";
 import { CheckIcon, CodeIcon, CopyIcon, NotebookPenIcon, TextIcon } from "lucide-react";
-import { Component, createContext, memo, type ReactNode, use, useEffect, useMemo, useRef, useState } from "react";
+import { Component, createContext, memo, type ReactNode, use, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 // copy the reply as written; the check stays a moment
 function CopyAction({ text }: { text: string }) {
@@ -78,6 +78,19 @@ export function ReplyActions({ children }: { readonly children: ReactNode }) {
       document.removeEventListener("pointerup", tapped);
     };
   }, []);
+  // shown: the row opens below the reply, which on the newest reply is where the floating dock sits.
+  // Before it paints, the newest reply's row is brought to the end of the chat (a reader at the end
+  // stays there, and the scroll-to-end button doesn't come up); another reply's row is scrolled only
+  // as far as the viewport's scroll padding (the dock's height) needs, which is not at all when it
+  // is already clear
+  useLayoutEffect(() => {
+    if (open === null) return;
+    const reply = document.querySelector(`[data-reply="${CSS.escape(open)}"]`);
+    const viewport = reply?.closest('[data-slot="message-scroller-viewport"]');
+    const newest = viewport ? [...viewport.querySelectorAll('[data-slot="message-scroller-item"]')].at(-1) : undefined;
+    if (viewport && newest?.contains(reply)) viewport.scrollTop = viewport.scrollHeight;
+    else reply?.querySelector('[data-slot="message-actions"]')?.scrollIntoView({ block: "nearest" });
+  }, [open]);
   // shown: a tap anywhere else, or the reply leaving the view, hides them
   useEffect(() => {
     if (open === null) return;

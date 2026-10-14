@@ -169,6 +169,36 @@ test.describe("a log with history above", () => {
   });
 });
 
+test.describe("on a touch screen, with history above", () => {
+  test.use({ hasTouch: true, isMobile: true, seeded: 40 });
+
+  test("a tap on the newest reply shows its actions clear of the dock, and the chat stays at its end", async ({ page, server }) => {
+    await open(page);
+    await page.getByLabel("Message").fill("one more");
+    await page.getByRole("button", { name: /^Send/ }).first().tap(); // Enter is a new line on a touch screen
+    await answered(page, "one more");
+    // opened afresh, the chat starts at its end, under the newest reply (no turn's room below it)
+    await server.restart(0);
+    await open(page);
+    const chat = page.getByRole("region", { name: "Chat" });
+    const gap = async () => chat.evaluate((v) => v.scrollHeight - v.clientHeight - v.scrollTop);
+    await expect(page.getByText(REPLY)).toBeInViewport();
+    // the reader scrolls back a little and down to the end again, as one reading does
+    await chat.hover();
+    await page.mouse.wheel(0, -300);
+    await expect.poll(gap).toBeGreaterThan(1);
+    await page.mouse.wheel(0, 1000);
+    await expect.poll(gap).toBeLessThanOrEqual(1);
+    const reply = page.locator("[data-reply]").last();
+    await expect(reply).not.toHaveAttribute("data-actions", "shown");
+    await reply.getByText(REPLY).tap();
+    await expect(reply).toHaveAttribute("data-actions", "shown");
+    // the row that opened sits above the dock, not under it, and the chat is still at its end
+    await expect.poll(async () => clearOfDock(page, reply.locator('[data-slot="message-actions"]'))).toBeGreaterThanOrEqual(0);
+    await expect.poll(gap).toBeLessThanOrEqual(1);
+  });
+});
+
 test("the memory screen zooms into a line and shows it in the chat", async ({ page }) => {
   await open(page);
   await send(page, "remember this");

@@ -273,8 +273,10 @@ composer has 14 px top corners and no bottom edge, so it reads as part of it.
   listener on the transcript hears touch and pen taps; a reply has no click handler of its own). A tap
   shows that reply's actions and hides any other reply's; a tap outside it, or scrolling it out of
   view, hides them; a tap on a link or a button in it, or one that ends a text selection, toggles
-  nothing. Hidden, they stay in the page (collapsed), so focus from a keyboard or a screen reader
-  opens them. Raw is there from the first token (SPEC: rendering never hides what the model wrote);
+  nothing. They open below the reply, where the dock floats over the newest one, so opening the
+  newest reply's actions brings the chat to its end (a reader there stays there), and another
+  reply's actions scroll just clear of the dock if they need to. Hidden, they stay in the page
+  (collapsed), so focus from a keyboard or a screen reader opens them. Raw is there from the first token (SPEC: rendering never hides what the model wrote);
   Copy waits for the whole reply. While a reply streams a circle caret marks its end.
 
 ### Tool calls (signature)
