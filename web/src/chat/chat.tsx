@@ -28,7 +28,7 @@ import {
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import type { Link } from "@/lib/connection";
 import { visible } from "@/lib/log";
-import { chatRows, entryRows, type Row, rowFor, rowIndexFor, toolStateOf } from "@/lib/rows";
+import { chatRows, entryRows, planOf, type Row, rowFor, rowIndexFor, type Source, toolStateOf, turnSources } from "@/lib/rows";
 import { type Marker as StatusMarker, type Queued, queued, type Session, type SessionStore } from "@/lib/session";
 import { canonicalRef, type Device, engineLabel, type SessionState, shortSha } from "@wire";
 import { cn } from "@/lib/utils";
@@ -301,6 +301,13 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
   }, [target, rows, first, loading, loadOlder, scrollToMessage, onTargetShown]);
 
   const lastTool = rows.findLast((r) => r.kind === "tool")?.key;
+  const lastPlan = rows.findLast((r) => r.kind === "tool" && planOf(r) !== null)?.key;
+  // each turn's sources under its last reply; a turn whose list didn't change keeps its array
+  const sourcesRef = useRef<ReadonlyMap<string, readonly Source[]>>(new Map());
+  const sources = useMemo(() => {
+    sourcesRef.current = turnSources(rows, sourcesRef.current);
+    return sourcesRef.current;
+  }, [rows]);
   const picked = device ?? state.state?.device ?? devices.find((d) => d.local)?.name ?? null;
 
   return (
@@ -337,7 +344,9 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
                 <Fragment key={row.key}>
                   <MessageScrollerItem data-kind={row.kind} data-log-index={row.id} messageId={row.key} scrollAnchor={row.kind === "user"}>
                     <ChatRow
+                      plan={row.key === lastPlan ? (busy ? "live" : "newest") : undefined}
                       row={row}
+                      sources={sources.get(row.key)}
                       streaming={row.key === draftKey}
                       toolState={row.kind === "tool" ? toolStateOf(row, busy, row.key === lastTool) : "done"}
                     />

@@ -89,6 +89,66 @@ test("the snapshot shows the log: messages, a collapsed tool call, markdown with
   expect(screen.getByText("Two things: **notes** and a repo.")).toBeTruthy();
 });
 
+test("a TodoWrite call reads as a plan and a turn's web links as its reply's sources; a plan's input stays one line away", async () => {
+  const todos = { todos: [{ activeForm: "Searching", content: "Search", status: "completed" }, { activeForm: "Answering", content: "Answer", status: "in_progress" }, { content: "Check", status: "pending" }] };
+  const links = [{ title: "Docs", url: "https://docs.example.com/a" }, { title: "Bad", url: "javascript:alert(1)" }];
+  start([
+    { kind: "user", text: "look it up" },
+    { kind: "tool", text: `TodoWrite ${JSON.stringify(todos)}` },
+    { kind: "echo", text: "Todos have been modified successfully." },
+    { kind: "tool", text: 'WebSearch {"query":"q"}' },
+    { kind: "echo", text: `Web search results for query: "q"\n\nLinks: ${JSON.stringify(links)}` },
+    { kind: "tool", text: 'WebFetch {"url":"https://other.example.org/p","prompt":"p"}' },
+    { kind: "echo", text: "page" },
+    { kind: "talk", text: "Found it." },
+  ]);
+  await screen.findByText("Found it.");
+  // the newest plan opens by itself; nothing runs, so no step reads in its present tense
+  const plan = screen.getByText("1 of 3 done").closest<HTMLElement>('[data-slot="plan"]') ?? document.body;
+  expect(plan.dataset.state).toBe("open");
+  expect(within(plan).getByText("Answer")).toBeTruthy();
+  expect(within(plan).queryByText("Answering")).toBeNull();
+  expect([...plan.querySelectorAll<HTMLElement>("[data-step]")].map((s) => s.dataset.step)).toEqual(["completed", "in_progress", "pending"]);
+  expect(within(plan).queryByText(/"activeForm"/)).toBeNull();
+  fireEvent.click(within(plan).getByText("Input and output"));
+  await waitFor(() => {
+    expect(plan.textContent).toContain("Todos have been modified successfully.");
+  });
+  // the sources: under the reply, the javascript: link left out
+  const reply = screen.getByText("Found it.").closest<HTMLElement>("[data-reply]") ?? document.body;
+  fireEvent.click(within(reply).getByText("Used 2 sources"));
+  const anchors = await within(reply).findAllByRole("link");
+  expect(anchors.map((a) => [a.getAttribute("href"), a.getAttribute("target"), a.getAttribute("rel")])).toEqual([
+    ["https://docs.example.com/a", "_blank", "noreferrer"],
+    ["https://other.example.org/p", "_blank", "noreferrer"],
+  ]);
+  expect(document.body.innerHTML).not.toContain("javascript:alert");
+});
+
+test("a live plan: its step in progress reads in its present tense and the line runs; a failed TodoWrite says Failed", async () => {
+  const todos = { todos: [{ activeForm: "Searching", content: "Search", status: "in_progress" }] };
+  const { play } = start([
+    { kind: "user", text: "go" },
+    { kind: "tool", text: `TodoWrite ${JSON.stringify(todos)}` },
+    { kind: "echo", text: "ok" },
+  ]);
+  await screen.findByText("Search");
+  play(state({ phase: "running" }));
+  const step = await screen.findByText("Searching");
+  expect(step.closest<HTMLElement>('[data-slot="trace-line"]')?.dataset.status).toBe("running");
+  play(state({ phase: "idle" }));
+  await screen.findByText("Search");
+  expect(screen.queryByText("Searching")).toBeNull();
+  cleanup();
+  start([
+    { kind: "user", text: "go" },
+    { kind: "tool", text: `TodoWrite ${JSON.stringify(todos)}` },
+    { error: true, kind: "echo", text: "InputValidationError" },
+  ]);
+  const failed = await screen.findByText("Failed");
+  expect(failed.closest('[data-slot="plan"]')).toBeTruthy();
+});
+
 test("a tool call reads as Failed when its echo is flagged, not from its output, which stays as logged", async () => {
   const { play } = start([
     { kind: "user", text: "lint it" },

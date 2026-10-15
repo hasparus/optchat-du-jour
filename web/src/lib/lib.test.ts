@@ -9,7 +9,7 @@ import { openLink, STALE_MS, wakeOnReturn } from "./connection";
 import { sentKey } from "./draft";
 import { applyEvent, applyPage, emptyLog, hole, type Log, MAX_HELD, tip, trimHeld, visible, withDraft } from "./log";
 import { type Inbound, parseFrame } from "./protocol";
-import { chatRows, entryRows, rowFor, rowIndexFor, toolStateOf, toolSummary } from "./rows";
+import { chatRows, entryRows, planOf, rowFor, rowIndexFor, sourcesOfTool, toolStateOf, toolSummary, turnSources } from "./rows";
 import { makeSession, queued, type Session, UNSENT } from "./session";
 import { buckets, byModel, periodOf, totals } from "./stats";
 
@@ -683,5 +683,106 @@ describe("an echo's error flag, from the log line to the row", () => {
     const body = JSON.stringify(Schema.encodeSync(MessagesPage)({ entries, total: entries.length }));
     const page = Schema.decodeUnknownSync(Schema.fromJsonString(MessagesPage))(body);
     expect(failedRows(applyPage(emptyLog, page.entries))).toEqual(expected);
+  });
+});
+
+// the Plan and Sources patterns, read from what the log holds (rows.ts)
+type Todo = { readonly content: string; readonly status: string; readonly activeForm?: string };
+const todo = (todos: readonly Todo[]) => ({ args: JSON.stringify({ todos }), name: "TodoWrite" });
+type Link = { readonly title?: string; readonly url: string };
+const search = (links: readonly Link[]) => `Web search results for query: "q"\n\nLinks: ${JSON.stringify(links)}\n\nSome summary.`;
+// a log's plans (their steps' text) and sources (by the reply they go under)
+const readPatterns = (log: Log) => {
+  const rows = entryRows(visible(log));
+  return { plans: rows.flatMap((r) => (r.kind === "tool" ? (planOf(r) ?? []) : [])).map((s) => s.content), sources: Object.fromEntries(turnSources(rows)) };
+};
+
+describe("a plan: a TodoWrite call's steps", () => {
+  test("reads Claude Code's todo list, in order, with each step's present tense", () => {
+    expect(
+      planOf(todo([
+        { activeForm: "Reading the spec", content: "Read the spec", status: "completed" },
+        { activeForm: "Writing the test", content: "Write the test", status: "in_progress" },
+        { content: "Ship it", status: "pending" },
+      ])),
+    ).toEqual([
+      { activeForm: "Reading the spec", content: "Read the spec", status: "completed" },
+      { activeForm: "Writing the test", content: "Write the test", status: "in_progress" },
+      { activeForm: null, content: "Ship it", status: "pending" },
+    ]);
+  });
+  test("an MCP-named TodoWrite is one too; any other tool, or input that isn't a todo list, is a tool line", () => {
+    expect(planOf({ ...todo([{ content: "a", status: "pending" }]), name: "mcp__todo__TodoWrite" })).toHaveLength(1);
+    expect(planOf({ args: JSON.stringify({ todos: [{ content: "a", status: "pending" }] }), name: "Bash" })).toBeNull();
+    expect(planOf(todo([]))).toBeNull();
+    expect(planOf(todo([{ content: "a", status: "blocked" }]))).toBeNull();
+    expect(planOf({ args: "not json", name: "TodoWrite" })).toBeNull();
+  });
+});
+
+describe("sources: the links a turn's web tools used", () => {
+  test("a WebFetch's address and a WebSearch's result links, only http(s), titled or by host", () => {
+    expect(sourcesOfTool({ args: '{"url":"https://a.example/x","prompt":"p"}', name: "WebFetch", output: "..." })).toEqual([{ title: "a.example", url: "https://a.example/x" }]);
+    expect(
+      sourcesOfTool({
+        args: '{"query":"q"}',
+        name: "WebSearch",
+        output: search([{ title: "B", url: "https://b.example/" }, { url: "http://c.example/p" }, { title: "evil", url: "javascript:alert(1)" }, { title: "data", url: "data:text/html,x" }]),
+      }),
+    ).toEqual([
+      { title: "B", url: "https://b.example/" },
+      { title: "c.example", url: "http://c.example/p" },
+    ]);
+    // a search still running, a result in another shape, another tool: nothing
+    expect(sourcesOfTool({ args: '{"query":"q"}', name: "WebSearch", output: null })).toEqual([]);
+    expect(sourcesOfTool({ args: '{"query":"q"}', name: "WebSearch", output: "Links: not json" })).toEqual([]);
+    expect(sourcesOfTool({ args: '{"url":"https://a.example/"}', name: "Read", output: "x" })).toEqual([]);
+  });
+  test("go under each turn's last reply, deduplicated, and keep their array while unchanged", () => {
+    const rows = entryRows([
+      { i: 0, kind: "user", text: "look" },
+      { i: 1, kind: "talk", text: "searching" },
+      { i: 2, kind: "tool", text: 'WebSearch {"query":"q"}' },
+      { i: 3, kind: "echo", text: search([{ title: "A", url: "https://a.example/" }]) },
+      { i: 4, kind: "tool", text: 'WebFetch {"url":"https://a.example/","prompt":"p"}' },
+      { i: 5, kind: "echo", text: "page" },
+      { i: 6, kind: "talk", text: "found it" },
+      { i: 7, kind: "user", text: "thanks" },
+      { i: 8, kind: "talk", text: "welcome" },
+      { i: 9, kind: "user", text: "fetch b" },
+      { i: 10, kind: "tool", text: 'WebFetch {"url":"https://b.example/","prompt":"p"}' },
+      { i: 11, kind: "echo", text: "page" },
+    ]);
+    const first = turnSources(rows);
+    expect([...first]).toEqual([["e6", [{ title: "A", url: "https://a.example/" }]]]);
+    // only the first turn: the second used no web tool, the third has no reply to go under
+    const again = turnSources(rows, first);
+    expect(again.get("e6")).toBe(first.get("e6"));
+  });
+});
+
+// Plan and Sources from a log line to the row, the way E28's flag is checked above: a snapshot
+// and live events give the same plan and the same sources
+describe("a plan and a turn's sources, from the log line to the row", () => {
+  const date = "2026-10-05T10:00:00.000Z";
+  const todos = JSON.stringify({ todos: [{ activeForm: "Searching", content: "Search", status: "in_progress" }, { content: "Answer", status: "pending" }] });
+  const results = `Web search results for query: "q"\n\nLinks: ${JSON.stringify([{ title: "A", url: "https://a.example/" }])}`;
+  const entries = [
+    { date, i: 0, kind: "user" as const, size: 4, text: "look" },
+    { date, i: 1, kind: "tool" as const, size: 10, text: `TodoWrite ${todos}` },
+    { date, i: 2, kind: "echo" as const, size: 10, text: "Todos have been modified successfully." },
+    { date, i: 3, kind: "tool" as const, size: 10, text: 'WebSearch {"query":"q"}' },
+    { date, i: 4, kind: "echo" as const, size: 10, text: results },
+    { date, i: 5, kind: "talk" as const, size: 10, text: "found it" },
+  ];
+  const expected = { plans: ["Search", "Answer"], sources: { e5: [{ title: "A", url: "https://a.example/" }] } };
+  test("a snapshot", () => {
+    const { first } = openStream({ entries, live: null, state: IDLE, thread: "mini", window: 50 });
+    expect(readPatterns(play(emptyLog, ...decoded(first)))).toEqual(expected);
+  });
+  test("live events", () => {
+    const { first, translate } = openStream({ entries: entries.slice(0, 1), live: null, state: IDLE, thread: "mini", window: 50 });
+    const live = entries.slice(1).flatMap((e) => translate({ entry: e, runId: "1", type: "logged" }));
+    expect(readPatterns(play(emptyLog, ...decoded(first), ...decoded(live)))).toEqual(expected);
   });
 });
