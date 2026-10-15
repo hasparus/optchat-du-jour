@@ -11,7 +11,7 @@ import { openChat } from "../src/chat.ts";
 import { Runner } from "../src/claude/process.ts";
 import { WarmLocalRunner } from "../src/claude/warm.ts";
 import type { Summarize } from "../src/compactor.ts";
-import { entryLabel, mediaSettings, type Settings } from "../src/config.ts";
+import { entryLabel, mediaSettings, reasoningSettings, type Settings } from "../src/config.ts";
 import type { DownList } from "../src/engines/chain.ts";
 import { makeGate } from "../src/engines/inflight.ts";
 import { turnEngine } from "../src/engines/registry.ts";
@@ -21,6 +21,7 @@ import { makeCaptioner } from "../src/media/caption.ts";
 import { makeMedia } from "../src/media/media.ts";
 import { makePersist } from "../src/persist.ts";
 import { systemPrompt } from "../src/prompts.ts";
+import { openReasoning } from "../src/reasoning.ts";
 import { type Secrets, SecretsLive } from "../src/secrets.ts";
 import { makeSession, type SessionEvent } from "../src/session.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
@@ -89,6 +90,9 @@ export const routes = (o: ServerOptions) =>
         : yield* makeSummarize({ ...needs, device: o.device, gate: makeGate(), instructions, placement: runnerFor(o.device), tools: defsFor(settings.defaultDevice) });
       const chat = yield* openChat(stream, { report, summarize: compactor.summarize });
       const toolsFor = (device: string) => toolsWith(device, chat.mem);
+      // a turn's thinking, kept beside the log in the stream's chat/reasoning/ (SPEC "Reasoning")
+      const thinking = reasoningSettings(settings);
+      const reasoning = yield* openReasoning(stream, { keep: thinking.keep, report });
       // the master's chain as the session keeps it (src/master.ts), made here so each engine can
       // ask whether the warm processes follow it: the most recent turn's (E18)
       const master = yield* makeMaster(settings.master.chain.map((r) => ({ label: entryLabel(r, settings.master.effort), ref: r.ref })), settings.master.effort);
@@ -100,10 +104,12 @@ export const routes = (o: ServerOptions) =>
       const mediaConfig = mediaSettings(settings);
       const captioner = makeCaptioner(mediaConfig.caption, { ...needs, device: o.device, planImages: mediaConfig.planImages, runner: local });
       const media = yield* makeMedia({ captioner, report, root: `${o.home}/assets`, settings: mediaConfig });
-      // an upload no logged message names (a photo attached and never sent) is not committed
-      const persist = yield* makePersist(report, () =>
-        media.unreferenced(chat.mem.root.flatMap((e) => (e.kind === "user" ? [e.text] : []))).map((path) => `/assets/${path}`),
-      );
+      // an upload no logged message names (a photo attached and never sent) is not committed, nor,
+      // with reasoning.commit off, the thinking side files (git keeps those already committed)
+      const persist = yield* makePersist(report, () => [
+        ...media.unreferenced(chat.mem.root.flatMap((e) => (e.kind === "user" ? [e.text] : []))).map((path) => `/assets/${path}`),
+        ...(thinking.commit ? [] : ["/streams/*/chat/reasoning/"]),
+      ]);
       const session = yield* makeSession({
         chat,
         media,
@@ -113,6 +119,7 @@ export const routes = (o: ServerOptions) =>
         devices: Object.keys(settings.devices),
         engines,
         events,
+        reasoning,
         choices,
         master,
         saveChoices: saveChoices(choicesPath, report),
@@ -136,7 +143,7 @@ export const routes = (o: ServerOptions) =>
       yield* wsRoute(router, { assets: { find: media.find, report }, entries: chat.mem.root, session, thread: o.device, window: o.window ?? 200 });
       yield* mcpRoutes(router, { attached: media.zoomContent, mem: chat.mem, secret });
       yield* assetRoutes(router, { media, settings: mediaConfig });
-      yield* apiRoutes(router, { device: o.device, mem: chat.mem, report, session, settings, usagePath });
+      yield* apiRoutes(router, { device: o.device, mem: chat.mem, reasoning, report, session, settings, usagePath });
       yield* webRoute(router, o.web);
       return { chat, session };
     }),

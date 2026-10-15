@@ -65,7 +65,7 @@ function makeDir(dir: string) {
 
 // one line, one write (more only if the OS takes it in parts), then fsync; a new file also
 // gets its directory entry synced
-function appendLine(dir: string, file: string, line: string) {
+export function appendLine(dir: string, file: string, line: string) {
   const synced = makeDir(dir);
   const target = `${dir}/${file}`, isNew = !existsSync(target);
   withFd(target, "a", (fd) => {
@@ -130,7 +130,7 @@ function readView(dir: string): Found {
 export type Loaded = { readonly mem: Mem; readonly problems: readonly string[] };
 
 // a day file is named YYYY-MM-DD.jsonl (ref §3); nothing else in the directory is read
-const DAY_FILE = /^[0-9]{4}(-[0-9]{2}){2}\.jsonl$/;
+export const DAY_FILE = /^[0-9]{4}(-[0-9]{2}){2}\.jsonl$/;
 
 // The decoded lines of one stream, oldest day first. A line that doesn't decode is listed in
 // `problems` and skipped. An unterminated last line may be a write in progress: a reader leaves

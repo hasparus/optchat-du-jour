@@ -132,6 +132,14 @@ export const splitTool = (text: string) => {
 export const joinTool = (name: string, args: string) => (args === "" ? name : `${name} ${args}`);
 export const toolCallId = (i: number) => `t${i}`;
 
+// A turn's thinking before an entry (SPEC "Reasoning") is an AG-UI reasoning message `r<index>`:
+// live, the index its entry is expected at; once kept, REASONING_END's metadata names the entry
+export const reasoningId = (i: number) => `r${i}`;
+export const reasoningIndex = (id: string): number | null => {
+  const digits = /^r(\d+)$/.exec(id)?.[1];
+  return digits === undefined ? null : Number(digits);
+};
+
 // a message id or tool call id back to its log index; null for an id that isn't one
 export const logIndex = (id: string): number | null => {
   const digits = /^t?(\d+)$/.exec(id)?.[1];
@@ -150,6 +158,22 @@ export const span = ({ l, i }: { readonly l: number; readonly i: number }) => {
 // /api/messages: log entries (records.ts Msg, with the size the server adds), oldest first
 export const MessagesPage = Schema.Struct({ entries: Schema.Array(Msg), total: Schema.Number });
 export type MessagesPage = typeof MessagesPage.Type;
+
+// /api/reasoning?from&to (SPEC "Reasoning"): which entries in [from, to) have thinking kept before
+// them, without its text: how long it took (`ms`), how many characters were kept (`chars`) and
+// left out (`cut`, only when some were), and the engine. The text is a second request, made when
+// the reader opens one (/api/reasoning/text?i): a long history never loads every turn's thinking.
+export const ReasoningHead = Schema.Struct({
+  i: Schema.Number,
+  ms: Schema.Number,
+  chars: Schema.Number,
+  engine: Schema.String,
+  cut: Schema.optional(Schema.Number),
+});
+export type ReasoningHead = typeof ReasoningHead.Type;
+export const ReasoningHeads = Schema.Struct({ pieces: Schema.Array(ReasoningHead) });
+export const ReasoningPiece = Schema.Struct({ ...ReasoningHead.fields, text: Schema.String, date: Schema.String });
+export type ReasoningPiece = typeof ReasoningPiece.Type;
 
 // /api/view: each view line with its range, dates and size
 export const ViewLine = Schema.Struct({

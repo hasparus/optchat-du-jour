@@ -11,6 +11,7 @@ import { ClaudeError, Runner, type Spawn } from "../src/claude/process.ts";
 import { type WarmOptions, warmRunner } from "../src/claude/warm.ts";
 import { MASTER_TOOLS } from "../src/config.ts";
 import { type McpSeen, mcpConfig, mcpTransports } from "../src/mcp.ts";
+import { openReasoning } from "../src/reasoning.ts";
 import { makeSession, noMedia, type SessionEvent } from "../src/session.ts";
 import { openStream, toMessages } from "../server/agui.ts";
 import { parseEvent } from "../src/claude/events.ts";
@@ -45,6 +46,7 @@ type RigOptions = {
   readonly commit?: Effect.Effect<string | null>;
   readonly warm?: WarmOptions; // the fake behind a pool of warm processes
   readonly warms?: boolean; // the warm processes follow this engine: it heads the master's chain (default)
+  readonly reasoning?: boolean; // keep thinking in the chat's side file (SPEC "Reasoning")
 };
 
 const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
@@ -82,7 +84,9 @@ const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
     };
     const engine = yield* claudeCodeTurn(options);
     const engines: TurnEngine[] = [o.prime ? engine : { ref: engine.ref, run: engine.run, vision: engine.vision, warm: engine.warm }];
+    const reasoning = o.reasoning ? yield* openReasoning(dir, { keep: true, report }) : undefined;
     const session = yield* makeSession({
+      reasoning,
       chat,
       commit: o.commit ?? Effect.succeed(null),
       defaultDevice: "mini",
@@ -103,7 +107,7 @@ const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
       until(`${n} finished runs`, () => events.filter((e) => e.type === "run-finished").length >= n && session.state().phase === "idle");
     const log = () => chat.mem.root.map((m) => [m.kind, m.text]);
     const infos = () => events.flatMap((e) => (e.type === "info" ? [e.message] : []));
-    return { chat, events, finished, infos, log, options, other, reports, session, usage };
+    return { chat, dir, events, finished, infos, log, options, other, reasoning, reports, session, usage };
   });
 
 // a stream-json user event carrying one tool_result, as parseEvent decodes it
@@ -192,6 +196,51 @@ test("a failed tool's echo keeps Claude Code's error flag on its log line, writt
       expect(toolMessages.map((m) => ("metadata" in m ? m.metadata : undefined))).toEqual([{ error: true }, undefined, undefined]);
       const results = r.events.flatMap((e) => (e.type === "logged" && e.entry.kind === "echo" ? [e.entry.error] : []));
       expect(results).toEqual([true, undefined, undefined]);
+    }),
+  );
+});
+
+test("Claude Code's thinking text goes beside the log, from its deltas or its whole block; the log, the view and the next turn's request are as without it", async () => {
+  const f = scripted({
+    turn: [
+      [{ thought: "The user wants a listing. Bash ls will do." }, { text: "Let me look." }, { thought: "Only the block says this.", streamed: false }, { tool: { input: { command: "ls" }, name: "Bash" } }, { toolResult: "a.txt" }, { thinking: 30 }, { text: "Found a.txt." }],
+      [{ text: "Again." }],
+    ],
+  });
+  await run(
+    f,
+    Effect.gen(function* () {
+      const r = yield* rig(f, { reasoning: true });
+      yield* r.session.input("list it");
+      yield* r.finished(1);
+      expect(r.log()).toEqual([
+        ["user", "list it"],
+        ["talk", "Let me look."],
+        ["tool", 'Bash {"command":"ls"}'],
+        ["echo", "a.txt"],
+        ["talk", "Found a.txt."],
+      ]);
+      // streamed as it came, each piece under the entry it came before; a thought with no text (the size only) keeps nothing
+      const said = r.events.flatMap((e) => (e.type === "reasoning-kept" ? [[e.i, e.at]] : []));
+      expect(said).toEqual([
+        [1, 1],
+        [2, 2],
+      ]);
+      expect(r.events.flatMap((e) => (e.type === "reasoning" && e.at === 1 ? [e.delta] : [])).join("")).toBe("The user wants a listing. Bash ls will do.");
+      expect(yield* r.reasoning!.piece(1)).toMatchObject({ engine: "claude-code:opus", text: "The user wants a listing. Bash ls will do." });
+      expect(yield* r.reasoning!.piece(2)).toMatchObject({ text: "Only the block says this." });
+      expect(r.reasoning!.heads(0, 10).map((h) => h.i)).toEqual([1, 2]);
+      // never in the log or the view
+      const main = readdirSync(`${r.dir}/chat/main`).map((n) => readFileSync(`${r.dir}/chat/main/${n}`, "utf8")).join("");
+      expect(main).not.toContain("listing");
+      expect(render(r.chat.mem)).not.toContain("listing");
+      // the next turn is sent the view and its message, not what the model thought
+      yield* r.session.input("and again");
+      yield* r.finished(2);
+      const second = JSON.stringify(f.of("turn")[1]?.ins ?? []);
+      expect(second).toContain("Found a.txt.");
+      expect(second).not.toContain("listing");
+      expect(second).not.toContain("Only the block");
     }),
   );
 });

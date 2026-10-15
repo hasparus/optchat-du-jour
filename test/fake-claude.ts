@@ -22,6 +22,8 @@
 //   {synthetic: "..."}            an assistant text block of model "<synthetic>", unstreamed: how
 //                                 Claude Code reports an API error before its error result
 //   {thinking: N}                 a thinking delta of ~N tokens and an empty thinking block
+//   {thought: "...", streamed?}   a thought with its text: thinking deltas carrying it (unless
+//                                 streamed is false), then the thinking block holding it whole
 //   {tool: {name, input}}         a tool_use block: its content_block_start, then the assistant block
 //   {toolResult: "...", is_error?}  the user event carrying that tool's result; is_error: true
 //                                 marks it failed, as Claude Code does (a Bash exit code, a
@@ -65,6 +67,7 @@ const Action = Schema.Union([
   Schema.Struct({ text: Schema.String }),
   Schema.Struct({ synthetic: Schema.String }),
   Schema.Struct({ thinking: Schema.Number }),
+  Schema.Struct({ thought: Schema.String, streamed: Schema.optional(Schema.Boolean) }),
   Schema.Struct({ tool: Schema.Struct({ input: Schema.Json, name: Schema.String }) }),
   Schema.Struct({ toolResult: Schema.String, is_error: Schema.optional(Schema.Json) }),
   Schema.Struct({ waitInput: Schema.Literal(true) }),
@@ -223,6 +226,12 @@ async function play(reply: Reply): Promise<boolean> {
       start();
       emit({ event: { delta: { estimated_tokens: a.thinking, thinking: "", type: "thinking_delta" }, index: 0, type: "content_block_delta" }, type: "stream_event" });
       emit({ message: { content: [{ signature: "sig", thinking: "", type: "thinking" }], model, role: "assistant" }, type: "assistant" });
+    } else if ("thought" in a) {
+      start();
+      if (a.streamed !== false)
+        for (const piece of a.thought.match(/[\s\S]{1,24}/gu) ?? [])
+          emit({ event: { delta: { thinking: piece, type: "thinking_delta" }, index: 0, type: "content_block_delta" }, type: "stream_event" });
+      emit({ message: { content: [{ signature: "sig", thinking: a.thought, type: "thinking" }], model, role: "assistant" }, type: "assistant" });
     } else if ("tool" in a) {
       start();
       emit({ event: { content_block: { id: "toolu_1", input: {}, name: a.tool.name, type: "tool_use" }, index: 0, type: "content_block_start" }, type: "stream_event" });

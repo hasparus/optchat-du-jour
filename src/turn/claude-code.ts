@@ -72,6 +72,7 @@ type User = typeof User.Type;
 type AssistantBlock = Assistant["message"]["content"][number];
 type TextBlock = Extract<AssistantBlock, { readonly type: "text" }>;
 type ToolUseBlock = Extract<AssistantBlock, { readonly type: "tool_use" }>;
+type ThinkingBlock = Extract<AssistantBlock, { readonly type: "thinking" }>;
 type UserContent = User["message"]["content"];
 type ToolResult = Extract<Exclude<UserContent, string>[number], { readonly type: "tool_result" }>;
 type ResultContent = ToolResult["content"];
@@ -79,6 +80,7 @@ type ResultContent = ToolResult["content"];
 // the schemas let any other block through as {type}; these tell the ones we log apart
 const isText = (b: AssistantBlock): b is TextBlock => b.type === "text" && "text" in b && typeof b.text === "string";
 const isToolUse = (b: AssistantBlock): b is ToolUseBlock => b.type === "tool_use" && "name" in b && typeof b.name === "string";
+const isThinking = (b: AssistantBlock): b is ThinkingBlock => b.type === "thinking";
 const isPlainUser = (c: UserContent): c is string => typeof c === "string";
 const isPlainResult = (c: NonNullable<ResultContent>): c is string => typeof c === "string";
 // A block that decoded as a tool_result has its fields; one only OtherBlock let through has none
@@ -96,8 +98,9 @@ const resultText = (content: ResultContent) => {
 // what claude's init says of the MCP server named optchat
 export const mcpStatus = (e: typeof Init.Type) => e.mcp_servers?.find(({ name }) => name === "optchat")?.status ?? "not listed";
 
-// Stream events to log entries, in stream order (ref §5.3). Live text goes out as it streams;
-// a thought only by its size. Replays: see onReplay; `passed` is what went to stdin after the
+// Stream events to log entries, in stream order (ref §5.3). Live text goes out as it streams; a
+// thought goes out as its size and, when Claude Code sends its text, as reasoning (never logged,
+// SPEC "Reasoning"): from its deltas, or from its whole block when no delta carried any. Replays: see onReplay; `passed` is what went to stdin after the
 // opening message, oldest first. `mcp` hears optchat's status from init. A message Claude Code
 // wrote itself (an API error, model "<synthetic>") is never logged as the model's: its text is
 // kept in `errors`, for the failure the error result after it becomes.
@@ -105,6 +108,7 @@ export function makeMapper(out: TurnEvents, passed: Mid[], mcp: (status: string)
   const errors: string[] = [];
   let openingSeen = false;
   let thoughtChars = 0;
+  let thoughtText = 0; // characters of this thought's text streamed so far
 
   // without the server named optchat the model has no memory tools; say so, and let the turn run
   const onInit = (e: typeof Init.Type) => {
@@ -116,10 +120,12 @@ export function makeMapper(out: TurnEvents, passed: Mid[], mcp: (status: string)
     if (e.event.type !== "content_block_delta") return Effect.void;
     const d = e.event.delta;
     if (d.type === "text_delta") return out.text(d.text);
-    // thinking text is not streamed today (ref §14 T1); if it ever is, only its size goes out
-    thoughtChars += d.thinking?.length ?? 0;
+    const said = d.thinking ?? "";
+    thoughtChars += said.length;
+    const fresh = thoughtText === 0;
+    thoughtText += said.length;
     const tokens = d.estimated_tokens ?? Math.ceil(thoughtChars / 4);
-    return tokens > 0 ? out.thinking(tokens) : Effect.void;
+    return Effect.andThen(said === "" ? Effect.void : out.reasoning(said, fresh), tokens > 0 ? out.thinking(tokens) : Effect.void);
   };
 
   const onAssistant = (e: Assistant) => {
@@ -132,8 +138,12 @@ export function makeMapper(out: TurnEvents, passed: Mid[], mcp: (status: string)
       (block) => {
         if (isText(block)) return block.text.trim() ? out.log("talk", block.text) : Effect.void;
         if (isToolUse(block)) return out.log("tool", `${block.name} ${JSON.stringify(block.input)}`);
-        if (block.type === "thinking") thoughtChars = 0; // a thought ended; never logged (docs/optchat.md §1)
-        return Effect.void;
+        if (!isThinking(block)) return Effect.void;
+        // a thought ended; never logged (docs/optchat.md §7). Its text, when no delta carried it
+        const whole = thoughtText === 0 && block.thinking ? out.reasoning(block.thinking, true) : Effect.void;
+        thoughtChars = 0;
+        thoughtText = 0;
+        return whole;
       },
       { discard: true },
     );

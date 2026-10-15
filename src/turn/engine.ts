@@ -52,7 +52,11 @@ export type TurnEvents = {
   // the call passed this mid-run message to the model: it is logged as `user` now, once
   readonly took: (message: Mid) => Effect.Effect<void, StoreError>;
   readonly text: (delta: string) => Effect.Effect<void>; // live reply text, never logged as such
-  readonly thinking: (tokens: number) => Effect.Effect<void>; // the size of a thought; its text is never kept
+  readonly thinking: (tokens: number) => Effect.Effect<void>; // the size of a thought so far, for the status line
+  // the text of a thought as it streams, `fresh` at the start of a new one (a thinking block, a
+  // reasoning item or summary part). The session streams it to clients and keeps it beside the log,
+  // never in it (SPEC "Reasoning"), with the reply or tool call it came before
+  readonly reasoning: (delta: string, fresh: boolean) => Effect.Effect<void>;
   readonly info: (message: string) => Effect.Effect<void>;
   readonly usage: (record: UsageRecord) => Effect.Effect<void>;
 };

@@ -231,7 +231,7 @@ test("an older config with cache.apiKeyTtls still loads, the key ignored; an eng
 // text with the log index its entry will get, thoughts, notices and usage records kept
 const turnRig = (rounds?: number) => {
   const usagePath = `${dir}/turn-${crypto.randomUUID()}.jsonl`;
-  const reports: string[] = [], records: UsageRecord[] = [], log: string[][] = [], texts: [number, string][] = [], infos: string[] = [], thoughts: number[] = [];
+  const reports: string[] = [], records: UsageRecord[] = [], log: string[][] = [], texts: [number, string][] = [], infos: string[] = [], thoughts: number[] = [], reasoned: string[] = [];
   const budget = makeBudget({ monthly: 5, report: (m) => Effect.sync(() => void reports.push(m)), usagePath });
   const box: ToolBox = { defs: [{ description: "Read a file", name: "Read", parameters: { type: "object" } }], run: (name) => Effect.succeed(toolOk(`${name} ran`)) };
   const engine = toolLoop({ instructions: "MASTER", provider: apiKeyProvider({ budget, clients, effort: "high", ref: API_KEY, settings: settings(5) }), ref: REF, rounds, toolsFor: () => box, vision: false });
@@ -241,15 +241,16 @@ const turnRig = (rounds?: number) => {
     log: (kind, text, flags) => Effect.sync(() => void log.push(flags?.error === true ? [kind, text, "error"] : [kind, text])),
     text: (delta) => Effect.sync(() => void texts.push([log.length, delta])),
     thinking: (tokens) => Effect.sync(() => void thoughts.push(tokens)),
+    reasoning: (delta) => Effect.sync(() => void reasoned.push(delta)),
     took: () => Effect.void,
     usage: (r) => budget.note(r).pipe(Effect.andThen(Effect.sync(() => void records.push(r)))),
   };
   const input: TurnInput = { device: "mini", earlier: [], media: [], mid: { next: Effect.never, ready: Effect.succeed([]) }, texts: ["go"], view: "<chat>\n</chat>" };
   const run = Effect.runPromise(Effect.flip(engine.run(input, out, null)).pipe(Effect.option));
-  return { budget, infos, log, records, run, texts, thoughts };
+  return { budget, infos, log, reasoned, records, run, texts, thoughts };
 };
 
-test("on the tool loop each block is logged as it completes, so text after a call streams as its own entry; thoughts go out by size, a cut reply is said", async () => {
+test("on the tool loop each block is logged as it completes, so text after a call streams as its own entry; thoughts go out by size and as text, a cut reply is said", async () => {
   fake.state.script = [
     { after: "Then I answer.", calls: [{ input: { file_path: "a.txt" }, name: "Read" }], text: "Let me look.", thinking: "x".repeat(40) },
     { stop: "max_tokens", text: "Done." },
@@ -270,6 +271,9 @@ test("on the tool loop each block is logged as it completes, so text after a cal
     [4, "Done."],
   ]);
   expect(t.thoughts).toEqual([10]);
+  // the thought's text goes to the session (SPEC "Reasoning"), its signature nowhere but back to the API
+  expect(t.reasoned.join("")).toBe("x".repeat(40));
+  expect(t.reasoned.join("")).not.toContain("sig");
   expect(t.infos).toEqual([`${REF}: the reply reached its 64000-token limit, so it may stop mid-sentence or mid-call`]);
 });
 

@@ -33,7 +33,11 @@ export type Call<E extends Tagged> = {
   readonly tools: readonly ToolDef[];
   readonly final: boolean; // no tool calls in this one
   readonly onText: (delta: string) => Effect.Effect<void>; // live text as it streams
-  readonly onThinking?: (tokens: number) => Effect.Effect<void>; // the size of the thought so far; its text is never kept
+  readonly onThinking?: (tokens: number) => Effect.Effect<void>; // the size of the thought so far
+  // the thought's text as it streams, when the API sends any (Anthropic's thinking, a Responses
+  // reasoning summary); `fresh` at the start of a new one. Never sent back as text: what goes back
+  // is the provider's own block (`kept`)
+  readonly onReasoning?: (delta: string, fresh: boolean) => Effect.Effect<void>;
   // every text and call item of the reply as it completes, in reply order, before the call returns
   readonly onItem?: (item: Item) => Effect.Effect<void, E>;
   readonly onStart?: Effect.Effect<void>; // the response started: its first stream event (src/engines/inflight.ts)

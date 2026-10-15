@@ -80,6 +80,7 @@ const quiet: TurnEvents = {
   info: () => Effect.void,
   log: () => Effect.void,
   text: () => Effect.void,
+  reasoning: () => Effect.void,
   thinking: () => Effect.void,
   took: () => Effect.void,
   usage: () => Effect.void,

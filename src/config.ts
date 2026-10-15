@@ -47,6 +47,11 @@ export const MASTER_DOWN_FOR = "30 minutes";
 // requests one turn of our own tool loop may make (openai-plan, api-key); the last one may not
 // call tools, so the turn ends with an answer (M5)
 export const TOOL_ROUNDS = 40;
+// what is kept of a turn's thinking in the reasoning side file (SPEC "Reasoning"): at most this
+// many characters per piece (the thinking before one reply or tool call) and per turn, the head of
+// each, in UTF-16 code units cut at a code-point boundary as CAP's are; what is left out is counted
+export const REASONING_PIECE = 30_000;
+export const REASONING_TURN = 120_000;
 
 // optchat.config.ts (SPEC "Constants and configuration"): engines, compactor chains per level,
 // cache TTLs, devices, who may connect.
@@ -264,6 +269,10 @@ export const Settings = Schema.Struct({
       planImages: Schema.optional(Schema.Boolean),
     }),
   ),
+  // A turn's thinking (SPEC "Reasoning"): `keep` writes it to the side file beside the log
+  // (chat/reasoning/, never the log, the tree or a request; off: it is only streamed live), and
+  // `commit` lets persist commit that file with the rest of the data dir. Both default to true.
+  reasoning: Schema.optional(Schema.Struct({ keep: Schema.optional(Schema.Boolean), commit: Schema.optional(Schema.Boolean) })),
   // Sign in with ChatGPT endpoints (src/openai/endpoints.ts): each key left out, or the whole field, decodes to its default
   openai: Endpoints.pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
 }).check(Schema.makeFilter((s) => {
@@ -342,3 +351,6 @@ export const mediaSettings = (settings: Settings) => {
   };
 };
 export type MediaSettings = ReturnType<typeof mediaSettings>;
+
+// the reasoning settings with their defaults filled in (SPEC "Reasoning")
+export const reasoningSettings = (settings: Settings) => ({ commit: settings.reasoning?.commit ?? true, keep: settings.reasoning?.keep ?? true });

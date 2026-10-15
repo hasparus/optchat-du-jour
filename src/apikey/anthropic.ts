@@ -39,6 +39,7 @@ export type MessagesAsk<E extends Tagged = never> = {
   readonly effort?: string;
   readonly onText?: (delta: string) => Effect.Effect<void>;
   readonly onThinking?: (tokens: number) => Effect.Effect<void>; // the size of the thought so far
+  readonly onReasoning?: (delta: string, fresh: boolean) => Effect.Effect<void>; // its text; the signature never goes out
   readonly onItem?: (item: Item) => Effect.Effect<void, E>; // each block as it completes, in order
   readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
 };
@@ -208,7 +209,7 @@ const blockOf = (b: typeof ContentBlock.Type): Block => {
   }
 };
 
-type Hooks<E extends Tagged> = Pick<MessagesAsk<E>, "onItem" | "onText" | "onThinking">;
+type Hooks<E extends Tagged> = Pick<MessagesAsk<E>, "onItem" | "onReasoning" | "onText" | "onThinking">;
 
 const onEvent =
   <E extends Tagged>(o: Hooks<E>) =>
@@ -236,7 +237,9 @@ const onEvent =
           }
           if (b?.type === "tool_use" && delta.partial_json !== undefined) b.json += delta.partial_json;
           if (b?.type === "thinking") {
+            const fresh = b.thinking === "";
             b.thinking += delta.thinking ?? "";
+            if (o.onReasoning && delta.thinking) yield* o.onReasoning(delta.thinking, fresh);
             b.signature += delta.signature ?? "";
             if (o.onThinking && delta.thinking) yield* o.onThinking(Math.ceil(b.thinking.length / 4));
           }
