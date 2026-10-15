@@ -2,7 +2,7 @@
 // outlives a reload, follow-ups queued for the next turn, sent now, or taken back, the model
 // picker (this page's own: each message names its model), and the resume after a usage limit.
 // 360 px wide, like the other specs.
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { answered, attach, expect, expectShowsLog, open, REPLY, send, SOL_REPLY, test } from "./fixture";
 
 const box = (page: Page) => page.getByLabel("Message");
@@ -13,6 +13,27 @@ async function followUps(page: Page, mode: "Steer" | "Queue") {
   await page.getByRole("button", { name: new RegExp(`^${mode}`) }).click();
   await expect(page.getByRole("button", { name: `Follow-ups: ${mode.toLowerCase()}` })).toBeVisible();
   await page.keyboard.press("Escape");
+}
+
+// a box's corners and edges, as the browser lays it out
+const geometry = async (box: Locator) =>
+  box.evaluate((el) => {
+    const cs = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    return { bottom: r.bottom, left: r.left, radii: [cs.borderTopLeftRadius, cs.borderTopRightRadius, cs.borderBottomRightRadius, cs.borderBottomLeftRadius], top: r.top, width: r.width };
+  });
+
+// The tray on the composer's top edge and the composer make one glass shape (DESIGN.md, Tray): the
+// tray as wide as the composer and sitting right on it, its top corners on the glass radius, the
+// composer's squared under it and its bottom ones rounded.
+async function expectJoined(page: Page, tray: Locator) {
+  const [t, c] = await Promise.all([geometry(tray), geometry(page.locator(".composer-surface"))]);
+  expect(t.radii).toEqual(["28px", "28px", "0px", "0px"]);
+  expect(c.radii).toEqual(["0px", "0px", "28px", "28px"]);
+  expect(Math.abs(t.bottom - c.top)).toBeLessThanOrEqual(1);
+  expect(Math.abs(t.left - c.left)).toBeLessThanOrEqual(1);
+  expect(Math.abs(t.width - c.width)).toBeLessThanOrEqual(1);
+  await expect(tray).toHaveAttribute("data-testid", "composer-tray");
 }
 
 test("a draft survives a reload: its text and its uploaded photo", async ({ page }) => {
@@ -122,6 +143,17 @@ test("the model picker: a message sent on GPT-6.1 Sol is served by the ChatGPT p
   await expectShowsLog(page, server, "indexes");
 });
 
+test("the queue's tray, with no held banner, makes one glass shape with the composer too", async ({ page }) => {
+  await open(page);
+  await send(page, "take your time");
+  await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+  await page.getByLabel("Message").fill("and after that, this");
+  await page.getByLabel("Message").press("Control+Enter"); // the other way: queued for the next turn
+  await expect(page.getByTestId("queue-item")).toBeVisible();
+  await expect(page.getByTestId("needs-model")).toHaveCount(0);
+  await expectJoined(page, page.getByTestId("queue").locator("xpath=.."));
+});
+
 test.describe("a spent Claude plan", () => {
   test.use({ spent: true });
 
@@ -147,26 +179,13 @@ test.describe("a spent Claude plan", () => {
     await expectShowsLog(page, server);
   });
 
-  test("the composer's glass is one radius at every corner, and the tray on it makes one shape with it", async ({ page }) => {
+  test("the composer's glass is one radius at every corner, and the held tray on it makes one shape with it", async ({ page }) => {
     await open(page);
-    const corners = async (selector: string) =>
-      page.locator(selector).first().evaluate((el) => {
-        const cs = getComputedStyle(el);
-        const r = el.getBoundingClientRect();
-        return { left: r.left, radii: [cs.borderTopLeftRadius, cs.borderTopRightRadius, cs.borderBottomRightRadius, cs.borderBottomLeftRadius], width: r.width };
-      });
-    const alone = await corners(".composer-surface");
+    const alone = await geometry(page.locator(".composer-surface"));
     expect(alone.radii).toEqual(["28px", "28px", "28px", "28px"]);
     await send(page, "are you there?");
     await expect(page.getByTestId("needs-model")).toBeVisible();
-    // the held tray: as wide as the composer, its top corners on the glass radius, the composer's
-    // squared under it
-    const tray = await corners('[data-testid="dock"] .glass-surface:not(.composer-surface)');
-    const composer = await corners(".composer-surface");
-    expect(tray.radii).toEqual(["28px", "28px", "0px", "0px"]);
-    expect(composer.radii).toEqual(["0px", "0px", "28px", "28px"]);
-    expect(tray.left).toBeCloseTo(composer.left, 0);
-    expect(tray.width).toBeCloseTo(composer.width, 0);
+    await expectJoined(page, page.getByTestId("needs-model").locator("xpath=.."));
   });
 });
 
@@ -208,6 +227,9 @@ test.describe("on a touch screen", () => {
     await plus.click();
     const sheet = page.getByRole("dialog", { name: "Add context" });
     await expect(sheet.getByRole("button", { name: /Camera/ })).toBeVisible();
+    // the glass radius on its top corners, not the Drawer's 10 px
+    const corners = await geometry(sheet);
+    expect(corners.radii).toEqual(["28px", "28px", "0px", "0px"]);
     const chooser = page.waitForEvent("filechooser");
     await sheet.getByRole("button", { name: /Photos & videos/ }).click();
     const picker = await chooser;

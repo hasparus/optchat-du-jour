@@ -236,8 +236,8 @@ for labels.
 
 ## Elevation & Depth
 
-Flat by default; depth comes from the two grounds and hairlines. Shadows are reserved for the one
-raised object (the composer) and for things that float over content.
+Flat by default; depth comes from the two grounds and hairlines. Shadows are reserved for glass
+(the composer, the tray on it, the sheets) and for things that float over content.
 
 ### Shadow Vocabulary
 - **Glass** (`glass-surface`, Components: Glass): the composer, the tray on its top edge and the
@@ -256,8 +256,8 @@ hairline, never a shadow.
 ## Shapes
 
 Radii from one base (10 px): 6 (inline code), 8 (buttons, tabs, rows' hover wash), 10 (tool panel,
-tool code), 14 (code blocks, tables, lists of devices, stat strip), 18 (bubbles), 22 (the
-composer), full (send, stop, pickers, chips, the scroll button). Glass has one radius,
+tool code), 14 (code blocks, tables, lists of devices, stat strip), 18 (bubbles), full (send,
+stop, pickers, chips, the scroll button). Glass has one radius,
 `--radius-glass` (28 px, `rounded-glass`): the composer's corners, the top corners of the tray on
 it (the composer's top corners square under a tray, so the two make one shape) and of a sheet.
 
@@ -315,26 +315,33 @@ sheet:
   reader asked for less transparency (`prefers-reduced-transparency`).
 - **Ring:** 1 px drawn as a box-shadow (`--glass-ring`: ink at 13%, dark white at 11%), never a
   CSS border.
-- **Sheen:** 1 px of white inset on the top edge (`--glass-sheen`: white at 100%, dark 10%), the
-  leading edge on a side panel, and a fill fading from white at 35% (dark 4%) to nothing by 44 px.
-- **Drop:** `--glass-drop`, soft and edgeless.
+- **Sheen:** 1 px of white inset on the top edge (`--glass-sheen`: white at 100%, dark 10%), and a
+  fill fading from white at 35% (dark 4%) to nothing by 44 px. `glass-surface-start` moves both to
+  the leading edge (a side panel); `glass-joined` drops both (the composer under a tray, whose own
+  top edge carries them).
+- **Drop:** `--glass-drop`, soft and edgeless, cast downward: under the composer and a bottom sheet
+  it lifts them off the page; a side panel's falls along its whole height and barely shows, so its
+  ring and vaul's dimmed page set it off.
 - **Radius:** `--radius-glass`, 28 px.
-- **Contrast:** muted text at 92% stays AA (4.6:1) even with black behind it, which is darker than
-  anything vaul's dimmed page shows; on the composer, over the dock's fade, the placeholder reads
-  5.5:1.
+- **Contrast:** muted text on a sheet, at 92%, stays AA (4.6:1) even with black behind it, which
+  is darker than anything vaul's dimmed page shows. On the composer, at 80% over the dock's fade:
+  ink about 15:1 with dark content under it, the placeholder about 5.1:1 at worst and 5.55:1 with
+  nothing under it; AA either way.
 
 ### Composer
 Modelled on Claude's app: a soft, translucent card with round controls.
 
-- **Surface:** Glass (below), at 80%, on `--radius-glass`; the group inside is see-through and
+- **Surface:** Glass (above), at 80%, on `--radius-glass`; the group inside is see-through and
   clipped to it. With the text focused the ring turns ivy at 65% with a 4 px ivy halo at 14%; a
-  dragged file does the same, stronger (`composer-surface`).
+  dragged file does the same, stronger (`composer-surface`: it changes `--glass-ring` only, two
+  layers like the resting ring, so the change animates). Under a tray, the tray takes the same ring
+  (`glass-tray`), each clipped where they meet, so focus outlines the one shape.
 - **Floating:** the dock floats over the end of the transcript, which scrolls on under it. The
   content keeps `--dock-h` clear below its last row, and the scroller's `scroll-padding-bottom` is
   `--dock-h` too, so focus never leaves a control under the dock (WCAG 2.2, 2.4.11). A fade runs from clear 24 px above the dock
   to the sheet at 80% by 3rem and solid at the bottom, so what passes under the composer is soft
-  and its text stays legible. Measured with a code block under it and no blur at all, the worst
-  case: ink 16:1, the placeholder 5.5:1 (light) and 5.8:1 (dark).
+  and its text stays legible. Measured with no blur at all: ink about 15:1 with dark content under
+  it, the placeholder about 5.1:1 at worst and 5.55:1 with nothing under it (light); 5.8:1 (dark).
 - **Text:** Read type, 52 px tall at rest, grows to 12rem or 40% of the viewport.
 - **Controls:** at the left, bare: "+" as an icon, its glyph on the start of the text above it, then
   the model, the device and the follow-up mode as plain 13 px labels (the model's effort, when the
@@ -349,10 +356,11 @@ Modelled on Claude's app: a soft, translucent card with round controls.
   keyboard dictates.
 - **Sheets:** the app has one, `components/sheet-drawer.tsx`: shadcn's Drawer on vaul (1.1.2,
   pinned; vaul is unmaintained since December 2024, kept by choice). From the bottom edge on a
-  phone (the glass radius on its top corners, vaul's grabber in the soft fill, a drag down closes
-  it), from the right as a side panel on a wide screen; a title and a 40 px close button, on Glass
-  at 92%, its sheen along the top edge (a side panel's along its leading edge). vaul's overlay dims
-  the page behind (black at 50%).
+  phone (the glass radius, 28 px, on its top corners in place of the Drawer's 10 px; vaul's grabber
+  in the soft fill; a drag down closes it), from the right as a side panel on a wide screen; a
+  title and a 40 px close button, on Glass at 92%, its sheen along the top edge (a side panel's
+  along its leading edge). vaul's overlay dims the page behind (black at 50%), and the strip vaul
+  extends past the screen's edge is the glass tint, opaque.
 - **Add context:** "+" opens it. On a touch screen it is the sheet from the bottom edge; with a
   mouse, a 256 px popover over the "+",
   but only when there is more than one choice: a mouse has no camera choice, so there "+" opens
@@ -363,7 +371,8 @@ Modelled on Claude's app: a soft, translucent card with round controls.
   camera). A choice opens the composer's own hidden picker from the tap, then closes the sheet.
 - **Tray:** what belongs to the composer sits in a tray attached to its top edge, as wide as it and
   on the same glass: its top corners on the glass radius, the composer's squared under it, so the
-  two make one shape and their rings meet in one line. In it, the held banner (amber ground) and
+  two make one shape and their rings meet in one line. The tray's top edge carries the sheen; the
+  composer under it has none, so the join is that line alone. In it, the held banner (amber ground) and
   the queue of waiting messages, separated by a hairline.
 - **Status:** above it, one 12 px line: a breathing ivy dot and the shimmering status while a turn
   runs; muted text for connecting or reconnecting.
@@ -435,9 +444,9 @@ transition stops; state still reads from text and colour (the shimmer stands sti
 - **Don't** colour the primary button; ink is the primary.
 - **Don't** box things inside the sheet with shadows; use a hairline.
 - **Don't** use mono for anything that isn't code, a command, a path, an id or output.
-- **Don't** add a second accent, a coloured side border, or glass or a gradient as decoration. The
-  composer is the one glass surface (a blur behind it, so the transcript runs on underneath), and
-  three gradients do jobs and are the only ones: the fade under the composer's dock, the composer's
-  top sheen, and shadcn's `shimmer` sweeping ink over live status that rests muted, so every colour
-  of the band stays AA (and plain text where the browser can't mix colours).
+- **Don't** add a second accent, a coloured side border, or glass or a gradient as decoration.
+  Glass is for the composer, the tray on it and the sheets (a blur behind them, so the page runs on
+  underneath), and three gradients do jobs and are the only ones: the fade under the composer's
+  dock, glass's sheen fill, and shadcn's `shimmer` sweeping ink over live status that rests muted,
+  so every colour of the band stays AA (and plain text where the browser can't mix colours).
 - **Don't** set text you read or type under 16 px on a touch screen.

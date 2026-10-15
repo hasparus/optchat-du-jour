@@ -76,7 +76,7 @@ export const PromptInput = ({ className, onSubmit, canSubmit = (text) => text.tr
           dragged over (composer-surface). One radius (rounded-glass), and the group inside clips to
           it. */}
       <div
-        className={cn("glass-surface composer-surface relative z-10 overflow-hidden rounded-glass transition-shadow duration-150", attached && "rounded-t-none")}
+        className={cn("glass-surface composer-surface relative z-10 overflow-hidden rounded-glass transition-shadow duration-150", attached && "glass-joined rounded-t-none")}
         data-dragging={dragging || undefined}
       >
         {/* the group itself is see-through: the surface above draws ground, ring and sheen */}

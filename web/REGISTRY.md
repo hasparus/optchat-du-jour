@@ -25,7 +25,7 @@ Block, AI Elements as patterns).
 | --- | --- | --- | --- |
 | ui/trace | radix-vega | lint-only edits | — |
 | ui/code-block, hooks/use-highlighted-code, lib/highlighter | radix-vega | themes; lazy load | GitHub's high-contrast pair (the default's #e36209 reads 3.5:1). shiki loads on first use, out of the startup bundle |
-| ui/drawer | new-york-v4 (vaul) | — | The app's one sheet, dressed in `components/sheet-drawer.tsx` |
+| ui/drawer | new-york-v4 (vaul) | the grabber in `bg-soft-strong` | It shows on glass. The app's one sheet, dressed in `components/sheet-drawer.tsx` |
 | ui/tooltip | new-york-v4 | — | One provider at the app root |
 | ui/collapsible, badge, input, textarea, marker, message, popover | new-york-v4 | — | — |
 | ui/bubble | new-york-v4 | a `soft` variant | The user's bubble |

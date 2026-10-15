@@ -33,11 +33,10 @@ export function SheetDrawer({ title, description, open, onOpenChange, trigger, s
           // the composer's glass (index.css glass-surface), at 92%: muted text stays AA over the
           // darkest thing vaul's dimmed page can put behind it. The Drawer's own edge border and its
           // 10 px corners (set per direction) give way to the glass's ring and radius.
-          // vaul's grabber (the Drawer's first child) in the composer's soft fill, so it shows on glass
-          "glass-surface border-0 bg-(--glass-bg) outline-none [--glass-alpha:92%] [&>div:first-child]:bg-soft-strong",
+          "glass-surface border-0 bg-(--glass-bg) outline-none [--glass-alpha:92%]",
           side === "bottom"
             ? "px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] data-[vaul-drawer-direction=bottom]:rounded-t-glass data-[vaul-drawer-direction=bottom]:border-t-0"
-            : "w-[min(24rem,90vw)] px-3 pt-[env(safe-area-inset-top)] data-[vaul-drawer-direction=right]:border-l-0 sm:max-w-sm",
+            : "glass-surface-start w-[min(24rem,90vw)] px-3 pt-[env(safe-area-inset-top)] data-[vaul-drawer-direction=right]:border-l-0 sm:max-w-sm",
           className,
         )}
         data-testid={testId}
