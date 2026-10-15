@@ -10,6 +10,8 @@
 
 @source "../node_modules/streamdown/dist/*.js";
 @source "../node_modules/@streamdown/code/dist/*.js";
+/* cn's compiled tables (lib/utils.ts) name every Tailwind class there is; none of them is used */
+@source not "./lib/cn-tables.ts";
 
 @custom-variant dark (&:is(.dark *));
 

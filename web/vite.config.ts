@@ -71,6 +71,11 @@ export default defineConfig({
       "@": fileURLToPath(new URL("src", import.meta.url)),
       // the server's wire contract: schemas and helpers with no node imports (SPEC "Protocol")
       "@wire": fileURLToPath(new URL("../src/wire.ts", import.meta.url)),
+      // shadcn's `cn` stands in for clsx and tailwind-merge, which Streamdown and
+      // class-variance-authority still import, so the bundle carries one implementation
+      // (the package's docs/aliasing.md)
+      clsx: "cn",
+      "tailwind-merge": "cn",
     },
   },
   server: {
