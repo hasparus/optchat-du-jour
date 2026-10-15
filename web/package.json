@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -p . && vite build",
-    "typecheck": "tsc -p .",
+    "build": "bun ../node_modules/typescript/bin/tsc -p . && vite build",
+    "typecheck": "bun ../node_modules/typescript/bin/tsc -p .",
     "cn-tables": "cn build --full --no-css --config cn.config.mjs -o src/lib/cn-tables.ts",
     "test": "bun test",
     "e2e": "vite build && playwright test",
@@ -20,7 +20,7 @@
     "@streamdown/code": "2.0.0",
     "class-variance-authority": "0.7.1",
     "cn": "0.4.0",
-    "effect": "4.0.1",
+    "effect": "4.0.4",
     "lucide-react": "1.52.0",
     "radix-ui": "1.6.7",
     "react": "19.3.0",
@@ -33,7 +33,7 @@
     "vaul": "1.1.2"
   },
   "devDependencies": {
-    "@effect/platform-bun": "4.0.0",
+    "@effect/platform-bun": "4.0.4",
     "@happy-dom/global-registrator": "20.14.5",
     "@playwright/test": "1.56.1",
     "@tailwindcss/vite": "4.3.3",

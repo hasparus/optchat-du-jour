@@ -17,7 +17,50 @@
 
     "types": ["bun"],
 
-    "plugins": [{ "name": "@effect/language-service" }]
+    "plugins": [{
+      "name": "@effect/language-service",
+      "allowedUnstableApis": [
+        "@effect/platform-bun/BunHttpServer#layer",
+        "@effect/platform-bun/BunRuntime#runMain",
+        "@effect/platform-bun/BunServices#layer",
+        "effect/FileSystem#FileSystem",
+        "effect/PlatformError#PlatformError",
+        "effect/encoding/Sse#SseError",
+        "effect/encoding/Sse#decode",
+        "effect/http/FetchHttpClient#layer",
+        "effect/http/HttpClient#HttpClient",
+        "effect/http/HttpClientError#isHttpClientError",
+        "effect/http/HttpClientRequest#HttpClientRequest",
+        "effect/http/HttpClientRequest#accept",
+        "effect/http/HttpClientRequest#acceptJson",
+        "effect/http/HttpClientRequest#bearerToken",
+        "effect/http/HttpClientRequest#bodyText",
+        "effect/http/HttpClientRequest#bodyUrlParams",
+        "effect/http/HttpClientRequest#get",
+        "effect/http/HttpClientRequest#post",
+        "effect/http/HttpClientRequest#setHeaders",
+        "effect/http/HttpRouter#HttpRouter",
+        "effect/http/HttpRouter#params",
+        "effect/http/HttpRouter#serve",
+        "effect/http/HttpRouter#use",
+        "effect/http/HttpServerRequest#HttpServerRequest",
+        "effect/http/HttpServerRequest#schemaSearchParams",
+        "effect/http/HttpServerResponse#empty",
+        "effect/http/HttpServerResponse#file",
+        "effect/http/HttpServerResponse#jsonUnsafe",
+        "effect/http/HttpServerResponse#schemaJson",
+        "effect/http/HttpServerResponse#text",
+        "effect/process/ChildProcess#make",
+        "effect/process/ChildProcessSpawner#ChildProcessSpawner",
+        "effect/socket/Socket#CloseEvent",
+        "effect/socket/Socket#Socket",
+        "effect/socket/Socket#SocketError",
+        "effect/socket/Socket#layerWebSocketConstructorGlobal",
+        "effect/socket/Socket#makeWebSocket",
+        "effect/socket/Socket#readerString"
+      ]
+    }]
   },
-  "include": ["*.ts", "src", "cli", "server", "device", "test", "dev"]
+  "include": ["*.ts", "src", "cli", "server", "device", "test", "dev"],
+  "exclude": ["repos/**", "node_modules"]
 }
