@@ -58,7 +58,13 @@ Every `ui/*` file below imports `cn` from `@/lib/utils` (see CLI); that is not r
 | ai-elements/message | the Message pattern (MessageFooter, Tooltip) | the footer's slot is `message-actions`; Streamdown hardened | Tap-to-reveal finds the row by it. No remote images; no downloads in the iOS app |
 | ai-elements/shimmer | shadcn's `shimmer` utility | rests muted, sweeps to ink; plain text without color-mix | AA throughout. Old Safari |
 | ai-elements/context | ours | a Popover, not the pattern's Hover Card | A phone can't hover |
-| ai-elements/prompt-input | ours on Input Group | — | Glass composer, held tray, iOS file inputs inside the tap, drafts, upload progress |
+| ai-elements/prompt-input | ours on Input Group, its tiles on ui/attachment | progress bar, HD toggle, the tile's 64 px dress | Glass composer, held tray, iOS file inputs inside the tap, drafts. Attachment has states but no progress |
+| ui/attachment | radix-vega | — | The tray's tiles and a message's thumbnails (dressed at the call sites: a 64 px tile; a thumbnail keeps its shape, not the registry's square crop) |
+| ui/dropdown-menu | radix-vega | — | The Model Selector. A disabled item's 50% opacity is set back at the call site (muted text instead, AA) |
+| ai-elements/plan | the Plan pattern on Trace | pending steps not dimmed; the call as logged behind one line; open state follows "newest" until chosen | AA (Trace's `pending` is 60% opacity); SPEC: rendering never hides what the model wrote |
+| ai-elements/sources | the Sources pattern on Trace | collapsed by default; the host beside a title | Tool lines are collapsed too; a title alone doesn't say where a link goes |
+| ai-elements/subagent | the Subagent pattern on Trace, Badge and our Tool | presentational, wired to nothing; Tell is a line inside it | SPEC M7 isn't built. A button can't sit in a trigger, so Stop is beside the line (the pattern's PlanAction) |
+| chat/pickers ModelSelector | the Model Selector pattern on Dropdown Menu | one menu, no effort menu; touch keeps the native select | An effort is part of a chain entry, not a free choice; SPEC wants the phone's own picker |
 
 ### What the radix-vega switch changes on screen
 
@@ -77,8 +83,82 @@ and Devices differ only in their timestamps, data and temp paths).
   `space-y-3` became `gap-3`).
 - **The sheet's title** keeps 600 weight (radix-vega's is 500) in `sheet-drawer.tsx`.
 
-## Not adopted yet
+## The October 2026 patterns, one by one
 
-- The patterns for what we don't log or do: Reasoning, Sources, Plan, Task, Confirmation,
-  Checkpoint, Model Selector, Suggestion, Questionnaire, Attachment.
-- Subagent, until the server reports subagents (M7). It belongs in Background work.
+All 21 patterns from the changelog, and the Attachment and Questionnaire components it names. (a)
+built on data the log already holds; (b) built with a small optional wire addition (none was
+needed); (c) needs a product or spec decision, or has no data source. "Had" means adopted before
+this round.
+
+| Pattern | Decision | What it is here |
+| --- | --- | --- |
+| Chat | had | MessageScroller |
+| Message | had | ai-elements/message |
+| Prompt Input | had | ai-elements/prompt-input |
+| Queue | had | ai-elements/queue |
+| Context | had | ai-elements/context (a Popover) |
+| Tool | had | ai-elements/tool |
+| Terminal | had, as Tool | A Bash call is a Tool line with its command and output. The pattern's extras need what we don't have: output streamed while it runs (Claude Code sends a tool's result whole) and an exit code (the log keeps the output and the E28 flag, not a code) |
+| Model Selector | (a) built | With a mouse; the native select stays on touch |
+| Attachment | (a) built | The tray's tiles and a message's thumbnails |
+| Plan | (a) built | A TodoWrite call's row, from its logged input. The default `master.tools` has no TodoWrite, so plans show only where the config adds it (below) |
+| Sources | (a) built | WebFetch addresses and WebSearch result links, under the turn's last reply |
+| Subagent | (c), presentational part built | M7 (below). The user chose to build the component now, wired to nothing |
+| Task | (c) | Below, with TodoWrite |
+| Reasoning, Chain of Thought | (c) | We don't log thinking (below). Chain of Thought's "Researched in 3 steps" summary over a turn's tool lines would also fold the work log DESIGN.md keeps as one line per call |
+| Confirmation | (c), no data | Turns run with `permissionMode: "bypassPermissions"` (ref D9) under `claude -p`, which can't stop for an answer: there is no approval to show |
+| Questionnaire | (c), no data | Claude Code's AskUserQuestion isn't in the turn's tools and can't wait for an answer under `-p`; a question the model asks is its reply, answered by the next message |
+| Checkpoint | (c), against the design | Restore drops every message after a point. Our log is append-only and is the memory (docs/optchat.md §1); the summary tree's nodes are summaries, not points to return to |
+| Suggestion | (c), no data | One endless chat with no "new chat": suggestions would be prompts we invent |
+| File Tree | (c) | The files a turn changed could come from its Edit and Write calls, but not from Bash (`sed -i`, `git mv`), so the tree would be wrong in the way that matters; one row per call already names each file |
+| Inline Citation | (c), no data | Claude Code's reply carries no citation spans, and a Hover Card can't open on a phone; Sources covers the links |
+| Stack Trace | (c), no data | A failed tool's output is text; frames would be parsed out of it, which E28 rules out for failure itself ("never guessed from what the output says") |
+| Test Results | (c), no data | Same: suites and failures would be parsed from a test runner's text |
+
+### For a decision
+
+**Reasoning (and Chain of Thought).** We never log thinking: docs/optchat.md §7 lists "Logging
+thoughts" as a mistake, SPEC "Turn and priming" step 6 says never log it, and the web rules say no
+thinking text. The server already hears thinking (it sends a token count as `CUSTOM thinking`).
+The ways to show it:
+
+1. *Stream only.* Send the text live as AG-UI's REASONING_* events (`@ag-ui/core` 1.0.1 has them),
+   keep it in the server's memory for the running turn so a page that joins mid-turn gets it, drop
+   it at RUN_FINISHED. Memory, the view and the cache don't change. The cost: it is gone on a reload
+   or a reconnect after the turn, so a reply reads differently live and later, which the "every row
+   from the log" rule exists to prevent; the socket carries a lot more on a long think; and only
+   `claude-code` has text to send (the ChatGPT plan's reasoning is encrypted, summaries only on
+   request), so the pattern would show for one engine. A wire addition, optional fields, (b)-sized.
+2. *Logged beside the memory.* A sidecar file per day keyed by log index (`thinking/<day>.jsonl`),
+   never read by the tree, the view or any request. The view and the cache don't change, and it
+   survives a reload. The cost: it is the largest thing a turn writes (often more than the reply),
+   so the data dir and its git history grow by that much, and persist pushes it to every device;
+   it is the model's private scratch, kept forever; and the log stops being the one source of truth
+   for what the page shows.
+3. *Logged in the log.* A new kind or key in `main`: the reference can't read it, parity breaks,
+   and it either enters the view (thinking summarized into memory: more compactions, a different
+   view, the cache rewritten) or needs a rule to skip it everywhere. This is the mistake §7 names.
+
+Our suggestion, if it is wanted: (1) with the in-memory buffer, labelled as live-only, and the
+Reasoning line collapsed into "Thought for 12 s" once the turn ends and the text is gone.
+
+**Subagent (M7).** The component (`ai-elements/subagent.tsx`) and the Background work group are
+built and shown on the story page. What M7 must add for them: a `subagents` list in `SessionState`
+(optional, so old clients and servers still decode) with each run's name, task, status
+(running / finished / failed / stopped, and why), device, engine and start time; its steps, as
+tool and echo pairs from its own log (`zoom("Name")`), sent as the run goes or on request when a
+line is opened; client frames `{"type":"tell","name","text"}` and `{"type":"stop-subagent","name"}`
+with their `info` answers; and the report, which reaches the chat as a `user` entry starting
+`[Name] ` (E23) and could render as a Subagent line pointing at the run. The open questions are
+M7's own: where a subagent's log lives (a stream of its own under `streams/`?), whether its
+steps are kept after it ends (Background work keeps no history today), and whether its report
+should be marked in the chat as one rather than read as a user message.
+
+**TodoWrite, and with it Task.** Plan is built but has nothing to show by default: the turn's
+`--tools` is `master.tools`, which defaults to Bash, Read, Edit, Write, Glob, Grep, WebFetch and
+WebSearch. Adding TodoWrite (to the config or the default) is a one-line change with costs: every
+turn's and compaction's request gains a tool definition (one cache rewrite, then stable); every
+TodoWrite call becomes a `tool` and `echo` pair in the log, so in memory, summarized and zoomable
+like any other call, and Claude Code calls it often on longer work. Task (the steps under what the agent is doing) needs a title per group of tool lines that
+the log doesn't hold; with TodoWrite on, the step in progress at the time could be that title for
+the calls after it. Both are the same decision.

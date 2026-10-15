@@ -9,7 +9,8 @@
     "typecheck": "tsc -p .",
     "cn-tables": "cn build --full --no-css --config cn.config.mjs -o src/lib/cn-tables.ts",
     "test": "bun test",
-    "e2e": "vite build && playwright test"
+    "e2e": "vite build && playwright test",
+    "shots": "vite build && playwright test -c playwright.shots.config.ts"
   },
   "dependencies": {
     "@ag-ui/core": "1.0.1",
