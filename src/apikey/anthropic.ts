@@ -9,7 +9,7 @@
 // compaction on the turns' model reads the turns' (E26). 3 of Anthropic's 4. Every entry is a 5-minute one, the API's
 // default (docs/optchat.md §3.3; E6's 1-hour entries are the Claude subscription's). Thinking blocks come back in the
 // next request exactly as they arrived, signature and all, as tool use with thinking requires.
-import { Effect, Option, Schema, Stream } from "effect";
+import { Cause, Effect, Option, Schema, Stream } from "effect";
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
 import { admitRequest } from "../engines/request-admission.ts";
@@ -40,6 +40,7 @@ export type MessagesAsk<E extends Tagged = never> = {
   readonly onText?: (delta: string) => Effect.Effect<void>;
   readonly onThinking?: (tokens: number) => Effect.Effect<void>; // the size of the thought so far
   readonly onItem?: (item: Item) => Effect.Effect<void, E>; // each block as it completes, in order
+  readonly onSettledUsage?: (spent: Spent, writes?: Writes) => Effect.Effect<void>;
   readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
 };
 // `writes` splits the cache writes by TTL when the API says how; `stop` is the API's stop_reason
@@ -133,15 +134,37 @@ export const requestBody = (ask: MessagesAsk<Tagged>) => {
 // the stream
 
 const ApiUsage = Schema.Struct({
-  input_tokens: Schema.optional(Schema.NullOr(Schema.Number)),
-  output_tokens: Schema.optional(Schema.NullOr(Schema.Number)),
-  cache_creation_input_tokens: Schema.optional(Schema.NullOr(Schema.Number)),
-  cache_read_input_tokens: Schema.optional(Schema.NullOr(Schema.Number)),
+  input_tokens: Schema.optional(Schema.NullOr(Schema.Natural)),
+  output_tokens: Schema.optional(Schema.NullOr(Schema.Natural)),
+  cache_creation_input_tokens: Schema.optional(Schema.NullOr(Schema.Natural)),
+  cache_read_input_tokens: Schema.optional(Schema.NullOr(Schema.Natural)),
   cache_creation: Schema.optional(
-    Schema.NullOr(Schema.Struct({ ephemeral_5m_input_tokens: Schema.optional(Schema.Number), ephemeral_1h_input_tokens: Schema.optional(Schema.Number) })),
+    Schema.NullOr(Schema.Struct({ ephemeral_5m_input_tokens: Schema.optional(Schema.Natural), ephemeral_1h_input_tokens: Schema.optional(Schema.Natural) })),
   ),
-});
+}).check(Schema.makeFilter((u) => {
+  const split = u.cache_creation;
+  if (u.cache_creation_input_tokens == null) return Schema.is(Schema.Natural)((split?.ephemeral_5m_input_tokens ?? 0) + (split?.ephemeral_1h_input_tokens ?? 0));
+  return split?.ephemeral_5m_input_tokens === undefined || split.ephemeral_1h_input_tokens === undefined ||
+    split.ephemeral_5m_input_tokens + split.ephemeral_1h_input_tokens === u.cache_creation_input_tokens;
+}));
 type ApiUsage = typeof ApiUsage.Type;
+const mergeUsage = (base: ApiUsage | null, update: ApiUsage | null | undefined): ApiUsage | null => {
+  if (!update) return base;
+  const aggregate = update.cache_creation_input_tokens ?? base?.cache_creation_input_tokens;
+  const oldSplit = aggregate === base?.cache_creation_input_tokens ? base?.cache_creation : undefined;
+  const split = oldSplit || update.cache_creation ? {
+    ephemeral_5m_input_tokens: update.cache_creation?.ephemeral_5m_input_tokens ?? oldSplit?.ephemeral_5m_input_tokens,
+    ephemeral_1h_input_tokens: update.cache_creation?.ephemeral_1h_input_tokens ?? oldSplit?.ephemeral_1h_input_tokens,
+  } : undefined;
+  return {
+    input_tokens: update.input_tokens ?? base?.input_tokens,
+    output_tokens: update.output_tokens ?? base?.output_tokens,
+    cache_creation_input_tokens: aggregate,
+    cache_read_input_tokens: update.cache_read_input_tokens ?? base?.cache_read_input_tokens,
+    cache_creation: split,
+  };
+};
+const validateUsage = Schema.decodeUnknownEffect(Schema.NullOr(ApiUsage));
 const ApiError = Schema.Struct({ type: Schema.optional(Schema.String), message: Schema.optional(Schema.String) });
 const messageStart = json(Schema.Struct({ message: Schema.Struct({ model: Schema.optional(Schema.String), usage: Schema.optional(ApiUsage) }) }));
 const ContentBlock = Schema.Struct({
@@ -218,8 +241,9 @@ const onEvent =
       switch (type) {
         case "message_start": {
           const { message } = yield* messageStart(data);
+          const candidate = yield* validateUsage(mergeUsage(r.start, message.usage));
           r.model = message.model ?? r.model;
-          r.start = message.usage ?? null;
+          r.start = candidate;
           return r;
         }
         case "content_block_start": {
@@ -251,8 +275,9 @@ const onEvent =
         }
         case "message_delta": {
           const e = yield* messageDelta(data);
+          const candidate = yield* validateUsage(mergeUsage(r.end ?? r.start, e.usage));
           r.stop = e.delta.stop_reason ?? r.stop;
-          r.end = e.usage ?? r.end;
+          r.end = candidate;
           return r;
         }
         case "message_stop":
@@ -265,7 +290,8 @@ const onEvent =
         default:
           return r; // ping
       }
-    });
+    }).pipe(Effect.catchCause((cause) => Effect.failCause(Cause.map(cause, (e: E | EngineError | Schema.SchemaError): E | EngineError =>
+      e instanceof Schema.SchemaError ? new ModelError({ message: "api-key: anthropic: invalid response event or usage counters", spent: spentOf(r) }) : e))));
 
 const itemOf = (b: Block): Item[] => {
   switch (b.type) {
@@ -286,24 +312,46 @@ const itemOf = (b: Block): Item[] => {
 // versions, the input side again); the later figure wins
 const usageOf = (start: ApiUsage | null, end: ApiUsage | null) => {
   const pick = (k: "input_tokens" | "output_tokens" | "cache_creation_input_tokens" | "cache_read_input_tokens") => end?.[k] ?? start?.[k] ?? 0;
-  const split = end?.cache_creation ?? start?.cache_creation;
-  const cacheWrite = pick("cache_creation_input_tokens");
+  const split = (end ?? start)?.cache_creation;
+  const cacheWrite = end?.cache_creation_input_tokens ?? start?.cache_creation_input_tokens ??
+    ((split?.ephemeral_5m_input_tokens ?? 0) + (split?.ephemeral_1h_input_tokens ?? 0));
   return {
     usage: { cacheRead: pick("cache_read_input_tokens"), cacheWrite, input: pick("input_tokens"), output: pick("output_tokens") } satisfies Tokens,
-    writes: (split ? { h1: split.ephemeral_1h_input_tokens ?? 0, m5: split.ephemeral_5m_input_tokens ?? 0 } : undefined) satisfies Writes | undefined,
+    writes: (split?.ephemeral_1h_input_tokens !== undefined && split.ephemeral_5m_input_tokens !== undefined && split.ephemeral_1h_input_tokens + split.ephemeral_5m_input_tokens === cacheWrite
+      ? { h1: split.ephemeral_1h_input_tokens, m5: split.ephemeral_5m_input_tokens } : undefined) satisfies Writes | undefined,
   };
 };
 
 // what a reply that went wrong cost so far, once the API has said anything about it
-const spentOf = (r: Read): Spent | undefined => (r.start === null && r.end === null ? undefined : { model: r.model, usage: usageOf(r.start, r.end).usage });
+const spentOf = (r: Read): Spent | undefined => {
+  const known = r.end ?? r.start;
+  return known && [known.input_tokens, known.output_tokens, known.cache_creation_input_tokens, known.cache_read_input_tokens, known.cache_creation?.ephemeral_5m_input_tokens, known.cache_creation?.ephemeral_1h_input_tokens].some((n) => n != null)
+    ? { model: r.model, usage: usageOf(r.start, r.end).usage } : undefined;
+};
 
-export const readMessages = <E extends Tagged = never>(stream: Stream.Stream<Uint8Array, EngineError>, ask: MessagesAsk<E>) =>
-  Effect.gen(function* () {
+export const readMessages = <E extends Tagged = never>(stream: Stream.Stream<Uint8Array, EngineError>, ask: MessagesAsk<E>): Effect.Effect<MessagesReply, EngineError | E> =>
+  Effect.suspend(() => {
     const init: Read = { blocks: [], done: false, end: null, model: ask.model, start: null, stop: null };
-    const r = yield* sseFold<Read, E>("api-key: anthropic", stream, init, onEvent<E>(ask), (state) => state.done, ask.onStart);
-    if (r.stop === "refusal") return yield* new Refusal({ message: "api-key: anthropic refused this request (stop_reason: refusal)", spent: spentOf(r) });
-    if (!r.done) return yield* new ModelError({ message: "api-key: anthropic: the stream ended without message_stop", spent: spentOf(r) });
-    return { items: r.blocks.flatMap(itemOf), model: r.model, stop: r.stop, ...usageOf(r.start, r.end) } satisfies MessagesReply;
+    return Effect.gen(function* () {
+      const r = yield* sseFold<Read, E>("api-key: anthropic", stream, init, onEvent<E>(ask), (state) => state.done, ask.onStart).pipe(Effect.catchCause((original) => {
+        const spent = spentOf(init);
+        const cause = Cause.map(original, (e: EngineError | E): EngineError | E => {
+          if (!spent) return e;
+          if (e instanceof ModelError && e.spent === undefined) return new ModelError({ message: e.message, spent });
+          if (e instanceof Refusal && e.spent === undefined) return new Refusal({ message: e.message, spent });
+          if (e instanceof UsageLimit && e.spent === undefined) return new UsageLimit({ message: e.message, spent });
+          return e;
+        });
+        return Effect.failCause(cause);
+      }));
+      if (r.stop === "refusal") return yield* new Refusal({ message: "api-key: anthropic refused this request (stop_reason: refusal)", spent: spentOf(r) });
+      if (!r.done) return yield* new ModelError({ message: "api-key: anthropic: the stream ended without message_stop", spent: spentOf(r) });
+      return { items: r.blocks.flatMap(itemOf), model: r.model, stop: r.stop, ...usageOf(r.start, r.end) } satisfies MessagesReply;
+    }).pipe(Effect.onExit((exit) => {
+      const spent = spentOf(init);
+      return spent && ask.onSettledUsage
+        ? ask.onSettledUsage(spent, exit._tag === "Success" ? exit.value.writes : undefined) : Effect.void;
+    }));
   });
 
 // The client: `key` is the API key now, UsageLimit when there is none (the chain moves on).

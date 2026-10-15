@@ -4,12 +4,12 @@
 // first asking the monthly budget and then priced from the table in optchat.config.ts (SPEC
 // "Usage and cost tracking"). The master runs it in our tool loop with the read-only tools; the
 // compactor (src/summarize/api-key.ts) runs it with none.
-import { Effect } from "effect";
+import { Cause, Effect } from "effect";
 import type { ApiKeys } from "../apikey/clients.ts";
 import { type Budget, dollarsOf } from "../apikey/budget.ts";
 import type { ApiKeyRef, Settings } from "../config.ts";
 import { MAX_TOKENS } from "../apikey/anthropic.ts";
-import { isEngineError, priced, UsageLimit } from "../engines/errors.ts";
+import { isEngineError, ModelError, priced, priceUsage, UsageLimit } from "../engines/errors.ts";
 import type { Provider } from "./provider.ts";
 import { responsesProvider } from "./responses.ts";
 
@@ -30,7 +30,10 @@ export const apiKeyProvider = (o: ApiKeyOptions): Provider => {
     const message = apiKey === undefined ? "api-key: no apiKey budget in optchat.config.ts" : `api-key: no price for ${name} in optchat.config.ts apiKey.prices`;
     return { auth: "api-key", call: () => Effect.fail(new UsageLimit({ message })), engine: "api-key" };
   }
-  const before = o.budget.check;
+  const before = Effect.try({
+    try: () => dollarsOf(price, { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 }),
+    catch: () => new ModelError({ message: "API-key price configuration is invalid" }),
+  }).pipe(Effect.andThen(o.budget.check));
   if (o.ref.provider === "openai")
     return responsesProvider({ auth: "api-key", before, dollars: (u) => dollarsOf(price, u), effort: o.effort, engine: "api-key", model: o.ref.model, respond: o.clients.openai });
   return {
@@ -39,12 +42,17 @@ export const apiKeyProvider = (o: ApiKeyOptions): Provider => {
     call: (c) =>
       Effect.gen(function* () {
         yield* before;
+        const { onSettledUsage } = c;
         const reply = yield* o.clients.anthropic({
           effort: o.effort,
           history: c.history,
           maxTokens: apiKey.maxTokens,
           model: o.ref.model,
           onItem: c.onItem,
+          onSettledUsage: onSettledUsage && ((spent, writes) => priceUsage(spent, (u) => dollarsOf(price, u, writes)).pipe(
+            Effect.match({ onFailure: () => spent, onSuccess: (dollars) => ({ ...spent, dollars }) }),
+            Effect.flatMap(onSettledUsage),
+          )),
           onStart: c.onStart,
           onText: c.onText,
           onThinking: c.onThinking,
@@ -53,8 +61,9 @@ export const apiKeyProvider = (o: ApiKeyOptions): Provider => {
           tools: c.tools,
         });
         const cut = reply.stop === "max_tokens" ? `the reply reached its ${apiKey.maxTokens ?? MAX_TOKENS}-token limit` : undefined;
-        return { cut, dollars: dollarsOf(price, reply.usage, reply.writes), items: reply.items, model: reply.model, usage: reply.usage };
-      }).pipe(Effect.mapError((e) => (isEngineError(e) ? priced(e, (u) => dollarsOf(price, u)) : e))),
+        const dollars = yield* priceUsage({ model: reply.model, usage: reply.usage }, (u) => dollarsOf(price, u, reply.writes));
+        return { cut, dollars, items: reply.items, model: reply.model, usage: reply.usage };
+      }).pipe(Effect.catchCause((cause) => Effect.failCause(Cause.map(cause, (e) => (isEngineError(e) ? priced(e, (u) => dollarsOf(price, u)) : e))))),
     engine: "api-key",
   };
 };

@@ -19,15 +19,21 @@ mise exec bun@1.4.2 -- bun node_modules/typescript/bin/tsc --version
 
 ## Deliberately accepted unstable exports
 
-Initial native scans checked 139 root and 59 web files with Effect V4 support, no missing plugin
-files, and no errors. Final coverage is 140 root / 59 web files after adding the tooling tests.
-A repeat scan with `--lspconfig '{}'` (permissions removed) reproduced exactly the 38/2 export
-sets configured below, proving no unused permission entries. All 135 root / 2 web warnings were
+Historical baseline native scans checked 139 root and 59 web files with Effect V4 support,
+no missing plugin files, and no errors. Baseline final coverage was 140 root / 59 web files
+after adding the tooling tests.
+A baseline repeat scan with `--lspconfig '{}'` (permissions removed) reproduced exactly the
+then-configured 38/2 export sets, proving no unused permission entries at that baseline.
+All 135 root / 2 web warnings at that baseline were
 `unstableApiUsage` (TS377136). These
 existing platform integrations implement filesystem/process/device IO, HTTP serving and
 provider transport, SSE and sockets. Rewriting runtime behavior is not part of this tooling change.
 
-The root plugin's **38 exact export identifiers** below accept only the existing uses. The web
+The root plugin's current **39 exact export identifiers** below include the reviewed
+`effect/encoding/Sse#Retry` addition. The pinned `Sse.ts` defines this decoder-produced retry
+directive as a typed class. Its exact `instanceof` guard normalizes SSE reconnect directives
+without swallowing generic callback errors that merely share the `Retry` tag. This source-guided
+addition does not change the historical scan counts above. The web
 plugin accepts only `@effect/platform-bun/BunRuntime#runMain` and `effect/http/FetchHttpClient#layer`
 for its fake-provider e2e server. There are no wildcard/module permissions, experimental API
 permissions, per-file ignores, or severity overrides. New APIs require a deliberate policy review.
@@ -38,6 +44,7 @@ permissions, per-file ignores, or severity overrides. New APIs require a deliber
 @effect/platform-bun/BunServices#layer
 effect/FileSystem#FileSystem
 effect/PlatformError#PlatformError
+effect/encoding/Sse#Retry
 effect/encoding/Sse#SseError
 effect/encoding/Sse#decode
 effect/http/FetchHttpClient#layer
