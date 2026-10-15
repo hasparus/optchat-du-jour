@@ -263,9 +263,9 @@ it (the composer's top corners square under a tray, so the two make one shape) a
 
 ## Components
 
-shadcn/ui first: the primitives in `components/ui` are the registry's (new-york-v4, Drawer and
-Tooltip included; radix-vega for Trace and Code Block, which new-york-v4 doesn't carry), and the AI
-Elements wrappers in `components/ai-elements` follow the October 2026 patterns built on them. Where
+shadcn/ui first: the primitives in `components/ui` are the registry's, in the radix-vega style
+(Drawer, Tooltip, Trace, Code Block, Dropdown Menu and Attachment included), and the AI Elements
+wrappers in `components/ai-elements` follow the October 2026 patterns built on them. Where
 ours differ, the reason is a behaviour the app needs (a touch target, the iOS WebView, contrast):
 component by component in [REGISTRY.md](./REGISTRY.md).
 
@@ -304,6 +304,17 @@ Built on shadcn/ui's Trace and Code Block (`components/ui/trace.tsx`, `code-bloc
 - **Open:** under Trace's indented rule, two small Code Blocks: "Input" (the JSON as logged,
   highlighted with GitHub's high-contrast pair) and "Output" with a copy button, or for a failed
   call the destructive block titled "Error".
+- **Plan** (a TodoWrite call, AI Elements' Plan): the same line with a list-check icon, "Plan" and
+  "2 of 4 done" in muted 12 px. Open: a line per step, a 14 px circle (filled check done, dot in
+  progress, hollow pending) and its text in 13 px, done ones muted; the step in progress reads in
+  its present tense and shimmers while the turn runs. Pending steps are not dimmed (Trace's 60%
+  would take muted text under AA). The call's input and output sit behind one more closed line,
+  "Input and output". A turn has one plan, its last TodoWrite call: the calls before it read as
+  plain tool lines. It is live (shimmering, its step in its present tense) only in the turn that
+  runs now. The chat's newest plan is open, the others closed, until the reader chooses.
+- **Sources** (AI Elements' Sources): under a turn's last reply, a line with a globe, "Used 3
+  sources". Open: a link per source, its title in ink, its host in muted 12 px, an up-right arrow;
+  28 px rows, 40 px on touch. Plain links: no favicons, nothing fetched.
 
 ### Glass
 One surface, `glass-surface` in `index.css`, for the composer, the tray on its top edge and every
@@ -346,7 +357,10 @@ Modelled on Claude's app: a soft, translucent card with round controls.
 - **Controls:** at the left, bare: "+" as an icon, its glyph on the start of the text above it, then
   the model, the device and the follow-up mode as plain 13 px labels (the model's effort, when the
   server's engine label names one, beside its name; a chevron on each picker, over the phone's own
-  select). No fill and no padding: muted, ink on hover or while open, the focus ring 4 px out. Each
+  select). With a mouse the model's chevron opens AI Elements' Model Selector instead: a menu
+  (raised, 14 px radius, Float shadow) of the engines grouped under where they run, in 11 px muted
+  labels, the chosen one checked, a down one disabled with why in muted text. No fill and no
+  padding: muted, ink on hover or while open, the focus ring 4 px out. Each
   has an invisible hit area of at least 40 × 40 px (the `bare-control` utility's `::before`, or the
   select laid over the same area), 6 px wider than its label each side; the 18 px gap between them
   keeps the targets from overlapping. At the right, send: a 36 px ink circle with an arrow (40 px on touch), a soft circle
@@ -373,7 +387,10 @@ Modelled on Claude's app: a soft, translucent card with round controls.
   on the same glass: its top corners on the glass radius, the composer's squared under it, so the
   two make one shape and their rings meet in one line. The tray's top edge carries the sheen; the
   composer under it has none, so the join is that line alone. In it, the held banner (amber ground) and
-  the queue of waiting messages, separated by a hairline.
+  the queue of waiting messages, separated by a hairline. The
+  attachments above the text are 64 px tiles (shadcn's Attachment): the photo dimmed while it
+  uploads, a 4 px progress bar along its foot, a remove button on its corner, HD on the photo; a
+  failed one in a red tint and ring, its error under it in red 11 px.
 - **Status:** above it, one 12 px line: a breathing ivy dot and the shimmering status while a turn
   runs; muted text for connecting or reconnecting.
 - **Hint:** under it, centred, 11 px muted: the shortcuts on a keyboard, or why send is off.
@@ -386,7 +403,11 @@ header's activity button (an ivy dot on it while anything runs): a phone's heade
 fifth target beside the tabs, the theme and, in the iOS app, the server button. Groups of trace lines (shadcn's Trace), each group collapsible with its count: "Running" (the
 turn: the engine's short name, then "Turn · on mini, 1 min 05 s", a Stop on a soft circle beside it;
 the compactor, a line per busy level of the tree), "Waiting for a turn" (each held message, its
-take-back beside it) and "Devices" (each runner, connected, offline or refused). A line is a 14 px
+take-back beside it), "Subagents" (SPEC M7: a Subagent line per run, "Running scout" with Stop
+beside it, open to its task, device and engine as badges, its steps as tool lines, a line to tell
+it something; "Ran", "Failed to run" or "Stopped" once over; built and on the story page, not in
+the app until the server reports subagents) and "Devices" (each runner, connected, offline or
+refused). A line is a 14 px
 icon, the title in ink and its kind and state in 12 px muted under it; a failed one is red. Only
 what the server tells: no group without lines, no history of finished work; with nothing running it
 says so in one muted line.

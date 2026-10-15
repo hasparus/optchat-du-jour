@@ -1,12 +1,15 @@
 // One row of the chat (SPEC "Web UI", Chat; DESIGN.md, The transcript): a user message as a soft
 // bubble on the right, a note likewise and marked as one, a reply as plain prose (markdown) with
 // copy and a raw-text toggle under it (rendering never hides what the model wrote), a tool call as
-// one work-log line with its input and output collapsed under it.
+// one work-log line with its input and output collapsed under it; a TodoWrite call as a plan, and
+// the links a turn's web tools used as its reply's sources.
 import { MessageAction, MessageActions, MessageResponse } from "@/components/ai-elements/message";
+import { Plan, PlanContent, PlanHeader, PlanLogged, PlanSteps } from "@/components/ai-elements/plan";
+import { Source, Sources, SourcesContent, SourcesTrigger } from "@/components/ai-elements/sources";
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from "@/components/ai-elements/tool";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Message, MessageContent, MessageHeader } from "@/components/ui/message";
-import { type Row, type ToolState, toolSummary } from "@/lib/rows";
+import { type PlanStep, planOf, type Row, type ToolState, toolSummary, type WebSource } from "@/lib/rows";
 import { splitMarkers } from "@wire";
 import { CheckIcon, CodeIcon, CopyIcon, NotebookPenIcon, TextIcon } from "lucide-react";
 import { Component, createContext, memo, type ReactNode, use, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -111,7 +114,7 @@ export function ReplyActions({ children }: { readonly children: ReactNode }) {
   return <ReplyActionsContext value={value}>{children}</ReplyActionsContext>;
 }
 
-function Reply({ id, text, streaming }: { id: string; text: string; streaming: boolean }) {
+function Reply({ id, text, streaming, sources }: { id: string; text: string; streaming: boolean; sources: readonly WebSource[] | undefined }) {
   const [raw, setRaw] = useState(false);
   const shown = use(ReplyActionsContext).open === id;
   return (
@@ -128,6 +131,16 @@ function Reply({ id, text, streaming }: { id: string; text: string; streaming: b
             )}
           </BubbleContent>
         </Bubble>
+        {sources !== undefined && sources.length > 0 && (
+          <Sources>
+            <SourcesTrigger count={sources.length} />
+            <SourcesContent>
+              {sources.map((s) => (
+                <Source key={s.url} source={s} />
+              ))}
+            </SourcesContent>
+          </Sources>
+        )}
         {/* the raw toggle is there from the first token (SPEC "Web UI"); copy waits for the whole reply */}
         <MessageActions className="-ml-1.5 gap-0.5">
           {!streaming && <CopyAction text={text} />}
@@ -149,7 +162,9 @@ function Reply({ id, text, streaming }: { id: string; text: string; streaming: b
 
 // A user message as logged: its attachments' thumbnails above the bubble (SPEC "Media"), and in
 // the bubble the text with its marker lines, dimmed. A thumbnail is our own asset, named by the
-// marker's 12 hex digits; only user rows show them, so nothing a model wrote is ever fetched.
+// marker's 12 hex digits; only user rows show them, so nothing a model wrote is ever fetched. A
+// thumbnail is a plain link to the full asset: it has no state or action for Attachment to carry,
+// and keeps its own shape where Attachment's image media is a square crop.
 function UserMessage({ text }: { text: string }) {
   const { body, markers } = splitMarkers(text);
   return (
@@ -159,6 +174,7 @@ function UserMessage({ text }: { text: string }) {
           <div className="flex flex-wrap justify-end gap-1.5" data-testid="user-attachments">
             {markers.map((m) => (
               <a
+                aria-label={`Open ${m.kind} ${m.sha}`}
                 className="block overflow-hidden rounded-xl border bg-muted transition-opacity hover:opacity-90"
                 href={`/api/assets/${m.sha}`}
                 key={m.line}
@@ -186,6 +202,26 @@ function UserMessage({ text }: { text: string }) {
   );
 }
 
+// A turn's TodoWrite call as a plan. The chat's newest plan is open and the others closed, live and
+// after a reload alike, until the reader opens or closes one: then their choice stays (the Reasoning
+// pattern's open state).
+function PlanRow({ row, steps, toolState, plan }: { row: Extract<Row, { kind: "tool" }>; steps: readonly PlanStep[]; toolState: ToolState; plan: ChatRowProps["plan"] }) {
+  const [chosen, setChosen] = useState<boolean | null>(null);
+  const live = plan === "live";
+  return (
+    <Plan onOpenChange={setChosen} open={chosen ?? (plan === "newest" || plan === "live")}>
+      <PlanHeader failed={toolState === "error"} running={toolState === "running" || (live && steps.some((s) => s.status !== "completed"))} steps={steps} />
+      <PlanContent>
+        <PlanSteps live={live} steps={steps} />
+        <PlanLogged>
+          <ToolInput input={row.args} />
+          {row.output !== null && <ToolOutput failed={toolState === "error"} output={row.output} />}
+        </PlanLogged>
+      </PlanContent>
+    </Plan>
+  );
+}
+
 // a row that fails to render shows its text as logged, and the rest of the chat stays up
 class RowBoundary extends Component<{ readonly text: string; readonly children: ReactNode }, { readonly failed: boolean }> {
   override state = { failed: false };
@@ -199,15 +235,28 @@ class RowBoundary extends Component<{ readonly text: string; readonly children: 
 
 // memo: a streamed token changes one row, and the rows above it (their objects are kept, rows.ts
 // chatRows) are not drawn again
-export const ChatRow = memo(function ChatRow({ row, streaming, toolState }: { row: Row; streaming: boolean; toolState: ToolState }) {
+// chatRows) are not drawn again. `plan`: this row is its turn's plan (rows.ts turnPlans), the
+// chat's newest ("newest", open until the reader chooses), in the turn that runs now ("live"), or
+// an older turn's ("turn", closed); a TodoWrite row without it is a plain tool line, an earlier
+// state of its turn's plan. `sources`: what the turn's web tools used, under its last reply (rows.ts
+// turnSources)
+export type ChatRowProps = {
+  row: Row;
+  streaming: boolean;
+  toolState: ToolState;
+  plan?: "newest" | "live" | "turn" | undefined;
+  sources?: readonly WebSource[] | undefined;
+};
+
+export const ChatRow = memo(function ChatRow({ row, streaming, toolState, plan, sources }: ChatRowProps) {
   return (
     <RowBoundary text={row.kind === "tool" ? `${row.name} ${row.args}\n${row.output ?? ""}` : row.text}>
-      <RowView row={row} streaming={streaming} toolState={toolState} />
+      <RowView plan={plan} row={row} sources={sources} streaming={streaming} toolState={toolState} />
     </RowBoundary>
   );
 });
 
-function RowView({ row, streaming, toolState }: { row: Row; streaming: boolean; toolState: ToolState }) {
+function RowView({ row, streaming, toolState, plan, sources }: ChatRowProps) {
   switch (row.kind) {
     case "user":
       return <UserMessage text={row.text} />;
@@ -226,8 +275,10 @@ function RowView({ row, streaming, toolState }: { row: Row; streaming: boolean; 
         </Message>
       );
     case "talk":
-      return <Reply id={row.key} streaming={streaming} text={row.text} />;
-    case "tool":
+      return <Reply id={row.key} sources={sources} streaming={streaming} text={row.text} />;
+    case "tool": {
+      const steps = plan === undefined ? null : planOf(row);
+      if (steps !== null) return <PlanRow plan={plan} row={row} steps={steps} toolState={toolState} />;
       return (
         <Tool>
           <ToolHeader detail={toolSummary(row.args)} name={row.name} state={toolState} />
@@ -237,5 +288,6 @@ function RowView({ row, streaming, toolState }: { row: Row; streaming: boolean; 
           </ToolContent>
         </Tool>
       );
+    }
   }
 }

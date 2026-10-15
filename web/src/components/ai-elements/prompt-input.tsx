@@ -5,6 +5,7 @@
 // thumbnails with their upload's progress and, for a photo, its tier (SPEC "Media"). Screenshots,
 // referenced sources, the command menu and the AI SDK's ChatStatus are left out, and sending never
 // waits for a reply. The text is the caller's state: the form does not clear it.
+import { Attachment, AttachmentAction, AttachmentActions, AttachmentDescription, AttachmentMedia, AttachmentTitle } from "@/components/ui/attachment";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "@/components/ui/input-group";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
@@ -128,49 +129,57 @@ export type PromptInputAttachmentProps = {
   readonly children?: ReactNode;
 };
 
+// One tile of the tray, on shadcn's Attachment (its `uploading`, `done` and `error` states, the
+// image media dimmed until the upload is done, an action to remove it) at its `tile` size, ours:
+// the tray's 64 px thumbnail (ui/attachment.tsx, REGISTRY.md). Here: the remove button on its corner, the HD toggle on the photo, and what Attachment has
+// no part for, the upload's progress bar. The name is for screen readers; a failure says why
+// under the tile (role alert), so it isn't told by colour alone.
 export const PromptInputAttachment = ({ name, kind, preview, progress, done, error, onRemove, high = false, onHigh }: PromptInputAttachmentProps) => {
   // a file the browser can't show (the server may still take it, or say why not)
   const [broken, setBroken] = useState(false);
+  const state = error ? "error" : done ? "done" : "uploading";
   return (
-    <div className="relative w-16 shrink-0" data-state={error ? "error" : done ? "done" : "uploading"} data-testid="attachment">
-      <div
-        className={cn(
-          "relative flex size-16 items-center justify-center overflow-hidden rounded-xl bg-muted text-muted-foreground",
-          error ? "shadow-[inset_0_0_0_1.5px_var(--destructive)]" : "hairline",
-        )}
+    <Attachment data-testid="attachment" size="tile" state={state}>
+      <AttachmentMedia
+        className={cn("transition-opacity duration-200", error ? "shadow-[inset_0_0_0_1.5px_var(--destructive)]" : "hairline")}
+        variant={kind === "image" && !broken ? "image" : "icon"}
       >
         {kind === "image" && !broken ? (
           <img
             alt={name}
-            className={cn("size-full object-cover transition-opacity duration-200", !done && !error && "opacity-60")}
+            className="size-full object-cover"
             onError={() => {
               setBroken(true);
             }}
             src={preview}
           />
         ) : kind === "image" ? (
-          <ImageOffIcon aria-label={name} className="size-5" />
+          <ImageOffIcon aria-label={name} />
         ) : (
-          <FilmIcon aria-label={name} className="size-5" />
+          <FilmIcon aria-label={name} />
         )}
         {!done && !error && (
           <Progress aria-label={`Uploading ${name}`} className="absolute inset-x-1.5 bottom-1.5 h-1 w-auto bg-background/70" value={Math.round(progress * 100)} />
         )}
-      </div>
-      <button
-        aria-label={`Remove ${name}`}
-        className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full bg-foreground text-background shadow-[0_0_0_2px_var(--raised)] transition-transform after:absolute after:-inset-2.5 hover:scale-105 active:scale-95 pointer-coarse:size-6"
-        onClick={onRemove}
-        type="button"
-      >
-        <XIcon className="size-3" strokeWidth={2.5} />
-      </button>
+      </AttachmentMedia>
+      <AttachmentTitle className="sr-only">{name}</AttachmentTitle>
+      <AttachmentActions className="absolute -top-1.5 -right-1.5">
+        <AttachmentAction
+          aria-label={`Remove ${name}`}
+          className="size-5 rounded-full border-0 bg-foreground text-background shadow-[0_0_0_2px_var(--raised)] transition-transform after:absolute after:-inset-2.5 hover:scale-105 hover:bg-foreground hover:text-background active:scale-95 pointer-coarse:size-6"
+          onClick={onRemove}
+          size="icon-xs"
+          variant="default"
+        >
+          <XIcon className="size-3" strokeWidth={2.5} />
+        </AttachmentAction>
+      </AttachmentActions>
       {kind === "image" && (onHigh !== undefined || high) && (
         <button
           aria-label={`High detail for ${name}`}
           aria-pressed={high}
           className={cn(
-            "absolute top-1 left-1 rounded-md px-1 text-2xs font-semibold tracking-wide shadow-xs after:absolute after:-inset-2",
+            "absolute top-1 left-1 z-20 rounded-md px-1 text-2xs font-semibold tracking-wide shadow-xs after:absolute after:-inset-2",
             high ? "bg-signal text-signal-foreground" : "bg-raised/90 text-foreground",
           )}
           disabled={!onHigh}
@@ -182,11 +191,11 @@ export const PromptInputAttachment = ({ name, kind, preview, progress, done, err
         </button>
       )}
       {error !== null && (
-        <p className="mt-1 line-clamp-3 text-2xs/tight text-destructive" role="alert" title={error}>
+        <AttachmentDescription className="mt-0 line-clamp-3 w-16 text-2xs/tight whitespace-normal text-destructive" role="alert" title={error}>
           {error}
-        </p>
+        </AttachmentDescription>
       )}
-    </div>
+    </Attachment>
   );
 };
 

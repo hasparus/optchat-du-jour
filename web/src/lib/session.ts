@@ -51,6 +51,10 @@ export type Session = {
   // the client ids this page asked the server to take back and has no answer for yet; a reconnect
   // forgets them (an answer told to the old socket is lost), so the take-back can be asked again
   readonly asking: readonly string[];
+  // the log index the running turn started at (RUN_STARTED's run id, `<first>` or `<first>+<n>`
+  // once resumed), null between turns, after the run ends or stops for a model, and while the link
+  // is down (a page that reconnects mid-turn is told again)
+  readonly run: number | null;
 };
 
 const MAX_MARKERS = 100;
@@ -61,7 +65,13 @@ const PAGE = 100; // older entries per page
 const MAX_FILL = 500; // a wider hole under the window is dropped, not fetched
 const PROBE = 500; // entries per /api/messages page when looking for messages sent before a reload
 
-const initial: Session = { asking: [], log: emptyLog, markers: [], pending: [], restored: null, state: null, stateAt: 0, status: "connecting", thinking: false };
+const initial: Session = { asking: [], log: emptyLog, markers: [], pending: [], restored: null, run: null, state: null, stateAt: 0, status: "connecting", thinking: false };
+
+// a run id's first log index: "12" and "12+1" (a resumed run) both started at 12
+export const runStart = (runId: string): number | null => {
+  const digits = /^(\d+)(?:\+\d+)?$/.exec(runId)?.[1];
+  return digits === undefined ? null : Number(digits);
+};
 
 // One message that waits for the model, and where it stands: "queued", the server holds it for a
 // later turn; "sent", a turn has it (offered to the running call, or being logged); "sending", the
@@ -326,10 +336,10 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
         if (s.thinking && s.log.draft?.kind !== "user") set({ thinking: false });
         return;
       case EventType.RUN_FINISHED:
-        set({ thinking: false });
+        set({ run: null, thinking: false });
         return;
       case EventType.RUN_ERROR:
-        set({ thinking: false });
+        set({ run: null, thinking: false });
         // a turn that stopped for a model says why in its own prompt, not here as well
         if (s.state?.phase !== "needs-model") mark(e.message, "error");
         return;
@@ -340,6 +350,8 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
         else if (e.name === "taken-back") takenBack(e.value.clientId, e.value.error, e.value.text, e.value.media);
         return;
       case EventType.RUN_STARTED:
+        set({ run: runStart(e.runId) });
+        return;
       case EventType.TEXT_MESSAGE_START:
       case EventType.TOOL_CALL_ARGS:
       case EventType.TOOL_CALL_END:
@@ -351,7 +363,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
   const unlisten = link.listen(event);
   const unstatus = link.onStatus((status) => {
     if (status === "open") conns++;
-    set(status === "open" ? { asking: [], status } : { status, thinking: false });
+    set(status === "open" ? { asking: [], status } : { run: null, status, thinking: false });
   });
 
   return {

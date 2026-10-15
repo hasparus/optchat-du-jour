@@ -84,7 +84,7 @@ export const ContextTrigger = ({ children, ...props }: ContextTriggerProps) => {
 export type ContextContentProps = ComponentProps<typeof PopoverContent>;
 
 export const ContextContent = ({ className, ...props }: ContextContentProps) => (
-  <PopoverContent className={cn("min-w-60 divide-y overflow-hidden rounded-xl border-0 p-0 shadow-float", className)} {...props} />
+  <PopoverContent className={cn("min-w-60 gap-0 divide-y overflow-hidden rounded-xl p-0 shadow-float ring-0", className)} {...props} />
 );
 
 export type ContextContentHeaderProps = ComponentProps<"div">;

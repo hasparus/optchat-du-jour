@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>optchat stories</title>
+    <script>
+      try {
+        document.documentElement.classList.toggle("dark", new URLSearchParams(location.search).get("theme") === "dark");
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/stories/stories.tsx"></script>
+  </body>
+</html>

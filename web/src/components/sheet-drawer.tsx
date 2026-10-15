@@ -36,7 +36,7 @@ export function SheetDrawer({ title, description, open, onOpenChange, trigger, s
           "glass-surface border-0 bg-(--glass-bg) outline-none [--glass-alpha:92%]",
           side === "bottom"
             ? "px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] data-[vaul-drawer-direction=bottom]:rounded-t-glass data-[vaul-drawer-direction=bottom]:border-t-0"
-            : "glass-surface-start w-[min(24rem,90vw)] px-3 pt-[env(safe-area-inset-top)] data-[vaul-drawer-direction=right]:border-l-0 sm:max-w-sm",
+            : "glass-surface-start w-[min(24rem,90vw)] px-3 pt-[env(safe-area-inset-top)] data-[vaul-drawer-direction=right]:rounded-l-none data-[vaul-drawer-direction=right]:border-l-0 sm:max-w-sm",
           className,
         )}
         data-testid={testId}
@@ -53,7 +53,7 @@ export function SheetDrawer({ title, description, open, onOpenChange, trigger, s
         }}
       >
         <DrawerHeader className="flex-row items-center justify-between gap-2 p-2 text-left md:text-left">
-          <DrawerTitle className="text-base tracking-tight">{title}</DrawerTitle>
+          <DrawerTitle className="text-base font-semibold tracking-tight">{title}</DrawerTitle>
           <DrawerDescription className="sr-only">{description}</DrawerDescription>
           <DrawerClose className="-mr-1 flex size-10 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
             <XIcon className="size-4" />

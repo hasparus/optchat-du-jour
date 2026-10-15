@@ -14,6 +14,8 @@
 //   E2E_QUICK_SUMMARIES=1  summaries without a `claude` call each, for a test that seeds a long log
 //   E2E_SPENT=1  every Claude turn ends on a usage limit
 //   E2E_TOOL_ERROR=1  every Claude turn's tool fails: Claude Code's is_error on its result (E28)
+//   E2E_PATTERNS=1  every Claude turn plans (TodoWrite), searches the web and fetches a page before
+//             its reply, as Claude Code logs them (e2e/replies.ts PLAN, SEARCH_RESULT)
 import { BunRuntime } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -26,7 +28,7 @@ import { login } from "../../src/openai/auth.ts";
 import { memorySecrets } from "../../src/secrets.ts";
 import { fakeOpenAi } from "../../test/fake-openai.ts";
 import { freePort } from "../../test/ports.ts";
-import { SOL_REPLY, TOOL_ERROR } from "./replies.ts";
+import { FETCHED, PLAN_DONE, PLAN_START, SEARCH_RESULT, SOL_REPLY, TOOL_ERROR } from "./replies.ts";
 
 const root = new URL("../..", import.meta.url).pathname;
 const home = Bun.env.E2E_HOME ?? mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
@@ -40,8 +42,24 @@ const reply = [
   { emit: { message: { content: [{ text: words.join(""), type: "text" }], role: "assistant" }, type: "assistant" } },
   { result: { text: words.join("") } },
 ];
+const todos = { result: "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress." };
+const patterns = [
+  { tool: { input: PLAN_START, name: "TodoWrite" } },
+  { toolResult: todos.result },
+  { sleep: 1500 },
+  { tool: { input: { query: "fake claude streaming" }, name: "WebSearch" } },
+  { toolResult: SEARCH_RESULT },
+  { tool: { input: { prompt: "What does it say about streaming?", url: FETCHED }, name: "WebFetch" } },
+  { toolResult: "The page says replies stream token by token." },
+  { tool: { input: PLAN_DONE, name: "TodoWrite" } },
+  { toolResult: todos.result },
+  ...words.flatMap((w) => [delta(w), { sleep: 300 }]),
+  { emit: { message: { content: [{ text: words.join(""), type: "text" }], role: "assistant" }, type: "assistant" } },
+  { result: { text: words.join("") } },
+];
 const spent = [{ result: { is_error: true, text: "Claude AI usage limit reached" } }];
-writeFileSync(`${home}/script.json`, JSON.stringify({ turn: [[Bun.env.E2E_SPENT ? spent : reply]] }));
+const turn = Bun.env.E2E_SPENT ? spent : Bun.env.E2E_PATTERNS ? patterns : reply;
+writeFileSync(`${home}/script.json`, JSON.stringify({ turn: [[turn]] }));
 writeFileSync(`${home}/fake.jsonl`, "");
 Object.assign(process.env, {
   FAKE_CLAUDE_LOG: `${home}/fake.jsonl`,

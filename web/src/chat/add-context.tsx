@@ -97,7 +97,7 @@ export function AddContext({ choices }: { readonly choices: readonly AddContextC
   return (
     <Popover modal onOpenChange={setOpen} open={open}>
       <PopoverTrigger asChild>{plus}</PopoverTrigger>
-      <PopoverContent align="start" aria-labelledby={title} className="w-64 rounded-2xl border-0 p-1.5 shadow-float" data-testid="add-context" role="dialog" side="top" sideOffset={8}>
+      <PopoverContent align="start" aria-labelledby={title} className="w-64 gap-0 rounded-2xl p-1.5 shadow-float ring-0" data-testid="add-context" role="dialog" side="top" sideOffset={8}>
         <p className="px-2 pt-1.5 pb-1 text-2xs font-medium text-muted-foreground" id={title}>
           Add context
         </p>
