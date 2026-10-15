@@ -43,7 +43,11 @@ export type Reasoning = {
 };
 
 // the head of a record: what /api/reasoning says of it without its text
-const headOf = (r: ReasoningRecord): ReasoningHead => ({ chars: r.text.length, cut: r.cut, engine: r.engine, i: r.i, ms: r.ms }); // JSON leaves `cut` out when undefined
+// `cut` only when some was left out: absent, not undefined, which the JSON codec would write as null
+const headOf = (r: ReasoningRecord): ReasoningHead => {
+  const head = { chars: r.text.length, engine: r.engine, i: r.i, ms: r.ms };
+  return r.cut === undefined ? head : { ...head, cut: r.cut };
+};
 
 // `len` bytes of `path` from `offset`
 const readAt = (path: string, offset: number, len: number) => {

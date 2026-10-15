@@ -331,8 +331,9 @@ export const makeSession = (o: {
         current.kept += piece.text.length;
         const now = clock.currentTimeMillisUnsafe();
         const ms = Math.max(0, now - piece.started);
-        // `cut` only when some was left out: JSON leaves it out when undefined
-        const record = { cut: piece.cut > 0 ? piece.cut : undefined, date: new Date(now).toISOString(), engine: piece.engine, i: entry.i, ms, text: piece.text } satisfies ReasoningRecord;
+        // `cut` only when some was left out: absent, not undefined, so no encoder writes it as null
+        const whole = { date: new Date(now).toISOString(), engine: piece.engine, i: entry.i, ms, text: piece.text } satisfies ReasoningRecord;
+        const record: ReasoningRecord = piece.cut > 0 ? { ...whole, cut: piece.cut } : whole;
         return sideFile.keep(record).pipe(Effect.andThen(publish({ at: piece.at, cut: piece.cut, i: entry.i, ms, runId, type: "reasoning-kept" })));
       });
     // the piece streaming in came before nothing the turn logged: it is not kept

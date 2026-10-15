@@ -8,6 +8,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { type Inbound, parseInbound } from "../cli/repl.ts";
 import { OUT_OF_DATE } from "../server/routes/ws.ts";
+import { ReasoningHeads, ReasoningPiece } from "../src/wire.ts";
 
 const ROOT = `${import.meta.dir}/../`;
 const FAKE = `${ROOT}test/fake-claude.ts`;
@@ -127,9 +128,12 @@ test("a turn over /ws streams to every client; the REPL is one of them; the mast
   expect(reasoning.at(-1)?.metadata?.i).toBe(1);
   // and read back after the turn: which entries have some, then the text of one
   const heads = await fetch(`${base}/api/reasoning?from=0&to=50`);
-  expect(await heads.json()).toMatchObject({ pieces: [{ chars: THOUGHT.length, engine: "claude-code:opus", i: 1 }] });
+  // exactly what the client's schema reads: no `cut` key when nothing was cut (not null)
+  expect(Object.keys(Schema.decodeUnknownSync(Schema.Struct({ pieces: Schema.Array(Schema.Record(Schema.String, Schema.Json)) }))(await heads.json()).pieces[0] ?? {}).toSorted()).toEqual(["chars", "engine", "i", "ms"]);
+  const decoded = await fetch(`${base}/api/reasoning?from=0&to=50`);
+  expect(Schema.decodeUnknownSync(ReasoningHeads)(await decoded.json()).pieces).toMatchObject([{ chars: THOUGHT.length, engine: "claude-code:opus", i: 1 }]);
   const piece = await fetch(`${base}/api/reasoning/text?i=1`);
-  expect(await piece.json()).toMatchObject({ i: 1, text: THOUGHT });
+  expect(Schema.decodeUnknownSync(ReasoningPiece)(await piece.json())).toMatchObject({ i: 1, text: THOUGHT });
   const statuses = await Promise.all(["text?i=0", "?from=5&to=1", "?from=0&to=999999"].map(async (q) => fetch(`${base}/api/reasoning${q.startsWith("?") ? "" : "/"}${q}`)));
   expect(statuses.map((r) => r.status)).toEqual([404, 400, 400]);
 

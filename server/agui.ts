@@ -80,8 +80,11 @@ const opening = (id: string): AgUiEvent[] => [{ messageId: id, type: EventType.R
 
 // where a piece of thinking went, on its REASONING_END: kept before entry `i` after `ms` (`cut`
 // only when characters were left out), or dropped
-const endOf = (how: { readonly i: number; readonly ms: number; readonly cut: number } | { readonly dropped: true }) =>
-  "dropped" in how ? { dropped: true } : { cut: how.cut > 0 ? how.cut : undefined, i: how.i, ms: how.ms }; // JSON leaves `cut` out when undefined
+const endOf = (how: { readonly i: number; readonly ms: number; readonly cut: number } | { readonly dropped: true }) => {
+  if ("dropped" in how) return { dropped: true };
+  const kept = { i: how.i, ms: how.ms };
+  return how.cut > 0 ? { ...kept, cut: how.cut } : kept;
+};
 
 // What one connection is told. It starts with a snapshot of the log's last `window` entries and
 // the state; if a run is going on, its RUN_STARTED and the reply streamed so far follow, so a client
