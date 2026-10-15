@@ -22,7 +22,7 @@ export function FollowUps({ link, followUp }: { readonly link: Link; readonly fo
           <span className="capitalize">{followUp}</span>
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-72 space-y-3 rounded-xl border-0 p-3 text-ui shadow-float">
+      <PopoverContent align="start" className="w-72 gap-3 rounded-xl p-3 text-ui shadow-float ring-0">
         <p className="font-medium">A message sent while a turn runs</p>
         <div className="grid grid-cols-2 gap-1.5">
           {choices.map((c) => (

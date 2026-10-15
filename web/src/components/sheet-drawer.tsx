@@ -48,7 +48,7 @@ export function SheetDrawer({ title, description, open, onOpenChange, trigger, s
         }}
       >
         <DrawerHeader className="flex-row items-center justify-between gap-2 p-2 text-left md:text-left">
-          <DrawerTitle className="text-base tracking-tight">{title}</DrawerTitle>
+          <DrawerTitle className="text-base font-semibold tracking-tight">{title}</DrawerTitle>
           <DrawerDescription className="sr-only">{description}</DrawerDescription>
           <DrawerClose className="-mr-1 flex size-10 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
             <XIcon className="size-4" />
