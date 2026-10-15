@@ -504,6 +504,9 @@ test("Background work: the running turn (engine, device, time, Stop), held messa
   fireEvent.click(screen.getByRole("button", { name: "Background work" }));
   const quiet = await screen.findByRole("dialog", { name: "Background work" });
   expect(within(quiet).getByText(/Nothing is running/)).toBeTruthy();
+  // M7's slot is empty in the app: the server tells of no subagents yet
+  expect(within(quiet).queryByText("Subagents")).toBeNull();
+  expect(within(quiet).queryAllByTestId("work-subagent")).toHaveLength(0);
   expect(within(quiet).getAllByTestId("work-device").map((d) => d.textContent)).toEqual(["miniThis server · connected, Claude Code 2.1.289", "macbookRunner · offline"]);
   fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
   fireEvent.animationEnd(quiet); // happy-dom runs no animations: the drawer waits for its slide-out's end

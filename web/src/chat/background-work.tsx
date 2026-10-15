@@ -8,8 +8,10 @@
 // the messages held for a later turn (each with take-back), the compactor's calls per level of the
 // tree (SessionState.compactions) and the device runners' connection (/api/devices, read again
 // each time the sheet opens). Nothing is kept once it ends: there is no "finished" history, since
-// the server has none to give. Subagents (SPEC M7) are a group of their own here when the server
-// tells them; there are none yet.
+// the server has none to give. Subagents (SPEC M7) are a group of their own (`subagents`, AI
+// Elements' Subagent): the slot is here, and only the story page and the tests fill it, since the
+// server tells of none until M7 is built.
+import { Subagent, type SubagentRun } from "@/components/ai-elements/subagent";
 import { SheetDrawer } from "@/components/sheet-drawer";
 import { Button } from "@/components/ui/button";
 import { TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceDescription, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace";
@@ -18,7 +20,7 @@ import { queued, type Queued, type Session, type SessionStore } from "@/lib/sess
 import type { Loaded } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 import { engineLabel, type Device, type SessionState } from "@wire";
-import { BotIcon, ClockIcon, LayersIcon, LaptopIcon, ServerIcon, SquareIcon, Undo2Icon } from "lucide-react";
+import { BotIcon, ClockIcon, LayersIcon, LaptopIcon, NetworkIcon, ServerIcon, SquareIcon, Undo2Icon } from "lucide-react";
 import { type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
 import { shortLabel } from "./pickers";
 
@@ -114,6 +116,9 @@ export function BackgroundWork({
   open,
   onOpenChange,
   trigger,
+  subagents = [],
+  onTellSubagent,
+  onStopSubagent,
 }: {
   readonly session: SessionStore;
   readonly link: Link;
@@ -121,6 +126,10 @@ export function BackgroundWork({
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly trigger?: ReactNode;
+  // SPEC M7's slot: the subagents the server tells of (none until M7; the story page fills it)
+  readonly subagents?: readonly SubagentRun[];
+  readonly onTellSubagent?: (name: string, text: string) => void;
+  readonly onStopSubagent?: (name: string) => void;
 }) {
   const s = useSyncExternalStore(session.subscribe, session.get);
   const side = useWide() ? "right" : "bottom";
@@ -147,7 +156,7 @@ export function BackgroundWork({
       trigger={trigger}
     >
       <div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-2 pt-1 pb-3">
-        {running === 0 && held.length === 0 && <p className="text-ui text-muted-foreground">Nothing is running. The next message starts a turn.</p>}
+        {running === 0 && held.length === 0 && subagents.length === 0 && <p className="text-ui text-muted-foreground">Nothing is running. The next message starts a turn.</p>}
         {running > 0 && state !== null && (
           <Group count={running} icon={<BotIcon className="size-3.5" />} title="Running">
             {turn !== null && (
@@ -192,6 +201,15 @@ export function BackgroundWork({
                 testId="work-compaction"
                 title={c.level === 0 ? "Summaries of messages" : `Summaries, level ${c.level}`}
               />
+            ))}
+          </Group>
+        )}
+        {subagents.length > 0 && (
+          <Group count={subagents.length} icon={<NetworkIcon className="size-3.5" />} title="Subagents">
+            {subagents.map((run) => (
+              <div data-testid="work-subagent" key={run.name} role="listitem">
+                <Subagent onStop={onStopSubagent} onTell={onTellSubagent} run={run} />
+              </div>
             ))}
           </Group>
         )}
