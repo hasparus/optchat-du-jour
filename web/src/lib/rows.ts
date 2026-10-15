@@ -21,6 +21,22 @@ export type Row =
 
 type ToolRow = Extract<Row, { kind: "tool" }>;
 
+// The row each entry made last time, so an entry the log still holds gives the same row object
+// when another is logged (ChatRow is memo'd, and what a row cites is read once per object, below).
+// Keyed by the entry object and its log index: the log keeps an entry's object until a snapshot or
+// a page replaces it (log.ts), and a new object is read again. An echo's row also depends on the
+// call it answers: it is kept only while that is the same row (null when it stands alone).
+type Made = { readonly i: number; readonly answers: Row | null; readonly row: Row };
+const made = new WeakMap<object, Made>();
+const kept = (e: Pick<Item, "i">, answers: Row | null): Row | undefined => {
+  const known = made.get(e);
+  return known?.i === e.i && known.answers === answers ? known.row : undefined;
+};
+const keep = (e: Pick<Item, "i">, answers: Row | null, row: Row): Row => {
+  made.set(e, { answers, i: e.i, row });
+  return row;
+};
+
 // An echo answers the nearest tool call before it that has no answer yet, as server/agui.ts pairs
 // them (a mid-run message can come between); one with none, or across a hole, stands alone.
 export function entryRows(entries: readonly Pick<Item, "error" | "i" | "kind" | "text">[]): Row[] {
@@ -35,17 +51,17 @@ export function entryRows(entries: readonly Pick<Item, "error" | "i" | "kind" | 
       case "user":
       case "note":
       case "talk":
-        out.push({ id: e.i, key, kind: e.kind, text: e.text });
+        out.push(kept(e, null) ?? keep(e, null, { id: e.i, key, kind: e.kind, text: e.text }));
         break;
       case "tool":
         open = out.length;
-        out.push({ failed: false, id: e.i, key, kind: "tool", output: null, ...splitTool(e.text) });
+        out.push(kept(e, null) ?? keep(e, null, { failed: false, id: e.i, key, kind: "tool", output: null, ...splitTool(e.text) }));
         break;
       case "echo": {
         const tool = open === null ? undefined : out[open];
         const failed = e.error === true;
-        if (open !== null && tool?.kind === "tool") out[open] = { ...tool, failed, output: e.text } satisfies ToolRow;
-        else out.push({ args: "", failed, id: e.i, key, kind: "tool", name: "output", output: e.text });
+        if (open !== null && tool?.kind === "tool") out[open] = kept(e, tool) ?? keep(e, tool, { ...tool, failed, output: e.text } satisfies ToolRow);
+        else out.push(kept(e, null) ?? keep(e, null, { args: "", failed, id: e.i, key, kind: "tool", name: "output", output: e.text }));
         open = null;
         break;
       }
@@ -193,6 +209,20 @@ export const planOf = (row: Pick<ToolRow, "args" | "name">): readonly PlanStep[]
 export const turnPlans = (rows: readonly Row[]): ReadonlySet<string> =>
   new Set(turnsOf(rows).flatMap((turn) => turn.findLast((r) => r.kind === "tool" && planOf(r) !== null)?.key ?? []));
 
+// How each turn's plan shows, keyed by row: the chat's newest open ("newest"), the others closed
+// ("turn"), and the newest plan of the run that goes on now "live". `run` is the log index that run
+// started at (Session.run), or null when none runs. A run can hold more than one turn's plan, since
+// a message steered into it starts a turn (turnsOf), but only its newest is live: a plan before the
+// steer is an earlier state of the same work, and two lists would shimmer at once.
+export type PlanState = "newest" | "live" | "turn";
+export function planStates(rows: readonly Row[], run: number | null): ReadonlyMap<string, PlanState> {
+  const keys = turnPlans(rows);
+  const plans = rows.filter((r) => keys.has(r.key));
+  const newest = plans.at(-1);
+  const live = run !== null && newest !== undefined && newest.id >= run;
+  return new Map(plans.map((r) => [r.key, r === newest ? (live ? "live" : "newest") : "turn"]));
+}
+
 // ---- the links a turn used: its WebFetch and WebSearch calls (the Sources pattern) ----
 
 export type WebSource = { readonly url: string; readonly title: string };
@@ -216,8 +246,9 @@ const Links = Schema.fromJsonString(Schema.Array(Schema.Struct({ title: Schema.o
 const decodeLinks = Schema.decodeUnknownOption(Links);
 
 const NO_SOURCES: readonly WebSource[] = [];
-// a row object never changes (rows.ts keeps the objects of entries already held), so what it cites
-// is read once per object: a streamed token doesn't parse the chat's searches again
+// a row object never changes, and entryRows gives the same one while its entries are the same
+// objects, so what it cites is read once per object: neither a streamed token nor a newly logged
+// entry parses the chat's searches again (a snapshot brings new entries, which are read once more)
 const cited = new WeakMap<object, readonly WebSource[]>();
 
 // what one tool row cites, in order: a WebFetch's address, a WebSearch's result links; the same
@@ -246,7 +277,7 @@ export const sourcesOfTool = (row: Pick<ToolRow, "args" | "name" | "output">): r
 
 // a turn's sources, deduplicated by address (first seen first), kept per the list of its rows'
 // arrays: the same tool rows give the same array back, so a reply drawn before (ChatRow is memo'd)
-// isn't drawn again on every streamed token
+// isn't drawn again on every streamed token or logged entry
 const turnLists = new WeakMap<readonly WebSource[], { readonly parts: readonly (readonly WebSource[])[]; readonly list: readonly WebSource[] }>();
 const sameParts = (a: readonly (readonly WebSource[])[], b: readonly (readonly WebSource[])[]) => a.length === b.length && a.every((part, k) => part === b[k]);
 

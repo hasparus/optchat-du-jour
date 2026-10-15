@@ -123,3 +123,27 @@ test("a turn's earlier TodoWrite calls fold into its latest plan: one Plan, the 
   const earlier = [...document.querySelectorAll('[data-slot="tool"]')].filter((t) => t.textContent.includes("TodoWrite"));
   expect(earlier).toHaveLength(1);
 });
+
+// a message steered into a run is a user row, which starts a turn of its own: the run then holds
+// two turns' plans, and only its newest is live
+const doing = (step: string) => `TodoWrite ${JSON.stringify({ todos: [{ activeForm: `${step}ing`, content: step, status: "in_progress" }] })}`;
+test("a steer inside a run leaves one live plan: the newest; the one before the steer closes", async () => {
+  const { play } = start([
+    { kind: "user", text: "go" },
+    { kind: "tool", text: doing("Search") },
+    { kind: "echo", text: "ok" },
+    { kind: "user", text: "and read the page too" },
+    { kind: "tool", text: doing("Read") },
+    { kind: "echo", text: "ok" },
+  ]);
+  await screen.findByText("Read");
+  play({ runId: "0", threadId: "mini", type: EventType.RUN_STARTED }, state({ phase: "running" }));
+  await screen.findByText("Reading");
+  const plans = [...document.querySelectorAll<HTMLElement>('[data-slot="plan"]')];
+  expect(plans).toHaveLength(2);
+  const live = plans.filter((p) => p.querySelector('[data-status="running"]') !== null);
+  expect(live).toHaveLength(1);
+  expect(live[0]?.textContent).toContain("Reading");
+  expect(screen.queryByText("Searching")).toBeNull();
+  expect(plans.map((p) => p.dataset.state)).toEqual(["closed", "open"]);
+});

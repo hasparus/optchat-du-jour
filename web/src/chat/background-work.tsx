@@ -141,6 +141,8 @@ export function BackgroundWork({
   }, [open, reload]);
 
   const running = (turn === null ? 0 : 1) + levels.length;
+  // what React draws nothing for is no group: the sheet still says nothing runs
+  const none = extra === undefined || extra === null || extra === false;
   return (
     <SheetDrawer
       className={side === "bottom" ? "max-h-[85dvh]" : undefined}
@@ -153,7 +155,7 @@ export function BackgroundWork({
       trigger={trigger}
     >
       <div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-2 pt-1 pb-3">
-        {running === 0 && held.length === 0 && extra === undefined && <p className="text-ui text-muted-foreground">Nothing is running. The next message starts a turn.</p>}
+        {running === 0 && held.length === 0 && none && <p className="text-ui text-muted-foreground">Nothing is running. The next message starts a turn.</p>}
         {running > 0 && state !== null && (
           <Group count={running} icon={<BotIcon className="size-3.5" />} title="Running">
             {turn !== null && (

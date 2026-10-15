@@ -131,9 +131,10 @@ export type PromptInputAttachmentProps = {
 
 // One tile of the tray, on shadcn's Attachment (its `uploading`, `done` and `error` states, the
 // image media dimmed until the upload is done, an action to remove it) at its `tile` size, ours:
-// the tray's 64 px thumbnail (ui/attachment.tsx, REGISTRY.md). Here: the remove button on its corner, the HD toggle on the photo, and what Attachment has
-// no part for, the upload's progress bar. The name is for screen readers; a failure says why
-// under the tile (role alert), so it isn't told by colour alone.
+// the tray's 64 px thumbnail (ui/attachment.tsx, REGISTRY.md). Here: the remove button on its
+// corner, the HD toggle on the photo, and what Attachment has no part for, the upload's progress
+// bar. The name is for screen readers; a failure says why under the tile (role alert), so it isn't
+// told by colour alone.
 export const PromptInputAttachment = ({ name, kind, preview, progress, done, error, onRemove, high = false, onHigh }: PromptInputAttachmentProps) => {
   // a file the browser can't show (the server may still take it, or say why not)
   const [broken, setBroken] = useState(false);

@@ -9,7 +9,7 @@ import { openLink, STALE_MS, wakeOnReturn } from "./connection";
 import { sentKey } from "./draft";
 import { applyEvent, applyPage, emptyLog, hole, type Log, MAX_HELD, tip, trimHeld, visible, withDraft } from "./log";
 import { type Inbound, parseFrame } from "./protocol";
-import { chatRows, entryRows, planOf, rowFor, rowIndexFor, sourcesOfTool, toolStateOf, toolSummary, turnPlans, turnSources } from "./rows";
+import { chatRows, entryRows, planOf, planStates, rowFor, rowIndexFor, sourcesOfTool, toolStateOf, toolSummary, turnPlans, turnSources } from "./rows";
 import { makeSession, queued, runStart, type Session, UNSENT } from "./session";
 import { buckets, byModel, periodOf, totals } from "./stats";
 
@@ -769,6 +769,37 @@ describe("sources: the links a turn's web tools used", () => {
     const copy = tools[0] === undefined ? null : { ...tools[0] };
     expect(copy === null ? null : sourcesOfTool(copy)).not.toBe(before[0]);
   });
+  test("a newly logged entry keeps the rows above it, so an earlier search isn't parsed again; an echo still fills its call's row", () => {
+    const searched = play(
+      emptyLog,
+      { messageId: "0", role: "user", type: EventType.TEXT_MESSAGE_START },
+      text(0, "look"),
+      end(0),
+      ...tool(1, "WebSearch", '{"query":"q"}'),
+    );
+    // the call before its echo, then with it: a new row for the call, the same one for the message
+    const before = entryRows(visible(searched));
+    const answered = play(searched, echo(2, 1, search([{ title: "A", url: "https://a.example/" }])), start(3), text(3, "found it"), end(3));
+    const rows = entryRows(visible(answered));
+    expect(rows[0]).toBe(before[0]);
+    expect(rows[1]).not.toBe(before[1]);
+    expect(rows[1]?.kind === "tool" ? rows[1].output : null).toContain("Links: ");
+    const cites = rows.map((r) => (r.kind === "tool" ? sourcesOfTool(r) : null));
+    const list = turnSources(rows).get("e3");
+    expect(list).toEqual([{ title: "A", url: "https://a.example/" }]);
+    // the next message is logged: every row above it is the same object, so the search's links are
+    // the same array (read once) and so is the turn's list
+    const next = play(answered, { messageId: "4", role: "user", type: EventType.TEXT_MESSAGE_START }, text(4, "thanks"), end(4));
+    const after = entryRows(visible(next));
+    expect(after).toHaveLength(4);
+    expect(after.slice(0, 3).every((r, k) => r === rows[k])).toBe(true);
+    expect(after.map((r) => (r.kind === "tool" ? sourcesOfTool(r) : null)).slice(0, 3).every((c, k) => c === cites[k])).toBe(true);
+    expect(turnSources(after).get("e3")).toBe(list);
+    // a snapshot brings new entry objects: their rows are read again, the same as before
+    const snap = entryRows(visible(applyPage(next, visible(next).map((x) => ({ i: x.i, kind: x.kind, text: x.text })))));
+    expect(snap[1]).not.toBe(after[1]);
+    expect(snap).toEqual(after);
+  });
   test("a turn ends at a user row: a steered message starts the next one (the log keeps no turn boundaries)", () => {
     const rows = entryRows([
       { i: 0, kind: "user", text: "look" },
@@ -811,6 +842,61 @@ describe("each turn's plan", () => {
   });
   test("a run id names the log index its turn started at, resumed or not", () => {
     expect([runStart("12"), runStart("12+1"), runStart("x"), runStart("")]).toEqual([12, 12, null, null]);
+  });
+  // a message steered into the run starts a turn of its own (turnsOf), so the run holds two plans
+  test("only the newest plan of the running run is live: one steered in after a plan doesn't make two", () => {
+    const rows = entryRows([
+      { i: 0, kind: "user", text: "old" },
+      { i: 1, kind: "tool", text: write("completed") },
+      { i: 2, kind: "echo", text: "ok" },
+      { i: 3, kind: "user", text: "go" },
+      { i: 4, kind: "tool", text: write("in_progress") },
+      { i: 5, kind: "echo", text: "ok" },
+      { i: 6, kind: "user", text: "and also this (steered)" },
+      { i: 7, kind: "tool", text: write("in_progress") },
+      { i: 8, kind: "echo", text: "ok" },
+    ]);
+    // the run started at 3: its newest plan is live, the one before the steer an older turn's
+    expect(Object.fromEntries(planStates(rows, 3))).toEqual({ e1: "turn", e4: "turn", e7: "live" });
+    // no run: the newest plan is open, nothing live
+    expect(Object.fromEntries(planStates(rows, null))).toEqual({ e1: "turn", e4: "turn", e7: "newest" });
+    // a run with no plan of its own (it started after them all): nothing live either
+    expect(Object.fromEntries(planStates(rows, 9))).toEqual({ e1: "turn", e4: "turn", e7: "newest" });
+  });
+});
+
+// Session.run, which says which plan is live: the run RUN_STARTED names, until it ends or the link drops
+describe("the running turn's start (Session.run)", () => {
+  test("RUN_STARTED sets it (a resumed run keeps its start); RUN_FINISHED, RUN_ERROR and a drop clear it; after a reconnect only RUN_STARTED sets it again", async () => {
+    const server = fakeServer(() => [snapshot([{ kind: "user", text: "old" }]), { snapshot: { ...IDLE, messages: 1 }, type: EventType.STATE_SNAPSHOT }]);
+    const link = openLink("ws://x/ws", { retryMs: 1, socket: server.socket });
+    const session = makeSession(link);
+    await tick();
+    const at = () => session.get().run;
+    expect(at()).toBeNull();
+    server.play({ runId: "3", threadId: "mini", type: EventType.RUN_STARTED });
+    expect(at()).toBe(3);
+    // resumed after a stop for a model: the same turn, from the same entry
+    server.play({ runId: "3+1", threadId: "mini", type: EventType.RUN_STARTED });
+    expect(at()).toBe(3);
+    server.play({ runId: "3+1", threadId: "mini", type: EventType.RUN_FINISHED });
+    expect(at()).toBeNull();
+    server.play({ runId: "5", threadId: "mini", type: EventType.RUN_STARTED });
+    expect(at()).toBe(5);
+    server.play({ message: "boom", type: EventType.RUN_ERROR });
+    expect(at()).toBeNull();
+    server.play({ runId: "7", threadId: "mini", type: EventType.RUN_STARTED });
+    expect(at()).toBe(7);
+    // the link drops mid-run: nothing is known to run until the server says so again
+    server.drop();
+    expect(at()).toBeNull();
+    await tick();
+    expect(session.get().status).toBe("open");
+    expect(at()).toBeNull();
+    // the server tells a page that joins mid-run the run it is in
+    server.play({ runId: "7", threadId: "mini", type: EventType.RUN_STARTED });
+    expect(at()).toBe(7);
+    link.close();
   });
 });
 
