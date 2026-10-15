@@ -10,7 +10,7 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { DeviceOffline } from "../engines/errors.ts";
 import { type Runner, type Spawn, exitText, makeClaude } from "./process.ts";
-import { TOOL_TIMEOUT } from "../tools/files.ts";
+import { TOOL_TIMEOUT, type ToolOutput, toolError } from "../tools/files.ts";
 import { Health, type ToDevice, type ToolCall, ToolReply, decodeFromDevice, frame, inbox } from "./wire.ts";
 
 export type RemoteTimeouts = {
@@ -153,15 +153,16 @@ const decodeReply = Schema.decodeUnknownEffect(Schema.fromJsonString(ToolReply))
 // is the tool's answer, as text: the turn goes on and the model reads why.
 export const remoteTool =
   (device: string, url: string) =>
-  (name: string, input: Schema.Json): Effect.Effect<string> => {
+  (name: string, input: Schema.Json): Effect.Effect<ToolOutput> => {
     const call: ToolCall = { input, name };
     return Effect.gen(function* () {
       const base = yield* ipv4(url);
       const response = yield* ask(HttpClientRequest.post(new URL("/tool", base)).pipe(HttpClientRequest.bodyText(JSON.stringify(call), "application/json")));
-      if (response.status !== 200) return `Error: ${device} did not run ${name}: the device runner answered ${response.status}`;
-      return (yield* decodeReply(response.text)).output;
+      if (response.status !== 200) return toolError(`Error: ${device} did not run ${name}: the device runner answered ${response.status}`);
+      const reply = yield* decodeReply(response.text);
+      return { error: reply.error === true, text: reply.output };
     }).pipe(
       Effect.timeout(Duration.sum(Duration.fromInputUnsafe(TOOL_TIMEOUT), Duration.seconds(5))),
-      Effect.catch((error) => Effect.succeed(`Error: ${device} did not run ${name}: ${error.message}`)),
+      Effect.catch((error) => Effect.succeed(toolError(`Error: ${device} did not run ${name}: ${error.message}`))),
     );
   };

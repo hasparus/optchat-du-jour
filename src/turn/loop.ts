@@ -3,7 +3,8 @@
 // the same system prompt, the view in the same blocks, then the new texts. Each reply's
 // text is logged as `talk` and each tool call as `tool` "name json" as it completes; the tools run
 // (read-only file tools on the turn's device, zoom and date from memory) and their output is
-// logged as `echo`, capped as Claude Code's is. A thought goes out only as its size. A message sent mid-run is taken after the current tool
+// logged as `echo`, capped as Claude Code's is, flagged `error` when the call failed or never ran
+// (E28). A thought goes out only as its size. A message sent mid-run is taken after the current tool
 // results, before the next request, and logged as `user` then (SPEC "Mid-run messages on
 // openai-plan"). The turn ends at the first reply that calls no tool; the last allowed request
 // may not call any.
@@ -77,14 +78,15 @@ export const toolLoop = (o: {
     };
     const live = (delta: string) => (track.refused === null ? out.text(delta) : Effect.void);
     const thinking = (tokens: number) => (track.refused === null ? out.thinking(tokens) : Effect.void);
-    const answer = (text: string) => out.log("echo", text).pipe(Effect.tap(() => Effect.sync(() => void track.open--)));
+    // `error`: the call failed or never ran, kept on the echo for clients (E28); the model reads the text only
+    const answer = (text: string, error: boolean) => out.log("echo", text, { error }).pipe(Effect.tap(() => Effect.sync(() => void track.open--)));
     // A turn that ends early (the provider failed, a cancel) leaves no tool entry without its echo,
     // as the last round does not either: each open call is answered `not run: <why>` as this call
     // unwinds, so on a cancel those echoes are the run's last entries, logged before the session
     // ends the run (run-finished) and logs what it held.
     const unanswered = (exit: Exit.Exit<void, StoreError | EngineError>) =>
       Exit.isFailure(exit) && track.refused === null && track.open > 0
-        ? Effect.forEach(Array.from({ length: track.open }), () => answer(`not run: ${Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : whyOf(exit.cause)}`), { discard: true }).pipe(Effect.ignoreCause)
+        ? Effect.forEach(Array.from({ length: track.open }), () => answer(`not run: ${Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : whyOf(exit.cause)}`, true), { discard: true }).pipe(Effect.ignoreCause)
         : Effect.void;
     return Effect.gen(function* () {
       const box = o.toolsFor(input.device);
@@ -133,12 +135,13 @@ export const toolLoop = (o: {
         if (final) {
           // the last request may call no tool; a model that still does gets each call answered in
           // the log, so no tool entry stands without its echo
-          for (const _ of calls) yield* answer(`not run: this turn used its ${rounds} requests`);
+          for (const _ of calls) yield* answer(`not run: this turn used its ${rounds} requests`, true);
           return yield* out.info(`${o.ref} stopped after ${rounds} requests with tool calls left`);
         }
         for (const call of calls) {
-          const output = cap(yield* box.run(call.name, call.input));
-          yield* answer(output);
+          const result = yield* box.run(call.name, call.input);
+          const output = cap(result.text);
+          yield* answer(output, result.error);
           history.push({ id: call.id, output, type: "result" });
         }
       }

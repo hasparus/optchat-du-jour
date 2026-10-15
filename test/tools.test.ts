@@ -9,6 +9,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { basename } from "node:path";
 import { deviceLayer } from "../device/runner.ts";
+import { remoteTool } from "../src/claude/remote.ts";
 import { toolBox } from "../src/tools/box.ts";
 import { makeFileTools } from "../src/tools/files.ts";
 import { newMem } from "../src/tree.ts";
@@ -35,7 +36,12 @@ test("Read, Glob and Grep stay inside the folders through .., symlinks and absol
   symlinkSync(`${outside}/secret.txt`, `${inside}/link.txt`);
 
   const run = await Effect.runPromise(makeFileTools([inside]).pipe(Effect.provide(BunServices.layer)));
-  const call = async (name: string, input: Record<string, string>) => Effect.runPromise(run(name, input));
+  // the text the model reads; every answer that starts "Error:" is flagged, and no other (E28)
+  const call = async (name: string, input: Record<string, string>) => {
+    const { error, text } = await Effect.runPromise(run(name, input));
+    expect(error).toBe(text.startsWith("Error: "));
+    return text;
+  };
 
   expect(await call("Read", { file_path: "src/a.txt" })).toBe("     1\talpha\n     2\tbeta");
   for (const path of [`${outside}/secret.txt`, "escape/secret.txt", "link.txt", `../${basename(outside)}/secret.txt`, `${inside}/src/../../${basename(outside)}/secret.txt`])
@@ -54,6 +60,10 @@ test("Read, Glob and Grep stay inside the folders through .., symlinks and absol
   for (const name of ["Write", "Edit", "Bash"]) expect(await call(name, { command: "touch x", file_path: "x" })).toStartWith(`Error: there is no tool named ${name}`);
   const box = toolBox({ device: "mini", files: run, folders: [inside], mem: newMem() });
   expect(box.defs.map((d) => d.name)).toEqual(["Read", "Glob", "Grep", "zoom", "date"]);
+  // input that isn't JSON fails; zoom of a node that isn't there answers, as /mcp does (no isError)
+  expect(await Effect.runPromise(box.run("Read", "{not json"))).toEqual({ error: true, text: "Error: the input of Read is not JSON" });
+  expect(await Effect.runPromise(box.run("zoom", '{"id":5,"n":1}'))).toMatchObject({ error: false });
+  expect(await Effect.runPromise(box.run("Read", JSON.stringify({ file_path: "src/a.txt" })))).toEqual({ error: false, text: "     1\talpha\n     2\tbeta" });
 });
 
 test("a Grep pattern that backtracks without end times out, and the server stays responsive meanwhile", async () => {
@@ -76,13 +86,15 @@ test("a Grep pattern that backtracks without end times out, and the server stays
   const took = performance.now() - started;
   clearInterval(tick);
 
-  expect(reply).toBe("Error: Grep took longer than 1s");
+  expect(reply).toEqual({ error: true, text: "Error: Grep took longer than 1s" });
   expect(took).toBeLessThan(3000);
   expect(worst).toBeLessThan(500);
 
   // the next search starts afresh, and a plain one in the same folder is answered
-  expect(await Effect.runPromise(run("Grep", { pattern: "needle" }))).toBe(`${folder}/fine.txt`);
-  expect(await Effect.runPromise(run("Grep", { pattern: "(" }))).toStartWith("Error: bad pattern");
+  expect(await Effect.runPromise(run("Grep", { pattern: "needle" }))).toEqual({ error: false, text: `${folder}/fine.txt` });
+  const bad = await Effect.runPromise(run("Grep", { pattern: "(" }));
+  expect(bad).toMatchObject({ error: true });
+  expect(bad.text).toStartWith("Error: bad pattern");
 });
 
 test("the device runner's POST /tool answers a trusted caller and refuses a browser", async () => {
@@ -93,17 +105,26 @@ test("the device runner's POST /tool answers a trusted caller and refuses a brow
     Effect.scoped(
       Effect.gen(function* () {
         yield* Layer.build(deviceLayer({ claude: ECHO, folders: [folder], host: "127.0.0.1", name: "macbook", port, trust: { _tag: "loopback" } }));
-        const post = (headers: Record<string, string>) =>
+        const post = (headers: Record<string, string>, file = "notes.txt") =>
           Effect.promise(async () => {
             const response = await fetch(`http://127.0.0.1:${port}/tool`, {
-              body: JSON.stringify({ input: { file_path: `${folder}/notes.txt` }, name: "Read" }),
+              body: JSON.stringify({ input: { file_path: `${folder}/${file}` }, name: "Read" }),
               headers: { "content-type": "application/json", ...headers },
               method: "POST",
             });
             return { status: response.status, text: await response.text() };
           });
         expect(yield* post({})).toEqual({ status: 200, text: JSON.stringify({ output: "     1\thello" }) });
+        // a call that failed says so beside its text (E28); one that worked leaves `error` out, as before
+        expect(yield* post({}, "missing.txt")).toEqual({ status: 200, text: JSON.stringify({ error: true, output: `Error: ${folder}/missing.txt does not exist on this device` }) });
         expect((yield* post({ origin: "https://evil.example" })).status).toBe(403);
+        // the server's side of /tool reads the flag, and flags a runner it could not reach
+        const remote = remoteTool("macbook", `http://127.0.0.1:${port}`);
+        expect(yield* remote("Read", { file_path: `${folder}/notes.txt` })).toEqual({ error: false, text: "     1\thello" });
+        expect(yield* remote("Read", { file_path: `${folder}/missing.txt` })).toEqual({ error: true, text: `Error: ${folder}/missing.txt does not exist on this device` });
+        const gone = yield* remoteTool("macbook", `http://127.0.0.1:${freePort()}`)("Read", { file_path: "x" });
+        expect(gone.error).toBe(true);
+        expect(gone.text).toStartWith("Error: macbook did not run Read: ");
       }),
     ),
   );

@@ -89,6 +89,38 @@ test("the snapshot shows the log: messages, a collapsed tool call, markdown with
   expect(screen.getByText("Two things: **notes** and a repo.")).toBeTruthy();
 });
 
+test("a tool call reads as Failed when its echo is flagged, not from its output, which stays as logged", async () => {
+  const { play } = start([
+    { kind: "user", text: "lint it" },
+    { kind: "tool", text: 'Bash {"command":"bun run lint"}' },
+    { error: true, kind: "echo", text: "src/x.ts:1:1 lint complaint" },
+    // looks like a failure, but the log doesn't say so: an echo from before the flag
+    { kind: "tool", text: 'Bash {"command":"grep -h Error: log.txt"}' },
+    { kind: "echo", text: "Error: disk quota exceeded" },
+  ]);
+  const failed = await screen.findByText("Failed");
+  const row = failed.closest('[data-slot="tool"]');
+  expect(row?.textContent).toContain("bun run lint"); // the line names the command
+  expect(screen.getAllByText("Failed")).toHaveLength(1); // the grep says nothing aloud but "Completed"
+  expect(screen.getByText("Completed")).toBeTruthy();
+  fireEvent.click(screen.getByText("bun run lint"));
+  await waitFor(() => {
+    expect(row?.textContent).toContain("src/x.ts:1:1 lint complaint");
+  });
+  expect(row?.textContent).toContain("Error"); // the output's header
+  // a live result carries the flag too
+  play(
+    { parentMessageId: "5", toolCallId: "t5", toolCallName: "Read", type: EventType.TOOL_CALL_START },
+    { delta: '{"file_path":"gone.md"}', toolCallId: "t5", type: EventType.TOOL_CALL_ARGS },
+    { toolCallId: "t5", type: EventType.TOOL_CALL_END },
+    { content: "File does not exist.", messageId: "6", metadata: { error: true }, role: "tool", toolCallId: "t5", type: EventType.TOOL_CALL_RESULT },
+  );
+  await waitFor(() => {
+    expect(screen.getAllByText("Failed")).toHaveLength(2);
+  });
+  expect(screen.getAllByText("Failed")[1]?.closest('[data-slot="tool"]')?.textContent).toContain("gone.md");
+});
+
 const CODE: Entry[] = [{ kind: "talk", text: "Here:\n\n```ts\nconst x = 1;\n```" }];
 const downloads = () => document.querySelectorAll('[data-streamdown="code-block-download-button"]').length;
 
@@ -203,6 +235,33 @@ test("after a reconnect the chat is rebuilt from the new snapshot, without dupli
   expect(screen.getByRole("img", { name: "connection open" })).toBeTruthy();
 });
 
+test("an open tool row copies its input and its output as logged, escape sequences and all", async () => {
+  const copied: string[] = [];
+  const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text: string) => void copied.push(text) } });
+  try {
+    start([
+      { kind: "user", text: "colours?" },
+      { kind: "tool", text: 'Bash {"command":"ls --color"}' },
+      { kind: "echo", text: "\u001B[34mnotes.md\u001B[0m" },
+    ]);
+    fireEvent.click(await screen.findByText(/^Bash/));
+    // shown without the escapes
+    await screen.findByText("notes.md");
+    fireEvent.click(await screen.findByRole("button", { name: "Copy input" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy output" }));
+    await waitFor(() => {
+      expect(copied).toEqual(['{"command":"ls --color"}', "\u001B[34mnotes.md\u001B[0m"]);
+    });
+  } finally {
+    if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
+    else Reflect.deleteProperty(navigator, "clipboard");
+  }
+});
+
+// the text of the tool row that is open
+const openTool = () => document.querySelector('[data-slot="tool"][data-state="open"]')?.textContent ?? "";
+
 test("a tool row opened mid-turn stays open as the turn goes on and the run's snapshot lands", async () => {
   const { log, play } = start();
   await screen.findByText("what is in the repo?");
@@ -213,7 +272,10 @@ test("a tool row opened mid-turn stays open as the turn goes on and the run's sn
     { toolCallId: "t5", type: EventType.TOOL_CALL_END },
   );
   fireEvent.click(await screen.findByText(/^Read/));
-  await screen.findByText(/"file_path":"notes\.md"/); // the input as logged, not re-serialised
+  // the line names the file; open, the input shows as logged, not re-serialised
+  await waitFor(() => {
+    expect(openTool()).toContain('{"file_path":"notes.md"}');
+  });
   play({ content: "# notes", messageId: "6", role: "tool", toolCallId: "t5", type: EventType.TOOL_CALL_RESULT }, ...said(7, "assistant", "It has notes."));
   log([
     { kind: "user", text: "look again" },
@@ -223,7 +285,7 @@ test("a tool row opened mid-turn stays open as the turn goes on and the run's sn
   ]);
   play({ runId: "4", threadId: "mini", type: EventType.RUN_FINISHED }, snapshot([...LOG, { kind: "user", text: "look again" }, { kind: "tool", text: 'Read {"file_path":"notes.md"}' }, { kind: "echo", text: "# notes" }, { kind: "talk", text: "It has notes." }]), state({ phase: "idle" }));
   await screen.findByText("It has notes.");
-  expect(screen.getByText(/"file_path":"notes\.md"/)).toBeTruthy(); // still open
+  expect(openTool()).toContain('{"file_path":"notes.md"}'); // still open
   expect(screen.getByText("# notes")).toBeTruthy();
   const rows = [...document.querySelectorAll<HTMLElement>("[data-log-index]")].map((e) => e.dataset.logIndex);
   expect(rows).toEqual(["0", "1", "3", "4", "5", "7"]);
@@ -312,6 +374,144 @@ const filesOf = (...files: File[]) => {
   return dt.files;
 };
 const Parts = Schema.Array(Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String), source: Schema.optional(Schema.Struct({ type: Schema.String, value: Schema.String })) }));
+
+// a touch screen for the length of `body`: (pointer: coarse) matches
+async function onTouchScreen(body: () => Promise<void>) {
+  const realMatch = globalThis.matchMedia;
+  globalThis.matchMedia = (query: string) => {
+    const list = realMatch(query);
+    Object.defineProperty(list, "matches", { value: query === "(pointer: coarse)" });
+    return list;
+  };
+  try {
+    await body();
+  } finally {
+    globalThis.matchMedia = realMatch;
+  }
+}
+
+// how many times a hidden file input was opened
+const opens = (input: HTMLElement) => {
+  const count = { n: 0 };
+  input.addEventListener("click", () => {
+    count.n++;
+  });
+  return count;
+};
+
+test("with a mouse the composer's + opens the one picker it has (photos and videos) itself", async () => {
+  start();
+  await screen.findByText("what is in the repo?");
+  const library = opens(screen.getByLabelText("Attach: files"));
+  fireEvent.click(screen.getByRole("button", { name: "Add context" }));
+  expect(library.n).toBe(1);
+  expect(screen.queryByRole("dialog", { name: "Add context" })).toBeNull();
+});
+
+test("on a touch screen + opens the Add context sheet; a choice opens its picker from the tap and closes; Escape closes and focus goes back to +", async () => {
+  await onTouchScreen(async () => {
+    start();
+    await screen.findByText("what is in the repo?");
+    const library = opens(screen.getByLabelText("Attach: files"));
+    const camera = opens(screen.getByLabelText("Take a photo: files"));
+    const plus = screen.getByRole("button", { name: "Add context" });
+    fireEvent.click(plus);
+    const sheet = await screen.findByRole("dialog", { name: "Add context" });
+    fireEvent.click(within(sheet).getByRole("button", { name: /Camera/ }));
+    expect([library.n, camera.n]).toEqual([0, 1]);
+    fireEvent.animationEnd(sheet); // happy-dom runs no animations: the drawer waits for its slide-out's end
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Add context" })).toBeNull();
+    });
+    fireEvent.click(plus);
+    const again = await screen.findByRole("dialog", { name: "Add context" });
+    expect(within(again).getByRole("button", { name: /Photos & videos/ })).toBeTruthy();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    fireEvent.animationEnd(again);
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Add context" })).toBeNull();
+    });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(plus); // focus back on the +
+    });
+  });
+});
+
+test("Background work: the running turn (engine, device, time, Stop), held messages with take-back, the compactor per level, the devices", async () => {
+  const { play, server } = start();
+  await screen.findByText("what is in the repo?");
+  // nothing going on: the header's control is quiet, and the sheet says nothing runs
+  fireEvent.click(screen.getByRole("button", { name: "Background work" }));
+  const quiet = await screen.findByRole("dialog", { name: "Background work" });
+  expect(within(quiet).getByText(/Nothing is running/)).toBeTruthy();
+  expect(within(quiet).getAllByTestId("work-device").map((d) => d.textContent)).toEqual(["miniThis server · connected, Claude Code 2.1.289", "macbookRunner · offline"]);
+  fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+  fireEvent.animationEnd(quiet); // happy-dom runs no animations: the drawer waits for its slide-out's end
+  await waitFor(() => {
+    expect(screen.queryByRole("dialog", { name: "Background work" })).toBeNull();
+  });
+
+  play(
+    state({
+      compactions: [
+        { failed: 0, level: 0, queued: 3, running: 2 },
+        { failed: 1, level: 1, queued: 0, running: 0 },
+      ],
+      engine: "claude-code:opus",
+      pending: [{ clientId: null, engine: "claude-code:opus", queued: true, text: "and the cron output too" }],
+      phase: "running",
+      elapsed: 65_000,
+    }),
+  );
+  // the status line opens it too
+  fireEvent.click(within(screen.getByTestId("status")).getByRole("button"));
+  const sheet = await screen.findByRole("dialog", { name: "Background work" });
+  const turn = within(sheet).getByTestId("work-turn");
+  expect(turn.textContent).toMatch(/^OpusTurn · on mini, 1 min 0[5-9] s$/);
+  expect(within(sheet).getAllByTestId("work-compaction").map((c) => c.textContent)).toEqual([
+    "Summaries of messagesCompactor · 2 running, 3 queued",
+    "Summaries, level 1Compactor · 1 failed, tried again at the next message",
+  ]);
+  expect(within(sheet).getByTestId("work-held").textContent).toBe("and the cron output tooMessage · queued for Opus");
+  fireEvent.click(within(turn).getByRole("button", { name: "Stop the turn" }));
+  expect(server.sent.at(-1)).toBe('{"type":"abort"}');
+});
+
+// a finger lifted from an element
+const tap = (el: Element) => fireEvent.pointerUp(el, { pointerType: "touch" });
+
+test("a tap on a reply shows its actions and hides another's; a tap on a link in it, or outside, doesn't keep them", async () => {
+  start([
+    { kind: "user", text: "two answers" },
+    { kind: "talk", text: "First, see [the docs](https://example.com)." },
+    { kind: "talk", text: "Second." },
+  ]);
+  const firstText = await screen.findByText(/First, see/);
+  const first = firstText.closest("[data-reply]");
+  const second = screen.getByText("Second.").closest("[data-reply]");
+  if (!(first instanceof HTMLElement) || !(second instanceof HTMLElement)) throw new Error("no replies");
+  fireEvent.pointerUp(screen.getByText(/First, see/), { pointerType: "mouse" });
+  expect(first.dataset.actions).toBeUndefined(); // a mouse keeps hover and focus
+  tap(screen.getByText(/First, see/));
+  expect(first.dataset.actions).toBe("shown");
+  tap(screen.getByText("Second."));
+  expect([first.dataset.actions, second.dataset.actions]).toEqual([undefined, "shown"]);
+  tap(screen.getByText("Second."));
+  expect(second.dataset.actions).toBeUndefined(); // a second tap hides them
+  expect(first.getAttribute("role")).toBeNull(); // nothing to activate: no click handler on a reply
+  // a link (Streamdown draws it as its link-safety button) is not that tap
+  const link = screen.getByText("the docs");
+  expect(link.closest("a, button")).not.toBeNull();
+  tap(link);
+  expect(first.dataset.actions).toBeUndefined();
+  tap(screen.getByText(/First, see/));
+  fireEvent.pointerDown(document.body);
+  await waitFor(() => {
+    expect(first.dataset.actions).toBeUndefined(); // a tap outside
+  });
+  // Raw is in the actions of every reply, shown or not: reachable by focus
+  expect(within(first).getByRole("button", { name: "Show raw text" })).toBeTruthy();
+});
 
 test("attach, paste and drop fill the tray; send waits for the uploads, names each by digest, and the logged message shows its thumbnails", async () => {
   const uploads = fakeUploads();
@@ -566,9 +766,12 @@ test("while a turn runs: send follows the follow-up setting, the other button an
   expect(box().getAttribute("placeholder")).toBe("Queue a follow-up");
   type("queued one");
   expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy(); // stopping doesn't need the draft cleared
-  // beside send's filled arrow, stop is outlined in the destructive color, so the two never look alike
-  expect(screen.getByRole("button", { name: "Stop" }).className).toContain("text-destructive");
-  expect(screen.getByRole("button", { name: "Send" }).className).not.toContain("text-destructive");
+  // beside send's filled ink circle and arrow, stop is a filled square on a soft circle, so the two
+  // never look alike
+  expect(screen.getByRole("button", { name: "Stop" }).querySelector(".lucide-square")).not.toBeNull();
+  expect(screen.getByRole("button", { name: "Stop" }).className).toContain("bg-soft");
+  expect(screen.getByRole("button", { name: "Send" }).querySelector(".lucide-arrow-up")).not.toBeNull();
+  expect(screen.getByRole("button", { name: "Send" }).className).toContain("bg-primary");
   fireEvent.click(screen.getByRole("button", { name: "Send" }));
   type("right now");
   fireEvent.click(screen.getByRole("button", { name: "Send now" }));
@@ -655,7 +858,10 @@ test("one model at two efforts reads apart: the picker, a queued message and the
   ];
   play(state({ engines }));
   fireEvent.change(screen.getByLabelText("Model"), { target: { value: "claude-code:opus@xhigh" } });
-  expect(within(screen.getByTestId("model-picker")).getByText("Opus · xhigh")).toBeTruthy();
+  // the picker: a bare label, the model's name and its effort beside it
+  expect(within(screen.getByTestId("model-picker")).getByText("Opus")).toBeTruthy();
+  expect(within(screen.getByTestId("model-picker")).getByText("xhigh")).toBeTruthy();
+  expect(screen.getByTestId("model-picker").className).toContain("bare-control");
   play(state({ engine: "claude-code:opus@xhigh", pending: [{ clientId: "a", engine: "claude-code:opus", queued: true, text: "for opus" }], phase: "running" }));
   const opus = await screen.findByTestId("queue-engine");
   expect(opus.textContent).toBe("Opus");

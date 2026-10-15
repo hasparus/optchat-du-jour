@@ -4,10 +4,10 @@
 import { Effect, Option, Schema } from "effect";
 import { memoryTool, TOOLS } from "../mcp.ts";
 import type { Mem } from "../tree.ts";
-import { type FileTools, type ToolDef, fileToolDefs } from "./files.ts";
+import { type FileTools, type ToolDef, type ToolOutput, fileToolDefs, toolError, toolOk } from "./files.ts";
 
-// a device's tools for one turn; `run` answers every call with text, errors included
-export type ToolBox = { readonly defs: readonly ToolDef[]; readonly run: (name: string, input: string) => Effect.Effect<string> };
+// a device's tools for one turn; `run` answers every call with text, errors included and flagged
+export type ToolBox = { readonly defs: readonly ToolDef[]; readonly run: (name: string, input: string) => Effect.Effect<ToolOutput> };
 
 const decodeInput = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
 
@@ -22,8 +22,9 @@ export const toolBox = (o: { readonly device: string; readonly folders: readonly
   defs: toolDefs(o),
   run: (name, input) => {
     const args = decodeInput(input);
-    if (Option.isNone(args)) return Effect.succeed(`Error: the input of ${name} is not JSON`);
+    if (Option.isNone(args)) return Effect.succeed(toolError(`Error: the input of ${name} is not JSON`));
+    // zoom and date answer as /mcp does, never with isError: "No line …" is an answer
     const answer = memoryTool(o.mem, name, args.value);
-    return answer === null ? o.files(name, args.value) : Effect.succeed(answer);
+    return answer === null ? o.files(name, args.value) : Effect.succeed(toolOk(answer));
   },
 });

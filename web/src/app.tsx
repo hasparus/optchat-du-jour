@@ -2,16 +2,21 @@
 // another tab is open, so its log and the live turn are there when you come back. One /ws link
 // for the whole page.
 import { Button } from "@/components/ui/button";
+import { segmentedItem, segmentedList } from "@/components/ui/segmented";
 import { MessageScrollerProvider } from "@/components/ui/message-scroller";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import type { Uploader } from "@/lib/attach";
 import type { Link } from "@/lib/connection";
 import type { SessionStore } from "@/lib/session";
+import { syncThemeColor } from "@/lib/theme";
 import { useApi } from "@/lib/use-api";
+import { cn } from "@/lib/utils";
 import { nativeShell } from "@/lib/shell";
-import { MoonIcon, ServerIcon, SunIcon } from "lucide-react";
+import { ActivityIcon, MoonIcon, ServerIcon, SunIcon } from "lucide-react";
 import { Component, lazy, type ReactNode, Suspense, useCallback, useState, useSyncExternalStore } from "react";
+import { BackgroundWork, busyWith } from "./chat/background-work";
 import { Chat } from "./chat/chat";
 import { Devices } from "./devices/devices";
 import { Memory } from "./memory/memory";
@@ -34,7 +39,7 @@ class ScreenBoundary extends Component<{ readonly children: ReactNode }, { reado
   override render(): ReactNode {
     if (!this.state.failed) return this.props.children;
     return (
-      <div className="space-y-2 p-4 text-sm" role="alert">
+      <div className="space-y-3 p-6 text-ui" role="alert">
         <p>Couldn't load this screen.</p>
         <Button
           onClick={() => {
@@ -65,9 +70,10 @@ function ThemeToggle() {
       // no storage (a private window): the choice lasts this page
     }
     setDark(next);
+    syncThemeColor();
   };
   return (
-    <Button aria-label={dark ? "Light theme" : "Dark theme"} onClick={toggle} size="icon-sm" variant="ghost">
+    <Button aria-label={dark ? "Light theme" : "Dark theme"} className="text-muted-foreground hover:text-foreground" onClick={toggle} size="icon-sm" variant="ghost">
       {dark ? <SunIcon /> : <MoonIcon />}
     </Button>
   );
@@ -78,7 +84,7 @@ function ChangeServer() {
   const shell = nativeShell();
   if (shell === undefined) return null;
   return (
-    <Button aria-label="Change server" onClick={shell.changeServer} size="icon-sm" variant="ghost">
+    <Button aria-label="Change server" className="text-muted-foreground hover:text-foreground" onClick={shell.changeServer} size="icon-sm" variant="ghost">
       <ServerIcon />
     </Button>
   );
@@ -92,62 +98,98 @@ export function App({ link, session, uploader }: { link: Link; session: SessionS
   const shown = useCallback(() => {
     setTarget(null);
   }, []);
+  const [work, setWork] = useState(false);
+  const openWork = useCallback(() => {
+    setWork(true);
+  }, []);
+  const busy = busyWith(state) > 0;
 
   return (
-    <MessageScrollerProvider>
-      <Tabs
-        className="flex h-dvh flex-col gap-0"
-        onValueChange={(v) => {
-          if (isTab(v)) setTab(v);
-        }}
-        value={tab}
-      >
-        <header className="flex items-center gap-2 border-b px-2 pt-[max(0.25rem,env(safe-area-inset-top))] pb-1">
-          <span
-            aria-label={`connection ${state.status}`}
-            className={`size-2 shrink-0 rounded-full ${state.status === "open" ? "bg-green-600" : "bg-muted-foreground"}`}
-            role="img"
-          />
-          <TabsList className="min-w-0 flex-1">
-            {TABS.map((t) => (
-              <TabsTrigger className="capitalize" key={t} value={t}>
-                {t}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-          <ChangeServer />
-          <ThemeToggle />
-        </header>
-        <TabsContent className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden" forceMount value="chat">
-          <Chat
-            devices={devices.data ?? []}
-            link={link}
-            onTargetShown={shown}
-            session={session}
-            state={state}
-            target={target}
-            uploader={uploader}
-          />
-        </TabsContent>
-        <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="memory">
-          <Memory
-            onShowInChat={(i) => {
-              setTarget(i);
-              setTab("chat");
-            }}
-          />
-        </TabsContent>
-        <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="stats">
-          <ScreenBoundary>
-            <Suspense fallback={<p className="p-4 text-sm text-muted-foreground">loading…</p>}>
-              <Stats />
-            </Suspense>
-          </ScreenBoundary>
-        </TabsContent>
-        <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="devices">
-          <Devices />
-        </TabsContent>
-      </Tabs>
-    </MessageScrollerProvider>
+    <TooltipProvider delayDuration={400}>
+      <MessageScrollerProvider>
+        <Tabs
+          className="flex h-dvh flex-col gap-0"
+          onValueChange={(v) => {
+            if (isTab(v)) setTab(v);
+          }}
+          value={tab}
+        >
+          <header
+            className="flex h-[calc(3rem+env(safe-area-inset-top))] shrink-0 items-center gap-2 border-b bg-background pt-[env(safe-area-inset-top)] pr-[max(0.5rem,env(safe-area-inset-right))] pl-[max(0.75rem,env(safe-area-inset-left))] md:bg-shell md:pr-3 md:pl-4"
+          >
+            <span className="hidden items-center gap-2 pr-3 text-ui font-semibold tracking-tight md:flex">optchat</span>
+            <span
+              aria-label={`connection ${state.status}`}
+              className={cn(
+                "size-2 shrink-0 rounded-full md:order-first",
+                state.status === "open" ? "bg-success shadow-[0_0_0_3px_color-mix(in_oklch,var(--success)_18%,transparent)]" : "animate-breathe bg-muted-foreground",
+              )}
+              role="img"
+              title={state.status === "open" ? "Connected" : state.status === "connecting" ? "Connecting…" : "Disconnected, reconnecting…"}
+            />
+            <TabsList className={cn(segmentedList({ ground: "bare" }), "h-auto min-w-0 flex-1 justify-start md:flex-none")}>
+              {TABS.map((t) => (
+                <TabsTrigger
+                  className={cn(segmentedItem, "h-8 min-w-0 flex-1 border-0 hover:bg-accent max-[400px]:px-1.5 md:flex-none dark:data-[state=active]:bg-raised")}
+                  key={t}
+                  value={t}
+                >
+                  {t}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+            <div className="ml-auto flex items-center gap-0.5">
+              <BackgroundWork
+                devices={devices}
+                link={link}
+                onOpenChange={setWork}
+                open={work}
+                session={session}
+                trigger={
+                  // on a phone the header has no room for it: the running turn's status line and the
+                  // Devices screen open the sheet there
+                  <Button aria-label={busy ? "Background work: busy" : "Background work"} className="relative text-muted-foreground hover:text-foreground max-sm:hidden" size="icon-sm" variant="ghost">
+                    <ActivityIcon />
+                    {busy && <span aria-hidden="true" className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-signal" />}
+                  </Button>
+                }
+              />
+              <ChangeServer />
+              <ThemeToggle />
+            </div>
+          </header>
+          <TabsContent className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden" forceMount value="chat">
+            <Chat
+              devices={devices.data ?? []}
+              link={link}
+              onTargetShown={shown}
+              onWork={openWork}
+              session={session}
+              state={state}
+              target={target}
+              uploader={uploader}
+            />
+          </TabsContent>
+          <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="memory">
+            <Memory
+              onShowInChat={(i) => {
+                setTarget(i);
+                setTab("chat");
+              }}
+            />
+          </TabsContent>
+          <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="stats">
+            <ScreenBoundary>
+              <Suspense fallback={<p className="p-6 text-ui text-muted-foreground">Loading…</p>}>
+                <Stats />
+              </Suspense>
+            </ScreenBoundary>
+          </TabsContent>
+          <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="devices">
+            <Devices onWork={openWork} />
+          </TabsContent>
+        </Tabs>
+      </MessageScrollerProvider>
+    </TooltipProvider>
   );
 }

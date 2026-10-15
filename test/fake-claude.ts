@@ -23,7 +23,10 @@
 //                                 Claude Code reports an API error before its error result
 //   {thinking: N}                 a thinking delta of ~N tokens and an empty thinking block
 //   {tool: {name, input}}         a tool_use block: its content_block_start, then the assistant block
-//   {toolResult: "..."}           the user event carrying that tool's result
+//   {toolResult: "...", is_error?}  the user event carrying that tool's result; is_error: true
+//                                 marks it failed, as Claude Code does (a Bash exit code, a
+//                                 <tool_use_error>); any other JSON value goes out as given, to
+//                                 test a malformed one; left out of the block when unset
 //   {waitInput: true}             wait until a message arrives that no reply or take used yet
 //   {take: true}                  wait for such a message and take it now: its replay event
 //   {result: {text?, is_error?, stop_reason?, subtype?, usage?}}
@@ -63,7 +66,7 @@ const Action = Schema.Union([
   Schema.Struct({ synthetic: Schema.String }),
   Schema.Struct({ thinking: Schema.Number }),
   Schema.Struct({ tool: Schema.Struct({ input: Schema.Json, name: Schema.String }) }),
-  Schema.Struct({ toolResult: Schema.String }),
+  Schema.Struct({ toolResult: Schema.String, is_error: Schema.optional(Schema.Json) }),
   Schema.Struct({ waitInput: Schema.Literal(true) }),
   Schema.Struct({ take: Schema.Literal(true) }),
   Schema.Struct({
@@ -225,7 +228,9 @@ async function play(reply: Reply): Promise<boolean> {
       emit({ event: { content_block: { id: "toolu_1", input: {}, name: a.tool.name, type: "tool_use" }, index: 0, type: "content_block_start" }, type: "stream_event" });
       emit({ message: { content: [{ id: "toolu_1", input: a.tool.input, name: a.tool.name, type: "tool_use" }], model, role: "assistant" }, type: "assistant" });
     } else if ("toolResult" in a) {
-      emit({ message: { content: [{ content: a.toolResult, tool_use_id: "toolu_1", type: "tool_result" }], role: "user" }, type: "user" });
+      const result = { content: a.toolResult, tool_use_id: "toolu_1", type: "tool_result" };
+      const block: Json = a.is_error === undefined ? result : { ...result, is_error: a.is_error };
+      emit({ message: { content: [block], role: "user" }, type: "user" });
     } else if ("waitInput" in a) {
       await unused();
     } else if ("take" in a) {

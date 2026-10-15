@@ -13,6 +13,7 @@
 //   E2E_HOME  the data dir (a restart keeps it); a fresh one when unset
 //   E2E_QUICK_SUMMARIES=1  summaries without a `claude` call each, for a test that seeds a long log
 //   E2E_SPENT=1  every Claude turn ends on a usage limit
+//   E2E_TOOL_ERROR=1  every Claude turn's tool fails: Claude Code's is_error on its result (E28)
 import { BunRuntime } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -25,7 +26,7 @@ import { login } from "../../src/openai/auth.ts";
 import { memorySecrets } from "../../src/secrets.ts";
 import { fakeOpenAi } from "../../test/fake-openai.ts";
 import { freePort } from "../../test/ports.ts";
-import { SOL_REPLY } from "./replies.ts";
+import { SOL_REPLY, TOOL_ERROR } from "./replies.ts";
 
 const root = new URL("../..", import.meta.url).pathname;
 const home = Bun.env.E2E_HOME ?? mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
@@ -34,7 +35,7 @@ const delta = (text: string) => ({ emit: { event: { delta: { text, type: "text_d
 const words = ["Streamed ", "reply ", "from ", "the ", "fake ", "claude."];
 const reply = [
   { tool: { input: { command: "ls" }, name: "Bash" } },
-  { toolResult: "notes.md\nrepo" },
+  Bun.env.E2E_TOOL_ERROR ? { is_error: true, toolResult: TOOL_ERROR } : { toolResult: "notes.md\nrepo" },
   ...words.flatMap((w) => [delta(w), { sleep: 600 }]),
   { emit: { message: { content: [{ text: words.join(""), type: "text" }], role: "assistant" }, type: "assistant" } },
   { result: { text: words.join("") } },

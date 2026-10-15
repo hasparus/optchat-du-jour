@@ -21,6 +21,7 @@ import type { OpenAiPlan } from "../src/openai/responses.ts";
 import { makeSession, noMedia } from "../src/session.ts";
 import { newMsg } from "../src/store.ts";
 import type { TurnEvents, TurnInput } from "../src/turn/engine.ts";
+import { toolOk } from "../src/tools/files.ts";
 import type { UsageRecord } from "../src/usage.ts";
 import { engineLabel } from "../src/wire.ts";
 
@@ -157,7 +158,7 @@ const rig = () => {
     ...needs(s),
     instructions: "SYSTEM",
     runnerFor: () => Effect.succeed({ cwd: undefined, mcpConfig: "{}", mcpSeen: () => Effect.succeed(false), runner }),
-    toolsFor: () => ({ defs: [], run: () => Effect.succeed("") }),
+    toolsFor: () => ({ defs: [], run: () => Effect.succeed(toolOk("")) }),
     warms: () => false,
   });
   return { compactor, efforts: { anthropic, argv, openai, plan: viaPlan }, runner, turn };

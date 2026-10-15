@@ -47,7 +47,8 @@ export const openingText = (input: Pick<TurnInput, "again" | "earlier" | "texts"
 };
 
 export type TurnEvents = {
-  readonly log: (kind: Exclude<Kind, "user">, body: string) => Effect.Effect<void, StoreError>;
+  // `error`: an echo whose tool reported that it failed, kept on the entry for clients (E28)
+  readonly log: (kind: Exclude<Kind, "user">, body: string, flags?: { readonly error?: boolean }) => Effect.Effect<void, StoreError>;
   // the call passed this mid-run message to the model: it is logged as `user` now, once
   readonly took: (message: Mid) => Effect.Effect<void, StoreError>;
   readonly text: (delta: string) => Effect.Effect<void>; // live reply text, never logged as such

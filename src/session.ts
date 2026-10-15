@@ -4,10 +4,10 @@
 // master's chain it is for, and a turn runs on its messages' engine: a usage limit or an offline
 // device stops it until a client resumes it on an engine (E4). Every client sees the same events.
 // Priming runs only while idle, and a turn never waits for it (E17, SPEC "Turn and priming").
-import { Cause, Deferred, type Duration, Effect, Exit, Fiber, FiberSet, Option, PubSub, Queue, type Scope } from "effect";
+import { Cause, Clock, Deferred, type Duration, Effect, Exit, Fiber, FiberSet, Option, PubSub, Queue, type Scope } from "effect";
 import type { Choices } from "./choices.ts";
 import { PRIME_IDLE, WAIT_RETRY } from "./config.ts";
-import type { Chat } from "./chat.ts";
+import type { Chat, LogExtra } from "./chat.ts";
 import type { DownList } from "./engines/chain.ts";
 import type { EngineError } from "./engines/errors.ts";
 import type { StoreError } from "./store.ts";
@@ -155,30 +155,48 @@ export const makeSession = (o: {
     let halted: { readonly why: string; readonly upTo: number } | null = null;
 
 
-    const state = (): SessionState => ({
-      budget: chat.mem.marks.high,
-      device,
-      down: o.compactorDown?.now() ?? [],
-      engine,
-      messages: chat.mem.root.length,
-      phase,
-      pending: inbox.map((m) => {
-        const queued = m.state === "held";
-        const one = { clientId: m.clientId, engine: m.engine, queued, text: m.text };
-        return m.media.length > 0 ? { ...one, media: m.media } : one;
-      }),
-      viewBytes: viewSize(chat.mem),
-      waiting: unbuilt(chat.mem),
-      followUp,
-      engines: master.engines(),
-      effort: master.effort,
-      stopped: stalled && { label: master.label(stalled.ref), ref: stalled.ref, why: stalled.why },
+    // when the phase clients see began, on this server's clock: stamped as a state with a new phase
+    // is first told. Clients get how long it has run (`elapsed`), never this time itself, so a
+    // phone whose clock is off still counts right.
+    const clock = yield* Clock.Clock;
+    let since: number | null = null, sincePhase: Phase | null = null;
+    const state = (): SessionState => {
+      const told: SessionState = {
+        budget: chat.mem.marks.high,
+        device,
+        down: o.compactorDown?.now() ?? [],
+        engine,
+        messages: chat.mem.root.length,
+        phase,
+        pending: inbox.map((m) => {
+          const queued = m.state === "held";
+          const one = { clientId: m.clientId, engine: m.engine, queued, text: m.text };
+          return m.media.length > 0 ? { ...one, media: m.media } : one;
+        }),
+        viewBytes: viewSize(chat.mem),
+        waiting: unbuilt(chat.mem),
+        followUp,
+        engines: master.engines(),
+        effort: master.effort,
+        stopped: stalled && { label: master.label(stalled.ref), ref: stalled.ref, why: stalled.why },
+        compactions: chat.activity(),
+      };
+      return since === null ? told : { ...told, elapsed: Math.max(0, clock.currentTimeMillisUnsafe() - since) };
+    };
+    const stamp = Effect.sync(() => {
+      if (phase === sincePhase) return;
+      sincePhase = phase;
+      since = clock.currentTimeMillisUnsafe();
     });
-    const tell = Effect.suspend(() => publish({ state: state(), type: "state" }));
+    const tell = Effect.andThen(stamp, Effect.suspend(() => publish({ state: state(), type: "state" })));
     const enter = (p: Phase) => Effect.suspend(() => ((phase = p), tell));
     // an engine's down mark lapsed: clients see it in the state
     const lapses = yield* PubSub.subscribe(master.changes);
     yield* PubSub.take(lapses).pipe(Effect.andThen(tell), Effect.forever, Effect.forkScoped);
+    // the compactor's work changed (a call started or ended): clients see it in the state, at most
+    // four times a second (the pump's changes slide, so a burst of calls is one tell)
+    const compacting = yield* PubSub.subscribe(chat.changes);
+    yield* PubSub.take(compacting).pipe(Effect.andThen(Effect.sleep("250 millis")), Effect.andThen(tell), Effect.forever, Effect.forkScoped);
     // a compactor engine went down or came back: clients see it in the state (subscribed here, so
     // no change is missed between now and the fiber's start)
     if (o.compactorDown) {
@@ -195,8 +213,9 @@ export const makeSession = (o: {
 
     // A write and its bookkeeping are one step a cancel cannot split: an entry in the log is
     // always known to the session, never half-told.
-    const log = (kind: Entry["kind"], text: string, on: string | null) =>
-      chat.log(kind, text, on ? { device: on } : {}).pipe(
+    // `error` is written only when true (E28), so an entry without it is the line it always was
+    const log = (kind: Entry["kind"], text: string, on: string | null, error = false) =>
+      chat.log(kind, text, extraOf(on, error)).pipe(
         Effect.tap(() =>
           Effect.sync(() => {
             if (current) current.reply = null; // the streamed text is logged now, or was left behind
@@ -206,8 +225,8 @@ export const makeSession = (o: {
       );
     const published = (runId: string | null) => (entry: Entry) => publish({ entry, runId, type: "logged" });
     // an entry of the turn's engine: written and published, or neither is cut short by a cancel
-    const logPublished = (kind: Entry["kind"], text: string, runId: string | null, on: string | null) =>
-      log(kind, text, on).pipe(Effect.flatMap(published(runId)), Effect.uninterruptible);
+    const logPublished = (kind: Entry["kind"], text: string, runId: string | null, on: string | null, error = false) =>
+      log(kind, text, on, error).pipe(Effect.flatMap(published(runId)), Effect.uninterruptible);
 
     const scope = yield* Effect.scope;
 
@@ -463,7 +482,7 @@ export const makeSession = (o: {
         steerIn(accepting); // came in while the captions or the log were awaited
         const out: TurnEvents = {
           info,
-          log: (kind, text) => logPublished(kind, text, runId, on),
+          log: (kind, text, flags) => logPublished(kind, text, runId, on, kind === "echo" && flags?.error === true),
           text: (delta) => stream(delta, runId),
           thinking: (tokens) => publish({ runId, tokens, type: "thinking" }),
           // the call passed this one to the model: logged now; a second report finds it gone (taken once)
@@ -649,6 +668,15 @@ export const makeSession = (o: {
 
 // A message's text as the log keeps it: what was typed, then a marker line per attachment with
 // its caption (SPEC "Media")
+// what a log line carries after the reference's keys (src/chat.ts): where its turn ran, and on an
+// echo whose tool failed, `error` (E28); each only when set
+const extraOf = (on: string | null, error: boolean) => {
+  const extra: LogExtra = {};
+  if (on) extra.device = on;
+  if (error) extra.error = true;
+  return extra;
+};
+
 const logText = (m: Incoming, said: readonly string[]) =>
   withMarkers(
     m.text,

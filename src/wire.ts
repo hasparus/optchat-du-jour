@@ -104,6 +104,13 @@ export const SessionState = Schema.Struct({
   // the master's effort: an entry at it is its bare ref (`canonicalRef`); null when not known
   effort: Schema.NullOr(Schema.String),
   stopped: Schema.NullOr(Schema.Struct({ ref: Schema.String, label: Schema.String, why: Schema.String })),
+  // The compactor's work per level of the tree, the busy levels only (src/compactor.ts Activity):
+  // calls running, nodes ready and waiting for a call, nodes whose call failed and wait for the
+  // next message. Optional: a server from before it sends none.
+  compactions: Schema.optional(Schema.Array(Schema.Struct({ level: Schema.Number, running: Schema.Number, queued: Schema.Number, failed: Schema.Number }))),
+  // how long the current phase has run, in ms, as of when this state was made (measured on the
+  // server's own clock, so no two clocks are compared): a client adds the time since it got it
+  elapsed: Schema.optional(Schema.Number),
 });
 export type SessionState = typeof SessionState.Type;
 

@@ -25,19 +25,21 @@ import {
   useMessageScroller,
   useMessageScrollerScrollable,
 } from "@/components/ui/message-scroller";
-import { Spinner } from "@/components/ui/spinner";
+import { Shimmer } from "@/components/ai-elements/shimmer";
 import type { Link } from "@/lib/connection";
 import { visible } from "@/lib/log";
-import { chatRows, entryRows, type Row, rowFor, rowIndexFor } from "@/lib/rows";
+import { chatRows, entryRows, type Row, rowFor, rowIndexFor, toolStateOf } from "@/lib/rows";
 import { type Marker as StatusMarker, type Queued, queued, type Session, type SessionStore } from "@/lib/session";
 import { canonicalRef, type Device, engineLabel, type SessionState, shortSha } from "@wire";
-import { AlertCircleIcon, FilmIcon, InfoIcon, Undo2Icon } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { AlertCircleIcon, FilmIcon, InfoIcon, TriangleAlertIcon, Undo2Icon } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Uploader } from "@/lib/attach";
 import { loadModel, saveModel } from "@/lib/draft";
 import { Composer } from "./composer";
 import { shortLabel } from "./pickers";
-import { ChatRow } from "./row";
+import { ChatRow, ReplyActions } from "./row";
+import { useStickToEnd } from "./use-stick-to-end";
 
 // an engine of the master's chain by the label its picker shows (with its effort, src/wire.ts
 // engineLabel), else as its ref reads
@@ -59,8 +61,12 @@ function status(s: Session): string | null {
 
 function StatusRow({ marker }: { marker: StatusMarker }) {
   return (
-    <Marker className={marker.tone === "error" ? "text-destructive" : undefined} data-testid={`marker-${marker.tone}`} role={marker.tone === "error" ? "alert" : "status"}>
-      <MarkerIcon>{marker.tone === "error" ? <AlertCircleIcon /> : <InfoIcon />}</MarkerIcon>
+    <Marker
+      className={cn("w-fit max-w-full gap-1.5 self-center rounded-full px-2.5 py-1 text-xs", marker.tone === "error" ? "bg-destructive/8 text-destructive" : "text-muted-foreground")}
+      data-testid={`marker-${marker.tone}`}
+      role={marker.tone === "error" ? "alert" : "status"}
+    >
+      <MarkerIcon className="size-3.5 [&_svg:not([class*='size-'])]:size-3.5">{marker.tone === "error" ? <AlertCircleIcon /> : <InfoIcon />}</MarkerIcon>
       <MarkerContent>{marker.text}</MarkerContent>
     </Marker>
   );
@@ -88,43 +94,43 @@ function Waiting({ q, asking, model, state, onTakeBack }: { readonly q: Queued; 
   const other = q.engine !== null && q.engine !== model ? labelOf(state, q.engine) : null;
   return (
     <QueueItem data-state={q.where} data-testid="queue-item">
-      <QueueItemIndicator className={queuedHere ? "border-dashed" : q.where === "sent" ? "border-primary bg-primary/30" : undefined} />
-      <div className="min-w-0 grow">
+      <QueueItemIndicator className={queuedHere ? "border-dashed" : q.where === "sent" ? "animate-breathe border-signal bg-signal" : q.where === "failed" ? "border-destructive bg-destructive" : undefined} />
+      <span className="block min-w-0 grow">
         {q.text.trim() !== "" && <QueueItemContent>{q.text}</QueueItemContent>}
         {q.media.length > 0 && (
-          <div className="mt-1 flex gap-1" data-testid="queue-media">
+          <span className="mt-1 flex gap-1" data-testid="queue-media">
             {q.media.map((a) =>
               a.kind === "image" ? (
                 <img
                   alt={`image ${shortSha(a.sha)}`}
-                  className="size-8 rounded-sm border object-cover"
+                  className="size-9 rounded-md border object-cover"
                   key={a.sha}
                   src={`/api/assets/${shortSha(a.sha)}/thumb`}
                 />
               ) : (
-                <span aria-label={`video ${shortSha(a.sha)}`} className="flex size-8 items-center justify-center rounded-sm border bg-muted" key={a.sha} role="img">
+                <span aria-label={`video ${shortSha(a.sha)}`} className="flex size-9 items-center justify-center rounded-md border bg-muted" key={a.sha} role="img">
                   <FilmIcon className="size-4" />
                 </span>
               ),
             )}
-          </div>
+          </span>
         )}
         {(q.where !== "failed" || other !== null) && (
-          <p className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+          <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-2xs text-muted-foreground">
             {other !== null && (
-              <span className="shrink-0 rounded-sm border px-1 font-medium text-foreground" data-testid="queue-engine" title={`for ${other}`}>
+              <span className="shrink-0 rounded-sm px-1 font-medium text-foreground hairline-strong" data-testid="queue-engine" title={`for ${other}`}>
                 {shortLabel(other)}
               </span>
             )}
             {q.where !== "failed" && <span data-testid="queue-where">{queuedHere ? "queued for the next turn" : q.where === "sent" ? "the turn has it" : "sending…"}</span>}
-          </p>
+          </span>
         )}
         {q.error !== null && (
-          <p className="text-xs text-destructive" data-testid="queue-error" role="alert">
+          <span className="block text-xs text-destructive" data-testid="queue-error" role="alert">
             not logged: {q.error}
-          </p>
+          </span>
         )}
-      </div>
+      </span>
       {q.back !== null && (
         <QueueItemAction
           aria-label={`Take back: ${q.text.trim() === "" ? `${q.media.length} attachments` : q.text}`}
@@ -149,29 +155,45 @@ function NeedsModel({ session, state, onModel }: { readonly session: Pick<Sessio
   const { stopped } = state;
   if (stopped === null) return null;
   return (
-    <div className="space-y-2 rounded-lg border border-destructive/50 bg-destructive/5 p-2.5 text-sm" data-testid="needs-model" role="alert">
-      <p>
-        <span className="font-medium">{stopped.label}</span>: {stopped.why}. Choose how to go on:
-      </p>
-      <div className="flex flex-wrap gap-1.5">
-        {state.engines.map((e) => {
-          const again = e.ref === stopped.ref;
-          const out = e.down !== null && !again;
-          return (
-            <Button
-              disabled={out}
-              key={e.ref}
-              onClick={() => {
-                if (session.resume(e.ref)) onModel(e.ref);
-              }}
-              size="sm"
-              title={e.down !== null && !again ? `unavailable: ${e.down}` : undefined}
-              variant={again ? "outline" : "default"}
-            >
-              {again ? `Try ${e.label} again` : `Continue with ${e.label}`}
-            </Button>
-          );
-        })}
+    <div className="flex gap-2.5 bg-warning-surface px-3.5 py-3 text-ui" data-testid="needs-model" role="alert">
+      <TriangleAlertIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-warning" />
+      <div className="min-w-0 space-y-2.5">
+        <p className="text-foreground">
+          <span className="font-semibold">{stopped.label}</span>: {stopped.why}. <span className="text-warning-foreground">Choose how to go on:</span>
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          {state.engines.map((e) => {
+            const again = e.ref === stopped.ref;
+            const out = e.down !== null && !again;
+            return (
+              <Button
+                className="h-8 rounded-lg pointer-coarse:h-10"
+                disabled={out}
+                key={e.ref}
+                onClick={() => {
+                  if (session.resume(e.ref)) onModel(e.ref);
+                }}
+                size="sm"
+                title={e.down !== null && !again ? `unavailable: ${e.down}` : undefined}
+                variant={again ? "outline" : "default"}
+              >
+                {again ? `Try ${e.label} again` : `Continue with ${e.label}`}
+              </Button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// A log with nothing in it yet: what this chat is, once, instead of a blank page
+function EmptyChat() {
+  return (
+    <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-8" data-testid="empty-chat">
+      <div className="max-w-sm space-y-2 text-center">
+        <p className="text-xl font-semibold tracking-tight text-foreground">One chat, for good</p>
+        <p className="text-read text-muted-foreground">Everything said here stays: it is folded into a memory the model reads at every turn, and can zoom back into.</p>
       </div>
     </div>
   );
@@ -185,10 +207,12 @@ export type ChatProps = {
   // a log index to show (from the Memory screen); done() once it is in view
   readonly target: number | null;
   readonly onTargetShown: () => void;
+  // the running turn's status line was tapped: open Background work
+  readonly onWork?: () => void;
   readonly uploader?: Uploader; // tests replace PUT /api/assets
 };
 
-export function Chat({ link, session, state, devices, target, onTargetShown, uploader }: ChatProps) {
+export function Chat({ link, session, state, devices, target, onTargetShown, onWork, uploader }: ChatProps) {
   const [loading, setLoading] = useState(false);
   const [device, setDevice] = useState<string | null>(null);
   // the model picker: this page's own, kept in localStorage. Before the first state it is sent as
@@ -207,7 +231,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
   useEffect(() => {
     if (kept !== null && kept !== chosen && engines?.some((e) => e.ref === kept)) onModel(kept);
   }, [kept, chosen, engines, onModel]);
-  const { scrollToMessage } = useMessageScroller();
+  const { scrollToEnd, scrollToMessage } = useMessageScroller();
   // at the newest end (nothing more to scroll to): the store may drop what is far out of sight
   const atEnd = !useMessageScrollerScrollable().end;
   useEffect(() => {
@@ -226,6 +250,15 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
   const busy = state.state !== null && state.state.phase !== "idle";
   const waiting = queued(state);
   const line = status(state);
+  // the server says the log is empty: a first visit, not a page still loading
+  const empty = state.state !== null && rows.length === 0 && state.markers.length === 0;
+  // a reader at the newest row stays there as the dock grows (./use-stick-to-end.ts)
+  const dock = useRef<HTMLDivElement>(null);
+  const toEnd = useCallback(() => {
+    scrollToEnd({ behavior: "auto" });
+  }, [scrollToEnd]);
+  const root = useRef<HTMLDivElement>(null);
+  useStickToEnd(dock, root, atEnd && !busy && target === null, toEnd);
 
   // one older page, prepended: true while there may be more, null when it couldn't be read
   const loadOlder = useCallback(async () => {
@@ -271,64 +304,112 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
   const picked = device ?? state.state?.device ?? devices.find((d) => d.local)?.name ?? null;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 flex-1 flex-col" ref={root}>
       <MessageScroller className="min-h-0 flex-1">
-        <MessageScrollerViewport aria-label="Chat" preserveScrollOnPrepend>
-          <MessageScrollerContent className="gap-4 p-4">
-            <div className="flex justify-center" ref={top}>
-              {first > 0 && (
-                <button className="text-xs text-muted-foreground underline" disabled={loading} onClick={() => void loadOlder()} type="button">
-                  {loading ? "loading…" : "earlier messages"}
-                </button>
-              )}
+        {/* The sentinel and the "earlier" button sit outside the content: the scroller reads its
+            content's first child to keep the view still when older rows are prepended, and opens
+            at the newest row only when the first rows arrive into an empty content. */}
+        {/* focus and scroll-into-view stop short of the floating dock (WCAG 2.4.11: a focused control
+            is never hidden under it) */}
+        <MessageScrollerViewport aria-label="Chat" className="relative scroll-pb-(--dock-h)" preserveScrollOnPrepend>
+          <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-px" ref={top} />
+          {first > 0 && (
+            <div className="flex justify-center pt-4">
+              <button
+                className="min-h-8 rounded-full px-3 text-xs text-muted-foreground hairline transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60 pointer-coarse:min-h-10"
+                disabled={loading}
+                onClick={() => void loadOlder()}
+                type="button"
+              >
+                {loading ? <Shimmer>loading…</Shimmer> : "earlier messages"}
+              </button>
             </div>
-            {placed.above.map((m) => (
-              <StatusRow key={`k${m.key}`} marker={m} />
-            ))}
-            {rows.map((row, k) => (
-              <Fragment key={row.key}>
-                <MessageScrollerItem data-log-index={row.id} messageId={row.key} scrollAnchor={row.kind === "user"}>
-                  <ChatRow
-                    row={row}
-                    streaming={row.key === draftKey}
-                    toolState={row.kind === "tool" && row.output !== null ? "done" : busy && row.key === lastTool ? "running" : "ended"}
-                  />
-                </MessageScrollerItem>
-                {placed.after.get(k)?.map((m) => (
-                  <StatusRow key={`k${m.key}`} marker={m} />
-                ))}
-              </Fragment>
-            ))}
-          </MessageScrollerContent>
+          )}
+          {empty && <EmptyChat />}
+          {/* the dock floats over the transcript's end; the content keeps its height clear below
+              the last row (--dock-h, set by useStickToEnd) */}
+          <ReplyActions>
+            <MessageScrollerContent className="mx-auto w-full max-w-184 gap-0 px-4 pt-6 pb-[calc(var(--dock-h,9rem)+1.5rem)] sm:px-6" data-region="chat-content">
+              {placed.above.map((m) => (
+                <StatusRow key={`k${m.key}`} marker={m} />
+              ))}
+              {rows.map((row, k) => (
+                <Fragment key={row.key}>
+                  <MessageScrollerItem data-kind={row.kind} data-log-index={row.id} messageId={row.key} scrollAnchor={row.kind === "user"}>
+                    <ChatRow
+                      row={row}
+                      streaming={row.key === draftKey}
+                      toolState={row.kind === "tool" ? toolStateOf(row, busy, row.key === lastTool) : "done"}
+                    />
+                  </MessageScrollerItem>
+                  {placed.after.get(k)?.map((m) => (
+                    <StatusRow key={`k${m.key}`} marker={m} />
+                  ))}
+                </Fragment>
+              ))}
+            </MessageScrollerContent>
+          </ReplyActions>
         </MessageScrollerViewport>
-        <MessageScrollerButton />
+        <MessageScrollerButton className="size-9 rounded-full border-0 bg-raised text-foreground shadow-float hover:bg-raised hover:text-foreground data-[direction=end]:bottom-[calc(var(--dock-h,9rem)+0.75rem)]" />
       </MessageScroller>
 
-      <div className="space-y-2 border-t bg-background p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+      {/* The dock floats over the end of the transcript, which scrolls on under the composer's
+          translucent surface: a fade from clear (24 px above it) to the sheet at 80% by the
+          composer's top and solid at the bottom keeps what passes under it soft and the text on it
+          legible (DESIGN.md, Composer). Only its controls take pointer events. */}
+      <div
+        className="pointer-events-none absolute inset-x-0 bottom-0 z-10 before:absolute before:inset-x-0 before:-top-6 before:bottom-0 before:bg-[linear-gradient(to_bottom,transparent,color-mix(in_oklch,var(--background)_80%,transparent)_3rem,var(--background))]"
+        data-testid="dock"
+        ref={dock}
+      >
+      <div className="pointer-events-auto relative mx-auto w-full max-w-184 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-4 sm:pb-[max(1rem,env(safe-area-inset-bottom))]">
         {line !== null && (
-          <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground" data-testid="status" role="status">
-            {busy && <Spinner className="size-3" />}
-            {line}
+          <div className="flex h-7 items-center gap-2 px-3 text-xs" data-testid="status" role="status">
+            {busy ? (
+              // a tap on the running turn's line opens Background work (./background-work.tsx)
+              <button
+                className="relative -mx-1 flex min-w-0 cursor-pointer items-center gap-2 rounded-md px-1 text-left after:absolute after:-inset-y-1.5 after:inset-x-0 hover:text-foreground"
+                onClick={onWork}
+                title="Background work"
+                type="button"
+              >
+                <span aria-hidden="true" className="size-1.5 shrink-0 animate-breathe rounded-full bg-signal" />
+                <Shimmer>{line}</Shimmer>
+              </button>
+            ) : (
+              <span className="text-muted-foreground">{line}</span>
+            )}
           </div>
         )}
-        {state.state?.phase === "needs-model" && <NeedsModel onModel={onModel} session={session} state={state.state} />}
-        {waiting.length > 0 && (
-          <Queue data-testid="queue">
-            <QueueSection>
-              <QueueSectionTrigger>
-                <QueueSectionLabel count={waiting.length} label="waiting for the model" />
-              </QueueSectionTrigger>
-              <QueueSectionContent>
-                <QueueList>
-                  {waiting.map((q) => (
-                    <Waiting asking={q.clientId !== null && state.asking.includes(q.clientId)} key={q.key} model={model} onTakeBack={() => {
-                        session.takeBack(q);
-                      }} q={q} state={state.state} />
-                  ))}
-                </QueueList>
-              </QueueSectionContent>
-            </QueueSection>
-          </Queue>
+        {(state.state?.phase === "needs-model" || waiting.length > 0) && (
+          <div className="mx-2.5 -mb-px overflow-hidden rounded-t-xl border border-b-0 bg-raised [&>*+*]:border-t">
+            {state.state?.phase === "needs-model" && <NeedsModel onModel={onModel} session={session} state={state.state} />}
+            {waiting.length > 0 && (
+              <Queue data-testid="queue">
+                <QueueSection>
+                  <QueueSectionTrigger>
+                    <QueueSectionLabel count={waiting.length} label="waiting for the model" />
+                  </QueueSectionTrigger>
+                  <QueueSectionContent>
+                    <QueueList>
+                      {waiting.map((q) => (
+                        <Waiting
+                          asking={q.clientId !== null && state.asking.includes(q.clientId)}
+                          key={q.key}
+                          model={model}
+                          onTakeBack={() => {
+                            session.takeBack(q);
+                          }}
+                          q={q}
+                          state={state.state}
+                        />
+                      ))}
+                    </QueueList>
+                  </QueueSectionContent>
+                </QueueSection>
+              </Queue>
+            )}
+          </div>
         )}
         <Composer
           busy={busy}
@@ -345,6 +426,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, upl
           state={state.state}
           uploader={uploader}
         />
+      </div>
       </div>
     </div>
   );

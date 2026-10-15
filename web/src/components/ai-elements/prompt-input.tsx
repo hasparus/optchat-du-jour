@@ -8,8 +8,8 @@
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "@/components/ui/input-group";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
-import { ArrowUpIcon, CameraIcon, FilmIcon, ImageOffIcon, PaperclipIcon, SquareIcon, XIcon } from "lucide-react";
-import type { ChangeEvent, ClipboardEvent, ComponentProps, DragEvent, HTMLAttributes, KeyboardEvent, ReactNode, SubmitEvent } from "react";
+import { ArrowUpIcon, FilmIcon, ImageOffIcon, SquareIcon, XIcon } from "lucide-react";
+import type { ChangeEvent, ClipboardEvent, ComponentProps, DragEvent, HTMLAttributes, KeyboardEvent, ReactNode, Ref, SubmitEvent } from "react";
 import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 
 export type PromptInputProps = Omit<HTMLAttributes<HTMLFormElement>, "onSubmit"> & {
@@ -19,12 +19,14 @@ export type PromptInputProps = Omit<HTMLAttributes<HTMLFormElement>, "onSubmit">
   canSubmit?: (text: string) => boolean;
   // files pasted or dropped onto the composer
   onFiles?: (files: File[]) => void;
+  // a line under the composer's surface (the shortcuts, or why send is off)
+  below?: ReactNode;
 };
 
 const filesOf = (list: FileList | null | undefined) => (list ? [...list] : []);
 const hasFiles = (e: DragEvent) => e.dataTransfer.types.includes("Files");
 
-export const PromptInput = ({ className, onSubmit, canSubmit = (text) => text.trim() !== "", onFiles, children, ...props }: PromptInputProps) => {
+export const PromptInput = ({ className, onSubmit, canSubmit = (text) => text.trim() !== "", onFiles, below, children, ...props }: PromptInputProps) => {
   const [dragging, setDragging] = useState(false);
   const submit = (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -65,50 +67,43 @@ export const PromptInput = ({ className, onSubmit, canSubmit = (text) => text.tr
       onSubmit={submit}
       {...props}
     >
-      <InputGroup className={cn("overflow-hidden", dragging && "border-primary ring-[3px] ring-primary/30")} data-dragging={dragging || undefined}>
-        {children}
-      </InputGroup>
+      {/* the one raised object on the page (DESIGN.md, Composer): translucent over what scrolls
+          under it, a sheen on its top edge, a ring drawn as a shadow; the ring turns to the accent
+          while the text has focus or a file is dragged over (index.css, composer-surface) */}
+      <div className="composer-surface relative z-10 overflow-hidden rounded-[1.75rem] transition-shadow duration-150" data-dragging={dragging || undefined}>
+        {/* the group itself is see-through: the surface above draws ground, ring and sheen */}
+        <InputGroup className="rounded-[inherit] border-0 bg-transparent shadow-none has-[[data-slot=input-group-control]:focus-visible]:ring-0 dark:bg-transparent">{children}</InputGroup>
+      </div>
+      {below}
     </form>
   );
 };
 
-// A file picker behind an icon button: the attach button, or with `capture` the camera (a phone
-// opens the rear camera; `capture` isn't everywhere, so the plain picker stays next to it)
-export type PromptInputAttachProps = Omit<ComponentProps<typeof InputGroupButton>, "onClick"> & {
+// A hidden file picker, opened by the composer's "Add context" choices (chat/add-context.tsx): the
+// library and files, or with `capture` the camera (a phone opens the rear camera; `capture` isn't
+// everywhere, so the plain picker is always offered too). It stays mounted with the composer, so a
+// choice can open it from the tap itself (iOS opens a picker only inside the gesture) and close the
+// sheet after.
+export type PromptInputFileInputProps = {
   readonly accept: string;
   readonly capture?: "environment" | "user";
   readonly label: string;
   readonly onFiles: (files: File[]) => void;
+  readonly ref?: Ref<HTMLInputElement>;
 };
 
-export const PromptInputAttach = ({ accept, capture, label, onFiles, children, ...props }: PromptInputAttachProps) => {
-  const input = useRef<HTMLInputElement>(null);
+export const PromptInputFileInput = ({ accept, capture, label, onFiles, ref }: PromptInputFileInputProps) => {
   const picked = (e: ChangeEvent<HTMLInputElement>) => {
     const files = filesOf(e.currentTarget.files);
     e.currentTarget.value = ""; // the same file can be picked again
     if (files.length > 0) onFiles(files);
   };
-  return (
-    <>
-      <input accept={accept} aria-label={`${label}: files`} capture={capture} className="hidden" multiple={capture === undefined} onChange={picked} ref={input} type="file" />
-      <InputGroupButton
-        aria-label={label}
-        onClick={() => {
-          input.current?.click();
-        }}
-        size="icon-sm"
-        variant="ghost"
-        {...props}
-      >
-        {children ?? (capture ? <CameraIcon className="size-4" /> : <PaperclipIcon className="size-4" />)}
-      </InputGroupButton>
-    </>
-  );
+  return <input accept={accept} aria-label={`${label}: files`} capture={capture} className="hidden" multiple={capture === undefined} onChange={picked} ref={ref} type="file" />;
 };
 
 // the tray over the text: one thumbnail per attachment
 export const PromptInputAttachments = ({ className, ...props }: HTMLAttributes<HTMLDivElement>) => (
-  <InputGroupAddon align="block-start" className={cn("flex-wrap gap-2", className)} data-testid="attachments" {...props} />
+  <InputGroupAddon align="block-start" className={cn("flex-wrap gap-2.5 px-3.5 pt-3.5", className)} data-testid="attachments" {...props} />
 );
 
 export type PromptInputAttachmentProps = {
@@ -129,38 +124,46 @@ export const PromptInputAttachment = ({ name, kind, preview, progress, done, err
   // a file the browser can't show (the server may still take it, or say why not)
   const [broken, setBroken] = useState(false);
   return (
-    <div className="relative w-20 shrink-0" data-state={error ? "error" : done ? "done" : "uploading"} data-testid="attachment">
-      <div className={cn("flex size-20 items-center justify-center overflow-hidden rounded-md border bg-muted", error && "border-destructive")}>
+    <div className="relative w-16 shrink-0" data-state={error ? "error" : done ? "done" : "uploading"} data-testid="attachment">
+      <div
+        className={cn(
+          "relative flex size-16 items-center justify-center overflow-hidden rounded-xl bg-muted text-muted-foreground",
+          error ? "shadow-[inset_0_0_0_1.5px_var(--destructive)]" : "hairline",
+        )}
+      >
         {kind === "image" && !broken ? (
           <img
             alt={name}
-            className="size-full object-cover"
+            className={cn("size-full object-cover transition-opacity duration-200", !done && !error && "opacity-60")}
             onError={() => {
               setBroken(true);
             }}
             src={preview}
           />
         ) : kind === "image" ? (
-          <ImageOffIcon aria-label={name} className="size-6" />
+          <ImageOffIcon aria-label={name} className="size-5" />
         ) : (
-          <FilmIcon aria-label={name} className="size-6" />
+          <FilmIcon aria-label={name} className="size-5" />
+        )}
+        {!done && !error && (
+          <Progress aria-label={`Uploading ${name}`} className="absolute inset-x-1.5 bottom-1.5 h-1 w-auto bg-background/70" value={Math.round(progress * 100)} />
         )}
       </div>
       <button
         aria-label={`Remove ${name}`}
-        className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full border bg-background text-foreground shadow-xs"
+        className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full bg-foreground text-background shadow-[0_0_0_2px_var(--raised)] transition-transform after:absolute after:-inset-2.5 hover:scale-105 active:scale-95 pointer-coarse:size-6"
         onClick={onRemove}
         type="button"
       >
-        <XIcon className="size-3" />
+        <XIcon className="size-3" strokeWidth={2.5} />
       </button>
       {kind === "image" && (onHigh !== undefined || high) && (
         <button
           aria-label={`High detail for ${name}`}
           aria-pressed={high}
           className={cn(
-            "absolute bottom-1 left-1 rounded-sm border px-1 text-[10px]/4 font-semibold shadow-xs",
-            high ? "border-primary bg-primary text-primary-foreground" : "bg-background/90 text-foreground",
+            "absolute top-1 left-1 rounded-md px-1 text-2xs font-semibold tracking-wide shadow-xs after:absolute after:-inset-2",
+            high ? "bg-signal text-signal-foreground" : "bg-raised/90 text-foreground",
           )}
           disabled={!onHigh}
           onClick={onHigh}
@@ -170,9 +173,8 @@ export const PromptInputAttachment = ({ name, kind, preview, progress, done, err
           HD
         </button>
       )}
-      {!done && !error && <Progress aria-label={`Uploading ${name}`} className="mt-1 h-1" value={Math.round(progress * 100)} />}
       {error !== null && (
-        <p className="mt-1 line-clamp-3 text-[10px] leading-tight text-destructive" role="alert" title={error}>
+        <p className="mt-1 line-clamp-3 text-2xs/tight text-destructive" role="alert" title={error}>
           {error}
         </p>
       )}
@@ -224,7 +226,7 @@ export const PromptInputTextarea = ({ onKeyDown, className, placeholder = "Messa
 
   return (
     <InputGroupTextarea
-      className={cn("field-sizing-content max-h-48 min-h-12", className)}
+      className={cn("field-sizing-content max-h-[min(12rem,40dvh)] min-h-13 px-4 pt-3.5 pb-1 text-read/normal placeholder:text-muted-foreground md:text-read", className)}
       enterKeyHint={touch ? "enter" : "send"}
       name="message"
       ref={own}
@@ -245,19 +247,27 @@ export const PromptInputTextarea = ({ onKeyDown, className, placeholder = "Messa
 export type PromptInputFooterProps = Omit<ComponentProps<typeof InputGroupAddon>, "align">;
 
 export const PromptInputFooter = ({ className, ...props }: PromptInputFooterProps) => (
-  <InputGroupAddon align="block-end" className={cn("justify-between gap-1", className)} {...props} />
+  <InputGroupAddon align="block-end" className={cn("cursor-default justify-between gap-1 pt-1 pr-2 pb-2 pl-4", className)} {...props} />
 );
 
 export type PromptInputToolsProps = HTMLAttributes<HTMLDivElement>;
 
 export const PromptInputTools = ({ className, ...props }: PromptInputToolsProps) => (
-  <div className={cn("flex min-w-0 items-center gap-1", className)} {...props} />
+  <div className={cn("flex min-w-0 items-center gap-4.5", className)} {...props} />
 );
 
 export type PromptInputSubmitProps = ComponentProps<typeof InputGroupButton>;
 
-export const PromptInputSubmit = ({ className, variant = "default", size = "icon-sm", children, ...props }: PromptInputSubmitProps) => (
-  <InputGroupButton aria-label="Send" className={cn("rounded-full", className)} size={size} type="submit" variant={variant} {...props}>
+// send: an ink circle with an arrow; with nothing to send, a soft circle with a muted arrow
+export const PromptInputSubmit = ({ className, variant = "default", size = "icon-md", children, ...props }: PromptInputSubmitProps) => (
+  <InputGroupButton
+    aria-label="Send"
+    className={cn("transition-[background-color,color,transform] active:not-disabled:scale-95 disabled:bg-soft disabled:text-muted-foreground disabled:opacity-100", className)}
+    size={size}
+    type="submit"
+    variant={variant}
+    {...props}
+  >
     {children ?? <ArrowUpIcon className="size-4" />}
   </InputGroupButton>
 );
@@ -266,19 +276,17 @@ export type PromptInputStopProps = ComponentProps<typeof InputGroupButton>;
 
 // the submit button turns into this while a turn runs and there is nothing to send: with text or
 // an attachment it is send again, since a message sent during a turn joins it or waits for the next.
-// Outlined in the destructive color, so beside send's filled arrow it never reads as send.
-export const PromptInputStop = ({ className, variant = "outline", size = "icon-sm", children, ...props }: PromptInputStopProps) => (
+// A filled ink square on a soft circle (as in Claude's app), so beside send's filled ink circle and
+// arrow the two never read alike: one is a solid disc, the other a square on a tint.
+export const PromptInputStop = ({ className, variant = "ghost", size = "icon-md", children, ...props }: PromptInputStopProps) => (
   <InputGroupButton
     aria-label="Stop"
-    className={cn(
-      "rounded-full border-destructive text-destructive hover:bg-destructive/10 hover:text-destructive dark:border-destructive dark:text-destructive dark:hover:bg-destructive/20",
-      className,
-    )}
+    className={cn("bg-soft text-foreground hover:bg-soft-strong hover:text-foreground active:not-disabled:scale-95 dark:hover:bg-soft-strong", className)}
     size={size}
     type="button"
     variant={variant}
     {...props}
   >
-    {children ?? <SquareIcon className="size-3.5 fill-current" />}
+    {children ?? <SquareIcon className="size-3.5 fill-current" strokeWidth={0} />}
   </InputGroupButton>
 );

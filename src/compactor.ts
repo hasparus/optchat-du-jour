@@ -4,7 +4,7 @@
 // messages arrive and nodes are built, never found by scanning the tree (§7 mistake 13): the
 // unbuilt messages in order, whose first AHEAD are the ones that may start, and the ready merges
 // level by level. A failed call is tried again at the next message.
-import { Cause, Console, Data, Effect, Exit, Semaphore } from "effect";
+import { Cause, Console, Data, Effect, Exit, PubSub, Semaphore } from "effect";
 import { AHEAD, JOBS } from "./config.ts";
 import type { Node } from "./records.ts";
 import { newNode, type StoreError } from "./store.ts";
@@ -72,6 +72,11 @@ class Line<A> {
   }
 }
 
+// The pump's work at one level of the tree, as clients see it (SessionState.compactions): calls
+// running now, nodes ready and waiting for a free call, and nodes whose call failed and wait for
+// the next message. Nodes not ready yet (a merge whose halves aren't built) are in none of these.
+export type Activity = { readonly level: number; readonly running: number; readonly queued: number; readonly failed: number };
+
 export type Pump = {
   // what the pump has to start at all: at startup, one scan of the tree into the queues
   readonly kick: Effect.Effect<void, StoreError>;
@@ -80,6 +85,10 @@ export type Pump = {
   readonly logged: (i: number) => Effect.Effect<void>;
   // a message is coming (one the session holds for its turn): failed calls are tried again now
   readonly retry: Effect.Effect<void>;
+  // the work per level, the busy levels only, lowest first
+  readonly activity: () => readonly Activity[];
+  // published after every change of the queues (a call started or ended, a node queued)
+  readonly changes: PubSub.PubSub<true>;
 };
 
 export type PumpOptions = {
@@ -99,7 +108,9 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
     // nodes whose failure was reported already.
     const leaves = new Line<number>();
     const merges: (Line<Coord> | undefined)[] = [];
-    const queued = new Set<string>(), running = new Set<string>(), failed = new Map<string, Coord>(), told = new Set<string>();
+    // `queued` and `running` keep each node's level, for `activity`
+    const queued = new Map<string, number>(), running = new Map<string, number>(), failed = new Map<string, Coord>(), told = new Set<string>();
+    const changes = yield* PubSub.sliding<true>(1);
     // one change of the queues at a time
     const one = yield* Semaphore.make(1);
     const kicks = { failing: false };
@@ -117,7 +128,7 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
             Effect.tapCause(() => Effect.sync(() => void failed.set(name, c))), // a defect too: it is tried again all the same
             Effect.andThen(Effect.suspend(() => done(c))),
           );
-        queued.add(name);
+        queued.set(name, c.l);
         if (c.l > 0) (merges[c.l] ??= new Line<Coord>()).push(c);
         return Effect.void;
       });
@@ -197,7 +208,7 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
         queued.delete(name);
         // if making the context throws, that is the job's failure and goes the same way
         const call = yield* Effect.exit(Effect.sync(() => makeJob(mem, c)));
-        running.add(name);
+        running.set(name, c.l);
         yield* Effect.forkIn(job(c, call), scope);
       }
     });
@@ -214,6 +225,7 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
     // waits for the next message. Interruption is the scope closing and passes through.
     const guarded = (change: Effect.Effect<void, StoreError>): Effect.Effect<void> =>
       one.withPermit(Effect.andThen(change, start)).pipe(
+        Effect.ensuring(PubSub.publish(changes, true)),
         Effect.andThen(Effect.sync(() => void (kicks.failing = false))),
         Effect.catchCause((cause) =>
           Cause.hasInterruptsOnly(cause)
@@ -232,8 +244,20 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
     const scan = Effect.gen(function* () {
       for (const c of nodes(mem.root.length)) if (!built(mem, c) && ready(mem, c)) yield* c.l === 0 ? arrived(c.i) : consider(c);
     });
-    const kick: Effect.Effect<void, StoreError> = one.withPermit(Effect.andThen(scan, start));
+    const kick: Effect.Effect<void, StoreError> = one.withPermit(Effect.andThen(scan, start)).pipe(Effect.ensuring(PubSub.publish(changes, true)));
+    const activity = (): readonly Activity[] => {
+      const at = new Map<number, { running: number; queued: number; failed: number }>();
+      const count = (level: number, key: "running" | "queued" | "failed") => {
+        const row = at.get(level) ?? { failed: 0, queued: 0, running: 0 };
+        row[key]++;
+        at.set(level, row);
+      };
+      for (const level of running.values()) count(level, "running");
+      for (const level of queued.values()) count(level, "queued");
+      for (const c of failed.values()) count(c.l, "failed");
+      return [...at].toSorted(([a], [b]) => a - b).map(([level, row]) => ({ level, ...row }));
+    };
     const logged = (i: number) => guarded(Effect.andThen(again, arrived(i)));
     const retry = guarded(again);
-    return { kick, logged, retry } satisfies Pump;
+    return { activity, changes, kick, logged, retry } satisfies Pump;
   });

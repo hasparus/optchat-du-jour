@@ -3,7 +3,7 @@
 // picker (this page's own: each message names its model), and the resume after a usage limit.
 // 360 px wide, like the other specs.
 import type { Page } from "@playwright/test";
-import { answered, expect, expectShowsLog, open, REPLY, send, SOL_REPLY, test } from "./fixture";
+import { answered, attach, expect, expectShowsLog, open, REPLY, send, SOL_REPLY, test } from "./fixture";
 
 const box = (page: Page) => page.getByLabel("Message");
 
@@ -19,7 +19,7 @@ test("a draft survives a reload: its text and its uploaded photo", async ({ page
   await open(page);
   await box(page).fill("a thought to finish later");
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
-  await page.getByLabel("Attach: files").setInputFiles({ buffer: png, mimeType: "image/png", name: "dot.png" });
+  await attach(page, { buffer: png, mimeType: "image/png", name: "dot.png" });
   await expect(page.getByTestId("attachment")).toHaveAttribute("data-state", "done");
   await page.reload();
   await expect(page.getByRole("img", { name: "connection open" })).toBeVisible();
@@ -145,5 +145,54 @@ test.describe("a spent Claude plan", () => {
     // Opus shows as unavailable, with why
     await expect(page.getByLabel("Model").locator("option").first()).toHaveText("Claude Opus (Claude Code): unavailable, Claude AI usage limit reached");
     await expectShowsLog(page, server);
+  });
+});
+
+test.describe("on a touch screen", () => {
+  test.use({ hasTouch: true, isMobile: true });
+
+  test("the footer's bare controls keep 40 px touch targets that don't overlap", async ({ page }) => {
+    await open(page);
+    await expect(page.getByTestId("model-picker")).toBeVisible();
+    const targets = await page.evaluate(() => {
+      const footer = document.querySelector('[aria-label="Add context"]')?.parentElement;
+      if (!footer) throw new Error("no footer tools");
+      return [...footer.querySelectorAll(".bare-control")].map((el) => {
+        // the hit area: the ::before, or for a picker the select laid over it
+        const select = el.querySelector("select");
+        if (select) {
+          const r = select.getBoundingClientRect();
+          return { height: r.height, left: r.left, right: r.right, width: r.width };
+        }
+        const box = el.getBoundingClientRect();
+        const before = getComputedStyle(el, "::before");
+        const width = Number.parseFloat(before.width);
+        const height = Number.parseFloat(before.height);
+        const centre = box.left + box.width / 2;
+        return { height, left: centre - width / 2, right: centre + width / 2, width };
+      });
+    });
+    expect(targets.length).toBeGreaterThanOrEqual(3); // +, the model, the follow-ups
+    for (const t of targets) {
+      expect(t.width).toBeGreaterThanOrEqual(40);
+      expect(t.height).toBeGreaterThanOrEqual(40);
+    }
+    for (let k = 1; k < targets.length; k++) expect(targets[k]!.left).toBeGreaterThanOrEqual(targets[k - 1]!.right - 0.5);
+  });
+
+  test("+ opens the Add context sheet; Photos & videos opens the file chooser, the photo lands in the tray, and focus goes back to +", async ({ page }) => {
+    await open(page);
+    const plus = page.getByRole("button", { name: "Add context" });
+    await plus.click();
+    const sheet = page.getByRole("dialog", { name: "Add context" });
+    await expect(sheet.getByRole("button", { name: /Camera/ })).toBeVisible();
+    const chooser = page.waitForEvent("filechooser");
+    await sheet.getByRole("button", { name: /Photos & videos/ }).click();
+    const picker = await chooser;
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+    await picker.setFiles({ buffer: png, mimeType: "image/png", name: "dot.png" });
+    await expect(sheet).toBeHidden();
+    await expect(page.getByTestId("attachment")).toHaveAttribute("data-state", "done");
+    await expect(plus).toBeFocused();
   });
 });

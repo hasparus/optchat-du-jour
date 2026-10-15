@@ -10,7 +10,7 @@
 // message; stop is beside them, and with nothing to send, send is stop.
 import {
   PromptInput,
-  PromptInputAttach,
+  PromptInputFileInput,
   PromptInputAttachment,
   PromptInputAttachments,
   PromptInputBody,
@@ -30,6 +30,7 @@ import { cn } from "@/lib/utils";
 import type { Device, FollowUp, SessionState } from "@wire";
 import { ListEndIcon, ZapIcon } from "lucide-react";
 import { type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
+import { AddContext, addContextChoices } from "./add-context";
 import { CompactSelect, FollowUps, ModelPicker } from "./pickers";
 import { useAttachments } from "./use-attachments";
 
@@ -72,6 +73,11 @@ export function Composer({ link, session, state, busy, open, devices, device, on
   const followUp = state?.followUp ?? "steer";
   const other: FollowUp = followUp === "steer" ? "queue" : "steer";
   const content = text.trim() !== "" || tray.items.length > 0;
+  // the second send button shows: a narrow footer has to make room for it
+  const crowded = running && !elsewhere && content;
+  // the hidden pickers the "+" sheet opens (./add-context.tsx)
+  const library = useRef<HTMLInputElement>(null);
+  const camera = useRef<HTMLInputElement>(null);
 
   // the draft as it stands, kept for a reload: the text and the uploads that finished
   const readyKey = tray.ready.map((a) => a.sha).join(",");
@@ -155,6 +161,19 @@ export function Composer({ link, session, state, busy, open, devices, device, on
   const otherLabel = other === "steer" ? "Send now" : "Queue for the next turn";
   return (
     <PromptInput
+      below={
+        <p
+          aria-live="polite"
+          className={cn("px-4 pt-2 text-center text-2xs text-muted-foreground", blocked === null && "hidden pointer-fine:sm:block")}
+          data-testid="composer-hint"
+          id={hint}
+        >
+          {blocked ??
+            (touch
+              ? null
+              : `Enter to send · Shift+Enter new line${running && !elsewhere ? ` · Ctrl/⌘+Enter ${other === "steer" ? "sends now" : "queues"}` : ""}${history.current.length > 0 ? " · ↑ last message" : ""}`)}
+        </p>
+      }
       canSubmit={sendable}
       onFiles={tray.add}
       onSubmit={() => {
@@ -205,41 +224,47 @@ export function Composer({ link, session, state, busy, open, devices, device, on
           value={text}
         />
       </PromptInputBody>
-      <PromptInputFooter className="flex-wrap">
+      <PromptInputFooter>
         <PromptInputTools>
-          <PromptInputAttach accept="image/*,video/*" label="Attach" onFiles={tray.add} />
-          <PromptInputAttach accept="image/*" capture="environment" label="Take a photo" onFiles={tray.add} />
-          {devices.length > 1 && (
-            <CompactSelect
-              label="Device"
-              onChange={(e) => {
-                onDevice(e.currentTarget.value);
-              }}
-              shown={picked ?? "device"}
-              title="Where the next turn runs"
-              value={picked ?? ""}
-            >
-              {devices.map((d) => (
-                <option key={d.name} value={d.name}>
-                  {d.name}
-                </option>
-              ))}
-            </CompactSelect>
-          )}
+          <PromptInputFileInput accept="image/*,video/*" label="Attach" onFiles={tray.add} ref={library} />
+          <PromptInputFileInput accept="image/*" capture="environment" label="Take a photo" onFiles={tray.add} ref={camera} />
+          <AddContext choices={addContextChoices(library, camera, touch)} />
           {state && model !== null && <ModelPicker model={model} onModel={onModel} state={state} />}
+          {devices.length > 1 && (
+            // on a narrow screen with the second send button showing, the device makes room: it
+            // is for the next turn, and comes back when the draft is sent
+            <span className={cn("contents", crowded && "max-[419px]:hidden")}>
+              <CompactSelect
+                label="Device"
+                onChange={(e) => {
+                  onDevice(e.currentTarget.value);
+                }}
+                shown={picked ?? "device"}
+                title="Where the next turn runs"
+                value={picked ?? ""}
+              >
+                {devices.map((d) => (
+                  <option key={d.name} value={d.name}>
+                    {d.name}
+                  </option>
+                ))}
+              </CompactSelect>
+            </span>
+          )}
           {state && <FollowUps followUp={state.followUp} link={link} />}
         </PromptInputTools>
-        <div className="ml-auto flex items-center gap-1">
-          {running && !elsewhere && content && (
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          {crowded && (
             <InputGroupButton
               aria-label={otherLabel}
               disabled={blocked !== null}
               onClick={() => {
                 send(other);
               }}
+              className="h-9 rounded-full bg-soft px-3 text-ui text-foreground hover:bg-soft-strong max-[399px]:w-9 max-[399px]:px-0 pointer-coarse:h-10 max-[399px]:pointer-coarse:w-10"
               size="sm"
               title={`${otherLabel} (Ctrl/⌘+Enter)`}
-              variant="outline"
+              variant="ghost"
             >
               {other === "steer" ? <ZapIcon /> : <ListEndIcon />}
               <span className="hidden min-[400px]:inline">{other === "steer" ? "Now" : "Queue"}</span>
@@ -256,17 +281,6 @@ export function Composer({ link, session, state, busy, open, devices, device, on
           )}
           {(!busy || content) && <PromptInputSubmit aria-describedby={hint} disabled={blocked !== null || !content} title={blocked ?? sendLabel} />}
         </div>
-        <p
-          aria-live="polite"
-          className={cn("w-full px-1 text-xs", blocked ? "text-muted-foreground" : "hidden text-muted-foreground/80 pointer-fine:sm:block")}
-          data-testid="composer-hint"
-          id={hint}
-        >
-          {blocked ??
-            (touch
-              ? null
-              : `Enter to send · Shift+Enter new line${running && !elsewhere ? ` · Ctrl/⌘+Enter ${other === "steer" ? "sends now" : "queues"}` : ""}${history.current.length > 0 ? " · ↑ last message" : ""}`)}
-        </p>
       </PromptInputFooter>
     </PromptInput>
   );

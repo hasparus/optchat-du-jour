@@ -28,9 +28,10 @@ import { loadsInApp, parseServerUrl, probe } from "./server-url";
 const KEY = "optchat.server"; // the server's origin, e.g. https://mini.tailnet.ts.net
 const VERSION = app.expo.version;
 
-// the web UI's own colors (web/index.html's theme-color and its light background), so nothing flashes
+// the web UI's own colors (web/DESIGN.md: the sheet, ink, ink muted, a hairline over the sheet, red),
+// so nothing flashes between the app's screens and the page
 const palette = (dark: boolean) =>
-  dark ? { bg: "#0a0a0a", fg: "#fafafa", muted: "#a3a3a3", border: "#262626", error: "#f87171" } : { bg: "#ffffff", fg: "#0a0a0a", muted: "#737373", border: "#e5e5e5", error: "#dc2626" };
+  dark ? { bg: "#111311", fg: "#e6e9e6", muted: "#9ba09c", border: "#262826", error: "#f66d67" } : { bg: "#fbfdfc", fg: "#161916", muted: "#606560", border: "#e4e6e5", error: "#cc2827" };
 type Palette = ReturnType<typeof palette>;
 
 // A link the server's page opens that isn't the app: the in-app Safari sheet for http(s), which is

@@ -3,7 +3,7 @@
 // offers, and linear on a long backlog), a failed call tried again at the next message, and the
 // wait on a call writing the same marked prefix (§3.3).
 import { expect, test } from "bun:test";
-import { Deferred, Effect, Fiber } from "effect";
+import { Deferred, Effect, Fiber, PubSub } from "effect";
 import { readFileSync } from "node:fs";
 import { CompactError, type Job, makeJob, makePump } from "../src/compactor.ts";
 import { AHEAD, NODE } from "../src/config.ts";
@@ -179,6 +179,46 @@ test("the queues start exactly what the start rule allows: a message's node with
             expect(started).toEqual(K.offers(mem).map(label).toSorted());
           }
         }
+      }),
+    ),
+  );
+});
+
+test("the pump tells its work per level (calls running, nodes queued for a call, calls failed) and pings on each change", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const mem = newMem({ high: 40_000, low: 20_000 }, { high: 10_000, low: 5000 });
+        const h = yield* harness(mem, 2);
+        const pings = yield* PubSub.subscribe(h.pump.changes);
+        yield* h.pump.kick;
+        expect(h.pump.activity()).toEqual([]);
+        for (let i = 0; i < 4; i++) {
+          addMessage(mem, newMsg(i, "echo", long(600)));
+          yield* h.pump.logged(i);
+        }
+        yield* h.quiet;
+        // two calls at a time: two run, two wait for one
+        expect(h.pump.activity()).toEqual([{ failed: 0, level: 0, queued: 2, running: 2 }]);
+        expect(yield* PubSub.take(pings)).toBe(true);
+        // one call fails: it waits for the next message, and a queued node takes its place
+        const first = [...h.calls.keys()][0] ?? "";
+        const d = h.calls.get(first);
+        if (d === undefined) throw new Error("no call");
+        h.calls.delete(first);
+        yield* Deferred.fail(d, new CompactError({ message: "no" }));
+        yield* h.quiet;
+        expect(h.pump.activity()).toEqual([{ failed: 1, level: 0, queued: 1, running: 2 }]);
+        expect(yield* PubSub.take(pings)).toBe(true);
+        // the others answer: messages 0 and 1 both built make their merge ready, a level up
+        for (const [name, call] of h.calls) {
+          h.calls.delete(name);
+          yield* Deferred.succeed(call, `line ${name}`);
+          yield* h.quiet;
+        }
+        const levels = h.pump.activity().map((a) => a.level);
+        expect(levels).toEqual(levels.toSorted((a, b) => a - b));
+        expect(h.pump.activity().find((a) => a.level === 0)?.failed).toBe(1);
       }),
     ),
   );

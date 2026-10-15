@@ -88,7 +88,9 @@ const inputGroupButtonVariants = cva(
         sm: "h-8 gap-1.5 rounded-md px-2.5 has-[>svg]:px-2.5",
         "icon-xs":
           "size-6 rounded-[calc(var(--radius)-5px)] p-0 has-[>svg]:p-0",
-        "icon-sm": "size-8 p-0 has-[>svg]:p-0",
+        "icon-sm": "size-8 p-0 has-[>svg]:p-0 pointer-coarse:size-10",
+        // the composer's round buttons (+, send, stop): 36 px, 40 px on touch
+        "icon-md": "size-9 rounded-full p-0 has-[>svg]:p-0 pointer-coarse:size-10",
       },
     },
     defaultVariants: {
