@@ -1,9 +1,10 @@
 // The session as this client sees it (SPEC "Web UI", Chat; "Protocol"): the log (log.ts: entries
 // by log index and the reply streaming in), the server's state (phase, device, view size, the
 // messages it holds unlogged), status markers from CUSTOM info and RUN_ERROR, whether the model is thinking,
-// and the messages sent from here that the log doesn't hold yet (kept across a reload, ./draft.ts).
+// and what it thought (./reasoning.ts: live, or read for the rows held), and the messages sent from
+// here that the log doesn't hold yet (kept across a reload, ./draft.ts).
 // Every AG-UI event and every page of /api/messages comes through here; the screens only draw it.
-import { type Asset, type Kind, logIndex, SessionState, splitMarkers } from "@wire";
+import { type Asset, type Kind, logIndex, type ReasoningHead, type ReasoningPiece, SessionState, splitMarkers } from "@wire";
 import { EventType } from "@ag-ui/core";
 import { Option, Schema } from "effect";
 import { api } from "./api.ts";
@@ -12,6 +13,7 @@ import type { Link, LinkStatus } from "./connection.ts";
 import { loadSent, saveSent } from "./draft.ts";
 import { applyEvent, applyPage, dropBelow, emptyLog, hole, type Log, lowest, tip, trimHeld } from "./log.ts";
 import type { Forwarded, Inbound, Patch } from "./protocol.ts";
+import { applyThought, dropLive, keepFrom, noThoughts, type Thoughts, withHeads, withText } from "./reasoning.ts";
 
 export type Marker = {
   readonly key: number;
@@ -46,6 +48,8 @@ export type Session = {
   readonly log: Log;
   readonly markers: readonly Marker[];
   readonly thinking: boolean;
+  // what the model thought before a reply or tool call, by that entry's log index (SPEC "Reasoning")
+  readonly thoughts: Thoughts;
   readonly pending: readonly Pending[];
   readonly restored: Restored | null;
   // the client ids this page asked the server to take back and has no answer for yet; a reconnect
@@ -65,7 +69,7 @@ const PAGE = 100; // older entries per page
 const MAX_FILL = 500; // a wider hole under the window is dropped, not fetched
 const PROBE = 500; // entries per /api/messages page when looking for messages sent before a reload
 
-const initial: Session = { asking: [], log: emptyLog, markers: [], pending: [], restored: null, run: null, state: null, stateAt: 0, status: "connecting", thinking: false };
+const initial: Session = { asking: [], log: emptyLog, markers: [], pending: [], restored: null, run: null, state: null, stateAt: 0, status: "connecting", thinking: false, thoughts: noThoughts };
 
 // a run id's first log index: "12" and "12+1" (a resumed run) both started at 12
 export const runStart = (runId: string): number | null => {
@@ -155,10 +159,15 @@ function patch(state: Record<string, Schema.Json>, ops: readonly Patch[]) {
 export type SessionOptions = {
   // /api/messages; tests replace it
   readonly messages?: (before: number, limit: number) => Promise<{ readonly entries: readonly { readonly i: number; readonly kind: Kind; readonly text: string }[] }>;
+  // /api/reasoning: the thinking kept before entries from..to-1, without its text; and one piece's text
+  readonly reasoning?: (from: number, to: number) => Promise<readonly ReasoningHead[]>;
+  readonly reasoningText?: (i: number) => Promise<ReasoningPiece | null>;
 };
 
 export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | "send" | "status" | "takeBack">, options: SessionOptions = {}) {
   const messages = options.messages ?? api.messages;
+  const reasoning = options.reasoning ?? api.reasoning;
+  const reasoningText = options.reasoningText ?? api.reasoningText;
   // what was sent before a reload and never acked: the snapshots tell below whether it got there
   const kept = loadSent().map((m): Pending => ({ ...m, conn: 0, error: null }));
   let s: Session = { ...initial, pending: kept, status: link.status() };
@@ -272,6 +281,34 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
   const setLog = (log: Log) => {
     if (log !== s.log) set({ log });
   };
+  // What was thought before the entries from..to-1, for rows this page holds now: no text yet,
+  // which is read when the reader opens one. A server from before reasoning has no such route,
+  // and an offline one says nothing: either way the rows show without it.
+  const thoughtsFor = async (from: number, to: number) => {
+    if (to <= from) return;
+    try {
+      const heads = await reasoning(Math.max(0, from), to);
+      const thoughts = withHeads(s.thoughts, heads);
+      if (thoughts !== s.thoughts) set({ thoughts });
+    } catch {
+      // none to show
+    }
+  };
+  // the piece before entry i is opened: its text, read once
+  const reading = new Set<number>();
+  const openThought = async (i: number) => {
+    const t = s.thoughts.get(i);
+    if (t === undefined || t.text !== null || reading.has(i)) return;
+    reading.add(i);
+    try {
+      const piece = await reasoningText(i);
+      set({ thoughts: withText(s.thoughts, i, piece) });
+    } catch {
+      set({ thoughts: withText(s.thoughts, i, null) });
+    } finally {
+      reading.delete(i);
+    }
+  };
 
   // older entries a hole cuts off from the window (it moved up while this page slept): fetch the
   // hole, or forget them when it is too wide, until what is held below the window is shown
@@ -292,6 +329,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
           break;
         }
         setLog(applyPage(s.log, page.entries));
+        void thoughtsFor(page.entries[0]?.i ?? gap.before, gap.before);
       }
     } catch {
       // offline again: the hole stays hidden, and the next snapshot tries again
@@ -303,6 +341,8 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
   const event = (e: Inbound) => {
     const before = s.log;
     setLog(applyEvent(s.log, e, { trim: atEnd }));
+    const thoughts = applyThought(s.thoughts, e, Date.now());
+    if (thoughts !== s.thoughts) set({ thoughts });
     switch (e.type) {
       case EventType.MESSAGES_SNAPSHOT: {
         // the snapshot is the log: a marker placed after what it doesn't hold (a reply cut off by a
@@ -313,8 +353,13 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
         const low = lowest(s.log);
         if (s.pending.length > 0)
           for (const item of s.log.items.values()) if (item.kind === "user" && item.i >= s.log.base) logged(item.i, item.text, (p) => p.from >= low || p.error !== null);
-        set({ markers: s.markers.some((m) => m.after > newest) ? s.markers.map((m) => (m.after > newest ? { ...m, after: newest } : m)) : s.markers, thinking: false });
+        set({
+          markers: s.markers.some((m) => m.after > newest) ? s.markers.map((m) => (m.after > newest ? { ...m, after: newest } : m)) : s.markers,
+          thinking: false,
+          thoughts: keepFrom(s.thoughts, low),
+        });
         if (hole(s.log)) void fill();
+        void thoughtsFor(s.log.base, tip(s.log) + 1);
         return;
       }
       // a connection's first word, after the log's snapshot
@@ -336,10 +381,10 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
         if (s.thinking && s.log.draft?.kind !== "user") set({ thinking: false });
         return;
       case EventType.RUN_FINISHED:
-        set({ run: null, thinking: false });
+        set({ run: null, thinking: false, thoughts: dropLive(s.thoughts) });
         return;
       case EventType.RUN_ERROR:
-        set({ run: null, thinking: false });
+        set({ run: null, thinking: false, thoughts: dropLive(s.thoughts) });
         // a turn that stopped for a model says why in its own prompt, not here as well
         if (s.state?.phase !== "needs-model") mark(e.message, "error");
         return;
@@ -356,6 +401,11 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
       case EventType.TOOL_CALL_ARGS:
       case EventType.TOOL_CALL_END:
       case EventType.TOOL_CALL_RESULT:
+      case EventType.REASONING_START:
+      case EventType.REASONING_MESSAGE_START:
+      case EventType.REASONING_MESSAGE_CONTENT:
+      case EventType.REASONING_MESSAGE_END:
+      case EventType.REASONING_END:
         return;
     }
   };
@@ -363,7 +413,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
   const unlisten = link.listen(event);
   const unstatus = link.onStatus((status) => {
     if (status === "open") conns++;
-    set(status === "open" ? { asking: [], status } : { run: null, status, thinking: false });
+    set(status === "open" ? { asking: [], status } : { run: null, status, thinking: false, thoughts: dropLive(s.thoughts) });
   });
 
   return {
@@ -404,10 +454,18 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
       mark("not connected: the resume was not sent", "error");
       return false;
     },
-    // the reader reached the chat's newest end, or left it: only there are the oldest entries dropped
+    // the reader reached the chat's newest end, or left it: only there are the oldest entries
+    // dropped, and what was thought before them with them
     scrolled: (end: boolean) => {
       atEnd = end;
-      if (end) setLog(trimHeld(s.log));
+      if (!end) return;
+      setLog(trimHeld(s.log));
+      const thoughts = keepFrom(s.thoughts, lowest(s.log));
+      if (thoughts !== s.thoughts) set({ thoughts });
+    },
+    // the reader opened what was thought before entry i: its text is read if this page lacks it
+    openThought: (i: number) => {
+      void openThought(i);
     },
     // one older page under what is shown; true while there may be more
     loadOlder: async () => {
@@ -415,6 +473,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
       if (low <= 0) return false;
       const page = await messages(low, PAGE);
       setLog(applyPage(s.log, page.entries));
+      void thoughtsFor(page.entries[0]?.i ?? low, low);
       return (page.entries[0]?.i ?? 0) > 0;
     },
     dispose: () => {

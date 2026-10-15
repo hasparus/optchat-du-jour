@@ -1,5 +1,7 @@
 // What the e2e server's fake engines answer (e2e/server.ts), for the specs to look for.
 export const REPLY = "Streamed reply from the fake claude.";
+// E2E_THINKING: what every Claude turn thinks before its tool call (SPEC "Reasoning")
+export const THOUGHT = "They want to see what is here. A listing first, then a short answer.";
 export const SOL_REPLY = "Answered by the fake ChatGPT plan.";
 // the tool's output when E2E_TOOL_ERROR fails it: nothing in the text says it failed, only the flag
 export const TOOL_ERROR = "ls: cannot open directory '.': Permission denied";

@@ -68,6 +68,7 @@ Every `ui/*` file below imports `cn` from `@/lib/utils` (see CLI); that is not r
 | ui/attachment | radix-vega | a `tile` size (ours): the media alone, 64 px, no card; for the composer's tray | The tray's thumbnails. A failed tile takes the registry's error look (a red tint, the icon in red) under our red ring. A message's thumbnails are plain links: nothing for Attachment to carry, and its image media crops square |
 | ui/dropdown-menu | radix-vega | — | The Model Selector. A disabled item's 50% opacity is set back at the call site (muted text instead, AA) |
 | ai-elements/plan | the Plan pattern on Trace | a turn's last TodoWrite is its plan, the earlier calls plain tool lines; live only in the turn that runs now (from RUN_STARTED); pending steps not dimmed; the call as logged behind one line; the newest plan open until the reader chooses | One list per turn, not "0 of 3" above "3 of 3". AA (Trace's `pending` is 60% opacity). SPEC: rendering never hides what the model wrote |
+| ai-elements/reasoning | the Reasoning pattern on Trace | collapsed by default, also while it streams (the pattern opens itself then); plain text, not markdown; open state per row in memory only; its text read from the server when first opened after a reload; what the caps cut said under it | A phone has no room for a long think pushing the reply down; SPEC: rendering never hides what the model wrote, and a 1,500-row history loads no thinking it doesn't open. Its shimmer is Trace's running status, as a running tool's |
 | ai-elements/sources | the Sources pattern on Trace | collapsed by default; the host beside a title; a turn ends at a user row | Tool lines are collapsed too; a title alone doesn't say where a link goes. The log keeps no turn boundaries, so a steered message (and later a subagent's report) starts the next turn's sources |
 | ai-elements/subagent | the Subagent pattern on Trace, Badge and our Tool | presentational, wired to nothing; Tell is a line inside it | SPEC M7 isn't built. Only the story page imports it: Background work's `extra` slot is empty in the app, so it isn't in the app's bundle. A button can't sit in a trigger, so Stop is beside the line (the pattern's PlanAction) |
 | chat/pickers ModelSelector | the Model Selector pattern on Dropdown Menu | one menu, no effort menu; touch keeps the native select; grouped by `engineParts(ref).where` (src/wire.ts) | An effort is part of a chain entry, not a free choice; SPEC wants the phone's own picker |
@@ -97,8 +98,8 @@ and Devices differ only in their timestamps, data and temp paths).
 ## The October 2026 patterns, one by one
 
 All 21 patterns from the changelog, and the Attachment and Questionnaire components it names. (a)
-built on data the log already holds; (b) built with a small optional wire addition (none was
-needed); (c) needs a product or spec decision, or has no data source. "Had" means adopted before
+built on data the log already holds; (b) built with a small optional wire addition (only
+Reasoning, which also needed the user's decision below); (c) needs a product or spec decision, or has no data source. "Had" means adopted before
 this round.
 
 | Pattern | Decision | What it is here |
@@ -116,7 +117,8 @@ this round.
 | Sources | (a) built | WebFetch addresses and WebSearch result links, under the turn's last reply |
 | Subagent | (c), presentational part built | M7 (below). The user chose to build the component now, wired to nothing |
 | Task | (c) | Below, with TodoWrite |
-| Reasoning, Chain of Thought | (c) | We don't log thinking (below). Chain of Thought's "Researched in 3 steps" summary over a turn's tool lines would also fold the work log DESIGN.md keeps as one line per call |
+| Reasoning | (b) built | Above the reply or tool call it came before, from the thinking kept beside the log (below; SPEC "Reasoning") |
+| Chain of Thought | (c) | Its "Researched in 3 steps" summary over a turn's tool lines would fold the work log DESIGN.md keeps as one line per call |
 | Confirmation | (c), no data | Turns run with `permissionMode: "bypassPermissions"` (ref D9) under `claude -p`, which can't stop for an answer: there is no approval to show |
 | Questionnaire | (c), no data | Claude Code's AskUserQuestion isn't in the turn's tools and can't wait for an answer under `-p`; a question the model asks is its reply, answered by the next message |
 | Checkpoint | (c), against the design | Restore drops every message after a point. Our log is append-only and is the memory (docs/optchat.md §1); the summary tree's nodes are summaries, not points to return to |
@@ -128,30 +130,17 @@ this round.
 
 ### For a decision
 
-**Reasoning (and Chain of Thought).** We never log thinking: docs/optchat.md §7 lists "Logging
-thoughts" as a mistake, SPEC "Turn and priming" step 6 says never log it, and the web rules say no
-thinking text. The server already hears thinking (it sends a token count as `CUSTOM thinking`).
-The ways to show it:
-
-1. *Stream only.* Send the text live as AG-UI's REASONING_* events (`@ag-ui/core` 1.0.1 has them),
-   keep it in the server's memory for the running turn so a page that joins mid-turn gets it, drop
-   it at RUN_FINISHED. Memory, the view and the cache don't change. The cost: it is gone on a reload
-   or a reconnect after the turn, so a reply reads differently live and later, which the "every row
-   from the log" rule exists to prevent; the socket carries a lot more on a long think; and only
-   `claude-code` has text to send (the ChatGPT plan's reasoning is encrypted, summaries only on
-   request), so the pattern would show for one engine. A wire addition, optional fields, (b)-sized.
-2. *Logged beside the memory.* A sidecar file per day keyed by log index (`thinking/<day>.jsonl`),
-   never read by the tree, the view or any request. The view and the cache don't change, and it
-   survives a reload. The cost: it is the largest thing a turn writes (often more than the reply),
-   so the data dir and its git history grow by that much, and persist pushes it to every device;
-   it is the model's private scratch, kept forever; and the log stops being the one source of truth
-   for what the page shows.
-3. *Logged in the log.* A new kind or key in `main`: the reference can't read it, parity breaks,
-   and it either enters the view (thinking summarized into memory: more compactions, a different
-   view, the cache rewritten) or needs a rule to skip it everywhere. This is the mistake §7 names.
-
-Our suggestion, if it is wanted: (1) with the in-memory buffer, labelled as live-only, and the
-Reasoning line collapsed into "Thought for 12 s" once the turn ends and the text is gone.
+**Reasoning.** Built after the user chose option 2 below ("Reasoning in side file makes sense").
+The options were: (1) *stream only*, the text as AG-UI's REASONING_* events, kept in memory for the
+running turn and gone on a reload, so a reply reads differently live and later; (2) *beside the
+memory*, a side file keyed by log index that the tree, the view and every request never read; (3)
+*in the log*, a new kind or key in `main`, which breaks parity and either enters the view or needs
+a rule to skip it everywhere: the mistake docs/optchat.md §7 names. What ships (SPEC "Reasoning",
+E29): (2), streamed live as (1) does. `chat/reasoning/YYYY-MM-DD.jsonl` beside `main/` and `tree/`,
+one piece per reply or tool call it came before, capped per piece and per turn, committed with the
+data dir unless `reasoning.commit` is off. Its costs are the ones listed then: the largest thing a
+turn writes, kept and pushed, and the log is no longer the one source of what the page shows. The
+component is `ai-elements/reasoning.tsx` on Trace, and differs from the pattern as the table says.
 
 **Subagent (M7).** The component (`ai-elements/subagent.tsx`) is built and shown on the story page,
 alone and in Background work's `extra` slot, which the app leaves empty. What M7 must add for

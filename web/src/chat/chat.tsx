@@ -38,7 +38,7 @@ import type { Uploader } from "@/lib/attach";
 import { loadModel, saveModel } from "@/lib/draft";
 import { Composer } from "./composer";
 import { shortLabel } from "./pickers";
-import { ChatRow, ReplyActions } from "./row";
+import { ChatRow, ReplyActions, ThoughtsMemory } from "./row";
 import { useStickToEnd } from "./use-stick-to-end";
 
 // an engine of the master's chain by the label its picker shows (with its effort, src/wire.ts
@@ -243,7 +243,10 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
   const { base, draft, items: held } = state.log;
   const items = useMemo(() => visible({ base, items: held }), [base, held]);
   const settled = useMemo(() => entryRows(items), [items]);
-  const rows = useMemo(() => chatRows(items, settled, draft), [items, settled, draft]);
+  // a thought streaming in before anything it came before has arrived is a row of its own (rows.ts)
+  const { thoughts } = state;
+  const thinkingAt = useMemo(() => [...thoughts.values()].find((t) => t.live)?.i ?? null, [thoughts]);
+  const rows = useMemo(() => chatRows(items, settled, draft, thinkingAt), [items, settled, draft, thinkingAt]);
   const placed = placeMarkers(state.markers, rows);
   const draftKey = draft ? `e${draft.i}` : null;
   const first = rows[0]?.id ?? 0;
@@ -337,6 +340,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
           {empty && <EmptyChat />}
           {/* the dock floats over the transcript's end; the content keeps its height clear below
               the last row (--dock-h, set by useStickToEnd) */}
+          <ThoughtsMemory read={session.openThought}>
           <ReplyActions>
             <MessageScrollerContent className="mx-auto w-full max-w-184 gap-0 px-4 pt-6 pb-[calc(var(--dock-h,9rem)+1.5rem)] sm:px-6" data-region="chat-content">
               {placed.above.map((m) => (
@@ -350,6 +354,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
                       row={row}
                       sources={sources.get(row.key)}
                       streaming={row.key === draftKey}
+                      thought={thoughts.get(row.id)}
                       toolState={row.kind === "tool" ? toolStateOf(row, busy, row.key === lastTool) : "done"}
                     />
                   </MessageScrollerItem>
@@ -360,6 +365,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
               ))}
             </MessageScrollerContent>
           </ReplyActions>
+          </ThoughtsMemory>
         </MessageScrollerViewport>
         <MessageScrollerButton className="size-9 rounded-full border-0 bg-raised text-foreground shadow-float hover:bg-raised hover:text-foreground data-[direction=end]:bottom-[calc(var(--dock-h,9rem)+0.75rem)]" />
       </MessageScroller>

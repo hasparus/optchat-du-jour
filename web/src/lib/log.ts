@@ -150,6 +150,12 @@ export function applyEvent(log: Log, e: Inbound, o: { readonly trim?: boolean } 
       if (i === null) return log;
       return put(log, { i, kind: "echo", live: true, text: e.content, ...flag(e.metadata?.error === true) }, null);
     }
+    // a turn's thinking is not the log's (./reasoning.ts holds it)
+    case EventType.REASONING_START:
+    case EventType.REASONING_MESSAGE_START:
+    case EventType.REASONING_MESSAGE_CONTENT:
+    case EventType.REASONING_MESSAGE_END:
+    case EventType.REASONING_END:
     case EventType.RUN_FINISHED:
     case EventType.RUN_ERROR:
     case EventType.STATE_SNAPSHOT:

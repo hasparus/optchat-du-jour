@@ -2,14 +2,18 @@
 // bubble on the right, a note likewise and marked as one, a reply as plain prose (markdown) with
 // copy and a raw-text toggle under it (rendering never hides what the model wrote), a tool call as
 // one work-log line with its input and output collapsed under it; a TodoWrite call as a plan, and
-// the links a turn's web tools used as its reply's sources.
+// the links a turn's web tools used as its reply's sources. What the model thought before a reply
+// or a tool call is a Reasoning line above it (SPEC "Reasoning").
 import { MessageAction, MessageActions, MessageResponse } from "@/components/ai-elements/message";
 import { Plan, PlanContent, PlanHeader, PlanLogged, PlanSteps } from "@/components/ai-elements/plan";
+import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import { Source, Sources, SourcesContent, SourcesTrigger } from "@/components/ai-elements/sources";
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from "@/components/ai-elements/tool";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Message, MessageContent, MessageHeader } from "@/components/ui/message";
+import { type Thought, thoughtLabel } from "@/lib/reasoning";
 import { type PlanStep, planOf, type Row, type ToolState, toolSummary, type WebSource } from "@/lib/rows";
+import { cn } from "@/lib/utils";
 import { splitMarkers } from "@wire";
 import { CheckIcon, CodeIcon, CopyIcon, NotebookPenIcon, TextIcon } from "lucide-react";
 import { Component, createContext, memo, type ReactNode, use, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -222,6 +226,48 @@ function PlanRow({ row, steps, toolState, plan }: { row: Extract<Row, { kind: "t
   );
 }
 
+// What the model thought before a row: open or closed is the reader's choice per row, kept for
+// this page only (a reload starts closed), in a map the chat owns; `read` asks for a piece's text,
+// which after a reload is read only when its line is opened.
+type RememberedThoughts = { readonly open: Map<number, boolean>; readonly read: (i: number) => void };
+const ThoughtsContext = createContext<RememberedThoughts>({
+  open: new Map(),
+  read: () => {
+    // no chat around it: nothing to read
+  },
+});
+
+export function ThoughtsMemory({ read, children }: { readonly read: (i: number) => void; readonly children: ReactNode }) {
+  // `read` is the session store's, one for the page's life: the map lives as long
+  const value = useMemo(() => ({ open: new Map<number, boolean>(), read }), [read]);
+  return <ThoughtsContext value={value}>{children}</ThoughtsContext>;
+}
+
+// The Reasoning line above a reply or a tool call: closed until the reader opens it, also while
+// it streams; the label ticks while it streams ("Thinking"), then says how long it took.
+function ThoughtLine({ thought }: { readonly thought: Thought }) {
+  const memory = use(ThoughtsContext);
+  const [open, setOpen] = useState(() => memory.open.get(thought.i) ?? false);
+  const { failed, i, text } = thought;
+  // opened before this row was drawn again (a piece that moved, a page of older rows): its text
+  useEffect(() => {
+    if (open && text === null && !failed) memory.read(i);
+  }, [open, text, failed, i, memory]);
+  return (
+    <Reasoning
+      isStreaming={thought.live}
+      onOpenChange={(next) => {
+        memory.open.set(i, next);
+        setOpen(next);
+      }}
+      open={open}
+    >
+      <ReasoningTrigger isStreaming={thought.live} label={thoughtLabel(thought)} />
+      <ReasoningContent cut={thought.cut} failed={failed} text={text} />
+    </Reasoning>
+  );
+}
+
 // a row that fails to render shows its text as logged, and the rest of the chat stays up
 class RowBoundary extends Component<{ readonly text: string; readonly children: ReactNode }, { readonly failed: boolean }> {
   override state = { failed: false };
@@ -239,25 +285,51 @@ class RowBoundary extends Component<{ readonly text: string; readonly children: 
 // chat's newest ("newest", open until the reader chooses), in the turn that runs now ("live"), or
 // an older turn's ("turn", closed); a TodoWrite row without it is a plain tool line, an earlier
 // state of its turn's plan. `sources`: what the turn's web tools used, under its last reply (rows.ts
-// turnSources)
+// turnSources). `thought`: what the model thought before this reply or tool call (a `thinking` row
+// is that alone, until its entry comes)
 export type ChatRowProps = {
   row: Row;
   streaming: boolean;
   toolState: ToolState;
   plan?: "newest" | "live" | "turn" | undefined;
   sources?: readonly WebSource[] | undefined;
+  thought?: Thought | undefined;
 };
 
-export const ChatRow = memo(function ChatRow({ row, streaming, toolState, plan, sources }: ChatRowProps) {
+const rowText = (row: Row) => {
+  switch (row.kind) {
+    case "tool":
+      return `${row.name} ${row.args}\n${row.output ?? ""}`;
+    case "thinking":
+      return "";
+    case "user":
+    case "note":
+    case "talk":
+      return row.text;
+  }
+};
+
+export const ChatRow = memo(function ChatRow({ row, streaming, toolState, plan, sources, thought }: ChatRowProps) {
+  const thinks = thought !== undefined && (row.kind === "talk" || row.kind === "tool" || row.kind === "thinking");
+  const view = <RowView plan={plan} row={row} sources={sources} streaming={streaming} toolState={toolState} />;
   return (
-    <RowBoundary text={row.kind === "tool" ? `${row.name} ${row.args}\n${row.output ?? ""}` : row.text}>
-      <RowView plan={plan} row={row} sources={sources} streaming={streaming} toolState={toolState} />
+    <RowBoundary text={rowText(row)}>
+      {thinks ? (
+        <div className={cn("flex min-w-0 flex-col", row.kind === "talk" ? "gap-1.5" : "gap-0.5")}>
+          <ThoughtLine thought={thought} />
+          {view}
+        </div>
+      ) : (
+        view
+      )}
     </RowBoundary>
   );
 });
 
 function RowView({ row, streaming, toolState, plan, sources }: ChatRowProps) {
   switch (row.kind) {
+    case "thinking":
+      return null;
     case "user":
       return <UserMessage text={row.text} />;
     case "note":
