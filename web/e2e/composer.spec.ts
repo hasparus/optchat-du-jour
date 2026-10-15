@@ -146,6 +146,28 @@ test.describe("a spent Claude plan", () => {
     await expect(page.getByLabel("Model").locator("option").first()).toHaveText("Claude Opus (Claude Code): unavailable, Claude AI usage limit reached");
     await expectShowsLog(page, server);
   });
+
+  test("the composer's glass is one radius at every corner, and the tray on it makes one shape with it", async ({ page }) => {
+    await open(page);
+    const corners = async (selector: string) =>
+      page.locator(selector).first().evaluate((el) => {
+        const cs = getComputedStyle(el);
+        const r = el.getBoundingClientRect();
+        return { left: r.left, radii: [cs.borderTopLeftRadius, cs.borderTopRightRadius, cs.borderBottomRightRadius, cs.borderBottomLeftRadius], width: r.width };
+      });
+    const alone = await corners(".composer-surface");
+    expect(alone.radii).toEqual(["28px", "28px", "28px", "28px"]);
+    await send(page, "are you there?");
+    await expect(page.getByTestId("needs-model")).toBeVisible();
+    // the held tray: as wide as the composer, its top corners on the glass radius, the composer's
+    // squared under it
+    const tray = await corners('[data-testid="dock"] .glass-surface:not(.composer-surface)');
+    const composer = await corners(".composer-surface");
+    expect(tray.radii).toEqual(["28px", "28px", "0px", "0px"]);
+    expect(composer.radii).toEqual(["0px", "0px", "28px", "28px"]);
+    expect(tray.left).toBeCloseTo(composer.left, 0);
+    expect(tray.width).toBeCloseTo(composer.width, 0);
+  });
 });
 
 test.describe("on a touch screen", () => {

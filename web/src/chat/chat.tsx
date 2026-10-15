@@ -382,7 +382,10 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
           </div>
         )}
         {(state.state?.phase === "needs-model" || waiting.length > 0) && (
-          <div className="mx-2.5 -mb-px overflow-hidden rounded-t-xl border border-b-0 bg-raised [&>*+*]:border-t">
+          // the tray on the composer's top edge: the same glass, as wide, its top corners on the
+          // glass radius and the composer's squared under it, so the two read as one shape whose
+          // rings meet in one line
+          <div className="glass-surface relative overflow-hidden rounded-t-glass [&>*+*]:border-t">
             {state.state?.phase === "needs-model" && <NeedsModel onModel={onModel} session={session} state={state.state} />}
             {waiting.length > 0 && (
               <Queue data-testid="queue">
@@ -412,6 +415,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
           </div>
         )}
         <Composer
+          attached={state.state?.phase === "needs-model" || waiting.length > 0}
           busy={busy}
           device={device}
           devices={devices}
