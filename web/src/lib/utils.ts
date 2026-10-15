@@ -1,5 +1,16 @@
-// shadcn's class joiner: later Tailwind classes win over earlier ones
-import { type ClassValue, clsx } from "clsx";
-import { twMerge } from "tailwind-merge";
+// shadcn's class joiner, from shadcn's `cn` package (clsx and tailwind-merge in one, with the same
+// output): later Tailwind classes win over earlier ones. Its tables are compiled by `cn build`
+// (`bun run cn-tables`) into cn-tables.ts with every class group kept, so they never depend on
+// which classes the sources use, plus the theme's own classes from cn.config.mjs: the font sizes
+// (text-2xs, text-ui, text-read), so `text-ui` replaces `text-sm` rather than standing beside it
+// as if it were a colour, the glass radius (rounded-glass replaces another radius rather than
+// losing to it), and the shadows and hairlines, which replace one another. Compiled
+// ahead, the theme costs nothing at run time, where `cn/config`'s createCn would bring its
+// compiler into the bundle (12.6 kB gzipped). utils.test.ts checks the tables are current.
+import { wrapClsx } from "cn/engine";
+import { engine } from "./tw-compat.ts";
 
-export const cn = (...inputs: ClassValue[]) => twMerge(clsx(inputs));
+export type { ClassValue } from "cn";
+
+// clsx-style arguments, merged on the one engine Streamdown's twMerge uses too (tw-compat.ts)
+export const cn = wrapClsx(engine.mergeString, engine);

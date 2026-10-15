@@ -53,9 +53,8 @@ export const ContextIcon = () => {
         cx={ICON_CENTER}
         cy={ICON_CENTER}
         fill="none"
-        opacity="0.7"
         r={ICON_RADIUS}
-        stroke="currentColor"
+        stroke="var(--signal)"
         strokeDasharray={`${circumference} ${circumference}`}
         strokeDashoffset={dashOffset}
         strokeLinecap="round"
@@ -73,8 +72,8 @@ export const ContextTrigger = ({ children, ...props }: ContextTriggerProps) => {
   return (
     <PopoverTrigger asChild>
       {children ?? (
-        <Button type="button" variant="ghost" {...props}>
-          <span className="font-medium text-muted-foreground">{percent.format(usedBytes / maxBytes)}</span>
+        <Button className="rounded-full text-muted-foreground hover:text-foreground" type="button" variant="ghost" {...props}>
+          <span className="font-medium">{percent.format(usedBytes / maxBytes)}</span>
           <ContextIcon />
         </Button>
       )}
@@ -85,7 +84,7 @@ export const ContextTrigger = ({ children, ...props }: ContextTriggerProps) => {
 export type ContextContentProps = ComponentProps<typeof PopoverContent>;
 
 export const ContextContent = ({ className, ...props }: ContextContentProps) => (
-  <PopoverContent className={cn("min-w-60 divide-y overflow-hidden p-0", className)} {...props} />
+  <PopoverContent className={cn("min-w-60 gap-0 divide-y overflow-hidden rounded-xl p-0 shadow-float ring-0", className)} {...props} />
 );
 
 export type ContextContentHeaderProps = ComponentProps<"div">;

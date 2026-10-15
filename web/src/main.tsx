@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
 import { App } from "./app";
 import { openLink, wakeOnReturn } from "./lib/connection";
+import { syncThemeColor } from "./lib/theme";
 import { makeSession } from "./lib/session";
 import "./index.css";
 
@@ -24,4 +25,5 @@ if (root) {
     </StrictMode>,
   );
 }
+syncThemeColor();
 void registerSW({ immediate: true });

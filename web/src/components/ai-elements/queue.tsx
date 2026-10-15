@@ -1,37 +1,43 @@
-// AI Elements' Queue (elements.ai-sdk.dev registry): messages sent but not taken by the model yet,
-// above the composer (SPEC "Web UI", Chat). Todos are left out; an item's one action takes a
-// held message back into the composer.
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { ScrollArea } from "@/components/ui/scroll-area";
+// AI Elements' Queue, rebuilt on shadcn/ui's Trace as the October 2026 AI Elements do it
+// (ui.shadcn.com/docs/ai-elements/radix/queue): a section is a collapsible trace line ("2 waiting
+// for the model") over a list of lines. Here the lines are messages sent but not taken by the model
+// yet, above the composer (SPEC "Web UI", Chat), in the tray attached to its top edge (DESIGN.md,
+// Composer). Todos are left out; an item's one action takes a held message back into the
+// composer. An item may run to two lines and carry thumbnails, so its line wraps rather than
+// truncating, and its action sits beside it, never inside the trigger.
+import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace";
 import { cn } from "@/lib/utils";
-import { ChevronDownIcon } from "lucide-react";
+import { ListIcon } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
 
-export type QueueItemProps = ComponentProps<"li">;
+export type QueueItemProps = ComponentProps<typeof TraceLine>;
 
 export const QueueItem = ({ className, ...props }: QueueItemProps) => (
-  <li className={cn("group flex items-start gap-2 rounded-md px-3 py-1 text-sm", className)} {...props} />
+  <TraceLine className={cn("w-full items-start gap-2.5 py-1 text-ui text-foreground", className)} role="listitem" {...props} />
 );
 
 export type QueueItemIndicatorProps = ComponentProps<"span">;
 
+// the line's icon: a small ring, filled or dashed by where the message stands
 export const QueueItemIndicator = ({ className, ...props }: QueueItemIndicatorProps) => (
-  <span className={cn("mt-1.5 inline-block size-2.5 shrink-0 rounded-full border border-muted-foreground/50", className)} {...props} />
+  <TraceIcon className="mt-0.5">
+    <span className={cn("inline-block size-2 rounded-full border border-muted-foreground/60", className)} {...props} />
+  </TraceIcon>
 );
 
-export type QueueItemContentProps = ComponentProps<"span">;
+export type QueueItemContentProps = ComponentProps<typeof TraceTitle>;
 
 export const QueueItemContent = ({ className, ...props }: QueueItemContentProps) => (
-  <span className={cn("line-clamp-2 grow wrap-break-word text-muted-foreground", className)} {...props} />
+  <TraceTitle className={cn("line-clamp-2 block whitespace-normal wrap-break-word text-foreground", className)} {...props} />
 );
 
 export type QueueItemActionProps = ComponentProps<"button">;
 
-// an icon button at the item's end, a 32 px target
+// an icon button at the item's end, a 32 px target (40 px on touch)
 export const QueueItemAction = ({ className, ...props }: QueueItemActionProps) => (
   <button
     className={cn(
-      "-my-1 flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50 [&_svg]:size-4",
+      "-my-1.5 ml-auto flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:not-disabled:scale-95 disabled:opacity-50 pointer-coarse:size-10 [&_svg]:size-4",
       className,
     )}
     type="button"
@@ -39,63 +45,40 @@ export const QueueItemAction = ({ className, ...props }: QueueItemActionProps) =
   />
 );
 
-export type QueueListProps = ComponentProps<typeof ScrollArea>;
+export type QueueListProps = ComponentProps<typeof Trace>;
 
-export const QueueList = ({ children, className, ...props }: QueueListProps) => (
-  <ScrollArea className={cn("mt-2 -mb-1", className)} {...props}>
-    <div className="max-h-40 pr-4">
-      <ul>{children}</ul>
-    </div>
-  </ScrollArea>
+// the section's lines; a long queue scrolls within 160 px
+export const QueueList = ({ className, ...props }: QueueListProps) => <Trace className={cn("max-h-40 gap-0 overflow-y-auto pr-1", className)} role="list" {...props} />;
+
+export type QueueSectionProps = Omit<ComponentProps<typeof TraceCollapsible>, "open" | "onOpenChange">;
+
+export const QueueSection = ({ defaultOpen = true, ...props }: QueueSectionProps) => <TraceCollapsible defaultOpen={defaultOpen} {...props} />;
+
+export type QueueSectionTriggerProps = ComponentProps<typeof TraceCollapsibleTrigger>;
+
+export const QueueSectionTrigger = ({ className, ...props }: QueueSectionTriggerProps) => (
+  <TraceCollapsibleTrigger className={cn("min-h-7 pointer-coarse:min-h-10", className)} {...props} />
 );
 
-export type QueueSectionProps = ComponentProps<typeof Collapsible>;
-
-export const QueueSection = ({ className, defaultOpen = true, ...props }: QueueSectionProps) => (
-  <Collapsible className={cn(className)} defaultOpen={defaultOpen} {...props} />
-);
-
-export type QueueSectionTriggerProps = ComponentProps<"button">;
-
-export const QueueSectionTrigger = ({ children, className, ...props }: QueueSectionTriggerProps) => (
-  <CollapsibleTrigger asChild>
-    <button
-      className={cn(
-        "group flex w-full items-center justify-between rounded-md bg-muted/40 px-3 py-2 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted",
-        className,
-      )}
-      type="button"
-      {...props}
-    >
-      {children}
-    </button>
-  </CollapsibleTrigger>
-);
-
-export type QueueSectionLabelProps = ComponentProps<"span"> & {
+export type QueueSectionLabelProps = ComponentProps<typeof TraceLine> & {
   count: number;
   label: string;
   icon?: ReactNode;
 };
 
 export const QueueSectionLabel = ({ count, label, icon, className, ...props }: QueueSectionLabelProps) => (
-  <span className={cn("flex items-center gap-2", className)} {...props}>
-    <ChevronDownIcon className="size-4 transition-transform group-data-[state=closed]:-rotate-90" />
-    {icon}
-    <span>
+  <TraceLine className={cn("text-2xs font-medium", className)} {...props}>
+    <TraceIcon>{icon ?? <ListIcon className="size-3.5" />}</TraceIcon>
+    <TraceTitle>
       {count} {label}
-    </span>
-  </span>
+    </TraceTitle>
+  </TraceLine>
 );
 
-export type QueueSectionContentProps = ComponentProps<typeof CollapsibleContent>;
+export type QueueSectionContentProps = ComponentProps<typeof TraceCollapsibleContent>;
 
-export const QueueSectionContent = ({ className, ...props }: QueueSectionContentProps) => (
-  <CollapsibleContent className={cn(className)} {...props} />
-);
+export const QueueSectionContent = ({ className, ...props }: QueueSectionContentProps) => <TraceCollapsibleContent className={cn("mt-1 mb-0 text-foreground", className)} {...props} />;
 
-export type QueueProps = ComponentProps<"div">;
+export type QueueProps = ComponentProps<typeof Trace>;
 
-export const Queue = ({ className, ...props }: QueueProps) => (
-  <div className={cn("flex flex-col gap-2 rounded-xl border border-border bg-background px-3 py-2 shadow-xs", className)} {...props} />
-);
+export const Queue = ({ className, ...props }: QueueProps) => <Trace className={cn("px-3.5 pt-1 pb-2", className)} {...props} />;

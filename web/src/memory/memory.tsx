@@ -9,7 +9,7 @@ import { api } from "@/lib/api";
 import { type NodeView, span, type ViewLine } from "@wire";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
-import { ArrowLeftIcon, MessageSquareIcon, RefreshCwIcon } from "lucide-react";
+import { ArrowLeftIcon, ChevronRightIcon, MessageSquareIcon, RefreshCwIcon } from "lucide-react";
 import { useCallback, useState } from "react";
 
 type At = { readonly l: number; readonly i: number };
@@ -20,13 +20,14 @@ const range = (line: ViewLine) => (line.from === line.to || line.to === null ? (
 function Line({ line, onOpen }: { line: ViewLine; onOpen: () => void }) {
   return (
     <li>
-      <button className="w-full rounded-md px-2 py-1.5 text-left hover:bg-muted" data-testid="view-line" onClick={onOpen} type="button">
+      <button className="group w-full rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-accent active:bg-accent" data-testid="view-line" onClick={onOpen} type="button">
         <div className="flex items-baseline gap-2 text-xs text-muted-foreground">
           <span className="font-mono text-foreground">{name(line)}</span>
           <span className="truncate">{range(line)}</span>
           <span className="ml-auto shrink-0 tabular-nums">{line.size === null ? "" : `${line.size} B`}</span>
+          <ChevronRightIcon aria-hidden="true" className="size-3.5 shrink-0 self-center opacity-0 transition-opacity group-hover:opacity-100" />
         </div>
-        <p className={cn("line-clamp-3 text-sm wrap-break-word", !line.built && "text-muted-foreground italic")}>{line.text}</p>
+        <p className={cn("mt-1 line-clamp-3 text-read wrap-break-word", !line.built && "text-muted-foreground italic")}>{line.text}</p>
       </button>
     </li>
   );
@@ -36,8 +37,8 @@ function Zoom({ at, onOpen, onBack, onShow }: { at: At; onOpen: (next: At) => vo
   const read = useCallback(async () => api.node(at.l, at.i), [at.l, at.i]);
   const { data, error } = useApi<NodeView>(read);
   return (
-    <div className="space-y-3" data-testid="zoom">
-      <Button onClick={onBack} size="sm" variant="ghost">
+    <div className="space-y-4" data-testid="zoom">
+      <Button className="-ml-2 text-muted-foreground hover:text-foreground" onClick={onBack} size="sm" variant="ghost">
         <ArrowLeftIcon /> back
       </Button>
       {error !== null && <p className="text-sm text-destructive">{error}</p>}
@@ -45,18 +46,21 @@ function Zoom({ at, onOpen, onBack, onShow }: { at: At; onOpen: (next: At) => vo
         <div className="space-y-2">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <span className="font-mono text-foreground">{name(data)}</span>
-            <Badge variant="secondary">{data.kind}</Badge>
-            <span>{data.date}</span>
+            <Badge className="rounded-full font-medium" variant="secondary">
+              {data.kind}
+            </Badge>
+            <span className="tabular-nums">{data.date}</span>
           </div>
-          <pre className="rounded-md bg-muted p-3 font-mono text-xs wrap-break-word whitespace-pre-wrap" data-testid="zoom-message">
+          <pre className="rounded-xl border bg-code p-3.5 font-mono text-xs/relaxed wrap-break-word whitespace-pre-wrap" data-testid="zoom-message">
             {data.text}
           </pre>
           <Button
+            className="rounded-full"
             onClick={() => {
               onShow(data.id);
             }}
             size="sm"
-            variant="secondary"
+            variant="outline"
           >
             <MessageSquareIcon /> show in chat
           </Button>
@@ -64,22 +68,23 @@ function Zoom({ at, onOpen, onBack, onShow }: { at: At; onOpen: (next: At) => vo
       ) : null}
       {data !== null && "children" in data ? (
         <div className="space-y-2">
-          <div className="text-xs text-muted-foreground">
-            <span className="font-mono text-foreground">{name(data)}</span> {data.text ?? "(not summarized yet)"}
+          <div className="space-y-1">
+            <span className="font-mono text-xs text-muted-foreground">{name(data)}</span>
+            <p className="text-read">{data.text ?? "(not summarized yet)"}</p>
           </div>
-          <ul className="space-y-1">
+          <ul className="space-y-2 border-l pl-3">
             {data.children.map((c) => (
               <li key={`${c.l}:${c.i}`}>
                 <button
-                  className="w-full rounded-md border px-2 py-1.5 text-left hover:bg-muted"
+                  className="w-full rounded-lg px-3 py-2.5 text-left hairline transition-colors hover:bg-accent"
                   data-testid="zoom-child"
                   onClick={() => {
                     onOpen({ i: c.i, l: c.l });
                   }}
                   type="button"
                 >
-                  <span className="font-mono text-xs">{name(span(c))}</span>
-                  <p className={cn("text-sm wrap-break-word", !c.built && "text-muted-foreground italic")}>{c.text ?? "(not summarized yet)"}</p>
+                  <span className="font-mono text-xs text-muted-foreground">{name(span(c))}</span>
+                  <p className={cn("mt-1 text-read wrap-break-word", !c.built && "text-muted-foreground italic")}>{c.text ?? "(not summarized yet)"}</p>
                 </button>
               </li>
             ))}
@@ -96,10 +101,13 @@ export function Memory({ onShowInChat }: { onShowInChat: (i: number) => void }) 
   const at = path.at(-1);
 
   return (
-    <div className="mx-auto w-full max-w-2xl space-y-3 p-4">
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-sm">
-          {data === null ? "…" : `${data.lines.length} lines · ${kb(data.size)}`}
+    <div className="mx-auto w-full max-w-2xl space-y-4 px-4 py-6 sm:px-6">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h1 className="text-base font-semibold tracking-tight">Memory</h1>
+          <p className="mt-1 text-ui text-muted-foreground">
+            {data === null ? "Loading…" : `What the model reads each turn: ${data.lines.length} lines, ${kb(data.size)}`}
+          </p>
         </div>
         <div className="flex items-center gap-1">
           {data !== null && (
@@ -110,7 +118,7 @@ export function Memory({ onShowInChat }: { onShowInChat: (i: number) => void }) 
               </ContextContent>
             </Context>
           )}
-          <Button aria-label="Reload" onClick={reload} size="icon-sm" variant="ghost">
+          <Button aria-label="Reload" className="text-muted-foreground hover:text-foreground" onClick={reload} size="icon-sm" variant="ghost">
             <RefreshCwIcon />
           </Button>
         </div>
@@ -129,7 +137,7 @@ export function Memory({ onShowInChat }: { onShowInChat: (i: number) => void }) 
           onShow={onShowInChat}
         />
       ) : (
-        <ul className="space-y-1">
+        <ul className="-mx-3 space-y-0.5">
           {data?.lines.map((line) => (
             <Line
               key={`${line.l}:${line.i}`}

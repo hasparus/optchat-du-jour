@@ -1,11 +1,14 @@
 // openChat: one writer's whole chat. It holds the lock, owns the memory and runs the pump until
 // its scope closes.
-import { Console, Effect, Semaphore } from "effect";
-import { type Commit, makePump, type PumpOptions } from "./compactor.ts";
+import { Console, Effect, type PubSub, Semaphore } from "effect";
+import { type Activity, type Commit, makePump, type PumpOptions } from "./compactor.ts";
 import type { Kind } from "./records.ts";
 import { appendMessage, appendNode, loadChat, lock, newMsg, saveView, type StoreError } from "./store.ts";
 import type { Entry, Marks, Mem } from "./tree.ts";
 import { addMessage, addNode } from "./view.ts";
+
+// what our log lines may carry beyond the reference's {i, kind, text, size, date} (records.ts Msg)
+export type LogExtra = { device?: string; error?: boolean };
 
 export type Chat = {
   readonly dir: string;
@@ -17,7 +20,11 @@ export type Chat = {
   // a message is coming: failed compactor calls are tried again now (docs/optchat.md §4: "at the
   // next message"), so a turn that waits for summaries is not left waiting on one
   readonly retry: Effect.Effect<void>;
-  readonly log: (kind: Kind, body: string, extra?: { readonly device?: string }) => Effect.Effect<Entry, StoreError>;
+  // `extra`'s keys go on the line after the reference's, as given: leave out what is not set
+  readonly log: (kind: Kind, body: string, extra?: Readonly<LogExtra>) => Effect.Effect<Entry, StoreError>;
+  // the compactor's work per level right now, and a ping on each change of it (the pump's)
+  readonly activity: () => readonly Activity[];
+  readonly changes: PubSub.PubSub<true>;
 };
 
 // The pump's commit: a node is on disk (fsynced) before memory knows it, so the view never
@@ -39,7 +46,7 @@ export const openChat = Effect.fn("openChat")(function* (dir: string, o: PumpOpt
   const pump = yield* makePump({ ...o, commit, mem });
   // one message stored at a time, so two concurrent logs never take the same id
   const storing = yield* Semaphore.make(1);
-  const store = (kind: Kind, body: string, extra: { readonly device?: string }) =>
+  const store = (kind: Kind, body: string, extra: Readonly<LogExtra>) =>
     Effect.suspend(() => {
       const id = mem.root.length;
       const entry = { ...newMsg(id, kind, body), ...extra };
@@ -60,5 +67,5 @@ export const openChat = Effect.fn("openChat")(function* (dir: string, o: PumpOpt
     storing.withPermit(store(kind, body, extra)).pipe(Effect.tap((entry) => pump.logged(entry.i)));
   // at startup there may be work already: free nodes to build, nodes an earlier run never finished
   yield* pump.kick;
-  return { dir, kick: pump.kick, log, mem, problems, retry: pump.retry } satisfies Chat;
+  return { activity: pump.activity, changes: pump.changes, dir, kick: pump.kick, log, mem, problems, retry: pump.retry } satisfies Chat;
 });

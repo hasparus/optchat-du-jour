@@ -28,9 +28,12 @@ export const IDLE: SessionState = {
   stopped: null,
   viewBytes: 0,
   waiting: 0,
+  compactions: [],
+  elapsed: 0,
 };
 
-export type Entry = { readonly kind: "user" | "talk" | "tool" | "echo" | "note"; readonly text: string };
+// `error`: an echo the log flags as failed (E28)
+export type Entry = { readonly kind: "user" | "talk" | "tool" | "echo" | "note"; readonly text: string; readonly error?: boolean };
 
 // the log as server/agui.ts toMessages writes it; `from` is the first entry's index
 export function snapshot(entries: readonly Entry[], from = 0): Inbound {
@@ -55,8 +58,10 @@ export function snapshot(entries: readonly Entry[], from = 0): Inbound {
             toolCalls: [{ function: { arguments: e.text.slice(space + 1), name: e.text.slice(0, space) }, id: open, type: "function" as const }],
           };
         }
-        case "echo":
-          return { content: e.text, id, role: "tool" as const, toolCallId: open };
+        case "echo": {
+          const message = { content: e.text, id, role: "tool" as const, toolCallId: open };
+          return e.error === true ? { ...message, metadata: { error: true } } : message;
+        }
       }
     }),
     type: EventType.MESSAGES_SNAPSHOT,

@@ -17,6 +17,11 @@ const openCall = (open: string | null, e: Entry): string | null => {
   return e.kind === "echo" ? null : open;
 };
 
+// An echo whose tool failed carries `metadata: {error: true}` (E28), on its tool message and on its
+// TOOL_CALL_RESULT alike: the event has no `error` field, and the tool message's `error` is a reason,
+// which the log doesn't keep apart from the output. Left out when the entry has no flag.
+const flagged = (e: Entry) => (e.error === true ? { metadata: { error: true } } : {});
+
 // the log as AG-UI messages: user and note entries are user messages (a note named "note"), talk an
 // assistant message, a tool entry an assistant message with one tool call, an echo the tool message
 // answering the nearest tool call before it
@@ -42,7 +47,7 @@ export function toMessages(entries: readonly Entry[]): Message[] {
         break;
       }
       case "echo":
-        out.push({ content: e.text, id, role: "tool", toolCallId: open ?? toolCallId(e.i) });
+        out.push({ content: e.text, id, role: "tool", toolCallId: open ?? toolCallId(e.i), ...flagged(e) });
         open = openCall(open, e);
         break;
     }
@@ -136,7 +141,7 @@ export function openStream(o: {
       case "echo": {
         const call = tool ?? toolCallId(entry.i);
         tool = openCall(tool, entry);
-        return [...closeText(), { content: entry.text, messageId: id, role: "tool", toolCallId: call, type: EventType.TOOL_CALL_RESULT }];
+        return [...closeText(), { content: entry.text, messageId: id, role: "tool", toolCallId: call, type: EventType.TOOL_CALL_RESULT, ...flagged(entry) }];
       }
       case "user":
       case "note":

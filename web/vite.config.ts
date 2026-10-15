@@ -25,8 +25,10 @@ export default defineConfig({
         description: "an endless chat whose history is its memory",
         display: "standalone",
         start_url: "/",
-        background_color: "#0a0a0a",
-        theme_color: "#0a0a0a",
+        // the dark sheet (web/DESIGN.md), dark as before: a manifest takes one colour, and the page
+        // sets the status bar to its own theme as it loads (index.html, src/lib/theme.ts)
+        background_color: "#111311",
+        theme_color: "#111311",
         icons: [
           { src: "icon-192.png", sizes: "192x192", type: "image/png" },
           { src: "icon-512.png", sizes: "512x512", type: "image/png" },
@@ -46,6 +48,13 @@ export default defineConfig({
             // new build's hashed names would pile up otherwise)
             options: { cacheName: "chunks", cacheableResponse: { statuses: [200] }, expiration: { maxEntries: 60 } },
           },
+          {
+            // the self-hosted fonts (src/fonts.css): cached once used, so the installed app keeps
+            // its type offline
+            urlPattern: /\/assets\/.*\.woff2$/,
+            handler: "CacheFirst",
+            options: { cacheName: "fonts", cacheableResponse: { statuses: [200] }, expiration: { maxEntries: 30 } },
+          },
         ],
       },
     }),
@@ -62,6 +71,13 @@ export default defineConfig({
       "@": fileURLToPath(new URL("src", import.meta.url)),
       // the server's wire contract: schemas and helpers with no node imports (SPEC "Protocol")
       "@wire": fileURLToPath(new URL("../src/wire.ts", import.meta.url)),
+      // shadcn's `cn` stands in for clsx and tailwind-merge, which Streamdown and
+      // class-variance-authority still import, so the bundle carries one implementation
+      // (https://github.com/shadcn-ui/cn/blob/main/docs/aliasing.md). tailwind-merge goes to our
+      // shim on cn's engine with our compiled tables, not to `cn` itself, whose default tables
+      // would ship as a second set and merge without the theme's classes
+      clsx: "cn/engine",
+      "tailwind-merge": fileURLToPath(new URL("src/lib/tw-compat.ts", import.meta.url)),
     },
   },
   server: {

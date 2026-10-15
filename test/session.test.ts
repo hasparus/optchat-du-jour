@@ -4,7 +4,7 @@
 // lost or logged twice, and the loop never spins.
 import { afterAll, expect, test } from "bun:test";
 import { type AGUIEvent, EventType } from "@ag-ui/core";
-import { type Duration, Effect, PubSub } from "effect";
+import { Deferred, type Duration, Effect, PubSub } from "effect";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
@@ -96,6 +96,40 @@ const rig = (
     const idle = () => events.some((e) => e.type === "state" && e.state.phase === "idle");
     return { chat, counts, disk, events, idle, log: () => chat.mem.root.map((m) => [m.kind, m.text]), said, session };
   });
+
+// the compactor has a call running on a message's node
+const running = (s: { readonly compactions?: readonly { readonly level: number; readonly running: number }[] | undefined }) =>
+  (s.compactions ?? []).some((a) => a.level === 0 && a.running > 0);
+
+test("the state tells the compactor's work per level, also when nothing else happens, and how long the phase has run", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const gate = Deferred.makeUnsafe<true, CompactError>();
+      const engine: TurnEngine = { ref: "fake:x", run: () => Effect.void, vision: false, warm: () => Effect.void };
+      const r = yield* rig(engine, { summarize: Effect.asVoid(Deferred.await(gate)) });
+      expect(r.session.state().compactions).toEqual([]);
+      // a message long enough to need a compactor call, held at the gate
+      yield* r.session.input("w".repeat(4000), { clientId: "c1" });
+      yield* until("the call", () => running(r.session.state()));
+      // clients are told without another event to carry it
+      yield* until("told", () => r.events.some((e) => e.type === "state" && running(e.state)));
+      // every state says how long its phase has run, on the server's own clock
+      const states = r.events.flatMap((e) => (e.type === "state" ? [e.state] : []));
+      expect(states.every((s) => s.elapsed !== undefined && s.elapsed >= 0)).toBe(true);
+      yield* Deferred.succeed(gate, true);
+      yield* until("built", () => (r.session.state().compactions ?? []).length === 0);
+      yield* until("told built", () => r.events.some((e) => e.type === "state" && (e.state.compactions ?? []).length === 0 && e.state.messages > 0));
+      // within a phase it only grows; a new phase starts again from about nothing
+      const phases = r.events.flatMap((e) => (e.type === "state" ? [[e.state.phase, e.state.elapsed ?? 0] as const] : []));
+      for (let k = 1; k < phases.length; k++) {
+        const [before, then] = phases[k - 1] ?? ["idle", 0];
+        const [phase, ran] = phases[k] ?? ["idle", 0];
+        if (phase === before) expect(ran).toBeGreaterThanOrEqual(then);
+        else expect(ran).toBeLessThan(1000);
+      }
+    }).pipe(Effect.scoped),
+  );
+});
 
 test("a turn that dies with messages steered into it logs every one of them unanswered, and says why", async () => {
   await Effect.runPromise(

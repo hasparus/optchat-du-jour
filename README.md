@@ -54,7 +54,7 @@ bun run test          # never calls a real model
 bun run parity        # REF=<shitty-optchat checkout>
 bun run proofs        # the Bend kernel's laws (needs bend: sh kernel/install-bend.sh)
 cd web && bun run e2e # Playwright against the real server and a fake claude
-cd web && bun run dev
+cd web && bun run dev    # /stories.html: UI with no data yet (the Subagent pattern), dev only
 cd mobile && bun install && bun run check
 ```
 

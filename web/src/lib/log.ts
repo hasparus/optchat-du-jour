@@ -11,6 +11,8 @@ export type Item = {
   readonly i: number;
   readonly kind: Kind;
   readonly text: string;
+  // an echo whose tool failed, as the log records it (E28); left out otherwise
+  readonly error?: boolean;
   // told by a live event rather than read from a snapshot or a page. Trusted while the snapshot
   // window holds it; once a newer snapshot starts above it, it is read again from the log
   readonly live: boolean;
@@ -37,6 +39,9 @@ export const MAX_HELD = 1500;
 
 export const emptyLog: Log = { base: 0, draft: null, items: new Map(), newest: -1 };
 
+// an echo's error flag as an Item holds it: there only when the log says the tool failed
+const flag = (error: boolean) => (error ? { error } : {});
+
 // a snapshot message as a log entry (server/agui.ts toMessages, read backwards)
 function fromMessage(m: Message): Item | null {
   const i = logIndex(m.id);
@@ -51,7 +56,7 @@ function fromMessage(m: Message): Item | null {
         : { i, kind: "talk", live: false, text: m.content ?? "" };
     }
     case "tool":
-      return { i, kind: "echo", live: false, text: m.content };
+      return { i, kind: "echo", live: false, text: m.content, ...flag(m.metadata?.error === true) };
   }
 }
 
@@ -80,13 +85,13 @@ function applySnapshot(log: Log, messages: readonly Message[], trim: boolean): L
 
 // A page of /api/messages is a stretch of the log as it is: it replaces what this client held for
 // that stretch, and a draft the page already holds as an entry.
-export function applyPage(log: Log, entries: readonly { readonly i: number; readonly kind: Kind; readonly text: string }[]): Log {
+export function applyPage(log: Log, entries: readonly { readonly i: number; readonly kind: Kind; readonly text: string; readonly error?: boolean | undefined }[]): Log {
   const first = entries[0]?.i;
   const last = entries.at(-1)?.i;
   if (first === undefined || last === undefined) return log;
   const items = new Map<number, Item>();
   for (const [i, item] of log.items) if (i < first || i > last) items.set(i, item);
-  for (const e of entries) items.set(e.i, { i: e.i, kind: e.kind, live: false, text: e.text });
+  for (const e of entries) items.set(e.i, { i: e.i, kind: e.kind, live: false, text: e.text, ...flag(e.error === true) });
   return { ...log, draft: log.draft && log.draft.i <= last ? null : log.draft, items, newest: Math.max(log.newest, last) };
 }
 
@@ -143,7 +148,7 @@ export function applyEvent(log: Log, e: Inbound, o: { readonly trim?: boolean } 
     case EventType.TOOL_CALL_RESULT: {
       const i = logIndex(e.messageId);
       if (i === null) return log;
-      return put(log, { i, kind: "echo", live: true, text: e.content }, null);
+      return put(log, { i, kind: "echo", live: true, text: e.content, ...flag(e.metadata?.error === true) }, null);
     }
     case EventType.RUN_FINISHED:
     case EventType.RUN_ERROR:

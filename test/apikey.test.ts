@@ -20,6 +20,7 @@ import { EngineExecutionPolicy, RequestNotAdmitted } from "../src/engines/reques
 import { apiKeyCompactor } from "../src/summarize/api-key.ts";
 import { apiKeyProvider } from "../src/providers/api-key.ts";
 import type { ToolBox } from "../src/tools/box.ts";
+import { toolOk } from "../src/tools/files.ts";
 import type { TurnEvents, TurnInput } from "../src/turn/engine.ts";
 import { toolLoop } from "../src/turn/loop.ts";
 import { type UsageRecord, logUsage } from "../src/usage.ts";
@@ -230,13 +231,14 @@ test("an older config with cache.apiKeyTtls still loads, the key ignored; an eng
 // text with the log index its entry will get, thoughts, notices and usage records kept
 const turnRig = (rounds?: number) => {
   const usagePath = `${dir}/turn-${crypto.randomUUID()}.jsonl`;
-  const reports: string[] = [], records: UsageRecord[] = [], log: [string, string][] = [], texts: [number, string][] = [], infos: string[] = [], thoughts: number[] = [];
+  const reports: string[] = [], records: UsageRecord[] = [], log: string[][] = [], texts: [number, string][] = [], infos: string[] = [], thoughts: number[] = [];
   const budget = makeBudget({ monthly: 5, report: (m) => Effect.sync(() => void reports.push(m)), usagePath });
-  const box: ToolBox = { defs: [{ description: "Read a file", name: "Read", parameters: { type: "object" } }], run: (name) => Effect.succeed(`${name} ran`) };
+  const box: ToolBox = { defs: [{ description: "Read a file", name: "Read", parameters: { type: "object" } }], run: (name) => Effect.succeed(toolOk(`${name} ran`)) };
   const engine = toolLoop({ instructions: "MASTER", provider: apiKeyProvider({ budget, clients, effort: "high", ref: API_KEY, settings: settings(5) }), ref: REF, rounds, toolsFor: () => box, vision: false });
   const out: TurnEvents = {
     info: (m) => Effect.sync(() => void infos.push(m)),
-    log: (kind, text) => Effect.sync(() => void log.push([kind, text])),
+    // an echo flagged as failed (E28) has "error" after its text
+    log: (kind, text, flags) => Effect.sync(() => void log.push(flags?.error === true ? [kind, text, "error"] : [kind, text])),
     text: (delta) => Effect.sync(() => void texts.push([log.length, delta])),
     thinking: (tokens) => Effect.sync(() => void thoughts.push(tokens)),
     took: () => Effect.void,
@@ -277,7 +279,7 @@ test("a call on the last request is answered in the log as not run; a refused re
   expect(Option.isNone(await last.run)).toBe(true);
   expect(last.log).toEqual([
     ["tool", 'Read {"file_path":"a.txt"}'],
-    ["echo", "not run: this turn used its 1 requests"],
+    ["echo", "not run: this turn used its 1 requests", "error"],
   ]);
   expect(last.infos).toEqual([`${REF} stopped after 1 requests with tool calls left`]);
 

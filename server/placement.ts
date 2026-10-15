@@ -12,7 +12,7 @@ import { DeviceOffline } from "../src/engines/errors.ts";
 import { mcpConfig, mcpTransports } from "../src/mcp.ts";
 import { expandHome } from "../src/paths.ts";
 import { toolBox, toolDefs } from "../src/tools/box.ts";
-import { type FileTools, makeFileTools } from "../src/tools/files.ts";
+import { type FileTools, makeFileTools, toolError } from "../src/tools/files.ts";
 import type { Mem } from "../src/tree.ts";
 import type { Placement } from "../src/turn/claude-code.ts";
 
@@ -56,7 +56,7 @@ export const makePlacements = (o: {
     const toolsFor = (device: string, mem: Mem) =>
       toolBox({
         device,
-        files: files.get(device) ?? ((name) => Effect.succeed(`Error: ${device} is not a configured device, so ${name} can't run`)),
+        files: files.get(device) ?? ((name) => Effect.succeed(toolError(`Error: ${device} is not a configured device, so ${name} can't run`))),
         folders: devices[device]?.folders ?? [],
         mem,
       });

@@ -21,8 +21,9 @@ import type { OpenAiPlan } from "../src/openai/responses.ts";
 import { makeSession, noMedia } from "../src/session.ts";
 import { newMsg } from "../src/store.ts";
 import type { TurnEvents, TurnInput } from "../src/turn/engine.ts";
+import { toolOk } from "../src/tools/files.ts";
 import type { UsageRecord } from "../src/usage.ts";
-import { engineLabel } from "../src/wire.ts";
+import { engineLabel, engineParts } from "../src/wire.ts";
 
 const price = { cacheRead: 0.01, cacheWrite5m: 0.125, input: 0.1, output: 0.5 };
 
@@ -157,7 +158,7 @@ const rig = () => {
     ...needs(s),
     instructions: "SYSTEM",
     runnerFor: () => Effect.succeed({ cwd: undefined, mcpConfig: "{}", mcpSeen: () => Effect.succeed(false), runner }),
-    toolsFor: () => ({ defs: [], run: () => Effect.succeed("") }),
+    toolsFor: () => ({ defs: [], run: () => Effect.succeed(toolOk("")) }),
     warms: () => false,
   });
   return { compactor, efforts: { anthropic, argv, openai, plan: viaPlan }, runner, turn };
@@ -371,6 +372,11 @@ test("the picker's label shows the effort a ref names, and what runs when a bare
   expect(engineLabel("claude-code:claude-haiku-4-5", null)).toBe("Claude Haiku 4.5 (Claude Code, no effort)");
   expect(engineLabel("openai-plan:gpt-6.1-sol@max")).toBe("GPT-6.1 Sol (ChatGPT plan, max)");
   expect(engineLabel("api-key:anthropic/claude-haiku-5-5@low")).toBe("Claude Haiku 5.5 (Anthropic API key, low)");
+  // the label's parts, which the web's Model Selector groups by (where) instead of parsing a label
+  expect(engineParts("claude-code:haiku@xhigh")).toEqual({ effort: "xhigh", name: "Claude Haiku", where: "Claude Code" });
+  expect(engineParts("claude-code:claude-haiku-4-5", null)).toEqual({ effort: "no effort", name: "Claude Haiku 4.5", where: "Claude Code" });
+  expect(engineParts("openai-plan:gpt-6.1-sol")).toEqual({ effort: null, name: "GPT-6.1 Sol", where: "ChatGPT plan" });
+  expect(engineParts("api-key:openai/gpt-6.1-sol", "high")).toEqual({ effort: "high", name: "GPT-6.1 Sol", where: "OpenAI API key" });
   const s = settings({ master: ["claude-code:opus", "claude-code:haiku@xhigh", "claude-code:sonnet@high"] });
   const master = await Effect.runPromise(Effect.scoped(makeMaster(s.master.chain.map((ref) => ({ label: entryLabel(ref, s.master.effort), ref: ref.ref })), s.master.effort)));
   expect(master.engines().map((e) => [e.ref, e.label])).toEqual([

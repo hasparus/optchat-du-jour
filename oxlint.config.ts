@@ -20,14 +20,15 @@ const unsorted = Object.fromEntries(
 
 export default defineConfig({
   extends: [base],
-  ignorePatterns: [...ignorePatterns, "vendor", "repos/**", "kernel/kernel.mjs", ...mobile],
+  // cn-tables.ts is `cn build`'s output (web/src/lib/utils.ts), regenerated, never edited
+  ignorePatterns: [...ignorePatterns, "vendor", "repos/**", "kernel/kernel.mjs", "web/src/lib/cn-tables.ts", ...mobile],
   overrides: [
     ...overrides,
     // a script whose output is its report
     { files: ["test/parity/**"], rules: { "no-console": "off" } },
-    // shadcn's registry components import React as a namespace, which this rule reads as importing
-    // PropsWithChildren; none of them use it
-    { files: ["web/src/components/ui/**"], rules: { "no-restricted-imports": "off" } },
+    // shadcn's registry components (and the Code Block's highlighter hook) import React as a
+    // namespace, which this rule reads as importing PropsWithChildren; none of them use it
+    { files: ["web/src/components/ui/**", "web/src/hooks/**", "web/src/lib/highlighter.tsx"], rules: { "no-restricted-imports": "off" } },
   ],
   // the web UI's Tailwind theme, for better-tailwindcss's class checks
   settings: { "better-tailwindcss": { entryPoint: "web/src/index.css" } },

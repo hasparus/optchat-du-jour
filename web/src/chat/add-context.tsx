@@ -1,0 +1,108 @@
+// The composer's "+" (DESIGN.md, Composer): one round button that opens "Add context", the ways to
+// attach something to the next message. On a touch screen it is a sheet from the bottom edge; with a
+// mouse, a popover over the button. The sheet is the app's one (components/sheet-drawer.tsx, shadcn's
+// Drawer on vaul): a drag down closes it too. Both trap focus, close on Escape or a tap outside, and return
+// focus to the "+". With one choice only (a mouse has no camera choice) the "+" opens that choice's
+// picker itself: a menu of one is a click wasted. A choice opens its file picker from the tap itself (iOS opens a picker only
+// inside the gesture), then closes. The pickers are the composer's own hidden inputs
+// (PromptInputFileInput): photos and videos from the library or files, and the camera where the
+// device has one, exactly as the two buttons this replaces did.
+import { useCoarsePointer } from "@/components/ai-elements/prompt-input";
+import { SheetDrawer } from "@/components/sheet-drawer";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
+import { CameraIcon, ImagesIcon, type LucideIcon, PlusIcon } from "lucide-react";
+import { type ComponentProps, type RefObject, useId, useState } from "react";
+
+export type AddContextChoice = {
+  readonly id: string;
+  readonly label: string;
+  readonly hint: string;
+  readonly icon: LucideIcon;
+  readonly input: RefObject<HTMLInputElement | null>;
+};
+
+// the choices the composer offers: the library (always) and the camera (on a touch screen, where a
+// device has one; elsewhere `capture` is ignored and it would be the same file picker again)
+export const addContextChoices = (library: RefObject<HTMLInputElement | null>, camera: RefObject<HTMLInputElement | null>, touch: boolean): readonly AddContextChoice[] => [
+  { hint: "From your library or files", icon: ImagesIcon, id: "library", input: library, label: "Photos & videos" },
+  ...(touch ? [{ hint: "Take a photo now", icon: CameraIcon, id: "camera", input: camera, label: "Camera" }] : []),
+];
+
+function Choices({ choices, onChosen }: { readonly choices: readonly AddContextChoice[]; readonly onChosen: () => void }) {
+  return (
+    <ul className="grid gap-0.5">
+      {choices.map((c) => (
+        <li key={c.id}>
+          <button
+            className="flex w-full items-center gap-3 rounded-xl p-2 text-left transition-colors hover:bg-accent focus-visible:bg-accent active:bg-soft-strong pointer-coarse:py-2.5"
+            data-testid={`add-${c.id}`}
+            onClick={() => {
+              c.input.current?.click(); // inside the tap: the picker opens
+              onChosen();
+            }}
+            type="button"
+          >
+            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-soft text-foreground">
+              <c.icon aria-hidden="true" className="size-4" strokeWidth={1.75} />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-ui font-medium">{c.label}</span>
+              <span className="block text-xs text-muted-foreground">{c.hint}</span>
+            </span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// the "+": a bare icon, its glyph lined up with the start of the composer's text (the -3 px takes up
+// the icon's own inset), its 40 px target invisible around it (bare-control, index.css); props pass
+// through, so a sheet or popover trigger can wrap it
+function Plus({ className, ...props }: ComponentProps<"button">) {
+  return (
+    <button aria-label="Add context" className={cn("bare-control -ml-0.75 shrink-0 cursor-pointer", className)} type="button" {...props}>
+      <PlusIcon aria-hidden="true" className="size-4.5" strokeWidth={1.75} />
+    </button>
+  );
+}
+
+export function AddContext({ choices }: { readonly choices: readonly AddContextChoice[] }) {
+  const [open, setOpen] = useState(false);
+  const touch = useCoarsePointer();
+  const title = useId();
+  const close = () => {
+    setOpen(false);
+  };
+  const plus = <Plus title="Add context" />;
+  const [only] = choices;
+  if (!touch && only !== undefined && choices.length === 1) {
+    return (
+      <Plus
+        onClick={() => {
+          only.input.current?.click();
+        }}
+        title={`Add context: ${only.label.toLowerCase()}`}
+      />
+    );
+  }
+  if (touch) {
+    return (
+      <SheetDrawer description="Attach a photo or a video to your next message" onOpenChange={setOpen} open={open} testId="add-context" title="Add context" trigger={plus}>
+        <Choices choices={choices} onChosen={close} />
+      </SheetDrawer>
+    );
+  }
+  return (
+    <Popover modal onOpenChange={setOpen} open={open}>
+      <PopoverTrigger asChild>{plus}</PopoverTrigger>
+      <PopoverContent align="start" aria-labelledby={title} className="w-64 gap-0 rounded-2xl p-1.5 shadow-float ring-0" data-testid="add-context" role="dialog" side="top" sideOffset={8}>
+        <p className="px-2 pt-1.5 pb-1 text-2xs font-medium text-muted-foreground" id={title}>
+          Add context
+        </p>
+        <Choices choices={choices} onChosen={close} />
+      </PopoverContent>
+    </Popover>
+  );
+}

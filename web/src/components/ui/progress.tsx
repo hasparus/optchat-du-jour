@@ -1,5 +1,3 @@
-"use client"
-
 import * as React from "react"
 import { cn } from "@/lib/utils"
 import { Progress as ProgressPrimitive } from "radix-ui"
@@ -13,7 +11,7 @@ function Progress({
     <ProgressPrimitive.Root
       data-slot="progress"
       className={cn(
-        "relative h-2 w-full overflow-hidden rounded-full bg-primary/20",
+        "relative flex h-1.5 w-full items-center overflow-x-hidden rounded-full bg-muted",
         className
       )}
       {...props}

@@ -2,10 +2,17 @@
 // outlives a reload, follow-ups queued for the next turn, sent now, or taken back, the model
 // picker (this page's own: each message names its model), and the resume after a usage limit.
 // 360 px wide, like the other specs.
-import type { Page } from "@playwright/test";
-import { answered, expect, expectShowsLog, open, REPLY, send, SOL_REPLY, test } from "./fixture";
+import type { Locator, Page } from "@playwright/test";
+import { answered, attach, expect, expectShowsLog, open, REPLY, send, SOL_REPLY, test } from "./fixture";
 
 const box = (page: Page) => page.getByLabel("Message");
+
+// the Model Selector (a mouse): open its menu, pick the engine by its name as the item shows it
+async function pickModel(page: Page, name: string) {
+  await page.getByTestId("model-picker").click();
+  await page.getByTestId("model-menu").getByRole("menuitemradio", { name }).click();
+  await expect(page.getByTestId("model-menu")).toBeHidden();
+}
 
 // the session's follow-up behavior, from the composer's popover
 async function followUps(page: Page, mode: "Steer" | "Queue") {
@@ -15,11 +22,32 @@ async function followUps(page: Page, mode: "Steer" | "Queue") {
   await page.keyboard.press("Escape");
 }
 
+// a box's corners and edges, as the browser lays it out
+const geometry = async (box: Locator) =>
+  box.evaluate((el) => {
+    const cs = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    return { bottom: r.bottom, left: r.left, radii: [cs.borderTopLeftRadius, cs.borderTopRightRadius, cs.borderBottomRightRadius, cs.borderBottomLeftRadius], top: r.top, width: r.width };
+  });
+
+// The tray on the composer's top edge and the composer make one glass shape (DESIGN.md, Tray): the
+// tray as wide as the composer and sitting right on it, its top corners on the glass radius, the
+// composer's squared under it and its bottom ones rounded.
+async function expectJoined(page: Page, tray: Locator) {
+  const [t, c] = await Promise.all([geometry(tray), geometry(page.locator(".composer-surface"))]);
+  expect(t.radii).toEqual(["28px", "28px", "0px", "0px"]);
+  expect(c.radii).toEqual(["0px", "0px", "28px", "28px"]);
+  expect(Math.abs(t.bottom - c.top)).toBeLessThanOrEqual(1);
+  expect(Math.abs(t.left - c.left)).toBeLessThanOrEqual(1);
+  expect(Math.abs(t.width - c.width)).toBeLessThanOrEqual(1);
+  await expect(tray).toHaveAttribute("data-testid", "composer-tray");
+}
+
 test("a draft survives a reload: its text and its uploaded photo", async ({ page }) => {
   await open(page);
   await box(page).fill("a thought to finish later");
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
-  await page.getByLabel("Attach: files").setInputFiles({ buffer: png, mimeType: "image/png", name: "dot.png" });
+  await attach(page, { buffer: png, mimeType: "image/png", name: "dot.png" });
   await expect(page.getByTestId("attachment")).toHaveAttribute("data-state", "done");
   await page.reload();
   await expect(page.getByRole("img", { name: "connection open" })).toBeVisible();
@@ -89,17 +117,21 @@ test("send now: while the session queues, the other button hands a message to th
   await expectShowsLog(page, server);
 });
 
-test("the model picker: a message sent on GPT-6.1 Sol is served by the ChatGPT plan, one sent back on Opus by claude; the pick is this page's", async ({ browser, page, server }) => {
+test("the Model Selector: a message sent on GPT-6.1 Sol is served by the ChatGPT plan, one sent back on Opus by claude; the pick is this page's", async ({ browser, page, server }) => {
   await open(page);
-  const model = page.getByLabel("Model");
-  await expect(model.locator("option")).toHaveText(["Claude Opus (Claude Code)", "GPT-6.1 Sol (ChatGPT plan)"]);
-  await model.selectOption("openai-plan:gpt-6.1-sol");
+  await page.getByTestId("model-picker").click();
+  const menu = page.getByTestId("model-menu");
+  await expect(menu.getByRole("menuitemradio")).toHaveText(["Opus", "GPT-6.1 Sol"]);
+  await expect(menu.getByRole("menuitemradio", { name: "Opus" })).toHaveAttribute("aria-checked", "true");
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
+  await pickModel(page, "GPT-6.1 Sol");
   await expect(page.getByTestId("model-picker")).toContainText("GPT-6.1 Sol");
   await send(page, "hello Sol");
   await expect(page.getByText(SOL_REPLY)).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("status")).toBeHidden({ timeout: 15_000 });
   expect(server.fakeInputs("turn")).toEqual([]); // claude was never asked
-  await model.selectOption("claude-code:opus");
+  await pickModel(page, "Opus");
   await send(page, "hello Opus");
   await expect(page.getByText(REPLY)).toBeVisible({ timeout: 15_000 });
   await answered(page, "hello Opus");
@@ -112,7 +144,7 @@ test("the model picker: a message sent on GPT-6.1 Sol is served by the ChatGPT p
   ]);
   expect(JSON.stringify(server.fakeInputs("turn"))).toContain("hello Opus");
   // the pick is this page's: it outlives a reload, and another page shows its own
-  await model.selectOption("openai-plan:gpt-6.1-sol");
+  await pickModel(page, "GPT-6.1 Sol");
   await page.reload();
   await expect(page.getByTestId("model-picker")).toContainText("GPT-6.1 Sol");
   const other = await browser.newPage({ baseURL: server.url, viewport: { height: 740, width: 360 } });
@@ -120,6 +152,17 @@ test("the model picker: a message sent on GPT-6.1 Sol is served by the ChatGPT p
   await expect(other.getByTestId("model-picker")).toContainText("Opus");
   await other.close();
   await expectShowsLog(page, server, "indexes");
+});
+
+test("the queue's tray, with no held banner, makes one glass shape with the composer too", async ({ page }) => {
+  await open(page);
+  await send(page, "take your time");
+  await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+  await page.getByLabel("Message").fill("and after that, this");
+  await page.getByLabel("Message").press("Control+Enter"); // the other way: queued for the next turn
+  await expect(page.getByTestId("queue-item")).toBeVisible();
+  await expect(page.getByTestId("needs-model")).toHaveCount(0);
+  await expectJoined(page, page.getByTestId("queue").locator("xpath=.."));
 });
 
 test.describe("a spent Claude plan", () => {
@@ -143,7 +186,85 @@ test.describe("a spent Claude plan", () => {
       ["talk", SOL_REPLY],
     ]);
     // Opus shows as unavailable, with why
-    await expect(page.getByLabel("Model").locator("option").first()).toHaveText("Claude Opus (Claude Code): unavailable, Claude AI usage limit reached");
+    await page.getByTestId("model-picker").click();
+    const opus = page.getByTestId("model-menu").getByRole("menuitemradio").first();
+    await expect(opus).toHaveText("Opusunavailable: Claude AI usage limit reached");
+    await expect(opus).toHaveAttribute("data-disabled", "");
+    await page.keyboard.press("Escape");
     await expectShowsLog(page, server);
+  });
+
+  test("the composer's glass is one radius at every corner, and the held tray on it makes one shape with it", async ({ page }) => {
+    await open(page);
+    const alone = await geometry(page.locator(".composer-surface"));
+    expect(alone.radii).toEqual(["28px", "28px", "28px", "28px"]);
+    await send(page, "are you there?");
+    await expect(page.getByTestId("needs-model")).toBeVisible();
+    await expectJoined(page, page.getByTestId("needs-model").locator("xpath=.."));
+  });
+});
+
+test.describe("on a touch screen", () => {
+  test.use({ hasTouch: true, isMobile: true });
+
+  test("the model picker is the phone's own select: a message sent on GPT-6.1 Sol is served by the ChatGPT plan", async ({ page, server }) => {
+    await open(page);
+    await expect(page.getByTestId("model-menu")).toBeHidden();
+    const model = page.getByLabel("Model");
+    await expect(model.locator("option")).toHaveText(["Claude Opus (Claude Code)", "GPT-6.1 Sol (ChatGPT plan)"]);
+    await model.selectOption("openai-plan:gpt-6.1-sol");
+    await expect(page.getByTestId("model-picker")).toContainText("GPT-6.1 Sol");
+    await box(page).fill("hello Sol");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(page.getByText(SOL_REPLY)).toBeVisible({ timeout: 15_000 });
+    expect(server.fakeInputs("turn")).toEqual([]);
+  });
+
+  test("the footer's bare controls keep 40 px touch targets that don't overlap", async ({ page }) => {
+    await open(page);
+    await expect(page.getByTestId("model-picker")).toBeVisible();
+    const targets = await page.evaluate(() => {
+      const footer = document.querySelector('[aria-label="Add context"]')?.parentElement;
+      if (!footer) throw new Error("no footer tools");
+      return [...footer.querySelectorAll(".bare-control")].map((el) => {
+        // the hit area: the ::before, or for a picker the select laid over it
+        const select = el.querySelector("select");
+        if (select) {
+          const r = select.getBoundingClientRect();
+          return { height: r.height, left: r.left, right: r.right, width: r.width };
+        }
+        const box = el.getBoundingClientRect();
+        const before = getComputedStyle(el, "::before");
+        const width = Number.parseFloat(before.width);
+        const height = Number.parseFloat(before.height);
+        const centre = box.left + box.width / 2;
+        return { height, left: centre - width / 2, right: centre + width / 2, width };
+      });
+    });
+    expect(targets.length).toBeGreaterThanOrEqual(3); // +, the model, the follow-ups
+    for (const t of targets) {
+      expect(t.width).toBeGreaterThanOrEqual(40);
+      expect(t.height).toBeGreaterThanOrEqual(40);
+    }
+    for (let k = 1; k < targets.length; k++) expect(targets[k]!.left).toBeGreaterThanOrEqual(targets[k - 1]!.right - 0.5);
+  });
+
+  test("+ opens the Add context sheet; Photos & videos opens the file chooser, the photo lands in the tray, and focus goes back to +", async ({ page }) => {
+    await open(page);
+    const plus = page.getByRole("button", { name: "Add context" });
+    await plus.click();
+    const sheet = page.getByRole("dialog", { name: "Add context" });
+    await expect(sheet.getByRole("button", { name: /Camera/ })).toBeVisible();
+    // the glass radius on its top corners, not the Drawer's 10 px
+    const corners = await geometry(sheet);
+    expect(corners.radii).toEqual(["28px", "28px", "0px", "0px"]);
+    const chooser = page.waitForEvent("filechooser");
+    await sheet.getByRole("button", { name: /Photos & videos/ }).click();
+    const picker = await chooser;
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+    await picker.setFiles({ buffer: png, mimeType: "image/png", name: "dot.png" });
+    await expect(sheet).toBeHidden();
+    await expect(page.getByTestId("attachment")).toHaveAttribute("data-state", "done");
+    await expect(plus).toBeFocused();
   });
 });

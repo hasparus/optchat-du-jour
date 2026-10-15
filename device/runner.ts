@@ -124,7 +124,8 @@ export const deviceRoutes = (o: DeviceOptions) =>
         Effect.gen(function* () {
           if (!(yield* allowed(request))) return forbidden;
           const call = yield* decodeCall(yield* request.text);
-          const reply: ToolReply = { output: yield* tools(call.name, call.input) };
+          const { error, text } = yield* tools(call.name, call.input);
+          const reply: ToolReply = error ? { error, output: text } : { output: text };
           return HttpServerResponse.jsonUnsafe(reply);
         }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
       );
