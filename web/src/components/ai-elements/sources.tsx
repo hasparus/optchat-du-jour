@@ -6,7 +6,7 @@
 // anything), and only http(s) addresses get this far. A link opens a new tab; in the iOS app that
 // is the in-app Safari sheet (E27). Collapsed by default, like the tool lines.
 import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace";
-import type { Source as SourceItem } from "@/lib/rows";
+import type { WebSource } from "@/lib/rows";
 import { cn } from "@/lib/utils";
 import { ArrowUpRightIcon, GlobeIcon } from "lucide-react";
 import type { ComponentProps } from "react";
@@ -44,7 +44,7 @@ export const SourcesContent = ({ className, children, ...props }: SourcesContent
   </TraceCollapsibleContent>
 );
 
-export type SourceProps = Omit<ComponentProps<"a">, "children" | "href" | "title"> & { readonly source: SourceItem };
+export type SourceProps = Omit<ComponentProps<"a">, "children" | "href" | "title"> & { readonly source: WebSource };
 
 // a link around a trace line: its title, the host under it when the title isn't the host
 export const Source = ({ className, source, ...props }: SourceProps) => {

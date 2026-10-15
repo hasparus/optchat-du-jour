@@ -9,8 +9,8 @@ import { openLink, STALE_MS, wakeOnReturn } from "./connection";
 import { sentKey } from "./draft";
 import { applyEvent, applyPage, emptyLog, hole, type Log, MAX_HELD, tip, trimHeld, visible, withDraft } from "./log";
 import { type Inbound, parseFrame } from "./protocol";
-import { chatRows, entryRows, planOf, rowFor, rowIndexFor, sourcesOfTool, toolStateOf, toolSummary, turnSources } from "./rows";
-import { makeSession, queued, type Session, UNSENT } from "./session";
+import { chatRows, entryRows, planOf, rowFor, rowIndexFor, sourcesOfTool, toolStateOf, toolSummary, turnPlans, turnSources } from "./rows";
+import { makeSession, queued, runStart, type Session, UNSENT } from "./session";
 import { buckets, byModel, periodOf, totals } from "./stats";
 
 const tick = async (ms = 5) =>
@@ -756,8 +756,61 @@ describe("sources: the links a turn's web tools used", () => {
     const first = turnSources(rows);
     expect([...first]).toEqual([["e6", [{ title: "A", url: "https://a.example/" }]]]);
     // only the first turn: the second used no web tool, the third has no reply to go under
-    const again = turnSources(rows, first);
+    // a streamed token: the same row objects and a new draft row after them. Nothing is parsed
+    // again (each tool row's array is the same object) and the turn's list is the same array
+    const tools = rows.filter((r) => r.kind === "tool");
+    const before = tools.map((r) => sourcesOfTool(r));
+    const streaming = [...rows, ...entryRows([{ i: 12, kind: "talk", text: "and b says" }])];
+    const again = turnSources(streaming);
+    expect(tools.map((r) => sourcesOfTool(r)).every((list, k) => list === before[k])).toBe(true);
     expect(again.get("e6")).toBe(first.get("e6"));
+    expect(again.get("e12")).toEqual([{ title: "b.example", url: "https://b.example/" }]);
+    // a row object read for the first time is parsed: another object with the same text is too
+    const copy = tools[0] === undefined ? null : { ...tools[0] };
+    expect(copy === null ? null : sourcesOfTool(copy)).not.toBe(before[0]);
+  });
+  test("a turn ends at a user row: a steered message starts the next one (the log keeps no turn boundaries)", () => {
+    const rows = entryRows([
+      { i: 0, kind: "user", text: "look" },
+      { i: 1, kind: "tool", text: 'WebFetch {"url":"https://a.example/","prompt":"p"}' },
+      { i: 2, kind: "echo", text: "page" },
+      { i: 3, kind: "talk", text: "reading" },
+      { i: 4, kind: "user", text: "also b (steered)" },
+      { i: 5, kind: "tool", text: 'WebFetch {"url":"https://b.example/","prompt":"p"}' },
+      { i: 6, kind: "echo", text: "page" },
+      { i: 7, kind: "talk", text: "done" },
+    ]);
+    expect([...turnSources(rows)].map(([key, list]) => [key, list.map((s) => s.url)])).toEqual([
+      ["e3", ["https://a.example/"]],
+      ["e7", ["https://b.example/"]],
+    ]);
+  });
+});
+
+const write = (status: string) => `TodoWrite ${JSON.stringify({ todos: [{ content: "a", status }] })}`;
+
+describe("each turn's plan", () => {
+  test("is its last TodoWrite: the calls before it in the turn are plain tool lines; each turn has its own", () => {
+    const rows = entryRows([
+      { i: 0, kind: "user", text: "go" },
+      { i: 1, kind: "tool", text: write("pending") },
+      { i: 2, kind: "echo", text: "ok" },
+      { i: 3, kind: "tool", text: write("in_progress") },
+      { i: 4, kind: "echo", text: "ok" },
+      { i: 5, kind: "tool", text: 'Bash {"command":"ls"}' },
+      { i: 6, kind: "echo", text: "x" },
+      { i: 7, kind: "tool", text: write("completed") },
+      { i: 8, kind: "echo", text: "ok" },
+      { i: 9, kind: "user", text: "again" },
+      { i: 10, kind: "tool", text: write("pending") },
+      { i: 11, kind: "echo", text: "ok" },
+      { i: 12, kind: "user", text: "no plan here" },
+      { i: 13, kind: "talk", text: "fine" },
+    ]);
+    expect([...turnPlans(rows)]).toEqual(["e7", "e10"]);
+  });
+  test("a run id names the log index its turn started at, resumed or not", () => {
+    expect([runStart("12"), runStart("12+1"), runStart("x"), runStart("")]).toEqual([12, 12, null, null]);
   });
 });
 

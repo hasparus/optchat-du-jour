@@ -130,8 +130,8 @@ export type PromptInputAttachmentProps = {
 };
 
 // One tile of the tray, on shadcn's Attachment (its `uploading`, `done` and `error` states, the
-// image media dimmed until the upload is done, an action to remove it), dressed as the tray's 64 px
-// thumbnail: the remove button on its corner, the HD toggle on the photo, and what Attachment has
+// image media dimmed until the upload is done, an action to remove it) at its `tile` size, ours:
+// the tray's 64 px thumbnail (ui/attachment.tsx, REGISTRY.md). Here: the remove button on its corner, the HD toggle on the photo, and what Attachment has
 // no part for, the upload's progress bar. The name is for screen readers; a failure says why
 // under the tile (role alert), so it isn't told by colour alone.
 export const PromptInputAttachment = ({ name, kind, preview, progress, done, error, onRemove, high = false, onHigh }: PromptInputAttachmentProps) => {
@@ -139,19 +139,9 @@ export const PromptInputAttachment = ({ name, kind, preview, progress, done, err
   const [broken, setBroken] = useState(false);
   const state = error ? "error" : done ? "done" : "uploading";
   return (
-    <Attachment
-      className="w-16 flex-col flex-nowrap gap-1 rounded-xl border-0 bg-transparent has-data-[slot=attachment-media]:p-0 has-[>a,>button]:hover:bg-transparent"
-      data-testid="attachment"
-      orientation="vertical"
-      size="xs"
-      state={state}
-    >
+    <Attachment data-testid="attachment" size="tile" state={state}>
       <AttachmentMedia
-        className={cn(
-          "size-16 rounded-xl bg-muted text-muted-foreground transition-opacity duration-200 group-data-[orientation=vertical]/attachment:w-16 group-data-[size=xs]/attachment:w-16 group-data-[size=xs]/attachment:rounded-xl group-data-[state=error]/attachment:bg-muted group-data-[state=error]/attachment:text-muted-foreground",
-          kind === "image" && "group-data-[state=error]/attachment:opacity-100",
-          error ? "shadow-[inset_0_0_0_1.5px_var(--destructive)]" : "hairline",
-        )}
+        className={cn("transition-opacity duration-200", error ? "shadow-[inset_0_0_0_1.5px_var(--destructive)]" : "hairline")}
         variant={kind === "image" && !broken ? "image" : "icon"}
       >
         {kind === "image" && !broken ? (
@@ -164,16 +154,16 @@ export const PromptInputAttachment = ({ name, kind, preview, progress, done, err
             src={preview}
           />
         ) : kind === "image" ? (
-          <ImageOffIcon aria-label={name} className="size-5" />
+          <ImageOffIcon aria-label={name} />
         ) : (
-          <FilmIcon aria-label={name} className="size-5" />
+          <FilmIcon aria-label={name} />
         )}
         {!done && !error && (
           <Progress aria-label={`Uploading ${name}`} className="absolute inset-x-1.5 bottom-1.5 h-1 w-auto bg-background/70" value={Math.round(progress * 100)} />
         )}
       </AttachmentMedia>
       <AttachmentTitle className="sr-only">{name}</AttachmentTitle>
-      <AttachmentActions className="absolute -top-1.5 -right-1.5 group-data-[orientation=vertical]/attachment:-top-1.5 group-data-[orientation=vertical]/attachment:-right-1.5">
+      <AttachmentActions className="absolute -top-1.5 -right-1.5">
         <AttachmentAction
           aria-label={`Remove ${name}`}
           className="size-5 rounded-full border-0 bg-foreground text-background shadow-[0_0_0_2px_var(--raised)] transition-transform after:absolute after:-inset-2.5 hover:scale-105 hover:bg-foreground hover:text-background active:scale-95 pointer-coarse:size-6"

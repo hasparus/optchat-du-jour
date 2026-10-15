@@ -15,7 +15,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { Link } from "@/lib/connection";
 import { cn } from "@/lib/utils";
-import type { FollowUp, MasterEngine, SessionState } from "@wire";
+import { engineParts, type FollowUp, type MasterEngine, type SessionState } from "@wire";
 import { ChevronDownIcon, SlidersHorizontalIcon } from "lucide-react";
 import { type ComponentProps, Fragment, type ReactNode } from "react";
 
@@ -70,9 +70,6 @@ export const labelParts = (label: string): LabelParts => {
   const [, name = label, effort] = /^(.*) \([^(),]*(?:, ([^(),]+))?\)$/.exec(label) ?? [];
   return { effort: effort ?? null, name: name.replace(/^Claude /, "") };
 };
-// "Claude Opus (Claude Code, xhigh)" → "Claude Code": where an engine runs, which the Model
-// Selector groups by
-export const labelProvider = (label: string) => /\(([^(),]*)(?:, [^(),]+)?\)$/.exec(label)?.[1] ?? "";
 export const shortLabel = (label: string) => {
   const { name, effort } = labelParts(label);
   return `${name}${effort === null ? "" : ` · ${effort}`}`;
@@ -131,11 +128,16 @@ function ModelShown({ label }: { readonly label: string }) {
 
 const pickerTitle = (current: MasterEngine | undefined) => (current ? `${current.label}: your next messages${current.down === null ? "" : ` (unavailable: ${current.down})`}` : undefined);
 
-// the engines in the chain's order, grouped where they run (Claude Code, the ChatGPT plan, a key)
-const byProvider = (engines: readonly MasterEngine[]) => {
+// the engines in the chain's order, grouped where they run (Claude Code, the ChatGPT plan, a key),
+// read from each ref (wire.ts engineParts), not from its label. (A loop: Map.groupBy is newer than
+// the Safari versions the app runs on.)
+const byWhere = (engines: readonly MasterEngine[]) => {
   const groups = new Map<string, MasterEngine[]>();
-  for (const e of engines) groups.set(labelProvider(e.label), [...(groups.get(labelProvider(e.label)) ?? []), e]);
-  return [...groups];
+  for (const e of engines) {
+    const { where } = engineParts(e.ref);
+    groups.set(where, [...(groups.get(where) ?? []), e]);
+  }
+  return groups;
 };
 
 // AI Elements' Model Selector (ui.shadcn.com/docs/ai-elements/radix/model-selector): a Dropdown
@@ -164,26 +166,26 @@ function ModelSelector({ model, onModel, state }: { readonly model: string; read
           }}
           value={model}
         >
-          {byProvider(state.engines).map(([provider, engines], k) => (
+          {[...byWhere(state.engines)].map(([provider, engines], k) => (
             <Fragment key={provider}>
               {k > 0 && <DropdownMenuSeparator />}
               <DropdownMenuGroup>
-              <DropdownMenuLabel className="text-2xs">{provider}</DropdownMenuLabel>
-              {engines.map((e) => (
-                <DropdownMenuRadioItem
-                  className="min-h-8 rounded-lg text-ui data-disabled:text-muted-foreground data-disabled:opacity-100"
-                  disabled={e.down !== null && e.ref !== model}
-                  key={e.ref}
-                  value={e.ref}
-                >
-                  <span className="flex min-w-0 flex-col">
-                    <span className="flex items-baseline gap-1.5">
-                      <ModelShown label={e.label} />
+                <DropdownMenuLabel className="text-2xs">{provider}</DropdownMenuLabel>
+                {engines.map((e) => (
+                  <DropdownMenuRadioItem
+                    className="min-h-8 rounded-lg text-ui data-disabled:text-muted-foreground data-disabled:opacity-100"
+                    disabled={e.down !== null && e.ref !== model}
+                    key={e.ref}
+                    value={e.ref}
+                  >
+                    <span className="flex min-w-0 flex-col">
+                      <span className="flex items-baseline gap-1.5" data-slot="model-shown">
+                        <ModelShown label={e.label} />
+                      </span>
+                      {e.down !== null && <span className="text-xs text-muted-foreground">unavailable: {e.down}</span>}
                     </span>
-                    {e.down !== null && <span className="text-xs text-muted-foreground">unavailable: {e.down}</span>}
-                  </span>
-                </DropdownMenuRadioItem>
-              ))}
+                  </DropdownMenuRadioItem>
+                ))}
               </DropdownMenuGroup>
             </Fragment>
           ))}

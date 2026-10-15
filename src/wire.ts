@@ -61,17 +61,22 @@ export const canonicalRef = (ref: string, roleEffort: string | null | undefined)
 // The effort a ref names is shown ("Claude Haiku (Claude Code, xhigh)"); a bare ref runs at its
 // role's, which is left out, unless `runs` says what it runs at instead: a lower one when its model
 // lacks the role's, or null for none (src/config.ts runEffort, entryLabel).
-export const engineLabel = (ref: string, runs?: string | null) => {
+// The label's parts: the model as people say it, where it runs, and the effort shown (null for
+// none). The web's Model Selector groups the engines by `where`.
+export type EngineParts = { readonly name: string; readonly where: string; readonly effort: string | null };
+export const engineParts = (ref: string, runs?: string | null): EngineParts => {
   const [bare, own] = effortSplit(ref);
   const [engine = "", model = ""] = bare.split(/:(.*)/s);
-  const effort = own ?? (runs === null ? "no effort" : runs);
-  const extra = effort === undefined ? "" : `, ${effort}`;
+  const effort = own ?? (runs === null ? "no effort" : (runs ?? null));
   if (engine === "api-key") {
     const [, provider = "", id = model] = /^(anthropic|openai)\/(.+)$/.exec(model) ?? [];
-    return `${modelName(id)} (${provider === "openai" ? "OpenAI" : "Anthropic"} API key${extra})`;
+    return { effort, name: modelName(id), where: `${provider === "openai" ? "OpenAI" : "Anthropic"} API key` };
   }
-  const where = engine === "claude-code" ? "Claude Code" : engine === "openai-plan" ? "ChatGPT plan" : engine;
-  return `${modelName(model)} (${where}${extra})`;
+  return { effort, name: modelName(model), where: engine === "claude-code" ? "Claude Code" : engine === "openai-plan" ? "ChatGPT plan" : engine };
+};
+export const engineLabel = (ref: string, runs?: string | null) => {
+  const { name, where, effort } = engineParts(ref, runs);
+  return `${name} (${where}${effort === null ? "" : `, ${effort}`})`;
 };
 
 export const SessionState = Schema.Struct({

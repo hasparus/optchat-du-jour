@@ -309,7 +309,9 @@ Built on shadcn/ui's Trace and Code Block (`components/ui/trace.tsx`, `code-bloc
   progress, hollow pending) and its text in 13 px, done ones muted; the step in progress reads in
   its present tense and shimmers while the turn runs. Pending steps are not dimmed (Trace's 60%
   would take muted text under AA). The call's input and output sit behind one more closed line,
-  "Input and output". The chat's newest plan is open, the others closed, until the reader chooses.
+  "Input and output". A turn has one plan, its last TodoWrite call: the calls before it read as
+  plain tool lines. It is live (shimmering, its step in its present tense) only in the turn that
+  runs now. The chat's newest plan is open, the others closed, until the reader chooses.
 - **Sources** (AI Elements' Sources): under a turn's last reply, a line with a globe, "Used 3
   sources". Open: a link per source, its title in ink, its host in muted 12 px, an up-right arrow;
   28 px rows, 40 px on touch. Plain links: no favicons, nothing fetched.
@@ -387,8 +389,8 @@ Modelled on Claude's app: a soft, translucent card with round controls.
   composer under it has none, so the join is that line alone. In it, the held banner (amber ground) and
   the queue of waiting messages, separated by a hairline. The
   attachments above the text are 64 px tiles (shadcn's Attachment): the photo dimmed while it
-  uploads, a 4 px progress bar along its foot, a remove button on its corner, HD on the photo, and
-  under a failed one its error in red 11 px.
+  uploads, a 4 px progress bar along its foot, a remove button on its corner, HD on the photo; a
+  failed one in a red tint and ring, its error under it in red 11 px.
 - **Status:** above it, one 12 px line: a breathing ivy dot and the shimmering status while a turn
   runs; muted text for connecting or reconnecting.
 - **Hint:** under it, centred, 11 px muted: the shortcuts on a keyboard, or why send is off.
@@ -403,7 +405,7 @@ turn: the engine's short name, then "Turn · on mini, 1 min 05 s", a Stop on a s
 the compactor, a line per busy level of the tree), "Waiting for a turn" (each held message, its
 take-back beside it), "Subagents" (SPEC M7: a Subagent line per run, "Running scout" with Stop
 beside it, open to its task, device and engine as badges, its steps as tool lines, a line to tell
-it something; "Ran", "Failed to run" or "Stopped" once over; built and on the story page, empty in
+it something; "Ran", "Failed to run" or "Stopped" once over; built and on the story page, not in
 the app until the server reports subagents) and "Devices" (each runner, connected, offline or
 refused). A line is a 14 px
 icon, the title in ink and its kind and state in 12 px muted under it; a failed one is red. Only

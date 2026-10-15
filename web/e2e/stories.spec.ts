@@ -29,16 +29,25 @@ const test = base.extend<object, { stories: string }>({
       const port = await freePort();
       const child: ChildProcess = spawn("./node_modules/.bin/vite", ["--port", String(port), "--strictPort", "--host", "127.0.0.1"], { cwd: web, stdio: "ignore" });
       const url = `http://127.0.0.1:${port}/stories.html`;
-      for (let tries = 0; tries < 300; tries++) {
+      // up within 30 s, or the fixture fails saying so (rather than every test timing out on a
+      // page that never loads)
+      let up = false;
+      for (let tries = 0; tries < 300 && !up; tries++) {
         try {
           const answer = await fetch(url);
-          if (answer.ok) break;
+          up = answer.ok;
         } catch {
           // not listening yet
         }
-        await new Promise((resolve) => {
-          setTimeout(resolve, 100);
-        });
+        if (!up) {
+          await new Promise((resolve) => {
+            setTimeout(resolve, 100);
+          });
+        }
+      }
+      if (!up) {
+        child.kill("SIGKILL");
+        throw new Error(`Vite's dev server never answered ${url}`);
       }
       await provide(url);
       child.kill("SIGKILL");

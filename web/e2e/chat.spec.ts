@@ -328,7 +328,7 @@ test("an attached photo is uploaded, sent, shown in the chat with its marker, an
   const thumb = row.getByRole("img");
   await expect(thumb).toHaveAttribute("src", /^\/api\/assets\/[0-9a-f]{12}\/thumb$/);
   await expect.poll(async () => thumb.evaluate((img) => (img instanceof HTMLImageElement ? img.naturalWidth : 0))).toBe(640);
-  // the whole tile (shadcn's Attachment, its trigger over it) opens the full asset in a new tab
+  // the thumbnail is a link to the full asset, in a new tab
   const link = row.getByRole("link", { name: /^Open image [0-9a-f]{12}$/ });
   await expect(link).toHaveAttribute("target", "_blank");
   const [popup] = await Promise.all([page.waitForEvent("popup"), link.click()]);

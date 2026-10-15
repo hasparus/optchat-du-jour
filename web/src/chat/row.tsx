@@ -4,13 +4,12 @@
 // one work-log line with its input and output collapsed under it; a TodoWrite call as a plan, and
 // the links a turn's web tools used as its reply's sources.
 import { MessageAction, MessageActions, MessageResponse } from "@/components/ai-elements/message";
-import { Attachment, AttachmentMedia, AttachmentTrigger } from "@/components/ui/attachment";
 import { Plan, PlanContent, PlanHeader, PlanLogged, PlanSteps } from "@/components/ai-elements/plan";
 import { Source, Sources, SourcesContent, SourcesTrigger } from "@/components/ai-elements/sources";
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from "@/components/ai-elements/tool";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Message, MessageContent, MessageHeader } from "@/components/ui/message";
-import { type PlanStep, planOf, type Row, type Source as SourceItem, type ToolState, toolSummary } from "@/lib/rows";
+import { type PlanStep, planOf, type Row, type ToolState, toolSummary, type WebSource } from "@/lib/rows";
 import { splitMarkers } from "@wire";
 import { CheckIcon, CodeIcon, CopyIcon, NotebookPenIcon, TextIcon } from "lucide-react";
 import { Component, createContext, memo, type ReactNode, use, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -115,7 +114,7 @@ export function ReplyActions({ children }: { readonly children: ReactNode }) {
   return <ReplyActionsContext value={value}>{children}</ReplyActionsContext>;
 }
 
-function Reply({ id, text, streaming, sources }: { id: string; text: string; streaming: boolean; sources: readonly SourceItem[] | undefined }) {
+function Reply({ id, text, streaming, sources }: { id: string; text: string; streaming: boolean; sources: readonly WebSource[] | undefined }) {
   const [raw, setRaw] = useState(false);
   const shown = use(ReplyActionsContext).open === id;
   return (
@@ -163,9 +162,9 @@ function Reply({ id, text, streaming, sources }: { id: string; text: string; str
 
 // A user message as logged: its attachments' thumbnails above the bubble (SPEC "Media"), and in
 // the bubble the text with its marker lines, dimmed. A thumbnail is our own asset, named by the
-// marker's 12 hex digits; only user rows show them, so nothing a model wrote is ever fetched. Each
-// is shadcn's Attachment (image media, its trigger a link to the full asset over the whole tile),
-// keeping the thumbnail's own shape rather than the registry's square crop.
+// marker's 12 hex digits; only user rows show them, so nothing a model wrote is ever fetched. A
+// thumbnail is a plain link to the full asset: it has no state or action for Attachment to carry,
+// and keeps its own shape where Attachment's image media is a square crop.
 function UserMessage({ text }: { text: string }) {
   const { body, markers } = splitMarkers(text);
   return (
@@ -174,21 +173,16 @@ function UserMessage({ text }: { text: string }) {
         {markers.length > 0 && (
           <div className="flex flex-wrap justify-end gap-1.5" data-testid="user-attachments">
             {markers.map((m) => (
-              <Attachment
-                className="w-auto rounded-xl border-0 bg-transparent transition-opacity hover:opacity-90 has-data-[slot=attachment-media]:p-0 has-[>a,>button]:hover:bg-transparent"
+              <a
+                aria-label={`Open ${m.kind} ${m.sha}`}
+                className="block overflow-hidden rounded-xl border bg-muted transition-opacity hover:opacity-90"
+                href={`/api/assets/${m.sha}`}
                 key={m.line}
-                orientation="vertical"
+                rel="noreferrer"
+                target="_blank"
               >
-                <AttachmentMedia
-                  className="aspect-auto w-auto rounded-xl border bg-muted group-data-[orientation=vertical]/attachment:w-auto *:[img]:aspect-auto *:[img]:max-h-44 *:[img]:w-auto *:[img]:max-w-60 *:[img]:object-contain"
-                  variant="image"
-                >
-                  <img alt={`${m.kind} ${m.sha}`} loading="lazy" src={`/api/assets/${m.sha}/thumb`} />
-                </AttachmentMedia>
-                <AttachmentTrigger asChild>
-                  <a aria-label={`Open ${m.kind} ${m.sha}`} className="rounded-xl focus-visible:ring-3 focus-visible:ring-ring/50" href={`/api/assets/${m.sha}`} rel="noreferrer" target="_blank" />
-                </AttachmentTrigger>
-              </Attachment>
+                <img alt={`${m.kind} ${m.sha}`} className="max-h-44 max-w-60 object-contain" loading="lazy" src={`/api/assets/${m.sha}/thumb`} />
+              </a>
             ))}
           </div>
         )}
@@ -208,14 +202,14 @@ function UserMessage({ text }: { text: string }) {
   );
 }
 
-// A TodoWrite call as a plan. The chat's newest plan is open and the others closed, live and after a
-// reload alike, until the reader opens or closes one: then their choice stays (the Reasoning
+// A turn's TodoWrite call as a plan. The chat's newest plan is open and the others closed, live and
+// after a reload alike, until the reader opens or closes one: then their choice stays (the Reasoning
 // pattern's open state).
 function PlanRow({ row, steps, toolState, plan }: { row: Extract<Row, { kind: "tool" }>; steps: readonly PlanStep[]; toolState: ToolState; plan: ChatRowProps["plan"] }) {
   const [chosen, setChosen] = useState<boolean | null>(null);
   const live = plan === "live";
   return (
-    <Plan onOpenChange={setChosen} open={chosen ?? plan !== undefined}>
+    <Plan onOpenChange={setChosen} open={chosen ?? (plan === "newest" || plan === "live")}>
       <PlanHeader failed={toolState === "error"} running={toolState === "running" || (live && steps.some((s) => s.status !== "completed"))} steps={steps} />
       <PlanContent>
         <PlanSteps live={live} steps={steps} />
@@ -241,15 +235,17 @@ class RowBoundary extends Component<{ readonly text: string; readonly children: 
 
 // memo: a streamed token changes one row, and the rows above it (their objects are kept, rows.ts
 // chatRows) are not drawn again
-// chatRows) are not drawn again. `plan`: this row is the chat's newest plan ("newest", open when
-// it first shows, live or after a reload), and its turn goes on ("live"); `sources`: what the
-// turn's web tools used, under its last reply (rows.ts turnSources)
+// chatRows) are not drawn again. `plan`: this row is its turn's plan (rows.ts turnPlans), the
+// chat's newest ("newest", open until the reader chooses), in the turn that runs now ("live"), or
+// an older turn's ("turn", closed); a TodoWrite row without it is a plain tool line, an earlier
+// state of its turn's plan. `sources`: what the turn's web tools used, under its last reply (rows.ts
+// turnSources)
 export type ChatRowProps = {
   row: Row;
   streaming: boolean;
   toolState: ToolState;
-  plan?: "newest" | "live" | undefined;
-  sources?: readonly SourceItem[] | undefined;
+  plan?: "newest" | "live" | "turn" | undefined;
+  sources?: readonly WebSource[] | undefined;
 };
 
 export const ChatRow = memo(function ChatRow({ row, streaming, toolState, plan, sources }: ChatRowProps) {
@@ -281,7 +277,7 @@ function RowView({ row, streaming, toolState, plan, sources }: ChatRowProps) {
     case "talk":
       return <Reply id={row.key} sources={sources} streaming={streaming} text={row.text} />;
     case "tool": {
-      const steps = planOf(row);
+      const steps = plan === undefined ? null : planOf(row);
       if (steps !== null) return <PlanRow plan={plan} row={row} steps={steps} toolState={toolState} />;
       return (
         <Tool>

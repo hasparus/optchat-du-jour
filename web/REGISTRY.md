@@ -28,10 +28,15 @@ Block, AI Elements as patterns).
   which `src/lib/utils.ts` hands to `cn/engine`. Compiled ahead because `cn/config`'s `createCn`
   compiles at run time and would add 12.6 kB gzipped to the startup bundle; `--full` so the tables
   never depend on which classes the sources happen to use. `utils.test.ts` fails when the tables
-  are stale. `cn build` can read `@theme` from a stylesheet, but 0.4.0 takes the `/*` in
+  are stale, and another when index.css's @theme adds a text size or radius the config lacks.
+  `cn build` can read `@theme` from a stylesheet, but 0.4.0 takes the `/*` in
   `@source "…/dist/*.js"` for a comment and misses our @theme block, so the config names them.
-  Vite aliases `clsx` and `tailwind-merge` to `cn`, so Streamdown and class-variance-authority use
-  the same engine and the old packages are out of the bundle; Tailwind skips the tables file.
+  Streamdown imports `twMerge` from tailwind-merge and class-variance-authority imports `clsx`, so
+  Vite aliases `tailwind-merge` to `src/lib/tw-compat.ts`, tailwind-merge's API on our one engine
+  and tables (`utils.ts` builds `cn` on the same engine), and `clsx` to `cn/engine`. Aliasing
+  tailwind-merge to `cn` itself, as cn's docs suggest, would ship `cn`'s default tables as a second
+  set, and Streamdown's merges wouldn't know the theme's classes. The old packages are out of the
+  bundle; Tailwind skips the tables file.
 - **vaul.** 1.1.2, exact, for shadcn's Drawer. It is vaul's last release (December 2024), and its
   README says the project is unmaintained. It is kept by choice: check it on devices (TODO.md).
 
@@ -59,13 +64,13 @@ Every `ui/*` file below imports `cn` from `@/lib/utils` (see CLI); that is not r
 | ai-elements/message | the Message pattern (MessageFooter, Tooltip) | the footer's slot is `message-actions`; Streamdown hardened | Tap-to-reveal finds the row by it. No remote images; no downloads in the iOS app |
 | ai-elements/shimmer | shadcn's `shimmer` utility | rests muted, sweeps to ink; plain text without color-mix | AA throughout. Old Safari |
 | ai-elements/context | ours | a Popover, not the pattern's Hover Card | A phone can't hover |
-| ai-elements/prompt-input | ours on Input Group, its tiles on ui/attachment | progress bar, HD toggle, the tile's 64 px dress | Glass composer, held tray, iOS file inputs inside the tap, drafts. Attachment has states but no progress |
-| ui/attachment | radix-vega | — | The tray's tiles and a message's thumbnails (dressed at the call sites: a 64 px tile; a thumbnail keeps its shape, not the registry's square crop) |
+| ai-elements/prompt-input | ours on Input Group, its tiles on ui/attachment's `tile` size | progress bar, HD toggle | Glass composer, held tray, iOS file inputs inside the tap, drafts. Attachment has states but no progress |
+| ui/attachment | radix-vega | a `tile` size (ours): the media alone, 64 px, no card; for the composer's tray | The tray's thumbnails. A failed tile takes the registry's error look (a red tint, the icon in red) under our red ring. A message's thumbnails are plain links: nothing for Attachment to carry, and its image media crops square |
 | ui/dropdown-menu | radix-vega | — | The Model Selector. A disabled item's 50% opacity is set back at the call site (muted text instead, AA) |
-| ai-elements/plan | the Plan pattern on Trace | pending steps not dimmed; the call as logged behind one line; open state follows "newest" until chosen | AA (Trace's `pending` is 60% opacity); SPEC: rendering never hides what the model wrote |
-| ai-elements/sources | the Sources pattern on Trace | collapsed by default; the host beside a title | Tool lines are collapsed too; a title alone doesn't say where a link goes |
-| ai-elements/subagent | the Subagent pattern on Trace, Badge and our Tool | presentational, wired to nothing; Tell is a line inside it | SPEC M7 isn't built. A button can't sit in a trigger, so Stop is beside the line (the pattern's PlanAction) |
-| chat/pickers ModelSelector | the Model Selector pattern on Dropdown Menu | one menu, no effort menu; touch keeps the native select | An effort is part of a chain entry, not a free choice; SPEC wants the phone's own picker |
+| ai-elements/plan | the Plan pattern on Trace | a turn's last TodoWrite is its plan, the earlier calls plain tool lines; live only in the turn that runs now (from RUN_STARTED); pending steps not dimmed; the call as logged behind one line; the newest plan open until the reader chooses | One list per turn, not "0 of 3" above "3 of 3". AA (Trace's `pending` is 60% opacity). SPEC: rendering never hides what the model wrote |
+| ai-elements/sources | the Sources pattern on Trace | collapsed by default; the host beside a title; a turn ends at a user row | Tool lines are collapsed too; a title alone doesn't say where a link goes. The log keeps no turn boundaries, so a steered message (and later a subagent's report) starts the next turn's sources |
+| ai-elements/subagent | the Subagent pattern on Trace, Badge and our Tool | presentational, wired to nothing; Tell is a line inside it | SPEC M7 isn't built. Only the story page imports it: Background work's `extra` slot is empty in the app, so it isn't in the app's bundle. A button can't sit in a trigger, so Stop is beside the line (the pattern's PlanAction) |
+| chat/pickers ModelSelector | the Model Selector pattern on Dropdown Menu | one menu, no effort menu; touch keeps the native select; grouped by `engineParts(ref).where` (src/wire.ts) | An effort is part of a chain entry, not a free choice; SPEC wants the phone's own picker |
 
 ### What the radix-vega switch changes on screen
 
@@ -85,6 +90,8 @@ and Devices differ only in their timestamps, data and temp paths).
 - **Popovers** keep their look: the registry's `ring-1`, `gap-4` and `text-sm` are set back at the
   call sites (`ring-0` under `shadow-float`, which has its own ring; the follow-ups popover's
   `space-y-3` became `gap-3`).
+- **A failed upload's tile** takes Attachment's error look: a red tint and the icon in red, inside
+  the red ring it had.
 - **The sheet's title** keeps 600 weight (radix-vega's is 500) in `sheet-drawer.tsx`.
 
 ## The October 2026 patterns, one by one
@@ -104,7 +111,7 @@ this round.
 | Tool | had | ai-elements/tool |
 | Terminal | had, as Tool | A Bash call is a Tool line with its command and output. The pattern's extras need what we don't have: output streamed while it runs (Claude Code sends a tool's result whole) and an exit code (the log keeps the output and the E28 flag, not a code) |
 | Model Selector | (a) built | With a mouse; the native select stays on touch |
-| Attachment | (a) built | The tray's tiles and a message's thumbnails |
+| Attachment | (a) built | The composer tray's tiles (a message's thumbnails stay plain links) |
 | Plan | (a) built | A TodoWrite call's row, from its logged input. The default `master.tools` has no TodoWrite, so plans show only where the config adds it (below) |
 | Sources | (a) built | WebFetch addresses and WebSearch result links, under the turn's last reply |
 | Subagent | (c), presentational part built | M7 (below). The user chose to build the component now, wired to nothing |
@@ -146,8 +153,10 @@ The ways to show it:
 Our suggestion, if it is wanted: (1) with the in-memory buffer, labelled as live-only, and the
 Reasoning line collapsed into "Thought for 12 s" once the turn ends and the text is gone.
 
-**Subagent (M7).** The component (`ai-elements/subagent.tsx`) and the Background work group are
-built and shown on the story page. What M7 must add for them: a `subagents` list in `SessionState`
+**Subagent (M7).** The component (`ai-elements/subagent.tsx`) is built and shown on the story page,
+alone and in Background work's `extra` slot, which the app leaves empty. What M7 must add for
+them (AG-UI 1.0.1 has SUBAGENT_STARTED, SUBAGENT_FINISHED and SUBAGENT_ERROR events for the
+transitions): a `subagents` list in `SessionState`
 (optional, so old clients and servers still decode) with each run's name, task, status
 (running / finished / failed / stopped, and why), device, engine and start time; its steps, as
 tool and echo pairs from its own log (`zoom("Name")`), sent as the run goes or on request when a

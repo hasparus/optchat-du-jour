@@ -7,9 +7,10 @@
 // losing to it), and the shadows and hairlines, which replace one another. Compiled
 // ahead, the theme costs nothing at run time, where `cn/config`'s createCn would bring its
 // compiler into the bundle (12.6 kB gzipped). utils.test.ts checks the tables are current.
-import { createCn } from "cn/engine";
-import tables from "./cn-tables.ts";
+import { wrapClsx } from "cn/engine";
+import { engine } from "./tw-compat.ts";
 
 export type { ClassValue } from "cn";
 
-export const cn = createCn(tables);
+// clsx-style arguments, merged on the one engine Streamdown's twMerge uses too (tw-compat.ts)
+export const cn = wrapClsx(engine.mergeString, engine);

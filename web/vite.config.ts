@@ -73,9 +73,11 @@ export default defineConfig({
       "@wire": fileURLToPath(new URL("../src/wire.ts", import.meta.url)),
       // shadcn's `cn` stands in for clsx and tailwind-merge, which Streamdown and
       // class-variance-authority still import, so the bundle carries one implementation
-      // (the package's docs/aliasing.md)
-      clsx: "cn",
-      "tailwind-merge": "cn",
+      // (https://github.com/shadcn-ui/cn/blob/main/docs/aliasing.md). tailwind-merge goes to our
+      // shim on cn's engine with our compiled tables, not to `cn` itself, whose default tables
+      // would ship as a second set and merge without the theme's classes
+      clsx: "cn/engine",
+      "tailwind-merge": fileURLToPath(new URL("src/lib/tw-compat.ts", import.meta.url)),
     },
   },
   server: {

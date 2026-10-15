@@ -139,6 +139,22 @@ export const toolSummary = (args: string): string =>
     },
   });
 
+// ---- turns, as the log shows them ----
+
+// The log keeps no turn boundaries: a turn starts at a user message, and a message steered into a
+// running turn is a user row inside it, as a subagent's report (M7) will be. So a "turn" here runs
+// from one user row to the next, and a steered message starts a new one: a plan or the sources
+// before it stay with the rows above it. The running turn itself is known exactly, from
+// RUN_STARTED (Session.run), and only that decides what is live.
+const turnsOf = (rows: readonly Row[]): (readonly Row[])[] => {
+  const turns: Row[][] = [[]];
+  for (const row of rows) {
+    if (row.kind === "user" && (turns.at(-1)?.length ?? 0) > 0) turns.push([]);
+    turns.at(-1)?.push(row);
+  }
+  return turns;
+};
+
 // ---- a plan: Claude Code's TodoWrite, read from its input as logged (the Plan pattern) ----
 
 export type PlanStepStatus = "pending" | "in_progress" | "completed";
@@ -157,22 +173,39 @@ const decodeTodos = Schema.decodeUnknownOption(Schema.fromJsonString(Todos));
 
 // The steps a TodoWrite call set, or null for any other call, or one whose input isn't the list
 // Claude Code writes (the row is then an ordinary tool line, its input as logged).
+// read once per row object, like a row's sources (below)
+const plans = new WeakMap<object, readonly PlanStep[] | null>();
 export const planOf = (row: Pick<ToolRow, "args" | "name">): readonly PlanStep[] | null => {
   if (toolName(row.name) !== "TodoWrite") return null;
-  return Option.match(decodeTodos(row.args), {
+  const known = plans.get(row);
+  if (known !== undefined) return known;
+  const steps = Option.match(decodeTodos(row.args), {
     onNone: () => null,
     onSome: ({ todos }) => (todos.length === 0 ? null : todos.map((t) => ({ activeForm: t.activeForm ?? null, content: t.content, status: t.status }))),
   });
+  plans.set(row, steps);
+  return steps;
 };
+
+// Each turn's plan: its last TodoWrite call, the list as it stands. The calls before it in the
+// turn are the same list at earlier points, so they read as plain tool lines (folded into the
+// latest) rather than "0 of 3 done" above "3 of 3 done". Keyed by row.
+export const turnPlans = (rows: readonly Row[]): ReadonlySet<string> =>
+  new Set(turnsOf(rows).flatMap((turn) => turn.findLast((r) => r.kind === "tool" && planOf(r) !== null)?.key ?? []));
 
 // ---- the links a turn used: its WebFetch and WebSearch calls (the Sources pattern) ----
 
-export type Source = { readonly url: string; readonly title: string };
+export type WebSource = { readonly url: string; readonly title: string };
 
-// only web addresses: a model-written `javascript:` or `data:` link is never offered
+// only web addresses: a model-written `javascript:` or `data:` link is never offered. (new URL in
+// a try: URL.canParse is newer than the Safari versions the app runs on)
 const webUrl = (s: string): URL | null => {
-  if (!URL.canParse(s)) return null;
-  const url = new URL(s);
+  let url: URL;
+  try {
+    url = new URL(s);
+  } catch {
+    return null;
+  }
   return url.protocol === "https:" || url.protocol === "http:" ? url : null;
 };
 
@@ -182,9 +215,18 @@ const decodeFetch = Schema.decodeUnknownOption(FetchInput);
 const Links = Schema.fromJsonString(Schema.Array(Schema.Struct({ title: Schema.optional(Schema.String), url: Schema.String })));
 const decodeLinks = Schema.decodeUnknownOption(Links);
 
-// what one tool row cites, in order: a WebFetch's address, a WebSearch's result links
-export const sourcesOfTool = (row: Pick<ToolRow, "args" | "name" | "output">): Source[] => {
+const NO_SOURCES: readonly WebSource[] = [];
+// a row object never changes (rows.ts keeps the objects of entries already held), so what it cites
+// is read once per object: a streamed token doesn't parse the chat's searches again
+const cited = new WeakMap<object, readonly WebSource[]>();
+
+// what one tool row cites, in order: a WebFetch's address, a WebSearch's result links; the same
+// array for the same row object
+export const sourcesOfTool = (row: Pick<ToolRow, "args" | "name" | "output">): readonly WebSource[] => {
   const name = toolName(row.name);
+  if (name !== "WebFetch" && name !== "WebSearch") return NO_SOURCES;
+  const known = cited.get(row);
+  if (known) return known;
   const found: { url: string; title?: string | undefined }[] = [];
   if (name === "WebFetch") Option.map(decodeFetch(row.args), (input) => found.push({ url: input.url }));
   if (name === "WebSearch" && row.output !== null) {
@@ -192,44 +234,46 @@ export const sourcesOfTool = (row: Pick<ToolRow, "args" | "name" | "output">): S
       if (line.startsWith("Links: ")) Option.map(decodeLinks(line.slice("Links: ".length)), (links) => found.push(...links));
     }
   }
-  return found.flatMap((f) => {
+  const sources = found.flatMap((f) => {
     const url = webUrl(f.url);
     if (!url) return [];
     const title = f.title?.trim();
     return [{ title: title === undefined || title === "" ? url.hostname : title, url: url.href }];
   });
+  cited.set(row, sources);
+  return sources;
 };
 
-// The sources of each turn, under its last reply: the rows from one user message to the next are
-// a turn, and its links (deduplicated by address, first seen first) go to the last `talk` row in
-// it, keyed by that row. A turn with no reply shows none: its tool lines carry the addresses.
-// `previous` is the last call's answer: a turn whose list didn't change keeps the same array, so
-// a reply drawn before (ChatRow is memo'd) isn't drawn again on every streamed token.
-export function turnSources(rows: readonly Row[], previous: ReadonlyMap<string, readonly Source[]> = new Map()): Map<string, readonly Source[]> {
-  const out = new Map<string, readonly Source[]>();
-  let found: Source[] = [];
-  let reply: string | null = null;
-  const close = () => {
-    if (reply !== null && found.length > 0) {
-      const seen = new Set<string>();
-      const unique = found.filter((s) => {
-        if (seen.has(s.url)) return false;
-        seen.add(s.url);
-        return true;
-      });
-      const before = previous.get(reply);
-      const key = (list: readonly Source[]) => JSON.stringify(list.map((s) => [s.url, s.title]));
-      const same = before !== undefined && key(before) === key(unique);
-      out.set(reply, same ? before : unique);
-    }
-    found = [];
-    reply = null;
-  };
-  for (const row of rows) {
-    if (row.kind === "user") close();
-    else if (row.kind === "talk") reply = row.key;
-    else if (row.kind === "tool") found.push(...sourcesOfTool(row));
+// a turn's sources, deduplicated by address (first seen first), kept per the list of its rows'
+// arrays: the same tool rows give the same array back, so a reply drawn before (ChatRow is memo'd)
+// isn't drawn again on every streamed token
+const turnLists = new WeakMap<readonly WebSource[], { readonly parts: readonly (readonly WebSource[])[]; readonly list: readonly WebSource[] }>();
+const sameParts = (a: readonly (readonly WebSource[])[], b: readonly (readonly WebSource[])[]) => a.length === b.length && a.every((part, k) => part === b[k]);
+
+const turnList = (parts: readonly (readonly WebSource[])[]): readonly WebSource[] => {
+  const last = parts.at(-1);
+  if (last === undefined) return NO_SOURCES;
+  const known = turnLists.get(last);
+  if (known && sameParts(known.parts, parts)) return known.list;
+  const seen = new Set<string>();
+  const list = parts.flat().filter((s) => {
+    if (seen.has(s.url)) return false;
+    seen.add(s.url);
+    return true;
+  });
+  turnLists.set(last, { list, parts });
+  return list;
+};
+
+// The sources of each turn (turnsOf), under its last reply, keyed by that row. A turn with no reply
+// shows none: its tool lines carry the addresses.
+export function turnSources(rows: readonly Row[]): Map<string, readonly WebSource[]> {
+  const out = new Map<string, readonly WebSource[]>();
+  for (const turn of turnsOf(rows)) {
+    const reply = turn.findLast((r) => r.kind === "talk");
+    if (reply === undefined) continue;
+    const parts = turn.flatMap((r) => (r.kind === "tool" ? [sourcesOfTool(r)] : [])).filter((p) => p.length > 0);
+    if (parts.length > 0) out.set(reply.key, turnList(parts));
   }
-  close();
   return out;
 }

@@ -1,8 +1,9 @@
 // The story page (web/stories.html): UI that the app has no data for yet, in each of its states,
 // for a look and for the e2e (e2e/stories.spec.ts). Vite serves it in dev; the build takes only
 // index.html, so it never ships. Today: AI Elements' Subagent (SPEC M7, not built), alone and in
-// the Background work sheet's slot, over the scripted server the unit tests use (test/fixture.ts).
-import { BackgroundWork } from "@/chat/background-work";
+// the Background work sheet's `extra` slot as M7 would fill it, over the scripted server the unit
+// tests use (test/fixture.ts).
+import { BackgroundWork, Group } from "@/chat/background-work";
 import { Subagent } from "@/components/ai-elements/subagent";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -10,6 +11,7 @@ import { openLink } from "@/lib/connection";
 import { makeSession } from "@/lib/session";
 import { fakeServer, IDLE, snapshot } from "@/test/fixture";
 import { EventType } from "@ag-ui/core";
+import { NetworkIcon } from "lucide-react";
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "../index.css";
@@ -55,7 +57,22 @@ function Stories() {
         >
           Background work with subagents
         </Button>
-        <BackgroundWork devices={devices} link={link} onOpenChange={setOpen} onStopSubagent={stop} onTellSubagent={tell} open={open} session={session} subagents={RUNS} />
+        <BackgroundWork
+          devices={devices}
+          extra={
+            <Group count={RUNS.length} icon={<NetworkIcon className="size-3.5" />} title="Subagents">
+              {RUNS.map((run) => (
+                <div data-testid="work-subagent" key={run.name} role="listitem">
+                  <Subagent onStop={stop} onTell={tell} run={run} />
+                </div>
+              ))}
+            </Group>
+          }
+          link={link}
+          onOpenChange={setOpen}
+          open={open}
+          session={session}
+        />
         <ol className="font-mono text-xs" data-testid="story-calls">
           {said.map((s, k) => (
             // oxlint-disable-next-line react/no-array-index-key -- a call is its place in the list

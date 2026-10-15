@@ -1,79 +1,17 @@
 // The app against a scripted server (test/fixture.ts): what a phone shows as the server's AG-UI
 // events arrive, and what it sends back.
 import { EventType } from "@ag-ui/core";
-import { afterEach, beforeEach, expect, test } from "bun:test";
-import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
-import { App } from "./app";
+import { expect, test } from "bun:test";
+import { act, cleanup, fireEvent, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { useAttachments } from "./chat/use-attachments";
 import type { Uploader } from "./lib/attach";
-import { openLink } from "./lib/connection";
-import type { Inbound } from "./lib/protocol";
 import { sentKey } from "./lib/draft";
-import { makeSession } from "./lib/session";
-import { ack, type Entry, fakeServer, IDLE, parseSent, said, snapshot, state } from "./test/fixture";
+import { box, frames, LOG, lastId, onTouchScreen, sentTexts, start, stubApi, type } from "./test/app";
+import { ack, type Entry, parseSent, said, snapshot, state } from "./test/fixture";
 import type { Asset } from "@wire";
 import { Schema } from "effect";
 
-const LOG: Entry[] = [
-  { kind: "user", text: "what is in the repo?" },
-  { kind: "tool", text: 'Bash {"command":"ls"}' },
-  { kind: "echo", text: "notes.md\nrepo" },
-  { kind: "talk", text: "Two things: **notes** and a repo." },
-];
-
-const DEVICES = [
-  { claudeVersion: "2.1.289", folders: ["~/repos"], local: true, name: "mini", status: "online", url: "http://optchat-mini:7710" },
-  { claudeVersion: null, folders: ["~/repos"], local: false, name: "macbook", status: "offline", url: "http://optchat-macbook:7710" },
-];
-
-const realFetch = globalThis.fetch;
-beforeEach(() => {
-  globalThis.fetch = Object.assign(async (input: string | URL | Request) => {
-    const path = new URL(input instanceof Request ? input.url : input, "http://127.0.0.1:7700/").pathname;
-    if (path === "/api/devices") return Response.json(DEVICES);
-    if (path === "/api/messages") {
-      // the page before message 100 of a long log: two entries are enough
-      const entries = [98, 99].map((i) => ({ date: "2026-10-05T10:00:00Z", i, kind: "user", text: `older message ${i}` }));
-      return Response.json({ entries, total: 104 });
-    }
-    return Response.json({ error: "not in this test" }, { status: 404 });
-  }, { preconnect: realFetch.preconnect });
-});
-afterEach(() => {
-  globalThis.fetch = realFetch;
-});
-
-// `stateless`: the server's greeting holds the log only, as before its first STATE_SNAPSHOT arrives
-function start(log: readonly Entry[] = LOG, from = 0, uploader?: Uploader, stateless = false) {
-  let entries = [...log];
-  const greeting = (): Inbound[] =>
-    stateless ? [snapshot(entries, from)] : [snapshot(entries, from), { snapshot: { ...IDLE, messages: from + entries.length }, type: EventType.STATE_SNAPSHOT }];
-  const server = fakeServer(greeting);
-  const link = openLink("ws://127.0.0.1:7700/ws", { retryMs: 1, socket: server.socket });
-  const session = makeSession(link);
-  render(<App link={link} session={session} uploader={uploader} />);
-  const play = (...events: Inbound[]) => {
-    act(() => {
-      server.play(...events);
-    });
-  };
-  return {
-    log: (more: readonly Entry[]) => {
-      entries = [...entries, ...more];
-    },
-    play,
-    server,
-  };
-}
-
-const sentTexts = (sent: readonly string[]) =>
-  sent.flatMap((f) => {
-    const frame = parseSent(f);
-    return frame.messages ? [{ device: frame.forwardedProps?.device, text: frame.messages.at(-1)?.content }] : [];
-  });
-// the id the newest message went out with, which the server's ack names
-const lastId = (sent: readonly string[]) =>
-  sent.flatMap((f) => parseSent(f).messages?.at(-1)?.id ?? []).at(-1) ?? "";
+stubApi();
 
 test("the snapshot shows the log: messages, a collapsed tool call, markdown with a raw-text toggle", async () => {
   start();
@@ -87,66 +25,6 @@ test("the snapshot shows the log: messages, a collapsed tool call, markdown with
   expect(screen.queryByText(/\*\*notes\*\*/)).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Show raw text" }));
   expect(screen.getByText("Two things: **notes** and a repo.")).toBeTruthy();
-});
-
-test("a TodoWrite call reads as a plan and a turn's web links as its reply's sources; a plan's input stays one line away", async () => {
-  const todos = { todos: [{ activeForm: "Searching", content: "Search", status: "completed" }, { activeForm: "Answering", content: "Answer", status: "in_progress" }, { content: "Check", status: "pending" }] };
-  const links = [{ title: "Docs", url: "https://docs.example.com/a" }, { title: "Bad", url: "javascript:alert(1)" }];
-  start([
-    { kind: "user", text: "look it up" },
-    { kind: "tool", text: `TodoWrite ${JSON.stringify(todos)}` },
-    { kind: "echo", text: "Todos have been modified successfully." },
-    { kind: "tool", text: 'WebSearch {"query":"q"}' },
-    { kind: "echo", text: `Web search results for query: "q"\n\nLinks: ${JSON.stringify(links)}` },
-    { kind: "tool", text: 'WebFetch {"url":"https://other.example.org/p","prompt":"p"}' },
-    { kind: "echo", text: "page" },
-    { kind: "talk", text: "Found it." },
-  ]);
-  await screen.findByText("Found it.");
-  // the newest plan opens by itself; nothing runs, so no step reads in its present tense
-  const plan = screen.getByText("1 of 3 done").closest<HTMLElement>('[data-slot="plan"]') ?? document.body;
-  expect(plan.dataset.state).toBe("open");
-  expect(within(plan).getByText("Answer")).toBeTruthy();
-  expect(within(plan).queryByText("Answering")).toBeNull();
-  expect([...plan.querySelectorAll<HTMLElement>("[data-step]")].map((s) => s.dataset.step)).toEqual(["completed", "in_progress", "pending"]);
-  expect(within(plan).queryByText(/"activeForm"/)).toBeNull();
-  fireEvent.click(within(plan).getByText("Input and output"));
-  await waitFor(() => {
-    expect(plan.textContent).toContain("Todos have been modified successfully.");
-  });
-  // the sources: under the reply, the javascript: link left out
-  const reply = screen.getByText("Found it.").closest<HTMLElement>("[data-reply]") ?? document.body;
-  fireEvent.click(within(reply).getByText("Used 2 sources"));
-  const anchors = await within(reply).findAllByRole("link");
-  expect(anchors.map((a) => [a.getAttribute("href"), a.getAttribute("target"), a.getAttribute("rel")])).toEqual([
-    ["https://docs.example.com/a", "_blank", "noreferrer"],
-    ["https://other.example.org/p", "_blank", "noreferrer"],
-  ]);
-  expect(document.body.innerHTML).not.toContain("javascript:alert");
-});
-
-test("a live plan: its step in progress reads in its present tense and the line runs; a failed TodoWrite says Failed", async () => {
-  const todos = { todos: [{ activeForm: "Searching", content: "Search", status: "in_progress" }] };
-  const { play } = start([
-    { kind: "user", text: "go" },
-    { kind: "tool", text: `TodoWrite ${JSON.stringify(todos)}` },
-    { kind: "echo", text: "ok" },
-  ]);
-  await screen.findByText("Search");
-  play(state({ phase: "running" }));
-  const step = await screen.findByText("Searching");
-  expect(step.closest<HTMLElement>('[data-slot="trace-line"]')?.dataset.status).toBe("running");
-  play(state({ phase: "idle" }));
-  await screen.findByText("Search");
-  expect(screen.queryByText("Searching")).toBeNull();
-  cleanup();
-  start([
-    { kind: "user", text: "go" },
-    { kind: "tool", text: `TodoWrite ${JSON.stringify(todos)}` },
-    { error: true, kind: "echo", text: "InputValidationError" },
-  ]);
-  const failed = await screen.findByText("Failed");
-  expect(failed.closest('[data-slot="plan"]')).toBeTruthy();
 });
 
 test("a tool call reads as Failed when its echo is flagged, not from its output, which stays as logged", async () => {
@@ -435,21 +313,6 @@ const filesOf = (...files: File[]) => {
 };
 const Parts = Schema.Array(Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String), source: Schema.optional(Schema.Struct({ type: Schema.String, value: Schema.String })) }));
 
-// a touch screen for the length of `body`: (pointer: coarse) matches
-async function onTouchScreen(body: () => Promise<void>) {
-  const realMatch = globalThis.matchMedia;
-  globalThis.matchMedia = (query: string) => {
-    const list = realMatch(query);
-    Object.defineProperty(list, "matches", { value: query === "(pointer: coarse)" });
-    return list;
-  };
-  try {
-    await body();
-  } finally {
-    globalThis.matchMedia = realMatch;
-  }
-}
-
 // how many times a hidden file input was opened
 const opens = (input: HTMLElement) => {
   const count = { n: 0 };
@@ -634,11 +497,11 @@ test("attach, paste and drop fill the tray; send waits for the uploads, names ea
   const thumbs = within(row ?? document.body).getAllByRole("img");
   expect(thumbs.map((t) => t.getAttribute("src"))).toEqual(["/api/assets/aaaaaaaaaaaa/thumb", "/api/assets/bbbbbbbbbbbb/thumb"]);
   expect(row?.textContent).toContain("[image aaaaaaaaaaaa 800x600 2KB: a whiteboard]");
-  // each one an Attachment whose whole tile opens the full asset
+  // each one a link to the full asset
   const links = within(row ?? document.body).getAllByRole("link");
-  expect(links.map((a) => [a.getAttribute("aria-label"), a.getAttribute("href"), a.closest<HTMLElement>("[data-slot=attachment]")?.dataset.state])).toEqual([
-    ["Open image aaaaaaaaaaaa", "/api/assets/aaaaaaaaaaaa", "done"],
-    ["Open image bbbbbbbbbbbb", "/api/assets/bbbbbbbbbbbb", "done"],
+  expect(links.map((a) => [a.getAttribute("aria-label"), a.getAttribute("href"), a.getAttribute("target")])).toEqual([
+    ["Open image aaaaaaaaaaaa", "/api/assets/aaaaaaaaaaaa", "_blank"],
+    ["Open image bbbbbbbbbbbb", "/api/assets/bbbbbbbbbbbb", "_blank"],
   ]);
 });
 
@@ -691,11 +554,6 @@ test("a file removed, or a composer closed, while the photo is being downscaled 
 // the composer (SPEC "Web UI", Chat): drafts, follow-ups, take-back, the model picker, recall
 
 const photo = (sha: string): Asset => ({ bytes: 2048, height: 600, kind: "image", mime: "image/jpeg", sha, width: 800 });
-const frames = (sent: readonly string[]) => sent.map((f) => parseSent(f));
-const box = () => screen.getByLabelText<HTMLTextAreaElement>("Message");
-const type = (text: string) => {
-  fireEvent.change(box(), { target: { value: text } });
-};
 
 test("the draft, its text and its finished uploads, survives the page; it is cleared once sent", async () => {
   const uploads = fakeUploads();
@@ -865,197 +723,6 @@ test("the follow-up setting is the server's: the composer sends the change, and 
   fireEvent.click(await screen.findByRole("button", { name: /^Queue/ }));
   expect(frames(server.sent).at(-1)).toMatchObject({ followUp: "queue", type: "settings" });
 });
-
-test("with a mouse the model picker is the Model Selector: a menu grouped by where each engine runs; picking sends nothing, the next message names it", async () => {
-  const { play, server } = start();
-  await screen.findByText("what is in the repo?");
-  play(
-    state({
-      engines: [
-        { down: null, label: "Claude Opus (Claude Code)", ref: "claude-code:opus" },
-        { down: null, label: "Claude Opus (Claude Code, xhigh)", ref: "claude-code:opus@xhigh" },
-        { down: "Claude AI usage limit reached", label: "Claude Sonnet (Claude Code)", ref: "claude-code:sonnet" },
-        { down: null, label: "GPT-6.1 Sol (ChatGPT plan)", ref: "openai-plan:gpt-6.1-sol" },
-      ],
-    }),
-  );
-  expect(screen.queryByLabelText("Model")).toBeNull(); // no native select with a mouse
-  const trigger = screen.getByTestId("model-picker");
-  expect(trigger.getAttribute("aria-label")).toBe("Model: Claude Opus (Claude Code)");
-  fireEvent.keyDown(trigger, { key: "Enter" });
-  const menu = await screen.findByTestId("model-menu");
-  expect([...menu.querySelectorAll('[data-slot="dropdown-menu-group"]')].map((g) => g.firstElementChild?.textContent)).toEqual(["Claude Code", "ChatGPT plan"]);
-  const items = within(menu).getAllByRole("menuitemradio");
-  expect(items.map((i) => [i.textContent, i.getAttribute("aria-checked"), i.dataset.disabled !== undefined])).toEqual([
-    ["Opus", "true", false],
-    ["Opusxhigh", "false", false],
-    ["Sonnetunavailable: Claude AI usage limit reached", "false", true],
-    ["GPT-6.1 Sol", "false", false],
-  ]);
-  const before = server.sent.length;
-  fireEvent.click(within(menu).getByText("GPT-6.1 Sol"));
-  await waitFor(() => {
-    expect(screen.queryByTestId("model-menu")).toBeNull();
-  });
-  expect(server.sent).toHaveLength(before); // picking sends nothing
-  expect(screen.getByTestId("model-picker").textContent).toContain("GPT-6.1 Sol");
-  expect(localStorage.getItem("optchat:model")).toBe("openai-plan:gpt-6.1-sol");
-  type("hello Sol");
-  fireEvent.click(screen.getByRole("button", { name: "Send" }));
-  expect(frames(server.sent).at(-1)).toMatchObject({ forwardedProps: { engine: "openai-plan:gpt-6.1-sol" }, messages: [{ content: "hello Sol" }] });
-});
-
-test("on a touch screen the model picker is the phone's own select, and this page's own's own: switching it sends nothing; each message names the model picked when it was sent", async () => 
-  onTouchScreen(async () => {
-    const { play, server } = start();
-    await screen.findByText("what is in the repo?");
-    const model = screen.getByLabelText<HTMLSelectElement>("Model");
-    expect([...model.options].map((o) => o.textContent)).toEqual(["Claude Opus (Claude Code)", "GPT-6.1 Sol (ChatGPT plan)"]);
-    expect(within(screen.getByTestId("model-picker")).getByText("Opus")).toBeTruthy(); // none picked: the chain's first
-    const before = server.sent.length;
-    fireEvent.change(model, { target: { value: "openai-plan:gpt-6.1-sol" } });
-    fireEvent.change(model, { target: { value: "claude-code:opus" } });
-    fireEvent.change(model, { target: { value: "openai-plan:gpt-6.1-sol" } });
-    expect(server.sent).toHaveLength(before); // nothing went out
-    expect(within(screen.getByTestId("model-picker")).getByText("GPT-6.1 Sol")).toBeTruthy();
-    expect(localStorage.getItem("optchat:model")).toBe("openai-plan:gpt-6.1-sol");
-    type("hello Sol");
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    expect(frames(server.sent).at(-1)).toMatchObject({ forwardedProps: { engine: "openai-plan:gpt-6.1-sol" }, messages: [{ content: "hello Sol" }] });
-    // the queue names a message's model only where it isn't the picker's
-    play(
-      state({
-        pending: [
-          { clientId: "a", engine: "claude-code:opus", queued: true, text: "for opus" },
-          { clientId: "b", engine: "openai-plan:gpt-6.1-sol", queued: true, text: "for sol" },
-        ],
-        phase: "running",
-      }),
-    );
-    const [opus, sol] = await screen.findAllByTestId("queue-item");
-    expect(within(opus ?? document.body).getByTestId("queue-engine").textContent).toBe("Opus");
-    expect(within(sol ?? document.body).queryByTestId("queue-engine")).toBeNull();
-    // the server's word on the engines: Opus is down, with why
-    play(
-      state({
-        engines: [
-          { down: "Claude AI usage limit reached", label: "Claude Opus (Claude Code)", ref: "claude-code:opus" },
-          { down: null, label: "GPT-6.1 Sol (ChatGPT plan)", ref: "openai-plan:gpt-6.1-sol" },
-        ],
-      }),
-    );
-    const [down] = [...screen.getByLabelText<HTMLSelectElement>("Model").options];
-    expect([down?.disabled, down?.textContent]).toEqual([true, "Claude Opus (Claude Code): unavailable, Claude AI usage limit reached"]);
-    // the closed picker marks its own engine when that one is down
-    expect(screen.queryByTestId("picker-down")).toBeNull();
-    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "claude-code:opus" } });
-    expect(screen.getByTestId("picker-down")).toBeTruthy();
-    // while a turn runs on Sol, a message for Opus waits for a turn of its own: no "send now"
-    play(state({ engine: "openai-plan:gpt-6.1-sol", phase: "running" }));
-    type("for opus");
-    expect(box().getAttribute("placeholder")).toBe("For the next turn (another model)");
-    expect(screen.getByRole("button", { name: "Send" }).getAttribute("title")).toBe("Send (waits for the next turn: another model)");
-    expect(screen.queryByRole("button", { name: /^(Send now|Queue for the next turn)$/ })).toBeNull();
-  }));
-
-test("on a touch screen, one model at two efforts reads apart: the picker, a queued message and the status line show the effort as the picker's options do", async () => 
-  onTouchScreen(async () => {
-    const { play } = start();
-    await screen.findByText("what is in the repo?");
-    const engines = [
-      { down: null, label: "Claude Opus (Claude Code)", ref: "claude-code:opus" },
-      { down: null, label: "Claude Opus (Claude Code, xhigh)", ref: "claude-code:opus@xhigh" },
-    ];
-    play(state({ engines }));
-    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "claude-code:opus@xhigh" } });
-    // the picker: a bare label, the model's name and its effort beside it
-    expect(within(screen.getByTestId("model-picker")).getByText("Opus")).toBeTruthy();
-    expect(within(screen.getByTestId("model-picker")).getByText("xhigh")).toBeTruthy();
-    expect(screen.getByTestId("model-picker").className).toContain("bare-control");
-    play(state({ engine: "claude-code:opus@xhigh", pending: [{ clientId: "a", engine: "claude-code:opus", queued: true, text: "for opus" }], phase: "running" }));
-    const opus = await screen.findByTestId("queue-engine");
-    expect(opus.textContent).toBe("Opus");
-    expect(screen.getByTestId("status").textContent).toContain("running on mini, Claude Opus (Claude Code, xhigh)");
-    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "claude-code:opus" } });
-    play(state({ pending: [{ clientId: "b", engine: "claude-code:opus@xhigh", queued: true, text: "for opus at xhigh" }] }));
-    const other = await screen.findByTestId("queue-engine");
-    expect([other.textContent, other.getAttribute("title")]).toEqual(["Opus · xhigh", "for Claude Opus (Claude Code, xhigh)"]);
-  }));
-
-test("a pick kept with the master's own effort (\"@xhigh\" once the master runs at xhigh) still finds its engine, and is kept as the chain spells it", async () => {
-  localStorage.setItem("optchat:model", "claude-code:opus@xhigh");
-  const { play, server } = start(LOG, 0, undefined, true);
-  await screen.findByText("what is in the repo?");
-  play({
-    snapshot: {
-      ...IDLE,
-      effort: "xhigh",
-      engines: [
-        { down: null, label: "GPT-6.1 Sol (ChatGPT plan)", ref: "openai-plan:gpt-6.1-sol" },
-        { down: null, label: "Claude Opus (Claude Code)", ref: "claude-code:opus" },
-      ],
-    },
-    type: EventType.STATE_SNAPSHOT,
-  });
-  expect(within(screen.getByTestId("model-picker")).getByText("Opus")).toBeTruthy();
-  expect(localStorage.getItem("optchat:model")).toBe("claude-code:opus");
-  type("still on opus");
-  fireEvent.click(screen.getByRole("button", { name: "Send" }));
-  expect(frames(server.sent).at(-1)).toMatchObject({ forwardedProps: { engine: "claude-code:opus" } });
-});
-
-test("before the first state, a message names the model this page kept; once the state shows the chain lacks it, the chain's first", async () => {
-  localStorage.setItem("optchat:model", "openai-plan:gpt-6.1-sol");
-  const { play, server } = start(LOG, 0, undefined, true);
-  await screen.findByText("what is in the repo?");
-  type("right after a reload");
-  fireEvent.click(screen.getByRole("button", { name: "Send" }));
-  expect(frames(server.sent).at(-1)).toMatchObject({ forwardedProps: { engine: "openai-plan:gpt-6.1-sol" } });
-  play({ snapshot: { ...IDLE, engines: [{ down: null, label: "Claude Opus (Claude Code)", ref: "claude-code:opus" }] }, type: EventType.STATE_SNAPSHOT });
-  expect(within(screen.getByTestId("model-picker")).getByText("Opus")).toBeTruthy();
-  type("after the state");
-  fireEvent.click(screen.getByRole("button", { name: "Send" }));
-  expect(frames(server.sent).at(-1)).toMatchObject({ forwardedProps: { engine: "claude-code:opus" } });
-});
-
-test("on a touch screen, a turn stopped on a usage limit: every client shows why and the engines to go on with; a button resumes, and the picker follows it", async () => 
-  onTouchScreen(async () => {
-    const { play, server } = start();
-    await screen.findByText("what is in the repo?");
-    play(
-      state({
-        engines: [
-          { down: "Claude AI usage limit reached", label: "Claude Opus (Claude Code)", ref: "claude-code:opus" },
-          { down: null, label: "GPT-6.1 Sol (ChatGPT plan)", ref: "openai-plan:gpt-6.1-sol" },
-        ],
-        phase: "needs-model",
-        stopped: { label: "Claude Opus (Claude Code)", ref: "claude-code:opus", why: "usage limit: Claude AI usage limit reached" },
-      }),
-    );
-    // the run's end that follows is not said again in the chat: the prompt says it, once
-    play({ message: "usage limit: Claude AI usage limit reached", type: EventType.RUN_ERROR });
-    const alert = await screen.findByTestId("needs-model");
-    expect(alert.textContent).toContain("Claude Opus (Claude Code): usage limit: Claude AI usage limit reached. Choose how to go on:");
-    expect(screen.queryByTestId("marker-error")).toBeNull();
-    // a message sent while it waits meets the turn as a running one would: it joins once the turn
-    // goes on, or (the other button) waits for the next turn
-    expect(box().getAttribute("placeholder")).toBe("Add to the turn, once it goes on");
-    type("meanwhile");
-    expect(screen.getByRole("button", { name: "Queue for the next turn" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
-    type("");
-    expect(screen.queryByTestId("status")).toBeNull();
-    // moving the picker resumes nothing
-    const before = server.sent.length;
-    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "openai-plan:gpt-6.1-sol" } });
-    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "claude-code:opus" } });
-    expect(server.sent).toHaveLength(before);
-    fireEvent.click(within(alert).getByRole("button", { name: "Continue with GPT-6.1 Sol (ChatGPT plan)" }));
-    expect(frames(server.sent).at(-1)).toEqual({ engine: "openai-plan:gpt-6.1-sol", type: "resume" });
-    expect(within(screen.getByTestId("model-picker")).getByText("GPT-6.1 Sol")).toBeTruthy();
-    fireEvent.click(within(alert).getByRole("button", { name: "Try Claude Opus (Claude Code) again" }));
-    expect(frames(server.sent).at(-1)).toEqual({ engine: "claude-code:opus", type: "resume" });
-  }));
 
 test("on a keyboard, Up in an empty composer recalls this client's sent messages, Down goes back; edited, it stays", async () => {
   start();
