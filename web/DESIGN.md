@@ -163,7 +163,7 @@ dead; ivy is the one accent. Light and dark are the same structure, not two desi
 ### Neutral
 - **Shell** (`oklch(0.963 0.004 150)`; dark `0.155`): the header band on wide screens.
 - **Sheet** (`oklch(0.992 0.002 150)`; dark `0.185`): where the conversation and every screen sit.
-- **Raised** (white; dark `0.225`): the composer, popovers, the active tab, the tray above the composer.
+- **Raised** (white; dark `0.225`): popovers, the active tab; in dark also the glass's tint (the composer, its tray, the sheets; light glass is `0.97`, Components: Glass).
 - **Bubble** (`oklch(0.945 0.005 150)`; dark `0.265`): your messages.
 - **Code ground** (`oklch(0.975 0.003 150)`; dark `0.16`, darker than the sheet): code blocks and the
   tool panel.
@@ -236,16 +236,16 @@ for labels.
 
 ## Elevation & Depth
 
-Flat by default; depth comes from the two grounds and hairlines. Shadows are reserved for the one
-raised object (the composer) and for things that float over content.
+Flat by default; depth comes from the two grounds and hairlines. Shadows are reserved for glass
+(the composer, the tray on it, the sheets) and for things that float over content.
 
 ### Shadow Vocabulary
-- **Raised** (`--elevation-raised`: `0 1px 2px oklch(0 0 0 / 4%), 0 12px 28px -18px oklch(0 0 0 /
-  32%)`; dark: an inset 1 px top highlight and `0 14px 32px -18px` at 70%): the composer's drop,
-  under its ring and sheen (`composer-surface`, Components).
+- **Glass** (`glass-surface`, Components: Glass): the composer, the tray on its top edge and the
+  sheets. Its drop is `--glass-drop` (`0 12px 28px -18px oklch(0 0 0 / 32%)`; dark `0 14px 32px
+  -18px` at 70%): soft, with no contact shadow, so the 1 px ring reads the same weight on every
+  edge.
 - **Float** (`shadow-float`: a 1 px hairline ring over `0 2px 6px -2px oklch(0 0 0 / 8%), 0 12px
-  32px -12px oklch(0 0 0 / 22%)`): popovers, the Add context sheet, the scroll-to-end button, the
-  context meter's card.
+  32px -12px oklch(0 0 0 / 22%)`): popovers, the scroll-to-end button, the context meter's card.
 - **Lift** (`shadow-lift`: a hairline ring and `0 1px 2px` at 6%): the chosen item of a segmented
   control.
 
@@ -256,9 +256,10 @@ hairline, never a shadow.
 ## Shapes
 
 Radii from one base (10 px): 6 (inline code), 8 (buttons, tabs, rows' hover wash), 10 (tool panel,
-tool code), 14 (code blocks, tables, lists of devices, stat strip), 18 (bubbles), 22 (the
-composer), full (send, stop, pickers, chips, the scroll button). The tray attached above the
-composer has 14 px top corners and no bottom edge, so it reads as part of it.
+tool code), 14 (code blocks, tables, lists of devices, stat strip), 18 (bubbles), full (send,
+stop, pickers, chips, the scroll button). Glass has one radius,
+`--radius-glass` (28 px, `rounded-glass`): the composer's corners, the top corners of the tray on
+it (the composer's top corners square under a tray, so the two make one shape) and of a sheet.
 
 ## Components
 
@@ -313,24 +314,43 @@ Built on shadcn/ui's Trace and Code Block (`components/ui/trace.tsx`, `code-bloc
   sources". Open: a link per source, its title in ink, its host in muted 12 px, an up-right arrow;
   28 px rows, 40 px on touch. Plain links: no favicons, nothing fetched.
 
+### Glass
+One surface, `glass-surface` in `index.css`, for the composer, the tray on its top edge and every
+sheet:
+
+- **Ground:** `--glass-tint` (light `oklch(0.97 0.003 150)`, a step under white so the sheen
+  shows; dark the raised colour) at `--glass-alpha` (80%; the sheets 92%) over a 16 px backdrop
+  blur saturated to 150%. Opaque (the tint itself) where the browser has no backdrop-filter, or the
+  reader asked for less transparency (`prefers-reduced-transparency`).
+- **Ring:** 1 px drawn as a box-shadow (`--glass-ring`: ink at 13%, dark white at 11%), never a
+  CSS border.
+- **Sheen:** 1 px of white inset on the top edge (`--glass-sheen`: white at 100%, dark 10%), and a
+  fill fading from white at 35% (dark 4%) to nothing by 44 px. `glass-surface-start` moves both to
+  the leading edge (a side panel); `glass-joined` drops both (the composer under a tray, whose own
+  top edge carries them).
+- **Drop:** `--glass-drop`, soft and edgeless, cast downward: under the composer and a bottom sheet
+  it lifts them off the page; a side panel's falls along its whole height and barely shows, so its
+  ring and vaul's dimmed page set it off.
+- **Radius:** `--radius-glass`, 28 px.
+- **Contrast:** muted text on a sheet, at 92%, stays AA (4.6:1) even with black behind it, which
+  is darker than anything vaul's dimmed page shows. On the composer, at 80% over the dock's fade:
+  ink about 15:1 with dark content under it, the placeholder about 5.1:1 at worst and 5.55:1 with
+  nothing under it; AA either way.
+
 ### Composer
 Modelled on Claude's app: a soft, translucent card with round controls.
 
-- **Surface** (`composer-surface` in `index.css`): 28 px radius. Its ground is the raised colour at
-  80% (`--composer-ground`), over a 16 px backdrop blur saturated to 150%, so what scrolls under it
-  shows through softly. Where the browser has no backdrop-filter, or the reader asked for less
-  transparency (`prefers-reduced-transparency`), the ground is opaque. The border is a 1 px ring
-  drawn as a box-shadow (`--composer-ring`: ink at 13%, dark white at 11%), never a CSS border. A
-  sheen lights the top edge: a 1 px inset highlight (`--composer-sheen`: white at 95%, dark 10%)
-  and a fill fading from white at 70% (dark 4%) to nothing by 44 px (`--composer-sheen-fill`).
-  Under it, the Raised drop. With the text focused the ring turns ivy at 65% with a 4 px ivy halo
-  at 14%; a dragged file does the same, stronger.
+- **Surface:** Glass (above), at 80%, on `--radius-glass`; the group inside is see-through and
+  clipped to it. With the text focused the ring turns ivy at 65% with a 4 px ivy halo at 14%; a
+  dragged file does the same, stronger (`composer-surface`: it changes `--glass-ring` only, two
+  layers like the resting ring, so the change animates). Under a tray, the tray takes the same ring
+  (`glass-tray`), each clipped where they meet, so focus outlines the one shape.
 - **Floating:** the dock floats over the end of the transcript, which scrolls on under it. The
   content keeps `--dock-h` clear below its last row, and the scroller's `scroll-padding-bottom` is
   `--dock-h` too, so focus never leaves a control under the dock (WCAG 2.2, 2.4.11). A fade runs from clear 24 px above the dock
   to the sheet at 80% by 3rem and solid at the bottom, so what passes under the composer is soft
-  and its text stays legible. Measured with a code block under it and no blur at all, the worst
-  case: ink 12.6:1, the placeholder 5.7:1 (light) and 5.8:1 (dark).
+  and its text stays legible. Measured with no blur at all: ink about 15:1 with dark content under
+  it, the placeholder about 5.1:1 at worst and 5.55:1 with nothing under it (light); 5.8:1 (dark).
 - **Text:** Read type, 52 px tall at rest, grows to 12rem or 40% of the viewport.
 - **Controls:** at the left, bare: "+" as an icon, its glyph on the start of the text above it, then
   the model, the device and the follow-up mode as plain 13 px labels (the model's effort, when the
@@ -348,8 +368,11 @@ Modelled on Claude's app: a soft, translucent card with round controls.
   keyboard dictates.
 - **Sheets:** the app has one, `components/sheet-drawer.tsx`: shadcn's Drawer on vaul (1.1.2,
   pinned; vaul is unmaintained since December 2024, kept by choice). From the bottom edge on a
-  phone (24 px top corners, vaul's grabber, a drag down closes it), from the right as a side panel
-  on a wide screen; a title and a 40 px close button, on the raised ground with the Float shadow.
+  phone (the glass radius, 28 px, on its top corners in place of the Drawer's 10 px; vaul's grabber
+  in the soft fill; a drag down closes it), from the right as a side panel on a wide screen; a
+  title and a 40 px close button, on Glass at 92%, its sheen along the top edge (a side panel's
+  along its leading edge). vaul's overlay dims the page behind (black at 50%), and the strip vaul
+  extends past the screen's edge is the glass tint, opaque.
 - **Add context:** "+" opens it. On a touch screen it is the sheet from the bottom edge; with a
   mouse, a 256 px popover over the "+",
   but only when there is more than one choice: a mouse has no camera choice, so there "+" opens
@@ -358,8 +381,11 @@ Modelled on Claude's app: a soft, translucent card with round controls.
   with a 36 px soft icon tile, a label and a muted hint: "Photos & videos" (the library or files,
   images and videos, several at once) and, on a touch screen, "Camera" (`capture`, the rear
   camera). A choice opens the composer's own hidden picker from the tap, then closes the sheet.
-- **Tray:** what belongs to the composer sits in a tray attached to its top edge, inset 10 px: the
-  held banner (amber ground) and the queue of waiting messages, separated by a hairline. The
+- **Tray:** what belongs to the composer sits in a tray attached to its top edge, as wide as it and
+  on the same glass: its top corners on the glass radius, the composer's squared under it, so the
+  two make one shape and their rings meet in one line. The tray's top edge carries the sheen; the
+  composer under it has none, so the join is that line alone. In it, the held banner (amber ground) and
+  the queue of waiting messages, separated by a hairline. The
   attachments above the text are 64 px tiles (shadcn's Attachment): the photo dimmed while it
   uploads, a 4 px progress bar along its foot, a remove button on its corner, HD on the photo, and
   under a failed one its error in red 11 px.
@@ -428,8 +454,8 @@ transition stops; state still reads from text and colour (the shimmer stands sti
   and InputGroupButton, the segmented control, the queue's header and the pickers carry the touch
   size themselves (`pointer-coarse:`).
 - **Do** draw a hairline with the `hairline` (or `hairline-strong`) utility, and raised or floating
-  things with `composer-surface` (the composer only), `shadow-float` and `shadow-lift`, never a
-  one-off shadow.
+  things with `glass-surface` (the composer, its tray, the sheets), `shadow-float` and
+  `shadow-lift`, never a one-off shadow.
 - **Do** theme browser surfaces: selection, caret, scrollbars and focus rings come from the palette.
 
 ### Don't:
@@ -437,9 +463,9 @@ transition stops; state still reads from text and colour (the shimmer stands sti
 - **Don't** colour the primary button; ink is the primary.
 - **Don't** box things inside the sheet with shadows; use a hairline.
 - **Don't** use mono for anything that isn't code, a command, a path, an id or output.
-- **Don't** add a second accent, a coloured side border, or glass or a gradient as decoration. The
-  composer is the one glass surface (a blur behind it, so the transcript runs on underneath), and
-  three gradients do jobs and are the only ones: the fade under the composer's dock, the composer's
-  top sheen, and shadcn's `shimmer` sweeping ink over live status that rests muted, so every colour
-  of the band stays AA (and plain text where the browser can't mix colours).
+- **Don't** add a second accent, a coloured side border, or glass or a gradient as decoration.
+  Glass is for the composer, the tray on it and the sheets (a blur behind them, so the page runs on
+  underneath), and three gradients do jobs and are the only ones: the fade under the composer's
+  dock, glass's sheen fill, and shadcn's `shimmer` sweeping ink over live status that rests muted,
+  so every colour of the band stays AA (and plain text where the browser can't mix colours).
 - **Don't** set text you read or type under 16 px on a touch screen.

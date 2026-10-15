@@ -22,7 +22,8 @@ Block, AI Elements as patterns).
   and tailwind-merge (same output: a differential run over the 549 class strings in `src`, every
   pair merged both ways, differed only in the order of two repeated unknown classes). It is
   extended the way tailwind-merge was: `cn.config.mjs` names the theme's text sizes (text-2xs,
-  text-ui, text-read) and the shadows and hairlines that replace one another, and `bun run
+  text-ui, text-read), the glass radius (`rounded-glass`, which the sheets' and the composer's
+  corners need to win over the Drawer's) and the shadows and hairlines that replace one another, and `bun run
   cn-tables` compiles that with every class group into `src/lib/cn-tables.ts` (`cn build --full`),
   which `src/lib/utils.ts` hands to `cn/engine`. Compiled ahead because `cn/config`'s `createCn`
   compiles at run time and would add 12.6 kB gzipped to the startup bundle; `--full` so the tables
@@ -48,7 +49,7 @@ Every `ui/*` file below imports `cn` from `@/lib/utils` (see CLI); that is not r
 | ui/message-scroller | radix-vega over @shadcn/react 0.3.1 | re-exports the package's hooks in one `export … from` | Lint |
 | ui/trace | radix-vega | lint-only edits | — |
 | ui/code-block, hooks/use-highlighted-code, lib/highlighter | radix-vega | themes; lazy load; lint-only edits | GitHub's high-contrast pair (the default's #e36209 reads 3.5:1). shiki loads on first use, out of the startup bundle |
-| ui/drawer | radix-vega (vaul) | — | The app's one sheet, dressed in `components/sheet-drawer.tsx` |
+| ui/drawer | radix-vega (vaul) | the grabber in `bg-soft-strong`; the overlay stays black at 50% (new-york's), not radix-vega's 10% with a blur | The grabber shows on glass. The sheets' glass (92%) was measured AA over the page as a 50% overlay dims it. The app's one sheet, dressed in `components/sheet-drawer.tsx` |
 | ui/tooltip | radix-vega | lint-only edit | One provider at the app root |
 | ui/badge, collapsible, input, textarea, marker, message, popover | radix-vega | — | — |
 | ui/chart | new-york-v4, cut down | only what Stats uses | radix-vega's chart is the same for the parts we keep (container, tooltip, legend); its full file adds the payload guessing Stats doesn't need |
@@ -73,8 +74,11 @@ follow-ups popover, Background work, Add context, the held banner, a failed tool
 Devices), and diffed pixel by pixel. Everything not listed here came out identical (Memory, Stats
 and Devices differ only in their timestamps, data and temp paths).
 
-- **Sheets** (Background work, Add context): radix-vega's overlay, black at 10% with a slight
-  backdrop blur, where new-york's was black at 50%. The sheet's grabber is 6 px tall, not 8.
+- **Sheets** (Background work, Add context): the grabber is 6 px tall, not 8 (radix-vega's).
+  radix-vega's overlay (black at 10% with a slight blur) is not taken: the sheets' glass was
+  measured AA over the 50% overlay, so ui/drawer keeps that.
+  radix-vega rounds a side panel's leading corners (14 px); `sheet-drawer.tsx` keeps Background
+  work's side panel square, as it was.
 - **Small buttons** (the held banner's "Try … again" and "Continue with …", Devices' "Background
   work", Memory's back): 10 px side padding instead of 12, a 1 px press-down, and hover fills from
   `muted` instead of `accent` (the same colour in our theme).

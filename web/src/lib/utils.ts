@@ -3,7 +3,8 @@
 // (`bun run cn-tables`) into cn-tables.ts with every class group kept, so they never depend on
 // which classes the sources use, plus the theme's own classes from cn.config.mjs: the font sizes
 // (text-2xs, text-ui, text-read), so `text-ui` replaces `text-sm` rather than standing beside it
-// as if it were a colour, and the shadows and hairlines, which replace one another. Compiled
+// as if it were a colour, the glass radius (rounded-glass replaces another radius rather than
+// losing to it), and the shadows and hairlines, which replace one another. Compiled
 // ahead, the theme costs nothing at run time, where `cn/config`'s createCn would bring its
 // compiler into the bundle (12.6 kB gzipped). utils.test.ts checks the tables are current.
 import { createCn } from "cn/engine";

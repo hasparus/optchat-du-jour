@@ -206,6 +206,8 @@ test("Background work, opened from the status line, shows the running turn and s
   await status.getByRole("button").click();
   const sheet = page.getByRole("dialog", { name: "Background work" });
   await expect(sheet).toHaveAttribute("data-vaul-drawer-direction", "bottom"); // a phone: from the bottom edge
+  // on the glass radius, not the Drawer's 10 px
+  expect(await sheet.evaluate((el) => getComputedStyle(el).borderTopLeftRadius)).toBe("28px");
   await expect(sheet.getByTestId("work-turn")).toContainText(/Turn · on mini, \d+ s/);
   await expect(sheet.getByTestId("work-device").first()).toBeVisible();
   await sheet.getByRole("button", { name: "Stop the turn" }).click();

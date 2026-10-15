@@ -29,6 +29,12 @@ describe("cn", () => {
     expect(cn("text-ui", "text-muted-foreground")).toBe("text-ui text-muted-foreground");
   });
 
+  test("the glass radius is a radius: the sheets' and the composer's corners win over the Drawer's", () => {
+    expect(cn("rounded-xl", "rounded-glass")).toBe("rounded-glass");
+    expect(cn("data-[vaul-drawer-direction=bottom]:rounded-t-xl", "data-[vaul-drawer-direction=bottom]:rounded-t-glass")).toBe("data-[vaul-drawer-direction=bottom]:rounded-t-glass");
+    expect(cn("rounded-glass", "rounded-t-none")).toBe("rounded-glass rounded-t-none");
+  });
+
   test("the shadows and hairlines replace one another", () => {
     expect(cn("shadow-md", "shadow-float")).toBe("shadow-float");
     expect(cn("hairline", "shadow-lift")).toBe("shadow-lift");

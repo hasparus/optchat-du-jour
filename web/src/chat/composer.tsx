@@ -41,6 +41,7 @@ export type ComposerProps = {
   readonly session: SessionStore;
   readonly state: SessionState | null; // the server's
   readonly busy: boolean; // a turn runs or waits
+  readonly attached?: boolean; // the held/queue tray sits on the composer's top edge
   readonly open: boolean; // the link is up
   readonly devices: readonly Device[];
   readonly device: string | null; // the device picked, or the state's
@@ -52,7 +53,7 @@ export type ComposerProps = {
   readonly uploader?: Uploader; // tests replace the upload
 };
 
-export function Composer({ link, session, state, busy, open, devices, device, onDevice, picked, model, onModel, restored, uploader }: ComposerProps) {
+export function Composer({ link, session, state, busy, attached = false, open, devices, device, onDevice, picked, model, onModel, restored, uploader }: ComposerProps) {
   const saved = useMemo(loadDraft, []); // read once: the composer owns the draft from here
   const tray = useAttachments(uploader, saved?.media);
   const [text, setText] = useState(saved?.text ?? "");
@@ -161,6 +162,7 @@ export function Composer({ link, session, state, busy, open, devices, device, on
   const otherLabel = other === "steer" ? "Send now" : "Queue for the next turn";
   return (
     <PromptInput
+      attached={attached}
       below={
         <p
           aria-live="polite"

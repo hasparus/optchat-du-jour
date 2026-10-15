@@ -73,9 +73,12 @@
     --radius-2xl: calc(var(--radius) * 1.8);
     --radius-3xl: calc(var(--radius) * 2.2);
     --radius-4xl: calc(var(--radius) * 2.6);
+    /* the glass surfaces' one radius (glass-surface): the composer, the tray on its top edge, the
+       sheets' top corners */
+    --radius-glass: 1.75rem;
 
     /* elevation: hairlines first; floating things and the chosen item of a segmented control,
-       each with its own 1 px ring (the composer's is composer-surface, below) */
+       each with its own 1 px ring (the glass surfaces' is glass-surface, below) */
     --shadow-float: 0 0 0 1px var(--border), var(--elevation-float);
     --shadow-lift: 0 0 0 1px var(--border), 0 1px 2px oklch(0 0 0 / 6%);
 
@@ -116,12 +119,18 @@
     /* the soft fill of the composer's round buttons and pills, and its hover */
     --soft: oklch(0.21 0.008 150 / 6%);
     --soft-strong: oklch(0.21 0.008 150 / 10%);
-    /* the composer (composer-surface): its ground at 80% over what scrolls under it, a 1 px ring
-       drawn as a shadow, and a sheen along its top edge */
-    --composer-ground: color-mix(in oklch, var(--raised) 80%, transparent);
-    --composer-ring: 0 0 0 1px oklch(0.21 0.008 150 / 13%);
-    --composer-sheen: inset 0 1px 0 oklch(1 0 0 / 95%);
-    --composer-sheen-fill: linear-gradient(to bottom, oklch(1 0 0 / 70%), oklch(1 0 0 / 0%) 2.75rem);
+    /* the glass (glass-surface: the composer, its tray, the sheets): a tint a step under white, so
+       the white sheen on its top edge shows, at --glass-alpha over what scrolls under it; a 1 px
+       ring drawn as a shadow; the sheen, 1 px of white on the top edge (the leading edge of a side
+       panel) and a white fill fading out by 44 px; and a soft drop with no edge of its own */
+    --glass-tint: oklch(0.97 0.003 150);
+    /* two layers, as the focus ring has (composer-surface): a ring and an empty halo, so a change
+       between them animates */
+    --glass-ring: 0 0 0 1px oklch(0.21 0.008 150 / 13%), 0 0 0 0 transparent;
+    --glass-sheen: inset 0 1px 0 oklch(1 0 0 / 100%);
+    --glass-sheen-start: inset 1px 0 0 oklch(1 0 0 / 100%);
+    --glass-sheen-fill: oklch(1 0 0 / 35%);
+    --glass-drop: 0 12px 28px -18px oklch(0 0 0 / 32%);
     --signal: oklch(0.5 0.12 158);
     --signal-foreground: oklch(0.99 0.002 150);
     --success: oklch(0.6 0.14 155);
@@ -133,7 +142,6 @@
     --input: oklch(0.21 0.008 150 / 16%);
     --ring: var(--signal);
     --focus: var(--signal);
-    --elevation-raised: 0 1px 2px oklch(0 0 0 / 4%), 0 12px 28px -18px oklch(0 0 0 / 32%);
     --elevation-float: 0 2px 6px -2px oklch(0 0 0 / 8%), 0 12px 32px -12px oklch(0 0 0 / 22%);
     --chart-1: #2a78d6;
     --chart-2: #eb6834;
@@ -160,10 +168,12 @@
     --code: oklch(0.16 0.004 150);
     --soft: oklch(1 0 0 / 7%);
     --soft-strong: oklch(1 0 0 / 11%);
-    --composer-ground: color-mix(in oklch, var(--raised) 80%, transparent);
-    --composer-ring: 0 0 0 1px oklch(1 0 0 / 11%);
-    --composer-sheen: inset 0 1px 0 oklch(1 0 0 / 10%);
-    --composer-sheen-fill: linear-gradient(to bottom, oklch(1 0 0 / 4%), oklch(1 0 0 / 0%) 2.75rem);
+    --glass-tint: var(--raised);
+    --glass-ring: 0 0 0 1px oklch(1 0 0 / 11%), 0 0 0 0 transparent;
+    --glass-sheen: inset 0 1px 0 oklch(1 0 0 / 10%);
+    --glass-sheen-start: inset 1px 0 0 oklch(1 0 0 / 10%);
+    --glass-sheen-fill: oklch(1 0 0 / 4%);
+    --glass-drop: 0 14px 32px -18px oklch(0 0 0 / 70%);
     --signal: oklch(0.8 0.12 158);
     --signal-foreground: oklch(0.185 0.005 150);
     --success: oklch(0.74 0.14 155);
@@ -173,7 +183,6 @@
     --destructive: oklch(0.7 0.17 25);
     --border: oklch(1 0 0 / 9%);
     --input: oklch(1 0 0 / 14%);
-    --elevation-raised: inset 0 1px 0 oklch(1 0 0 / 5%), 0 14px 32px -18px oklch(0 0 0 / 70%);
     --elevation-float: inset 0 1px 0 oklch(1 0 0 / 5%), 0 16px 40px -12px oklch(0 0 0 / 60%);
     --chart-1: #3987e5;
     --chart-2: #d95926;
@@ -243,38 +252,82 @@
   outline-offset: -2px;
 }
 
-/* The composer (components/ai-elements/prompt-input.tsx): translucent where the browser can blur
-   what is behind it (16 px, saturated 150%), opaque where it can't or where less transparency was
-   asked for; a ring drawn as a shadow, never a border; a sheen along the top edge, as a 1 px inset
-   highlight and a fill that fades out by 44 px; the soft drop under it. With the text focused the
-   ring turns to the accent with a 4 px halo; a dragged file does the same, stronger. */
-@utility composer-surface {
-  background-color: var(--raised);
-  background-image: var(--composer-sheen-fill);
-  box-shadow: var(--composer-ring), var(--composer-sheen), var(--elevation-raised);
+/* Glass (DESIGN.md, Glass): the composer, the tray on its top edge, and the sheets. Translucent
+   where the browser can blur what is behind it (16 px, saturated 150%), at --glass-alpha (80%; the
+   sheets set 92%, which keeps muted text at AA over the darkest thing a dimmed page can show);
+   opaque where it can't or where less transparency was asked for. A ring drawn as a shadow, never
+   a border; a sheen along the top edge, as a 1 px inset highlight and a fill that fades out by
+   44 px (a side panel, opened from the right, has it along its leading edge); a soft drop under it
+   that adds no edge, so the ring reads the same weight all the way round. */
+@utility glass-surface {
+  /* the ground, as --glass-bg too: a component whose own bg-* class must give way (shadcn's Drawer
+     sets bg-background) takes bg-(--glass-bg) */
+  --glass-bg: var(--glass-tint);
+  background-color: var(--glass-bg);
+  /* the sheen: the fill and the 1 px edge, the top one unless a modifier below says otherwise */
+  background-image: var(--glass-fill, linear-gradient(to bottom, var(--glass-sheen-fill), transparent 2.75rem));
+  box-shadow: var(--glass-ring), var(--glass-edge, var(--glass-sheen)), var(--glass-drop);
   @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-    background-color: var(--composer-ground);
+    --glass-bg: color-mix(in oklch, var(--glass-tint) var(--glass-alpha, 80%), transparent);
     -webkit-backdrop-filter: blur(16px) saturate(150%);
     backdrop-filter: blur(16px) saturate(150%);
   }
   @media (prefers-reduced-transparency: reduce) {
-    background-color: var(--raised);
+    --glass-bg: var(--glass-tint);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
+}
+
+/* vaul extends a sheet past the screen's edge with an ::after that inherits the sheet's background
+   (its injected, unlayered rule: [data-vaul-drawer]:not(…)::after), which on glass would be the
+   translucent ground and the sheen fill again. There it is the tint, opaque, with no sheen: a rule
+   as unlayered and one attribute more specific than vaul's, since a Tailwind after: class, layered,
+   would lose to it. */
+.glass-surface[data-vaul-drawer][data-vaul-drawer-direction]::after {
+  background: var(--glass-tint);
+}
+
+/* a side panel, opened from the right: its sheen along the leading edge */
+@utility glass-surface-start {
+  --glass-edge: var(--glass-sheen-start);
+  --glass-fill: linear-gradient(to right, var(--glass-sheen-fill), transparent 2.75rem);
+}
+
+/* the composer under a tray (DESIGN.md, Tray): the tray's top edge carries the sheen for both, so
+   the composer has none, and the join is one ring line */
+@utility glass-joined {
+  --glass-edge: 0 0 #0000;
+  --glass-fill: none;
+}
+
+/* The composer on its glass (components/ai-elements/prompt-input.tsx): with the text focused the
+   ring turns to the accent with a 4 px halo; a dragged file does the same, stronger. Only the ring
+   changes, so glass-surface keeps its one box-shadow. Under a tray, the halo above the composer's
+   top edge is clipped: the tray (glass-tray) draws the rest, and focus reads as one shape. */
+@utility composer-surface {
   &:has([data-slot="input-group-control"]:focus-visible) {
-    box-shadow:
-      0 0 0 1px color-mix(in oklch, var(--signal) 65%, transparent),
-      0 0 0 4px color-mix(in oklch, var(--signal) 14%, transparent),
-      var(--composer-sheen),
-      var(--elevation-raised);
+    --glass-ring: 0 0 0 1px color-mix(in oklch, var(--signal) 65%, transparent), 0 0 0 4px color-mix(in oklch, var(--signal) 14%, transparent);
   }
   &[data-dragging] {
-    box-shadow:
-      0 0 0 1.5px var(--signal),
-      0 0 0 5px color-mix(in oklch, var(--signal) 16%, transparent),
-      var(--composer-sheen),
-      var(--elevation-raised);
+    --glass-ring: 0 0 0 1.5px var(--signal), 0 0 0 5px color-mix(in oklch, var(--signal) 16%, transparent);
+  }
+  &.glass-joined:is(:has([data-slot="input-group-control"]:focus-visible), [data-dragging]) {
+    clip-path: inset(0 -3rem -3rem -3rem);
+  }
+}
+
+/* the tray on the composer's top edge (chat.tsx): while the composer has focus or a file dragged
+   over it, the tray takes the same ring and halo, its own clipped at its bottom edge */
+@utility glass-tray {
+  transition: box-shadow 150ms var(--ease-fluid);
+  &:has(~ form [data-slot="input-group-control"]:focus-visible) {
+    --glass-ring: 0 0 0 1px color-mix(in oklch, var(--signal) 65%, transparent), 0 0 0 4px color-mix(in oklch, var(--signal) 14%, transparent);
+    clip-path: inset(-3rem -3rem 0 -3rem);
+  }
+  &:has(~ form .composer-surface[data-dragging]) {
+    --glass-ring: 0 0 0 1.5px var(--signal), 0 0 0 5px color-mix(in oklch, var(--signal) 16%, transparent);
+    clip-path: inset(-3rem -3rem 0 -3rem);
   }
 }
 

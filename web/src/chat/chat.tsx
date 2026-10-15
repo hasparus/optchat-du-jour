@@ -249,6 +249,8 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
   const first = rows[0]?.id ?? 0;
   const busy = state.state !== null && state.state.phase !== "idle";
   const waiting = queued(state);
+  // the tray on the composer's top edge shows a turn waiting for a model, or messages waiting
+  const tray = state.state?.phase === "needs-model" || waiting.length > 0;
   const line = status(state);
   // the server says the log is empty: a first visit, not a page still loading
   const empty = state.state !== null && rows.length === 0 && state.markers.length === 0;
@@ -390,8 +392,11 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
             )}
           </div>
         )}
-        {(state.state?.phase === "needs-model" || waiting.length > 0) && (
-          <div className="mx-2.5 -mb-px overflow-hidden rounded-t-xl border border-b-0 bg-raised [&>*+*]:border-t">
+        {tray && (
+          // the tray on the composer's top edge: the same glass, as wide, its top corners on the
+          // glass radius and the composer's squared under it, so the two read as one shape whose
+          // rings meet in one line (and one focus ring, glass-tray)
+          <div className="glass-surface glass-tray relative overflow-hidden rounded-t-glass [&>*+*]:border-t" data-testid="composer-tray">
             {state.state?.phase === "needs-model" && <NeedsModel onModel={onModel} session={session} state={state.state} />}
             {waiting.length > 0 && (
               <Queue data-testid="queue">
@@ -421,6 +426,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
           </div>
         )}
         <Composer
+          attached={tray}
           busy={busy}
           device={device}
           devices={devices}

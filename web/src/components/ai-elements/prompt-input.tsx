@@ -22,12 +22,15 @@ export type PromptInputProps = Omit<HTMLAttributes<HTMLFormElement>, "onSubmit">
   onFiles?: (files: File[]) => void;
   // a line under the composer's surface (the shortcuts, or why send is off)
   below?: ReactNode;
+  // a tray is attached to the top edge (DESIGN.md, Composer): the two read as one glass shape, the
+  // tray's top corners rounded and the composer's squared where they meet
+  attached?: boolean;
 };
 
 const filesOf = (list: FileList | null | undefined) => (list ? [...list] : []);
 const hasFiles = (e: DragEvent) => e.dataTransfer.types.includes("Files");
 
-export const PromptInput = ({ className, onSubmit, canSubmit = (text) => text.trim() !== "", onFiles, below, children, ...props }: PromptInputProps) => {
+export const PromptInput = ({ className, onSubmit, canSubmit = (text) => text.trim() !== "", onFiles, below, attached = false, children, ...props }: PromptInputProps) => {
   const [dragging, setDragging] = useState(false);
   const submit = (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -68,10 +71,15 @@ export const PromptInput = ({ className, onSubmit, canSubmit = (text) => text.tr
       onSubmit={submit}
       {...props}
     >
-      {/* the one raised object on the page (DESIGN.md, Composer): translucent over what scrolls
-          under it, a sheen on its top edge, a ring drawn as a shadow; the ring turns to the accent
-          while the text has focus or a file is dragged over (index.css, composer-surface) */}
-      <div className="composer-surface relative z-10 overflow-hidden rounded-[1.75rem] transition-shadow duration-150" data-dragging={dragging || undefined}>
+      {/* the one raised object on the page (DESIGN.md, Composer), on glass (index.css,
+          glass-surface): translucent over what scrolls under it, a sheen on its top edge, a ring
+          drawn as a shadow; the ring turns to the accent while the text has focus or a file is
+          dragged over (composer-surface). One radius (rounded-glass), and the group inside clips to
+          it. */}
+      <div
+        className={cn("glass-surface composer-surface relative z-10 overflow-hidden rounded-glass transition-shadow duration-150", attached && "glass-joined rounded-t-none")}
+        data-dragging={dragging || undefined}
+      >
         {/* the group itself is see-through: the surface above draws ground, ring and sheen */}
         <InputGroup className="rounded-[inherit] border-0 bg-transparent shadow-none has-[[data-slot=input-group-control]:focus-visible]:ring-0 dark:bg-transparent">{children}</InputGroup>
       </div>

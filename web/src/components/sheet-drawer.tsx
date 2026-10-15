@@ -30,8 +30,13 @@ export function SheetDrawer({ title, description, open, onOpenChange, trigger, s
       {trigger !== undefined && <DrawerTrigger asChild>{trigger}</DrawerTrigger>}
       <DrawerContent
         className={cn(
-          "border-0 bg-raised shadow-float outline-none",
-          side === "bottom" ? "rounded-t-3xl px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]" : "w-[min(24rem,90vw)] px-3 pt-[env(safe-area-inset-top)] sm:max-w-sm",
+          // the composer's glass (index.css glass-surface), at 92%: muted text stays AA over the
+          // darkest thing vaul's dimmed page can put behind it. The Drawer's own edge border and its
+          // 10 px corners (set per direction) give way to the glass's ring and radius.
+          "glass-surface border-0 bg-(--glass-bg) outline-none [--glass-alpha:92%]",
+          side === "bottom"
+            ? "px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] data-[vaul-drawer-direction=bottom]:rounded-t-glass data-[vaul-drawer-direction=bottom]:border-t-0"
+            : "glass-surface-start w-[min(24rem,90vw)] px-3 pt-[env(safe-area-inset-top)] data-[vaul-drawer-direction=right]:rounded-l-none data-[vaul-drawer-direction=right]:border-l-0 sm:max-w-sm",
           className,
         )}
         data-testid={testId}
