@@ -631,6 +631,12 @@ test("attach, paste and drop fill the tray; send waits for the uploads, names ea
   const thumbs = within(row ?? document.body).getAllByRole("img");
   expect(thumbs.map((t) => t.getAttribute("src"))).toEqual(["/api/assets/aaaaaaaaaaaa/thumb", "/api/assets/bbbbbbbbbbbb/thumb"]);
   expect(row?.textContent).toContain("[image aaaaaaaaaaaa 800x600 2KB: a whiteboard]");
+  // each one an Attachment whose whole tile opens the full asset
+  const links = within(row ?? document.body).getAllByRole("link");
+  expect(links.map((a) => [a.getAttribute("aria-label"), a.getAttribute("href"), a.closest<HTMLElement>("[data-slot=attachment]")?.dataset.state])).toEqual([
+    ["Open image aaaaaaaaaaaa", "/api/assets/aaaaaaaaaaaa", "done"],
+    ["Open image bbbbbbbbbbbb", "/api/assets/bbbbbbbbbbbb", "done"],
+  ]);
 });
 
 test("a fifth attachment is refused in the tray, and a reply's marker-like text never loads a thumbnail", async () => {
