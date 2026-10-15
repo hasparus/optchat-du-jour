@@ -1,11 +1,23 @@
 // The composer's pickers (SPEC "Web UI", Composer): the follow-up setting, the model, and the
-// compact native select both the model and the device picker are.
+// compact native select the device picker is, and the model picker on a touch screen. With a mouse
+// the model picker is AI Elements' Model Selector (a Dropdown Menu).
+import { useCoarsePointer } from "@/components/ai-elements/prompt-input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { Link } from "@/lib/connection";
 import { cn } from "@/lib/utils";
-import type { FollowUp, SessionState } from "@wire";
+import type { FollowUp, MasterEngine, SessionState } from "@wire";
 import { ChevronDownIcon, SlidersHorizontalIcon } from "lucide-react";
-import type { ComponentProps, ReactNode } from "react";
+import { type ComponentProps, Fragment, type ReactNode } from "react";
 
 // What a message sent mid-run does, in a popover off the tools; its trigger names the behavior
 // (on a narrow screen without its icon), so the mode is never hidden.
@@ -58,6 +70,9 @@ export const labelParts = (label: string): LabelParts => {
   const [, name = label, effort] = /^(.*) \([^(),]*(?:, ([^(),]+))?\)$/.exec(label) ?? [];
   return { effort: effort ?? null, name: name.replace(/^Claude /, "") };
 };
+// "Claude Opus (Claude Code, xhigh)" → "Claude Code": where an engine runs, which the Model
+// Selector groups by
+export const labelProvider = (label: string) => /\(([^(),]*)(?:, [^(),]+)?\)$/.exec(label)?.[1] ?? "";
 export const shortLabel = (label: string) => {
   const { name, effort } = labelParts(label);
   return `${name}${effort === null ? "" : ` · ${effort}`}`;
@@ -97,11 +112,89 @@ export function CompactSelect({ label, shown, title, testId, down = false, wide 
 // The model picker: the engines of the master's chain, `model` the one this client's next messages
 // are for. It is this client's own (kept in localStorage): a change sends nothing, and a turn
 // waiting for a model is resumed from its alert, not from here. An engine that hit a usage limit
-// is disabled with why, unless it is the one picked, which then shows a small down mark.
-export function ModelPicker({ model, onModel, state }: { readonly model: string; readonly onModel: (ref: string) => void; readonly state: SessionState }) {
+// is disabled with why, unless it is the one picked, which then shows a small down mark. On a touch
+// screen it is the phone's own picker (SPEC "Web UI"); with a mouse, the Model Selector.
+export function ModelPicker(props: { readonly model: string; readonly onModel: (ref: string) => void; readonly state: SessionState }) {
+  return useCoarsePointer() ? <NativeModelPicker {...props} /> : <ModelSelector {...props} />;
+}
+
+// the closed picker: the name, then the effort when the server's label names one
+function ModelShown({ label }: { readonly label: string }) {
+  const { name, effort } = labelParts(label);
+  return (
+    <>
+      <span className="truncate">{name}</span>
+      {effort !== null && <span className="shrink-0">{effort}</span>}
+    </>
+  );
+}
+
+const pickerTitle = (current: MasterEngine | undefined) => (current ? `${current.label}: your next messages${current.down === null ? "" : ` (unavailable: ${current.down})`}` : undefined);
+
+// the engines in the chain's order, grouped where they run (Claude Code, the ChatGPT plan, a key)
+const byProvider = (engines: readonly MasterEngine[]) => {
+  const groups = new Map<string, MasterEngine[]>();
+  for (const e of engines) groups.set(labelProvider(e.label), [...(groups.get(labelProvider(e.label)) ?? []), e]);
+  return [...groups];
+};
+
+// AI Elements' Model Selector (ui.shadcn.com/docs/ai-elements/radix/model-selector): a Dropdown
+// Menu of radio items, a group per provider. Its trigger is the bare label the footer's other
+// controls are (bare-control). No second menu for the effort: an effort is part of a chain entry
+// (`claude-code:opus@xhigh` is an engine of its own), so each item names its own. A down engine is
+// disabled and says why in muted text, which stays AA (the registry's 50% opacity would not).
+function ModelSelector({ model, onModel, state }: { readonly model: string; readonly onModel: (ref: string) => void; readonly state: SessionState }) {
   const current = state.engines.find((e) => e.ref === model);
-  // the name, then the effort when the server's label names one
-  const { name, effort } = labelParts(current?.label ?? model);
+  const down = current !== undefined && current.down !== null;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button aria-label={`Model: ${current?.label ?? model}`} className="bare-control max-w-44 cursor-pointer text-ui font-medium" data-testid="model-picker" title={pickerTitle(current)} type="button">
+          {down && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-destructive" data-testid="picker-down" />}
+          <span className="flex min-w-0 items-baseline gap-1.5 truncate">
+            <ModelShown label={current?.label ?? model} />
+          </span>
+          <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-70" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-auto max-w-80 min-w-56 rounded-xl p-1.5 text-ui shadow-float ring-0" data-testid="model-menu" side="top" sideOffset={8}>
+        <DropdownMenuRadioGroup
+          onValueChange={(ref) => {
+            onModel(ref);
+          }}
+          value={model}
+        >
+          {byProvider(state.engines).map(([provider, engines], k) => (
+            <Fragment key={provider}>
+              {k > 0 && <DropdownMenuSeparator />}
+              <DropdownMenuGroup>
+              <DropdownMenuLabel className="text-2xs">{provider}</DropdownMenuLabel>
+              {engines.map((e) => (
+                <DropdownMenuRadioItem
+                  className="min-h-8 rounded-lg text-ui data-disabled:text-muted-foreground data-disabled:opacity-100"
+                  disabled={e.down !== null && e.ref !== model}
+                  key={e.ref}
+                  value={e.ref}
+                >
+                  <span className="flex min-w-0 flex-col">
+                    <span className="flex items-baseline gap-1.5">
+                      <ModelShown label={e.label} />
+                    </span>
+                    {e.down !== null && <span className="text-xs text-muted-foreground">unavailable: {e.down}</span>}
+                  </span>
+                </DropdownMenuRadioItem>
+              ))}
+              </DropdownMenuGroup>
+            </Fragment>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function NativeModelPicker({ model, onModel, state }: { readonly model: string; readonly onModel: (ref: string) => void; readonly state: SessionState }) {
+  const current = state.engines.find((e) => e.ref === model);
   return (
     <CompactSelect
       wide
@@ -110,14 +203,9 @@ export function ModelPicker({ model, onModel, state }: { readonly model: string;
       onChange={(e) => {
         onModel(e.currentTarget.value);
       }}
-      shown={
-        <>
-          <span className="truncate">{name}</span>
-          {effort !== null && <span className="shrink-0">{effort}</span>}
-        </>
-      }
+      shown={<ModelShown label={current?.label ?? model} />}
       testId="model-picker"
-      title={current ? `${current.label}: your next messages${current.down === null ? "" : ` (unavailable: ${current.down})`}` : undefined}
+      title={pickerTitle(current)}
       value={model}
     >
       {state.engines.map((e) => (

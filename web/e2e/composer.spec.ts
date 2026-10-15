@@ -7,6 +7,13 @@ import { answered, attach, expect, expectShowsLog, open, REPLY, send, SOL_REPLY,
 
 const box = (page: Page) => page.getByLabel("Message");
 
+// the Model Selector (a mouse): open its menu, pick the engine by its name as the item shows it
+async function pickModel(page: Page, name: string) {
+  await page.getByTestId("model-picker").click();
+  await page.getByTestId("model-menu").getByRole("menuitemradio", { name }).click();
+  await expect(page.getByTestId("model-menu")).toBeHidden();
+}
+
 // the session's follow-up behavior, from the composer's popover
 async function followUps(page: Page, mode: "Steer" | "Queue") {
   await page.getByRole("button", { name: /^Follow-ups:/ }).click();
@@ -89,17 +96,21 @@ test("send now: while the session queues, the other button hands a message to th
   await expectShowsLog(page, server);
 });
 
-test("the model picker: a message sent on GPT-6.1 Sol is served by the ChatGPT plan, one sent back on Opus by claude; the pick is this page's", async ({ browser, page, server }) => {
+test("the Model Selector: a message sent on GPT-6.1 Sol is served by the ChatGPT plan, one sent back on Opus by claude; the pick is this page's", async ({ browser, page, server }) => {
   await open(page);
-  const model = page.getByLabel("Model");
-  await expect(model.locator("option")).toHaveText(["Claude Opus (Claude Code)", "GPT-6.1 Sol (ChatGPT plan)"]);
-  await model.selectOption("openai-plan:gpt-6.1-sol");
+  await page.getByTestId("model-picker").click();
+  const menu = page.getByTestId("model-menu");
+  await expect(menu.getByRole("menuitemradio")).toHaveText(["Opus", "GPT-6.1 Sol"]);
+  await expect(menu.getByRole("menuitemradio", { name: "Opus" })).toHaveAttribute("aria-checked", "true");
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
+  await pickModel(page, "GPT-6.1 Sol");
   await expect(page.getByTestId("model-picker")).toContainText("GPT-6.1 Sol");
   await send(page, "hello Sol");
   await expect(page.getByText(SOL_REPLY)).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("status")).toBeHidden({ timeout: 15_000 });
   expect(server.fakeInputs("turn")).toEqual([]); // claude was never asked
-  await model.selectOption("claude-code:opus");
+  await pickModel(page, "Opus");
   await send(page, "hello Opus");
   await expect(page.getByText(REPLY)).toBeVisible({ timeout: 15_000 });
   await answered(page, "hello Opus");
@@ -112,7 +123,7 @@ test("the model picker: a message sent on GPT-6.1 Sol is served by the ChatGPT p
   ]);
   expect(JSON.stringify(server.fakeInputs("turn"))).toContain("hello Opus");
   // the pick is this page's: it outlives a reload, and another page shows its own
-  await model.selectOption("openai-plan:gpt-6.1-sol");
+  await pickModel(page, "GPT-6.1 Sol");
   await page.reload();
   await expect(page.getByTestId("model-picker")).toContainText("GPT-6.1 Sol");
   const other = await browser.newPage({ baseURL: server.url, viewport: { height: 740, width: 360 } });
@@ -143,13 +154,30 @@ test.describe("a spent Claude plan", () => {
       ["talk", SOL_REPLY],
     ]);
     // Opus shows as unavailable, with why
-    await expect(page.getByLabel("Model").locator("option").first()).toHaveText("Claude Opus (Claude Code): unavailable, Claude AI usage limit reached");
+    await page.getByTestId("model-picker").click();
+    const opus = page.getByTestId("model-menu").getByRole("menuitemradio").first();
+    await expect(opus).toHaveText("Opusunavailable: Claude AI usage limit reached");
+    await expect(opus).toHaveAttribute("data-disabled", "");
+    await page.keyboard.press("Escape");
     await expectShowsLog(page, server);
   });
 });
 
 test.describe("on a touch screen", () => {
   test.use({ hasTouch: true, isMobile: true });
+
+  test("the model picker is the phone's own select: a message sent on GPT-6.1 Sol is served by the ChatGPT plan", async ({ page, server }) => {
+    await open(page);
+    await expect(page.getByTestId("model-menu")).toBeHidden();
+    const model = page.getByLabel("Model");
+    await expect(model.locator("option")).toHaveText(["Claude Opus (Claude Code)", "GPT-6.1 Sol (ChatGPT plan)"]);
+    await model.selectOption("openai-plan:gpt-6.1-sol");
+    await expect(page.getByTestId("model-picker")).toContainText("GPT-6.1 Sol");
+    await box(page).fill("hello Sol");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(page.getByText(SOL_REPLY)).toBeVisible({ timeout: 15_000 });
+    expect(server.fakeInputs("turn")).toEqual([]);
+  });
 
   test("the footer's bare controls keep 40 px touch targets that don't overlap", async ({ page }) => {
     await open(page);
