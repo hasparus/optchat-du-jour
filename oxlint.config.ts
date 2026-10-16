@@ -21,7 +21,7 @@ const unsorted = Object.fromEntries(
 export default defineConfig({
   extends: [base],
   // cn-tables.ts is `cn build`'s output (web/src/lib/utils.ts), regenerated, never edited
-  ignorePatterns: [...ignorePatterns, "vendor", "kernel/kernel.mjs", "web/src/lib/cn-tables.ts", ...mobile],
+  ignorePatterns: [...ignorePatterns, "vendor", "repos/**", "kernel/kernel.mjs", "web/src/lib/cn-tables.ts", ...mobile],
   overrides: [
     ...overrides,
     // a script whose output is its report

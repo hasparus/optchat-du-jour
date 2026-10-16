@@ -5,8 +5,8 @@
   "type": "module",
   "packageManager": "bun@1.4.2",
   "scripts": {
-    "postinstall": "bun --filter '@hasparus/oxlint-config' build",
-    "build": "tsc -p . && bun --filter optchat-web build",
+    "postinstall": "bun node_modules/typescript/bin/tsc -p vendor/oxlint-config/tsconfig.build.json",
+    "build": "bun node_modules/typescript/bin/tsc -p . && bun --filter optchat-web build",
     "lint": "oxlint --deny-warnings --disable-nested-config",
     "lint:effect": "bun dev/lint-effect.ts",
     "lint:design": "bun dev/lint-design.ts",
@@ -16,7 +16,9 @@
     "parity": "bun test/parity/run.ts"
   },
   "devDependencies": {
-    "@effect/language-service": "0.87.3",
+    "@effect/language-service": "0.87.4",
+    "@effect/tsgo": "0.52.0",
+    "@typescript/native": "npm:typescript@7.0.2",
     "@hasparus/oxlint-config": "workspace:*",
     "@oxlint/plugins": "1.78.0",
     "@types/bun": "1.4.2",
@@ -34,8 +36,8 @@
   ],
   "dependencies": {
     "@ag-ui/core": "1.0.1",
-    "@effect/platform-bun": "4.0.0",
-    "effect": "4.0.1",
+    "@effect/platform-bun": "4.0.4",
+    "effect": "4.0.4",
     "sharp": "0.35.5"
   },
   "bin": {
