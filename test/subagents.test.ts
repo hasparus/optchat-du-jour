@@ -54,7 +54,7 @@ const answers =
 
 // a side log's line, and agent.json, as a test reads them
 const decodeLine = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ i: Schema.Number, kind: Schema.String, text: Schema.String })));
-const decodeMeta = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ state: Schema.String, ref: Schema.String, pending: Schema.NullOr(Schema.String), why: Schema.NullOr(Schema.String), entries: Schema.Number })));
+const decodeMeta = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ state: Schema.String, ref: Schema.String, pending: Schema.NullOr(Schema.Struct({ run: Schema.Number, text: Schema.String })), why: Schema.NullOr(Schema.String), entries: Schema.Number })));
 
 const usageOf = (): UsageRecord => ({
   attempt: 1,
@@ -557,7 +557,7 @@ test("after a restart a pending report is sent word for word, unless the chat ho
   // a crash between the chat's line and agent.json's: the report is still pending on disk
   const pendingAs = (text: string) => {
     const meta = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)))(readFileSync(path, "utf8"));
-    writeFileSync(path, `${JSON.stringify({ ...meta, pending: text })}\n`);
+    writeFileSync(path, `${JSON.stringify({ ...meta, pending: { run: 1, text } })}\n`);
   };
   pendingAs("[scout] scout found it");
   await scoped((scope) =>
@@ -593,6 +593,26 @@ test("an agent.json that names another folder than its own is left alone, and sa
       yield* until("said", () => r.said.some((e) => e.type === "info" && e.message === "subagent scout: agent.json names other, not its folder; left alone"));
       expect(r.session.state().subagents).toEqual([]);
       expect(r.log()).toEqual([]); // no report for it
+    }),
+  );
+});
+
+test("two runs that report the same words are two reports, each delivered once", async () => {
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const r = yield* rig({
+        child: { echo: (_input, out) => out.log("talk", "nothing new").pipe(Effect.orDie) },
+        master: (call) => Effect.asVoid(call("spawn", { name: "echo", task: "look" })),
+        scope,
+      });
+      const path = `${r.dir}/agents/echo/agent.json`;
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("the first report", () => r.log().includes("user: [echo] nothing new"));
+      expect(yield* r.subagents.tell("echo", "again")).toBeNull();
+      yield* until("the second report", () => r.log().filter((l) => l === "user: [echo] nothing new").length === 2);
+      yield* until("none pending", () => decodeMeta(readFileSync(path, "utf8")).pending === null);
+      yield* Effect.sleep("50 millis");
+      expect(r.log().filter((l) => l.startsWith("user: [echo]"))).toEqual(["user: [echo] nothing new", "user: [echo] nothing new"]);
     }),
   );
 });

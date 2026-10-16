@@ -20,7 +20,10 @@
 //   {type: "in", pid, content}                          every user message read from stdin
 //   {type: "exit", pid, code}                           a normal end (not after SIGKILL)
 //
-// FAKE_CLAUDE_SCRIPT: a JSON file {turn?, prime?, compact?, caption?, subagent?}. Each role holds a list of calls: the
+// FAKE_CLAUDE_SCRIPT: a JSON file {turn?, prime?, compact?, caption?, subagent?}. `subagent` may
+// instead be an object by the subagent's name, {scout: call, …}: a subagent's call is then picked by
+// the name its opening message gives it (`You are the subagent "scout"`), not by the order processes
+// started in, which two subagents spawned at once can't be relied on for. Each role holds a list of calls: the
 // k-th process of that role plays call k, and the last call repeats. A call is a list of replies,
 // reply k answering the k-th message the call starts work on (the last reply repeats); a call
 // may also be written as one reply, a plain list of actions. Actions:
@@ -107,7 +110,7 @@ const Script = Schema.Struct({
   caption: Schema.optional(Schema.Array(Call)),
   compact: Schema.optional(Schema.Array(Call)),
   prime: Schema.optional(Schema.Array(Call)),
-  subagent: Schema.optional(Schema.Array(Call)),
+  subagent: Schema.optional(Schema.Union([Schema.Array(Call), Schema.Record(Schema.String, Call)])),
   turn: Schema.optional(Schema.Array(Call)),
 });
 const Input = Schema.fromJsonString(Schema.Struct({ message: Schema.optional(Schema.Struct({ content: Schema.optional(Schema.Json) })) }));
@@ -181,10 +184,16 @@ const servers = Object.entries(Schema.decodeUnknownSync(McpConfig)(flag("--mcp-c
 const mcpUrl = servers.find(([name]) => name === "optchat")?.[1].url?.replace(/^ws/, "http");
 const overWs = servers.filter(([, c]) => c.type === "ws").map(([name]) => name);
 
-const calls = script[role] ?? [];
-const call = calls[Math.min(callIndex, calls.length - 1)] ?? DEFAULTS[role];
 const isReply = Schema.is(Reply);
-const replies: readonly Reply[] = isReply(call) ? [call] : call;
+const repliesOf = (call: typeof Call.Type): readonly Reply[] => (isReply(call) ? [call] : call);
+const scripted = script[role] ?? [];
+// by name (subagents only): picked once the opening says who this is
+const ByName = Schema.Record(Schema.String, Call);
+const byName = !Array.isArray(scripted) && Schema.is(ByName)(scripted) ? scripted : null;
+const isCalls = Schema.is(Schema.Array(Call));
+const calls: readonly (typeof Call.Type)[] = isCalls(scripted) ? scripted : [];
+let replies: readonly Reply[] = repliesOf(calls[Math.min(callIndex, calls.length - 1)] ?? DEFAULTS[role]);
+const nameIn = (content: Json) => /You are the subagent \\?"([^"\\]+)\\?"/.exec(JSON.stringify(content))?.[1];
 const replyFor = (k: number): Reply => replies[Math.min(k, replies.length - 1)] ?? DEFAULTS[role];
 
 const quit = (code: number) => {
@@ -335,6 +344,10 @@ let initSent = false;
 for (let k = 0; ; k++) {
   await unused();
   const content = inbox[used++] ?? null;
+  if (k === 0 && byName) {
+    const own = byName[nameIn(content) ?? ""];
+    replies = own === undefined ? [DEFAULTS[role]] : repliesOf(own);
+  }
   if (!initSent) {
     initSent = true;
     const wsStatus = env.FAKE_CLAUDE_WS_STATUS ?? "connected";

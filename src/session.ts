@@ -674,8 +674,10 @@ export const makeSession = (o: {
         const stop = halted;
         halted = null;
         if (stop !== null) parked = stop.upTo;
-        // a report that came in meanwhile is logged by the loop too, unless the log just refused
-        if (inbox.some((m) => stop === null || m.seq > stop.upTo) || (stop === null && reports.length > 0)) return start;
+        // Again only for a turn that is due (`turnsDue`: a held message newer than any parked one),
+        // or for a report that came in meanwhile, unless the log just refused. Messages parked after
+        // an error are no reason: the loop would find nothing to do, end and start again, for ever.
+        if (turnsDue() || (stop === null && reports.length > 0)) return start;
         phase = "idle";
         const told = stop === null ? Effect.void : Effect.forEach(inbox, (m) => ack(m, null, stop.why), { discard: true });
         return told.pipe(Effect.andThen(tell), Effect.andThen(primeLater), Effect.andThen(warm));

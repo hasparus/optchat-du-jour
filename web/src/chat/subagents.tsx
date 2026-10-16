@@ -47,39 +47,57 @@ export const runOf = (info: SubagentInfo, entries: readonly Msg[], shownElapsed:
 // entries per read of a side log
 export const SIDE_PAGE = 50;
 
+// the wait before a failed read of a side log is tried again: 1 s, doubling, at most 30 s
+const RETRY_FIRST = 1000;
+const RETRY_MAX = 30_000;
+export const retryAfter = (failures: number) => Math.min(RETRY_MAX, RETRY_FIRST * 2 ** Math.max(0, failures - 1));
+
 // Its side log as this page has it: the entries read so far, and the next ones while the server
 // counts more (`entries`), a page at a time. One read at a time: a count that grows while one is
 // on its way doesn't drop it (it starts where this page's log ends, so it is right whatever came
 // since), and when it lands the next one starts if there is more. A read that fails is tried again
-// at the next count; one that lands after the card is gone is dropped. A card is keyed by its
-// subagent's name, so the name never changes under it.
+// after a wait that doubles with each failure in a row (`retryAfter`), never sooner, whatever the
+// count does meanwhile; a success starts the count of failures again. A read or a wait that ends
+// after the card is gone does nothing. A card is keyed by its subagent's name, so the name never
+// changes under it.
 function useSideLog(name: string, count: number) {
   const [log, setLog] = useState<readonly Msg[]>([]);
-  const [failed, setFailed] = useState(0); // reads that failed, so the next count tries again
+  const [retries, setRetries] = useState(0); // waits ended: each lets the effect read again
   const reading = useRef(false);
+  const waiting = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const failures = useRef(0);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      if (waiting.current !== null) clearTimeout(waiting.current);
+      waiting.current = null;
     };
   }, []);
   const have = log.length;
   useEffect(() => {
-    if (have >= count || reading.current) return;
+    if (have >= count || reading.current || waiting.current !== null) return;
     reading.current = true;
     const read = async () => {
       try {
         const page = await api.subagent(name, have, SIDE_PAGE);
         reading.current = false;
+        failures.current = 0;
         if (mounted.current) setLog((before) => [...before, ...page.entries.filter((e) => e.i >= before.length)]);
       } catch {
-        reading.current = false; // offline, or the server restarted
-        if (mounted.current) setFailed((n) => n + 1);
+        // offline, or the server restarted: wait, then try again
+        reading.current = false;
+        if (!mounted.current) return;
+        failures.current += 1;
+        waiting.current = setTimeout(() => {
+          waiting.current = null;
+          if (mounted.current) setRetries((n) => n + 1);
+        }, retryAfter(failures.current));
       }
     };
     void read();
-  }, [name, count, have, failed]);
+  }, [name, count, have, retries]);
   return log;
 }
 

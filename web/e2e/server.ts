@@ -70,7 +70,7 @@ const thinks = [
   { emit: { message: { content: [{ signature: "sig", thinking: THOUGHT, type: "thinking" }], role: "assistant" }, type: "assistant" } },
   ...reply,
 ];
-// spawned one after the other, so the fake's calls of role "subagent" come in that order
+// spawned one after the other, so their cards list in that order; each one's script is by its name
 const spawns = [
   { mcp: { input: { model: "claude-code:opus@low", name: "notes", task: NOTES_TASK }, name: "spawn" } },
   { sleep: 1500 },
@@ -80,7 +80,7 @@ const spawns = [
 const notes = [{ tool: { input: { pattern: "trip", path: home }, name: "Grep" } }, { toolResult: "notes/oct.md:4: trip dates" }, { text: NOTES_REPORT }];
 const scout = [{ take: true }, { tool: { input: { file_path: `${home}/notes/oct.md` }, name: "Read" } }, { toolResult: "trip: Oct 3 to Oct 9" }, { sleep: 500 }, { text: SCOUT_REPORT }];
 const turn = Bun.env.E2E_SPENT ? spent : Bun.env.E2E_PATTERNS ? patterns : Bun.env.E2E_THINKING ? thinks : Bun.env.E2E_SUBAGENTS ? spawns : reply;
-writeFileSync(`${home}/script.json`, JSON.stringify({ subagent: [[notes], [scout]], turn: [[turn]] }));
+writeFileSync(`${home}/script.json`, JSON.stringify({ subagent: { notes: [notes], scout: [scout] }, turn: [[turn]] }));
 writeFileSync(`${home}/fake.jsonl`, "");
 Object.assign(process.env, {
   FAKE_CLAUDE_LOG: `${home}/fake.jsonl`,

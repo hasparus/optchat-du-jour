@@ -10,7 +10,7 @@ import { makeSession } from "@/lib/session";
 import { fakeServer, IDLE, parseSent, snapshot, state } from "@/test/fixture";
 import type { Msg, SubagentInfo } from "@wire";
 import { BackgroundWork, busyWith } from "./background-work";
-import { runOf, stepsOf, Subagents } from "./subagents";
+import { retryAfter, runOf, stepsOf, Subagents } from "./subagents";
 
 const links: { readonly close: () => void }[] = [];
 const realFetch = globalThis.fetch;
@@ -246,4 +246,30 @@ test("while the link is down a card's Stop, Tell and model can't be used", async
   expect(within(scout).getByTestId("subagent-model-scout")).toHaveProperty("disabled", true);
   fireEvent.change(within(scout).getByLabelText("Tell scout"), { target: { value: "hello" } });
   expect(within(scout).getByRole("button", { name: "Send to scout" })).toHaveProperty("disabled", true);
+});
+
+test("a side log read that keeps failing waits before it is tried again, longer each time", async () => {
+  // no LOGS entry: /api/subagent answers 404, as a server that is down would fail the read
+  const { server } = sheet([{ ...SCOUT, entries: 3 }]);
+  await new Promise((r) => {
+    setTimeout(r, 300);
+  });
+  expect(reads).toEqual(["scout@0"]); // not tried again within the first second
+  // a count that grows meanwhile doesn't cut the wait short
+  act(() => {
+    server.play(state({ subagents: [{ ...SCOUT, entries: 4 }] }));
+  });
+  await new Promise((r) => {
+    setTimeout(r, 100);
+  });
+  expect(reads).toEqual(["scout@0"]);
+  // after the wait it is read again, and once there is something it shows
+  LOGS.set("scout", [entry(0, "user", SCOUT.task), entry(1, "tool", 'Grep {"pattern":"trip"}'), entry(2, "echo", "x"), entry(3, "talk", "on it")]);
+  await waitFor(
+    () => {
+      expect(reads).toEqual(["scout@0", "scout@0"]);
+    },
+    { timeout: 2000 },
+  );
+  expect([1, 2, 3, 4, 5, 6, 9].map(retryAfter)).toEqual([1000, 2000, 4000, 8000, 16_000, 30_000, 30_000]);
 });

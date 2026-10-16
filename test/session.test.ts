@@ -1364,9 +1364,13 @@ test("a subagent's report after the log refused a message is logged alone: it st
       yield* until("idle", r.idle);
       r.disk.full = false;
       // the disk is back; a subagent finishes: its report is logged, the parked message waits on
+      const before = r.counts.commits;
       yield* r.session.report("[scout] found it");
       expect(r.log()).toEqual([["user", "[scout] found it"]]);
-      yield* Effect.sleep("50 millis");
+      yield* until("its commit", () => r.counts.commits > before);
+      yield* Effect.sleep("200 millis");
+      // one loop, one commit: the parked message doesn't start the loop again and again
+      expect(r.counts.commits).toBe(before + 1);
       expect(runs).toBe(0);
       expect(r.session.state().phase).toBe("idle");
       // a newer message takes the parked one with it

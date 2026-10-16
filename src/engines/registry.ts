@@ -56,7 +56,9 @@ export type CompactorNeeds = EngineNeeds & {
 // a turn engine's needs: the one system prompt (docs/optchat.md §5), where each device's claude runs (E7),
 // and the read-only tools of an engine with its own loop (M5)
 export type TurnNeeds = EngineNeeds & {
-  readonly warms: () => boolean; // the warm processes follow it: it ran the most recent turn, or heads the chain before any (E18)
+  // the warm processes follow it: it ran the most recent turn, or heads the chain before any (E18);
+  // a policy that isn't pooled (a subagent's) is never warmed, so it needs none
+  readonly warms?: () => boolean;
   readonly instructions: string;
   readonly runnerFor: (device: string) => Effect.Effect<Placement, DeviceOffline>;
   readonly toolsFor: (device: string) => ToolBox;
@@ -135,7 +137,7 @@ export const turnEngine = (ref: Ref, o: TurnNeeds, policy: TurnPolicy = MASTER_P
         runnerFor: o.runnerFor,
         tools: tools ?? MASTER_TOOLS,
         ttl: o.settings.cache.claudeCodeTtl,
-        warms: policy.pooled ? o.warms : () => false,
+        warms: (policy.pooled ? o.warms : undefined) ?? (() => false),
       });
     case "openai-plan":
     case "api-key":

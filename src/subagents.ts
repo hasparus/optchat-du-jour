@@ -12,7 +12,8 @@
 //                                              records (records.ts Msg), append-only, fsynced
 //   streams/<device>/agents/<Name>/agent.json  what it is: task, model, state, times, its log's
 //                                              length and newest line, and the text of a report
-//                                              not in the chat yet (`pending`); replaced whole
+//                                              not in the chat yet (`pending`, with its run's
+//                                              number); replaced whole
 // Both are committed with the data dir. A run that a restart cut short is found "running" at the
 // next start: it is marked stopped and reported so, and nothing resumes it. A side log is held in
 // memory only while its subagent runs or is listed; the others are read again when asked for.
@@ -88,7 +89,7 @@ const Meta = Schema.Struct({
   why: Schema.NullOr(Schema.String),
   runs: Schema.Number,
   // the report made when its last run ended and not in the chat yet, word for word
-  pending: Schema.optional(Schema.NullOr(Schema.String)),
+  pending: Schema.optional(Schema.NullOr(Schema.Struct({ run: Schema.Number, text: Schema.String }))),
   // its side log's length and newest line (LAST_LINE characters), so a subagent that isn't listed
   // needn't be read; a file without them is read once at startup
   entries: Schema.optional(Schema.Number),
@@ -97,6 +98,10 @@ const Meta = Schema.Struct({
 type Meta = typeof Meta.Type;
 const decodeMeta = Schema.decodeUnknownOption(Schema.fromJsonString(Meta));
 const decodeEntry = Schema.decodeUnknownOption(Schema.fromJsonString(Msg));
+
+// a report not in the chat yet, and the run it ends (its `runs` then): two runs' reports with the
+// same words stay two reports
+type Pending = { readonly run: number; readonly text: string };
 
 // a message sent to a subagent: held for its next call, or offered to the running one
 type Tell = { readonly seq: number; readonly text: string; state: "held" | "offered" };
@@ -112,7 +117,7 @@ type Agent = {
   ended: number | null;
   why: string | null;
   runs: number;
-  pending: string | null; // the report not in the chat yet
+  pending: Pending | null; // the report not in the chat yet
   entries: Entry[] | null; // its side log, while in memory (`entriesOf` reads it again)
   count: number; // its side log's length
   lastLine: string | null; // its newest line, as the state shows it
@@ -363,11 +368,11 @@ export const makeSubagents = (o: {
 
     // This report, word for word, into the chat once the session logs it; then no longer pending,
     // unless a later run's report is pending by then. Forked: the session logs it when no turn runs.
-    const sendReport = (a: Agent, text: string) =>
+    const sendReport = (a: Agent, report: Pending) =>
       Effect.gen(function* () {
         const host = yield* Deferred.await(o.host);
-        yield* host.report(text);
-        if (a.pending !== text) return;
+        yield* host.report(report.text);
+        if (a.pending?.run !== report.run) return;
         a.pending = null;
         yield* save(a).pipe(Effect.catch((error) => info(error.message)));
       }).pipe(Effect.forkIn(scope), Effect.asVoid);
@@ -401,11 +406,11 @@ export const makeSubagents = (o: {
         }
         a.stopping = false;
         a.ended = now();
-        const report = reportOf(a, a.ended);
+        const report: Pending = { run: a.runs, text: reportOf(a, a.ended) };
         a.pending = report;
         const told: SessionEvent =
           a.state === "done"
-            ? { name: a.name, report, runId, type: "subagent-finished" }
+            ? { name: a.name, report: report.text, runId, type: "subagent-finished" }
             : { code: a.state === "stopped" ? "stopped" : "failed", message: a.why ?? a.state, name: a.name, runId, type: "subagent-error" };
         return Effect.gen(function* () {
           yield* save(a).pipe(Effect.catch((error) => info(error.message)));
@@ -677,12 +682,12 @@ export const makeSubagents = (o: {
           a.state = "stopped";
           a.why = "the server restarted while it ran; nothing resumes it";
           a.ended = last === undefined ? now() : Date.parse(last.date) || now();
-          a.pending = reportOf(a, a.ended);
+          a.pending = { run: a.runs, text: reportOf(a, a.ended) };
           yield* save(a).pipe(Effect.catch((error) => info(error.message)));
         }
         const { ended, pending } = a;
         if (pending === null || a.state === "running") continue;
-        if (ended !== null && inChat(pending, ended)) {
+        if (ended !== null && inChat(pending.text, ended)) {
           a.pending = null;
           yield* save(a).pipe(Effect.catch((error) => info(error.message)));
         } else yield* sendReport(a, pending);

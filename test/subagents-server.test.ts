@@ -31,9 +31,10 @@ let server: Bun.Subprocess<"ignore", "pipe", "pipe">;
 beforeAll(async () => {
   writeFileSync(`${dir}/notes.md`, "trip: Oct 3\n");
   // turns: the first spawns scout, the second sleeper and idler; the third and later answer "ok"
+  // each subagent's script by its name: sleeper and idler start at the same time
   const script = {
-    subagent: [
-      [
+    subagent: {
+      scout: [
         { tool: { input: { command: "touch /tmp/should-not-exist" }, name: "Bash" } },
         { toolResult: "ran" }, // never reached: the permission mode refused the call
         { mcp: { input: { name: "nested", task: "t" }, name: "spawn" } },
@@ -42,11 +43,11 @@ beforeAll(async () => {
         { mcp: { input: { id: 0, n: 1 }, name: "zoom" } },
         { text: "The trip is on Oct 3." },
       ],
-      // sleeper: waits for a message, then answers it
-      [{ take: true }, { text: "got your message" }],
-      // idler: never answers
-      [{ hang: true }],
-    ],
+      // waits for a message, then answers it
+      sleeper: [{ take: true }, { text: "got your message" }],
+      // never answers
+      idler: [{ hang: true }],
+    },
     turn: [
       [{ mcp: { input: { name: "scout", task: "Find when the trip is." }, name: "spawn" } }, { text: "scout is on it" }],
       [
@@ -92,6 +93,16 @@ const starts = (role: string) =>
     .split("\n")
     .flatMap((line) => Option.toArray(decodeStart(line)))
     .filter((s) => s.role === role);
+// The pid of the subagent's claude that read the opening naming it: subagents spawned together
+// start in either order, so not by index
+const Read = Schema.Struct({ type: Schema.Literal("in"), pid: Schema.Number, content: Schema.Json });
+const decodeRead = Schema.decodeUnknownOption(Schema.fromJsonString(Read));
+const pidOf = (name: string) =>
+  readFileSync(env.FAKE_CLAUDE_LOG, "utf8")
+    .split("\n")
+    .flatMap((line) => Option.toArray(decodeRead(line)))
+    .find((r) => JSON.stringify(r.content).includes(`You are the subagent \\"${name}\\"`))?.pid;
+const startOf = (name: string) => starts("subagent").find((s) => s.pid === pidOf(name));
 const decodeUsage = Schema.decodeUnknownSync(Schema.fromJsonString(UsageRecord));
 const flag = (argv: readonly string[], name: string) => argv[argv.indexOf(name) + 1];
 const McpConfig = Schema.fromJsonString(Schema.Struct({ mcpServers: Schema.Struct({ optchat: Schema.Struct({ url: Schema.String }) }) }));
@@ -173,7 +184,7 @@ test("the master spawns a read-only subagent over /mcp; its report reaches the c
   // its claude: the master's tools and system prompt, but permission mode default with only the
   // read tools let through, a key of its own, and never warm
   const [master] = starts("turn");
-  const [scout] = starts("subagent");
+  const scout = startOf("scout");
   expect(scout).toBeDefined();
   expect(flag(scout?.argv ?? [], "--permission-mode")).toBe("default");
   expect(flag(scout?.argv ?? [], "--allowedTools")).toBe("Read,Glob,Grep,mcp__optchat__zoom,mcp__optchat__date");
@@ -232,12 +243,7 @@ test("from their cards over /ws: a tell reaches a running subagent, a stop ends 
   expect(list.find((a) => a.name === "idler")).toMatchObject({ effort: "high", ref: "claude-code:opus" });
   // a message from sleeper's card, which it takes between its steps (once its call runs: one sent
   // before that would join its opening, which the fake's script doesn't wait for)
-  const Read = Schema.Struct({ type: Schema.Literal("in"), pid: Schema.Number });
-  const decodeRead = Schema.decodeUnknownOption(Schema.fromJsonString(Read));
-  await eventually("sleeper reads its opening", () => {
-    const pid = starts("subagent")[1]?.pid;
-    return readFileSync(env.FAKE_CLAUDE_LOG, "utf8").split("\n").some((line) => Option.exists(decodeRead(line), (r) => r.pid === pid));
-  });
+  await eventually("sleeper reads its opening", () => pidOf("sleeper") !== undefined);
   ws.send(JSON.stringify({ name: "sleeper", text: "the word is go", type: "tell" }));
   await eventually("sleeper's report", async () => chatHas((e) => e.text === "[sleeper] got your message"));
   const slept = await sideLog("sleeper");

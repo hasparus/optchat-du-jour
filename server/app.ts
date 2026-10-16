@@ -120,7 +120,7 @@ export const routes = (o: ServerOptions) =>
         dir: stream,
         effort: settings.master.effort,
         // read when a run starts, long after `subagents` is set
-        engine: (ref) => turnEngine(ref, { ...needs, instructions, runnerFor: subagentRunnerFor, toolsFor: (device) => toolsWith(device, chat.mem, subagents.tools("subagent")), warms: () => false }, SUBAGENT_POLICY),
+        engine: (ref) => turnEngine(ref, { ...needs, instructions, runnerFor: subagentRunnerFor, toolsFor: (device) => toolsWith(device, chat.mem, subagents.tools("subagent")) }, SUBAGENT_POLICY),
         host,
         logUsage: usage,
         mem: chat.mem,
