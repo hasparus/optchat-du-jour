@@ -1,4 +1,4 @@
-// Subagent runs as SPEC M7 would tell them, for the story page (stories.html) and the tests. Fake
+// Subagent runs as SPEC M7a tells them, for the story page (stories.html) and the tests. Fake
 // data only: the names, tasks, paths and reports are made up.
 import type { SubagentRun } from "@/components/ai-elements/subagent";
 

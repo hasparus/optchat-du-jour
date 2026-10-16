@@ -22,3 +22,11 @@ export const SEARCH_LINKS = [
 ];
 export const FETCHED = "https://docs.example.com/streaming";
 export const SEARCH_RESULT = `Web search results for query: "fake claude streaming"\n\nLinks: ${JSON.stringify(SEARCH_LINKS)}\n\nBoth pages describe streamed replies.`;
+
+// E2E_SUBAGENTS (SPEC M7a): the turn spawns two subagents; "notes" reports at once, "scout" waits for
+// a message from its card, then reports. Fake data only.
+export const NOTES_TASK = "Which notes mention the trip, and which is the newest?";
+export const NOTES_REPORT = "Two notes mention the trip; the newest (Oct 3) has the dates.";
+export const SCOUT_TASK = "Find the trip dates in the demo notes.";
+export const SCOUT_REPORT = "The trip is Oct 3 to Oct 9; the hotel is booked.";
+export const SPAWNED = "Two subagents are on it: notes and scout.";

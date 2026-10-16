@@ -3,14 +3,13 @@
 // a run, "Running scout" while it works and "Ran scout" once it reported, that opens into the task
 // it was given, where it runs, its steps (tool lines) and its report.
 //
-// Presentational only, and wired to nothing yet: SPEC M7 (subagents) isn't built. The props are
-// what M7 is to tell, after docs/optchat.md §5–§6 and the earlier gist's spawn and tell: a
-// subagent has a name (its reports reach the chat as a `user` message starting "[name] ", E23, and
-// `zoom("name")` opens its own log), the task it was spawned with, a status, the device it runs
-// on, its steps from its own log, and its final reply. Tell (a message to it, between its tool
-// calls) and Stop are the caller's callbacks. Background work (chat/background-work.tsx) has the
-// slot; only the story page (web/stories.html) and the tests fill it until the server reports
-// subagents.
+// Presentational: the props are what the server tells of a subagent (SPEC M7a), after
+// docs/optchat.md §5–§6 and the earlier gist's spawn and tell: a name (its reports reach the chat
+// as a `user` message starting "[name] ", E23, and `zoom("name")` opens its own log), the task it
+// was spawned with, a status, the device it runs on, its steps from its own log, and its final
+// reply. Tell (a message to it, between its tool calls; to one that has ended, when `resumable`,
+// a message that starts it again) and Stop are the caller's callbacks, and `model` the caller's
+// picker for its next call. chat/subagents.tsx wires it to the server in Background work.
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from "@/components/ai-elements/tool";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,7 +18,7 @@ import { Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigg
 import { toolStateOf, toolSummary } from "@/lib/rows";
 import { cn } from "@/lib/utils";
 import { ArrowUpIcon, BotIcon, CircleCheckIcon, CircleSlashIcon, CircleXIcon, type LucideIcon, SquareIcon } from "lucide-react";
-import { type ComponentProps, useId, useState } from "react";
+import { type ComponentProps, type ReactNode, useId, useState } from "react";
 
 export type SubagentStatus = "running" | "finished" | "failed" | "stopped";
 
@@ -50,6 +49,8 @@ export type SubagentRun = {
   readonly report: string | null;
   // why it failed or was stopped, when the server says
   readonly reason?: string | null | undefined;
+  // once it has ended, a message to it starts it again (SPEC M7a): its Tell line stays
+  readonly resumable?: boolean | undefined;
 };
 
 export type SubagentProps = Omit<ComponentProps<typeof TraceCollapsible>, "open" | "onOpenChange" | "children"> & {
@@ -57,6 +58,8 @@ export type SubagentProps = Omit<ComponentProps<typeof TraceCollapsible>, "open"
   // a message to the running subagent, read between its tool calls
   readonly onTell?: ((name: string, text: string) => void) | undefined;
   readonly onStop?: ((name: string) => void) | undefined;
+  // a picker for the model of its next call, in place of the engine's badge
+  readonly model?: ReactNode;
 };
 
 const TITLES = {
@@ -69,7 +72,7 @@ const TITLES = {
 const ICONS = { failed: CircleXIcon, finished: CircleCheckIcon, running: BotIcon, stopped: CircleSlashIcon } satisfies Record<SubagentStatus, LucideIcon>;
 
 // a running run is open, the others closed, until the reader chooses
-export const Subagent = ({ className, run, onTell, onStop, ...props }: SubagentProps) => {
+export const Subagent = ({ className, run, onTell, onStop, model, ...props }: SubagentProps) => {
   const running = run.status === "running";
   const Icon = ICONS[run.status];
   const lastStep = run.steps.at(-1)?.key;
@@ -107,7 +110,7 @@ export const Subagent = ({ className, run, onTell, onStop, ...props }: SubagentP
             <Badge className="text-muted-foreground" variant="outline">
               on {run.device}
             </Badge>
-            {run.engine !== null && run.engine !== undefined && <Badge variant="secondary">{run.engine}</Badge>}
+            {model ?? (run.engine !== null && run.engine !== undefined && <Badge variant="secondary">{run.engine}</Badge>)}
           </div>
           <p className="text-ui whitespace-pre-wrap" data-slot="subagent-task">
             {run.task}
@@ -139,15 +142,16 @@ export const Subagent = ({ className, run, onTell, onStop, ...props }: SubagentP
               {run.reason}
             </p>
           )}
-          {running && onTell !== undefined && <TellSubagent name={run.name} onTell={onTell} />}
+          {(running || run.resumable === true) && onTell !== undefined && <TellSubagent again={!running} name={run.name} onTell={onTell} />}
         </TraceCollapsibleContent>
       </TraceCollapsible>
     </Trace>
   );
 };
 
-// a line to tell the running subagent something; sent on Enter or the arrow, then cleared
-function TellSubagent({ name, onTell }: { readonly name: string; readonly onTell: (name: string, text: string) => void }) {
+// a line to tell the subagent something (`again`: it has ended, and this starts it again); sent on
+// Enter or the arrow, then cleared
+function TellSubagent({ again, name, onTell }: { readonly again: boolean; readonly name: string; readonly onTell: (name: string, text: string) => void }) {
   const [text, setText] = useState("");
   const id = useId();
   const send = () => {
@@ -172,7 +176,7 @@ function TellSubagent({ name, onTell }: { readonly name: string; readonly onTell
           onChange={(e) => {
             setText(e.currentTarget.value);
           }}
-          placeholder={`Tell ${name}…`}
+          placeholder={again ? `Tell ${name} to go on…` : `Tell ${name}…`}
           value={text}
         />
         <InputGroupAddon align="inline-end">

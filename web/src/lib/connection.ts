@@ -4,7 +4,7 @@
 // socket only when this client sends, and gives up when it closes, so a phone that only watches
 // would never see a turn the laptop started (SPEC M2 open question).
 import { Option } from "effect";
-import { ABORT, type AttachmentRef, type Forwarded, type Inbound, parseFrame, resumeFrame, runInput, type Settings, settingsFrame, takeBackFrame } from "./protocol.ts";
+import { ABORT, type AttachmentRef, type Forwarded, type Inbound, parseFrame, resumeFrame, runInput, type Settings, settingsFrame, type SubagentAction, subagentFrame, takeBackFrame } from "./protocol.ts";
 
 export type LinkStatus = "connecting" | "open" | "closed";
 
@@ -23,6 +23,10 @@ export type Link = {
   // a turn waiting for a model goes on, on this engine: like a cancel, only while the link is open
   // (kept for later, it would settle whatever turn waits after the reconnect). False when it wasn't sent.
   readonly resume: (engine: string) => boolean;
+  // a subagent card's tell, stop or model (SPEC M7a): like a cancel, only while the link is open
+  // (kept for later, a stop would end whatever runs under that name after the reconnect). False
+  // when it wasn't sent.
+  readonly subagent: (action: SubagentAction) => boolean;
   readonly listen: (listener: (event: Inbound) => void) => () => void;
   readonly onStatus: (listener: (status: LinkStatus) => void) => () => void;
   readonly status: () => LinkStatus;
@@ -161,6 +165,11 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
       return true;
     },
     status: () => status,
+    subagent: (action) => {
+      if (!socket || status !== "open") return false;
+      socket.send(subagentFrame(action));
+      return true;
+    },
   };
 }
 

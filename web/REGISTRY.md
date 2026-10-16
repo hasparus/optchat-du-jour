@@ -70,7 +70,7 @@ Every `ui/*` file below imports `cn` from `@/lib/utils` (see CLI); that is not r
 | ai-elements/plan | the Plan pattern on Trace | a turn's last TodoWrite is its plan, the earlier calls plain tool lines; live only in the run that goes on now (from RUN_STARTED), and there only its newest plan; pending steps not dimmed; the call as logged behind one line; the newest plan open until the reader chooses | One list per turn, not "0 of 3" above "3 of 3"; one live list per run, though a steered message starts a turn of its own. AA (Trace's `pending` is 60% opacity). SPEC: rendering never hides what the model wrote |
 | ai-elements/reasoning | the Reasoning pattern on Trace | collapsed by default, also while it streams (the pattern opens itself then); plain text, not markdown; open state per piece in the session store, for this page only, carried when a steer moves it; its text read from the server when first opened after a reload (a failed read retried on reopening, a missing one said); what the caps cut said under it | A phone has no room for a long think pushing the reply down; SPEC: rendering never hides what the model wrote, and a 1,500-row history loads no thinking it doesn't open. Its shimmer is Trace's running status, as a running tool's |
 | ai-elements/sources | the Sources pattern on Trace | collapsed by default; the host beside a title; a turn ends at a user row | Tool lines are collapsed too; a title alone doesn't say where a link goes. The log keeps no turn boundaries, so a steered message (and later a subagent's report) starts the next turn's sources |
-| ai-elements/subagent | the Subagent pattern on Trace, Badge and our Tool | presentational, wired to nothing; Tell is a line inside it | SPEC M7 isn't built. Only the story page imports it: Background work's `extra` slot is empty in the app, so it isn't in the app's bundle. A button can't sit in a trigger, so Stop is beside the line (the pattern's PlanAction) |
+| ai-elements/subagent | the Subagent pattern on Trace, Badge and our Tool | Tell is a line inside it, also on one that has ended (it starts it again); a `model` slot holds the card's Model Selector in place of the engine badge | SPEC M7a wires it (chat/subagents.tsx) into Background work's `extra` slot, one card per subagent the state lists. A button can't sit in a trigger, so Stop is beside the line (the pattern's PlanAction) |
 | chat/pickers ModelSelector | the Model Selector pattern on Dropdown Menu | one menu, no effort menu; touch keeps the native select; grouped by `engineParts(ref).where` (src/wire.ts) | An effort is part of a chain entry, not a free choice; SPEC wants the phone's own picker |
 
 ### What the radix-vega switch changes on screen
@@ -115,7 +115,7 @@ this round.
 | Attachment | (a) built | The composer tray's tiles (a message's thumbnails stay plain links) |
 | Plan | (a) built | A TodoWrite call's row, from its logged input. TodoWrite is in the default `master.tools` (below) |
 | Sources | (a) built | WebFetch addresses and WebSearch result links, under the turn's last reply |
-| Subagent | (c), presentational part built | M7 (below). The user chose to build the component now, wired to nothing |
+| Subagent | (a) built | M7a (below): Background work's cards |
 | Task | (c) | Below, with TodoWrite: no title per group of tool lines in the log |
 | Reasoning | (b) built | Above the reply or tool call it came before, from the thinking kept beside the log (below; SPEC "Reasoning") |
 | Chain of Thought | (c) | Its "Researched in 3 steps" summary over a turn's tool lines would fold the work log DESIGN.md keeps as one line per call |
@@ -142,19 +142,18 @@ data dir unless `reasoning.commit` is off. Its costs are the ones listed then: t
 turn writes, kept and pushed, and the log is no longer the one source of what the page shows. The
 component is `ai-elements/reasoning.tsx` on Trace, and differs from the pattern as the table says.
 
-**Subagent (M7).** The component (`ai-elements/subagent.tsx`) is built and shown on the story page,
-alone and in Background work's `extra` slot, which the app leaves empty. What M7 must add for
-them (AG-UI 1.0.1 has SUBAGENT_STARTED, SUBAGENT_FINISHED and SUBAGENT_ERROR events for the
-transitions): a `subagents` list in `SessionState`
-(optional, so old clients and servers still decode) with each run's name, task, status
-(running / finished / failed / stopped, and why), device, engine and start time; its steps, as
-tool and echo pairs from its own log (`zoom("Name")`), sent as the run goes or on request when a
-line is opened; client frames `{"type":"tell","name","text"}` and `{"type":"stop-subagent","name"}`
-with their `info` answers; and the report, which reaches the chat as a `user` entry starting
-`[Name] ` (E23) and could render as a Subagent line pointing at the run. The open questions are
-M7's own: where a subagent's log lives (a stream of its own under `streams/`?), whether its
-steps are kept after it ends (Background work keeps no history today), and whether its report
-should be marked in the chat as one rather than read as a user message.
+**Subagent (M7a).** Built and wired: `chat/subagents.tsx` fills Background work's `extra` slot with a
+"Subagents" group, one `Subagent` card per entry of `SessionState.subagents` (optional, so old
+clients and servers still decode): every running subagent, then the newest others. A card's steps
+are the tool and echo pairs of its side log, read from `GET /api/subagent?name&from` as the state's
+`entries` count grows (only the new entries); its report is the side log's last reply. Its frames
+are `{"type":"tell","name","text"}`, `{"type":"stop-subagent","name"}` and
+`{"type":"subagent-model","name","model"}`; what the server refuses comes back as an `info`. The
+server also sends AG-UI's SUBAGENT_STARTED, SUBAGENT_FINISHED and SUBAGENT_ERROR, which the client
+decodes and leaves to the state. The model is the composer's Model Selector (`ModelPicker` with a
+label, a test id and the server's label for a ref that is none of the chain's entries), for the
+subagent's next call. Still open: a report reaches the chat as a `user` entry starting `[Name] `
+(E23) and reads as a user message there; marking it as a report is M7b.
 
 **TodoWrite, and with it Task.** The user chose to turn TodoWrite on, so Plan shows in real
 claude-code turns: the turn's `--tools` is `master.tools`, which defaults to Bash, Read, Edit, Write, Glob,

@@ -17,6 +17,9 @@
 //   E2E_PATTERNS=1  every Claude turn plans (TodoWrite), searches the web and fetches a page before
 //             its reply, as Claude Code logs them (e2e/replies.ts PLAN, SEARCH_RESULT)
 //   E2E_THINKING=1  every Claude turn thinks (THOUGHT, streamed slowly) before its tool call
+//   E2E_SUBAGENTS=1  every Claude turn spawns two subagents (SPEC M7a): "notes", which reads and
+//             reports NOTES_REPORT, then "scout", which waits for a message from its card, reads
+//             and reports SCOUT_REPORT (e2e/replies.ts)
 import { BunRuntime } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -29,7 +32,7 @@ import { login } from "../../src/openai/auth.ts";
 import { memorySecrets } from "../../src/secrets.ts";
 import { fakeOpenAi } from "../../test/fake-openai.ts";
 import { freePort } from "../../test/ports.ts";
-import { FETCHED, PLAN_DONE, PLAN_START, SEARCH_RESULT, SOL_REPLY, THOUGHT, TOOL_ERROR } from "./replies.ts";
+import { FETCHED, NOTES_REPORT, NOTES_TASK, PLAN_DONE, PLAN_START, SCOUT_REPORT, SCOUT_TASK, SEARCH_RESULT, SOL_REPLY, SPAWNED, THOUGHT, TOOL_ERROR } from "./replies.ts";
 
 const root = new URL("../..", import.meta.url).pathname;
 const home = Bun.env.E2E_HOME ?? mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
@@ -67,8 +70,17 @@ const thinks = [
   { emit: { message: { content: [{ signature: "sig", thinking: THOUGHT, type: "thinking" }], role: "assistant" }, type: "assistant" } },
   ...reply,
 ];
-const turn = Bun.env.E2E_SPENT ? spent : Bun.env.E2E_PATTERNS ? patterns : Bun.env.E2E_THINKING ? thinks : reply;
-writeFileSync(`${home}/script.json`, JSON.stringify({ turn: [[turn]] }));
+// spawned one after the other, so the fake's calls of role "subagent" come in that order
+const spawns = [
+  { mcp: { input: { model: "claude-code:opus@low", name: "notes", task: NOTES_TASK }, name: "spawn" } },
+  { sleep: 1500 },
+  { mcp: { input: { name: "scout", task: SCOUT_TASK }, name: "spawn" } },
+  { text: SPAWNED },
+];
+const notes = [{ tool: { input: { pattern: "trip", path: home }, name: "Grep" } }, { toolResult: "notes/oct.md:4: trip dates" }, { text: NOTES_REPORT }];
+const scout = [{ take: true }, { tool: { input: { file_path: `${home}/notes/oct.md` }, name: "Read" } }, { toolResult: "trip: Oct 3 to Oct 9" }, { sleep: 500 }, { text: SCOUT_REPORT }];
+const turn = Bun.env.E2E_SPENT ? spent : Bun.env.E2E_PATTERNS ? patterns : Bun.env.E2E_THINKING ? thinks : Bun.env.E2E_SUBAGENTS ? spawns : reply;
+writeFileSync(`${home}/script.json`, JSON.stringify({ subagent: [[notes], [scout]], turn: [[turn]] }));
 writeFileSync(`${home}/fake.jsonl`, "");
 Object.assign(process.env, {
   FAKE_CLAUDE_LOG: `${home}/fake.jsonl`,

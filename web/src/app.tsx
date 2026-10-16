@@ -18,6 +18,7 @@ import { ActivityIcon, MoonIcon, ServerIcon, SunIcon } from "lucide-react";
 import { Component, lazy, type ReactNode, Suspense, useCallback, useState, useSyncExternalStore } from "react";
 import { BackgroundWork, busyWith } from "./chat/background-work";
 import { Chat } from "./chat/chat";
+import { Subagents } from "./chat/subagents";
 import { Devices } from "./devices/devices";
 import { Memory } from "./memory/memory";
 
@@ -141,6 +142,7 @@ export function App({ link, session, uploader }: { link: Link; session: SessionS
             <div className="ml-auto flex items-center gap-0.5">
               <BackgroundWork
                 devices={devices}
+                extra={(state.state?.subagents?.length ?? 0) > 0 ? [<Subagents key="subagents" link={link} session={session} />] : undefined}
                 link={link}
                 onOpenChange={setWork}
                 open={work}

@@ -170,3 +170,38 @@ for (const theme of ["light", "dark"] as const) {
     });
   }
 }
+
+// Subagents (SPEC M7a): a turn of the fake claude spawns two (E2E_SUBAGENTS); their cards in
+// Background work, one running and one done (opened), then both done and the reports in the chat
+for (const theme of ["light", "dark"] as const) {
+  for (const [form, viewport] of [["phone", { height: 844, width: 390 }], ["desktop", { height: 800, width: 1280 }]] as const) {
+    test.describe(`subagents ${form} ${theme}`, () => {
+      test.use({ subagents: true, viewport });
+      test("subagents", async ({ page }) => {
+        await themed(page, theme);
+        await open(page);
+        await send(page, "find the trip dates, with subagents");
+        await answered(page, "find the trip dates, with subagents");
+        if (form === "phone") {
+          await page.getByRole("tab", { name: "devices" }).click();
+          await page.getByTestId("devices").getByRole("button", { name: "Background work" }).click();
+        } else await page.getByRole("button", { name: /^Background work/ }).click();
+        const sheet = page.getByRole("dialog", { name: "Background work" });
+        const notes = sheet.getByTestId("subagent-notes");
+        await expect(notes.getByText("Ran notes")).toBeVisible();
+        await notes.getByText("Ran notes").click();
+        await expect(sheet.getByTestId("subagent-scout").getByText("Running scout")).toBeVisible();
+        await shot(page, `subagents-${form}-${theme}-cards`);
+        const scout = sheet.getByTestId("subagent-scout");
+        await scout.getByLabel("Tell scout").fill("check the October notes");
+        await scout.getByRole("button", { name: "Send to scout" }).click();
+        await expect(scout.getByText("Ran scout")).toBeVisible({ timeout: 15_000 });
+        await shot(page, `subagents-${form}-${theme}-done`);
+        await page.keyboard.press("Escape");
+        if (form === "phone") await page.getByRole("tab", { name: "chat" }).click();
+        await expect(page.getByTestId("user-message").filter({ hasText: "[scout] " })).toBeVisible();
+        await shot(page, `subagents-${form}-${theme}-reports`);
+      });
+    });
+  }
+}

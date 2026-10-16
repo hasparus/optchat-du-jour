@@ -170,6 +170,9 @@ export function applyEvent(log: Log, e: Inbound, o: { readonly trim?: boolean } 
     case EventType.STATE_DELTA:
     case EventType.RUN_STARTED:
     case EventType.CUSTOM:
+    case EventType.SUBAGENT_STARTED: // a subagent's steps are its own log's, never the chat's (SPEC M7a)
+    case EventType.SUBAGENT_FINISHED:
+    case EventType.SUBAGENT_ERROR:
       return log;
   }
 }

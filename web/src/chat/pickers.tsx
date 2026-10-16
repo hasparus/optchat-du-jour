@@ -111,7 +111,19 @@ export function CompactSelect({ label, shown, title, testId, down = false, wide 
 // waiting for a model is resumed from its alert, not from here. An engine that hit a usage limit
 // is disabled with why, unless it is the one picked, which then shows a small down mark. On a touch
 // screen it is the phone's own picker (SPEC "Web UI"); with a mouse, the Model Selector.
-export function ModelPicker(props: { readonly model: string; readonly onModel: (ref: string) => void; readonly state: SessionState }) {
+// `label` names what is picked for ("Model" for the composer's next messages); `shown`, what the
+// closed picker says when the model is none of the chain's own entries (a subagent's at another
+// effort, SPEC M7a); `testId`, the picker's
+type PickerProps = {
+  readonly model: string;
+  readonly onModel: (ref: string) => void;
+  readonly state: SessionState;
+  readonly label?: string;
+  readonly shown?: string;
+  readonly testId?: string;
+  readonly purpose?: string; // what the picked model is for, in its title
+};
+export function ModelPicker(props: PickerProps) {
   return useCoarsePointer() ? <NativeModelPicker {...props} /> : <ModelSelector {...props} />;
 }
 
@@ -126,7 +138,7 @@ function ModelShown({ label }: { readonly label: string }) {
   );
 }
 
-const pickerTitle = (current: MasterEngine | undefined) => (current ? `${current.label}: your next messages${current.down === null ? "" : ` (unavailable: ${current.down})`}` : undefined);
+const pickerTitle = (current: MasterEngine | undefined, purpose = "your next messages") => (current ? `${current.label}: ${purpose}${current.down === null ? "" : ` (unavailable: ${current.down})`}` : undefined);
 
 // the engines in the chain's order, grouped where they run (Claude Code, the ChatGPT plan, a key),
 // read from each ref (wire.ts engineParts), not from its label. (A loop: Map.groupBy is newer than
@@ -145,16 +157,16 @@ const byWhere = (engines: readonly MasterEngine[]) => {
 // controls are (bare-control). No second menu for the effort: an effort is part of a chain entry
 // (`claude-code:opus@xhigh` is an engine of its own), so each item names its own. A down engine is
 // disabled and says why in muted text, which stays AA (the registry's 50% opacity would not).
-function ModelSelector({ model, onModel, state }: { readonly model: string; readonly onModel: (ref: string) => void; readonly state: SessionState }) {
+function ModelSelector({ model, onModel, state, label = "Model", shown, testId = "model-picker", purpose }: PickerProps) {
   const current = state.engines.find((e) => e.ref === model);
   const down = current !== undefined && current.down !== null;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button aria-label={`Model: ${current?.label ?? model}`} className="bare-control max-w-44 cursor-pointer text-ui font-medium" data-testid="model-picker" title={pickerTitle(current)} type="button">
+        <button aria-label={`${label}: ${current?.label ?? shown ?? model}`} className="bare-control max-w-44 cursor-pointer text-ui font-medium" data-testid={testId} title={pickerTitle(current, purpose)} type="button">
           {down && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-destructive" data-testid="picker-down" />}
           <span className="flex min-w-0 items-baseline gap-1.5 truncate">
-            <ModelShown label={current?.label ?? model} />
+            <ModelShown label={current?.label ?? shown ?? model} />
           </span>
           <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-70" />
         </button>
@@ -195,21 +207,22 @@ function ModelSelector({ model, onModel, state }: { readonly model: string; read
   );
 }
 
-function NativeModelPicker({ model, onModel, state }: { readonly model: string; readonly onModel: (ref: string) => void; readonly state: SessionState }) {
+function NativeModelPicker({ model, onModel, state, label = "Model", shown, testId = "model-picker", purpose }: PickerProps) {
   const current = state.engines.find((e) => e.ref === model);
   return (
     <CompactSelect
       wide
       down={current !== undefined && current.down !== null}
-      label="Model"
+      label={label}
       onChange={(e) => {
         onModel(e.currentTarget.value);
       }}
-      shown={<ModelShown label={current?.label ?? model} />}
-      testId="model-picker"
-      title={pickerTitle(current)}
+      shown={<ModelShown label={current?.label ?? shown ?? model} />}
+      testId={testId}
+      title={pickerTitle(current, purpose)}
       value={model}
     >
+      {current === undefined && <option value={model}>{shown ?? model}</option>}
       {state.engines.map((e) => (
         <option disabled={e.down !== null && e.ref !== model} key={e.ref} value={e.ref}>
           {e.down === null ? e.label : `${e.label}: unavailable, ${e.down}`}
