@@ -16,6 +16,14 @@ Everything is built and tested against fakes. Each check below needs a real logi
 - [ ] Does `claude -p` send thinking text (deltas, the block, or neither) on our models? One real turn, then `chat/reasoning/` (SPEC Reasoning).
 - [ ] api-key Anthropic keeps no thinking text on Opus 4.7+/5.x/Haiku 5.5, whose default `thinking.display` is `"omitted"`: decide whether to send `display: "summarized"` (no bill change, but part of the cached prefix), then check one real turn (SPEC Reasoning).
 
+## Subagents (M7a)
+
+- [ ] A real master calls `spawn` only when the user asks for a subagent ("Use subagents only when the user asks for them", prompts/system.txt), writes a task a fresh call can do alone, and never waits or polls for the report (SPEC M7a).
+- [ ] A subagent's `claude -p` (`--permission-mode default`, `--allowedTools Read,Glob,Grep,mcp__optchat__zoom,mcp__optchat__date`, `--setting-sources ""`): Bash, Edit, Write, WebFetch, WebSearch and `mcp__optchat__spawn` are refused as a tool result, never asked about; Read, Glob, Grep, zoom and date run; TodoWrite runs too (no permission, no file). The fake claude plays this; the real one has not been run (SPEC M7a).
+- [ ] Does `--permission-mode default` with `--allowedTools` leave claude's request prefix (tools, system prompt) as a turn's, so a subagent on the turn's model reads the turn's cached view? The open M3 question about the compactor's `default`, measured on a subagent's first call's `cacheRead` (SPEC M7a, E26).
+- [ ] Two Opus subagents and a turn at once against the Max 5× limits: watch `usage.jsonl`'s `role: "subagent"` records for a week before raising `SUBAGENTS_AT_ONCE` (SPEC M7a).
+- [ ] A subagent on `openai-plan` (the master's chain's Sol): its tool loop's spawn and tell refused, Read through the device runner, its report back (SPEC M7a).
+
 ## ChatGPT plan
 
 - [x] `optchat login openai` end to end: callback, refresh, Keychain (SPEC M3).
