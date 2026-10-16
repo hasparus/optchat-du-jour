@@ -3,7 +3,7 @@
 // The engine folds them into its reply and the stream ends where it says it is done: whatever
 // follows (a `data: [DONE]` line, say) is never read. A stream that breaks is a ModelError named
 // after it.
-import { Effect, Option, Predicate, Schema, Stream } from "effect";
+import { Cause, Effect, Option, Schema, Stream } from "effect";
 import { Sse } from "effect/encoding";
 import { type EngineError, ModelError } from "./errors.ts";
 
@@ -27,12 +27,12 @@ export const sseFold = <S, E>(
     Stream.takeUntil(done),
     Stream.runLast,
     Effect.map(Option.getOrElse(() => init)),
-    Effect.mapError((e) => {
-      if (Predicate.isTagged(e, "Retry")) return new ModelError({ message: `${label}: the stream asked to reconnect` });
+    Effect.catchCause((cause) => Effect.failCause(Cause.map(cause, (e: E | EngineError | Schema.SchemaError | Sse.Retry | Sse.SseError): E | EngineError => {
+      if (e instanceof Sse.Retry) return new ModelError({ message: `${label}: the stream asked to reconnect` });
       if (e instanceof Schema.SchemaError) return new ModelError({ message: `${label}: unexpected stream event: ${e.message}` });
       if (e instanceof Sse.SseError) return new ModelError({ message: `${label}: ${e.message}` });
       return e;
-    }),
+    }))),
   );
 };
 

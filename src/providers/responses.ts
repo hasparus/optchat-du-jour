@@ -2,8 +2,8 @@
 // OpenAI API key's for api-key. `stream: true` and `store: false`, so every request re-sends the
 // whole conversation, the reply's reasoning items included, with their encrypted content (E26
 // §8): the model keeps its reasoning across tool rounds, and the cached prefix stays the same.
-import { Effect } from "effect";
-import { type EngineError, isEngineError, priced } from "../engines/errors.ts";
+import { Cause, Effect } from "effect";
+import { type EngineError, isEngineError, priced, priceUsage } from "../engines/errors.ts";
 import type { Out, Respond, Turn } from "../openai/responses.ts";
 import type { Tokens } from "../usage.ts";
 import type { Item, Provider } from "./provider.ts";
@@ -52,20 +52,24 @@ export const responsesProvider = (o: {
   call: (c) =>
     Effect.gen(function* () {
       if (o.before) yield* o.before;
-      const { onItem } = c;
+      const { onSettledUsage, onItem } = c;
       const reply = yield* o.respond({
         effort: o.effort,
         input: c.history.flatMap(turnOf),
         instructions: c.instructions,
         model: o.model,
         onOut: onItem && ((out) => onItem(itemOf(out))),
+        onSettledUsage: onSettledUsage && ((spent) => (o.dollars ? priceUsage(spent, o.dollars).pipe(
+          Effect.match({ onFailure: () => spent, onSuccess: (dollars) => ({ ...spent, dollars }) }),
+        ) : Effect.succeed(spent)).pipe(Effect.flatMap(onSettledUsage))),
         onStart: c.onStart,
         onText: c.onText,
         onThinking: c.onThinking,
         toolChoice: c.final ? "none" : "auto",
         tools: c.tools.length === 0 ? undefined : c.tools, // a compactor's call has none
       });
-      return { dollars: o.dollars?.(reply.usage), items: reply.output.map(itemOf), model: reply.model, usage: reply.usage };
-    }).pipe(Effect.mapError((e) => (o.dollars && isEngineError(e) ? priced(e, o.dollars) : e))),
+      const dollars = o.dollars ? yield* priceUsage({ model: reply.model, usage: reply.usage }, o.dollars) : undefined;
+      return { dollars, items: reply.output.map(itemOf), model: reply.model, usage: reply.usage };
+    }).pipe(Effect.catchCause((cause) => Effect.failCause(Cause.map(cause, (e) => (o.dollars && isEngineError(e) ? priced(e, o.dollars) : e))))),
   engine: o.engine,
 });

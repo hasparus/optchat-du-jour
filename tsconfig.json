@@ -25,6 +25,7 @@
         "@effect/platform-bun/BunServices#layer",
         "effect/FileSystem#FileSystem",
         "effect/PlatformError#PlatformError",
+        "effect/encoding/Sse#Retry",
         "effect/encoding/Sse#SseError",
         "effect/encoding/Sse#decode",
         "effect/http/FetchHttpClient#layer",
