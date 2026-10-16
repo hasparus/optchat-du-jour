@@ -226,44 +226,21 @@ function PlanRow({ row, steps, toolState, plan }: { row: Extract<Row, { kind: "t
   );
 }
 
-// What the model thought before a row: open or closed is the reader's choice per row, kept for
-// this page only (a reload starts closed), in a map the chat owns; `read` asks for a piece's text,
-// which after a reload is read only when its line is opened.
-type RememberedThoughts = { readonly open: Map<number, boolean>; readonly read: (i: number) => void };
-const ThoughtsContext = createContext<RememberedThoughts>({
-  open: new Map(),
-  read: () => {
-    // no chat around it: nothing to read
-  },
-});
-
-export function ThoughtsMemory({ read, children }: { readonly read: (i: number) => void; readonly children: ReactNode }) {
-  // `read` is the session store's, one for the page's life: the map lives as long
-  const value = useMemo(() => ({ open: new Map<number, boolean>(), read }), [read]);
-  return <ThoughtsContext value={value}>{children}</ThoughtsContext>;
-}
-
-// The Reasoning line above a reply or a tool call: closed until the reader opens it, also while
-// it streams; the label ticks while it streams ("Thinking"), then says how long it took.
-function ThoughtLine({ thought }: { readonly thought: Thought }) {
-  const memory = use(ThoughtsContext);
-  const [open, setOpen] = useState(() => memory.open.get(thought.i) ?? false);
-  const { failed, i, text } = thought;
-  // opened before this row was drawn again (a piece that moved, a page of older rows): its text
-  useEffect(() => {
-    if (open && text === null && !failed) memory.read(i);
-  }, [open, text, failed, i, memory]);
+// The Reasoning line above a reply or a tool call: closed until the reader opens it, also while it
+// streams; the label says "Thinking" while it streams, then how long it took. Controlled: whether it
+// is open, and reading its text when it is opened, are the session store's (`onThought`, its
+// toggleThought), so the reader's choice stays with the piece when it moves or its row is drawn again.
+function ThoughtLine({ thought, onThought }: { readonly thought: Thought; readonly onThought: (i: number, open: boolean) => void }) {
   return (
     <Reasoning
       isStreaming={thought.live}
       onOpenChange={(next) => {
-        memory.open.set(i, next);
-        setOpen(next);
+        onThought(thought.i, next);
       }}
-      open={open}
+      open={thought.open}
     >
       <ReasoningTrigger isStreaming={thought.live} label={thoughtLabel(thought)} />
-      <ReasoningContent cut={thought.cut} failed={failed} text={text} />
+      <ReasoningContent cut={thought.cut} failed={thought.failed} text={thought.text} />
     </Reasoning>
   );
 }
@@ -293,6 +270,11 @@ export type ChatRowProps = {
   plan?: PlanState | undefined;
   sources?: readonly WebSource[] | undefined;
   thought?: Thought | undefined;
+  onThought?: ((i: number, open: boolean) => void) | undefined;
+};
+
+const noToggle = () => {
+  // a row outside a chat (the story page): nothing to open
 };
 
 const rowText = (row: Row) => {
@@ -308,14 +290,14 @@ const rowText = (row: Row) => {
   }
 };
 
-export const ChatRow = memo(function ChatRow({ row, streaming, toolState, plan, sources, thought }: ChatRowProps) {
+export const ChatRow = memo(function ChatRow({ row, streaming, toolState, plan, sources, thought, onThought = noToggle }: ChatRowProps) {
   const thinks = thought !== undefined && (row.kind === "talk" || row.kind === "tool" || row.kind === "thinking");
   const view = <RowView plan={plan} row={row} sources={sources} streaming={streaming} toolState={toolState} />;
   return (
     <RowBoundary text={rowText(row)}>
       {thinks ? (
         <div className={cn("flex min-w-0 flex-col", row.kind === "talk" ? "gap-1.5" : "gap-0.5")}>
-          <ThoughtLine thought={thought} />
+          <ThoughtLine onThought={onThought} thought={thought} />
           {view}
         </div>
       ) : (

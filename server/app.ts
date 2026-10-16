@@ -21,7 +21,7 @@ import { makeCaptioner } from "../src/media/caption.ts";
 import { makeMedia } from "../src/media/media.ts";
 import { makePersist } from "../src/persist.ts";
 import { systemPrompt } from "../src/prompts.ts";
-import { openReasoning } from "../src/reasoning.ts";
+import { openReasoning, reasoningLeftOut } from "../src/reasoning.ts";
 import { type Secrets, SecretsLive } from "../src/secrets.ts";
 import { makeSession, type SessionEvent } from "../src/session.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
@@ -108,7 +108,7 @@ export const routes = (o: ServerOptions) =>
       // with reasoning.commit off, the thinking side files (git keeps those already committed)
       const persist = yield* makePersist(report, () => [
         ...media.unreferenced(chat.mem.root.flatMap((e) => (e.kind === "user" ? [e.text] : []))).map((path) => `/assets/${path}`),
-        ...(thinking.commit ? [] : ["/streams/*/chat/reasoning/"]),
+        ...reasoningLeftOut(thinking.commit),
       ]);
       const session = yield* makeSession({
         chat,

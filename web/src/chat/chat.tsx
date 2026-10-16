@@ -28,7 +28,7 @@ import {
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import type { Link } from "@/lib/connection";
 import { visible } from "@/lib/log";
-import { chatRows, entryRows, planStates, type Row, rowFor, rowIndexFor, toolStateOf, turnSources } from "@/lib/rows";
+import { chatRows, entryRows, planStates, type Row, rowFor, rowIndexFor, thoughtHolder, toolStateOf, turnSources } from "@/lib/rows";
 import { type Marker as StatusMarker, type Queued, queued, type Session, type SessionStore } from "@/lib/session";
 import { canonicalRef, type Device, engineLabel, type SessionState, shortSha } from "@wire";
 import { cn } from "@/lib/utils";
@@ -38,7 +38,7 @@ import type { Uploader } from "@/lib/attach";
 import { loadModel, saveModel } from "@/lib/draft";
 import { Composer } from "./composer";
 import { shortLabel } from "./pickers";
-import { ChatRow, ReplyActions, ThoughtsMemory } from "./row";
+import { ChatRow, ReplyActions } from "./row";
 import { useStickToEnd } from "./use-stick-to-end";
 
 // an engine of the master's chain by the label its picker shows (with its effort, src/wire.ts
@@ -245,8 +245,11 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
   const settled = useMemo(() => entryRows(items), [items]);
   // a thought streaming in before anything it came before has arrived is a row of its own (rows.ts)
   const { thoughts } = state;
-  const thinkingAt = useMemo(() => [...thoughts.values()].find((t) => t.live)?.i ?? null, [thoughts]);
+  const live = useMemo(() => [...thoughts.values()].find((t) => t.live), [thoughts]);
+  const thinkingAt = live?.i ?? null;
   const rows = useMemo(() => chatRows(items, settled, draft, thinkingAt), [items, settled, draft, thinkingAt]);
+  // the row the live thought shows above, given to it as is (rows.ts thoughtHolder)
+  const holder = useMemo(() => (thinkingAt === null ? undefined : thoughtHolder(rows, thinkingAt)?.key), [rows, thinkingAt]);
   const placed = placeMarkers(state.markers, rows);
   const draftKey = draft ? `e${draft.i}` : null;
   const first = rows[0]?.id ?? 0;
@@ -339,7 +342,6 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
           {empty && <EmptyChat />}
           {/* the dock floats over the transcript's end; the content keeps its height clear below
               the last row (--dock-h, set by useStickToEnd) */}
-          <ThoughtsMemory read={session.openThought}>
           <ReplyActions>
             <MessageScrollerContent className="mx-auto w-full max-w-184 gap-0 px-4 pt-6 pb-[calc(var(--dock-h,9rem)+1.5rem)] sm:px-6" data-region="chat-content">
               {placed.above.map((m) => (
@@ -353,7 +355,8 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
                       row={row}
                       sources={sources.get(row.key)}
                       streaming={row.key === draftKey}
-                      thought={thoughts.get(row.id)}
+                      onThought={session.toggleThought}
+                      thought={row.key === holder ? live : row.kind === "talk" || row.kind === "tool" ? thoughts.get(row.id) : undefined}
                       toolState={row.kind === "tool" ? toolStateOf(row, busy, row.key === lastTool) : "done"}
                     />
                   </MessageScrollerItem>
@@ -364,7 +367,6 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
               ))}
             </MessageScrollerContent>
           </ReplyActions>
-          </ThoughtsMemory>
         </MessageScrollerViewport>
         <MessageScrollerButton className="size-9 rounded-full border-0 bg-raised text-foreground shadow-float hover:bg-raised hover:text-foreground data-[direction=end]:bottom-[calc(var(--dock-h,9rem)+0.75rem)]" />
       </MessageScroller>

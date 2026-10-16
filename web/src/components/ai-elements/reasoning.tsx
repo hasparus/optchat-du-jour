@@ -55,18 +55,22 @@ export type ReasoningContentProps = Omit<ComponentProps<typeof TraceCollapsibleC
   readonly text: string | null;
   // characters the caps left out
   readonly cut: number;
-  // its text couldn't be read
-  readonly failed: boolean;
+  // its text couldn't be read: none on the server ("missing"), or the read failed ("error")
+  readonly failed: "missing" | "error" | null;
 };
 
 // Under Trace's indented rule: what the model thought, as written, in UI type; what was left out
 export const ReasoningContent = ({ className, text, cut, failed, ...props }: ReasoningContentProps) => (
   <TraceCollapsibleContent className={cn("text-ui", className)} {...props}>
     {text === null ? (
-      failed ? (
-        <span className="text-muted-foreground">It couldn't be read: try again later.</span>
+      failed === null ? (
+        <span aria-busy="true">
+          <Shimmer>loading…</Shimmer>
+        </span>
       ) : (
-        <Shimmer>loading…</Shimmer>
+        <span className="text-muted-foreground" data-slot="reasoning-failed">
+          {failed === "missing" ? "It wasn't kept." : "It couldn't be read. Close and open it to try again."}
+        </span>
       )
     ) : (
       <p className="wrap-break-word whitespace-pre-wrap" data-slot="reasoning-text">

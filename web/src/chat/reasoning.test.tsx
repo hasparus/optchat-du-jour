@@ -90,3 +90,43 @@ test("after a reload: a reply's thought shows collapsed with how long it took, i
   fireEvent.click(screen.getByRole("button", { name: "Show raw text" }));
   expect(screen.getByText("Two things: **notes** and a repo.")).toBeTruthy();
 });
+
+test("live: a message steered in while it thinks takes its index, and the thought stays shown, open as the reader left it, until the reply it came before", async () => {
+  const { play } = start();
+  await screen.findByText("what is in the repo?");
+  play(...said(4, "user", "and the tests?"), { runId: "4", threadId: "mini", type: EventType.RUN_STARTED }, state({ phase: "running" }), ...thinking(5, "Tests first. "));
+  fireEvent.click(await screen.findByRole("button", { name: /Thinking…/ }));
+  await screen.findByText("Tests first.");
+  // the steer is logged at 5, the index the thought began at; the thought now waits after it
+  play(...said(5, "user", "also the docs"), { delta: "Then the docs.", messageId: "r5", type: EventType.REASONING_MESSAGE_CONTENT });
+  await screen.findByText("also the docs");
+  const trigger = screen.getByRole("button", { name: /Thinking…/ });
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByText("Tests first. Then the docs.")).toBeTruthy();
+  const row = trigger.closest<HTMLElement>('[data-slot="message-scroller-item"]');
+  expect(row?.dataset.logIndex).toBe("6");
+  expect(row?.dataset.kind).toBe("thinking");
+  // the reply streams at 6: the thought sits above it, still open, and is kept there
+  play({ messageId: "6", role: "assistant", type: EventType.TEXT_MESSAGE_START }, { delta: "Neither has any.", messageId: "6", type: EventType.TEXT_MESSAGE_CONTENT });
+  await screen.findByText("Neither has any.");
+  expect(screen.getByRole("button", { name: /Thinking…/ }).closest('[data-slot="message-scroller-item"]')).toBe(row);
+  play({ messageId: "6", type: EventType.TEXT_MESSAGE_END }, ...keptAt(5, 6, 2100));
+  const done = await screen.findByRole("button", { name: /Thought for 2 s/ });
+  expect(done.getAttribute("aria-expanded")).toBe("true");
+  expect(done.closest('[data-slot="message-scroller-item"]')).toBe(row);
+  expect(row?.dataset.kind).toBe("talk");
+  expect(screen.getByText("Tests first. Then the docs.")).toBeTruthy();
+});
+
+test("after a reload: a line whose text the server has no more says so, and isn't asked for again", async () => {
+  THOUGHTS.set(3, { ms: 2000, text: "" });
+  start(LOG);
+  const trigger = await screen.findByRole("button", { name: /Thought for 2 s/ });
+  THOUGHTS.clear(); // the server lost it between the heads and the text
+  fireEvent.click(trigger);
+  await screen.findByText("It wasn't kept.");
+  fireEvent.click(trigger);
+  fireEvent.click(trigger);
+  await screen.findByText("It wasn't kept.");
+  expect(thoughtReads).toEqual([3]);
+});

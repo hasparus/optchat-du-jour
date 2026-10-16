@@ -6,6 +6,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { makePersist } from "../src/persist.ts";
+import { reasoningLeftOut } from "../src/reasoning.ts";
 
 const dirs: string[] = [];
 const tmp = () => {
@@ -127,5 +128,22 @@ test("files the caller leaves out are not committed until it stops leaving them 
     expect(exclude).not.toContain("assets");
   } finally {
     await Effect.runPromise(Scope.close(scope, Exit.void));
+  }
+});
+
+test("with reasoning.commit off the thinking side files stay untracked; the log beside them is committed", async () => {
+  const home = tmp();
+  for (const [folder, line] of [["main", '{"i":0}'], ["reasoning", '{"i":0,"text":"hmm"}']] as const) {
+    mkdirSync(`${home}/streams/mini/chat/${folder}`, { recursive: true });
+    writeFileSync(`${home}/streams/mini/chat/${folder}/2026-10-16.jsonl`, `${line}\n`);
+  }
+  for (const commit of [false, true]) {
+    const scope = await Effect.runPromise(Scope.make());
+    const persist = await Effect.runPromise(Scope.provide(makePersist(() => Effect.void, () => reasoningLeftOut(commit)), scope));
+    expect(await Effect.runPromise(persist(home, `commit ${commit}`))).toBeNull();
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    const tracked = git(home, "ls-files").out.split("\n");
+    expect(tracked.includes("streams/mini/chat/main/2026-10-16.jsonl")).toBe(true);
+    expect(tracked.includes("streams/mini/chat/reasoning/2026-10-16.jsonl")).toBe(commit);
   }
 });

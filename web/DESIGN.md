@@ -326,7 +326,10 @@ Built on shadcn/ui's Trace and Code Block (`components/ui/trace.tsx`, `code-bloc
   rule in UI type, muted, plain text as written (no markdown: nothing hides what the model wrote,
   so no Raw toggle), and "N more characters were not kept" in muted 12 px when the caps cut it.
   Open or closed is the reader's per row, for this page only. After a reload the text is read when
-  the line is first opened ("loading…" shimmering meanwhile).
+  the line is first opened ("loading…" shimmering meanwhile); "It wasn't kept." when the server has
+  none, "It couldn't be read. Close and open it to try again." when the read failed, which reopening
+  does. Open or closed is held by the session store with the piece, so it stays as the reader left
+  it when a steered message comes in mid-thought and the thought moves to the row after it.
 
 ### Glass
 One surface, `glass-surface` in `index.css`, for the composer, the tray on its top edge and every

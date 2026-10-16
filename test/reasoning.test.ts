@@ -11,11 +11,12 @@ import { openStream } from "../server/agui.ts";
 import { openChat } from "../src/chat.ts";
 import { REASONING_PIECE, REASONING_TURN } from "../src/config.ts";
 import { ModelError } from "../src/engines/errors.ts";
-import { openReasoning, ReasoningRecord } from "../src/reasoning.ts";
+import { makePieces, openReasoning, reasoningLeftOut } from "../src/reasoning.ts";
 import { makeSession, noMedia, type SessionEvent } from "../src/session.ts";
 import { newMsg, type StoreError } from "../src/store.ts";
 import type { TurnEngine, TurnEvents } from "../src/turn/engine.ts";
-import { render } from "../src/view.ts";
+import { allBuilt, render } from "../src/view.ts";
+import { ReasoningPiece } from "../src/wire.ts";
 
 const dirs: string[] = [];
 afterAll(() => {
@@ -87,7 +88,7 @@ const lines = (dir: string, stream: string) => {
 };
 const withoutDate = (line: string) => line.replace(/"date":"[^"]*"/, '"date":""');
 // the side file's lines, decoded; and each line's keys in the order written
-const decodeRecord = Schema.decodeUnknownSync(Schema.fromJsonString(ReasoningRecord));
+const decodeRecord = Schema.decodeUnknownSync(Schema.fromJsonString(ReasoningPiece));
 const kept = (dir: string) => lines(dir, "reasoning").map((l) => decodeRecord(l));
 const keysOf = (line: string) => Object.keys(Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)))(line)).join(",");
 
@@ -115,6 +116,7 @@ test("thinking is kept in chat/reasoning/ under the entry it came before; the lo
       const r = yield* rig(thoughtful);
       yield* r.session.input("hello");
       yield* r.finished(1);
+      yield* until("the tree is built", () => allBuilt(r.chat.mem));
       return { dir: r.dir, events: r.events, view: render(r.chat.mem) };
     }),
   );
@@ -123,13 +125,16 @@ test("thinking is kept in chat/reasoning/ under the entry it came before; the lo
       const r = yield* rig(plain);
       yield* r.session.input("hello");
       yield* r.finished(1);
+      yield* until("the tree is built", () => allBuilt(r.chat.mem));
       return { dir: r.dir, view: render(r.chat.mem) };
     }),
   );
   // the log and the tree: not a byte apart but the dates
   expect(lines(withIt.dir, "main").map(withoutDate)).toEqual(lines(without.dir, "main").map(withoutDate));
   expect(lines(withIt.dir, "main").join("\n")).not.toContain("Plan");
-  expect(lines(withIt.dir, "tree").join("\n")).not.toContain("Plan");
+  // the tree has no dates: byte for byte, as a set (its nodes are built in parallel)
+  expect(lines(withIt.dir, "tree").toSorted()).toEqual(lines(without.dir, "tree").toSorted());
+  expect(lines(withIt.dir, "tree").length).toBeGreaterThan(0);
   expect(withIt.view).toBe(without.view);
   // the side file: one line per piece, keyed by the tool call's and the reply's log index
   expect(lines(withIt.dir, "reasoning").map(keysOf)).toEqual(["i,text,engine,date,ms", "i,text,engine,date,ms"]);
@@ -316,4 +321,61 @@ test("a piece kept with nothing streamed opens and closes at once, with its cut;
     { messageId: "r3", type: EventType.REASONING_MESSAGE_END },
     { messageId: "r3", metadata: { dropped: true }, type: EventType.REASONING_END },
   ]);
+});
+
+// ---- the pieces of a run, without a session ----
+
+test("pieces: each delta streams from where the piece is, a new thought starts a paragraph, an entry takes the piece with how long it ran", () => {
+  const p = makePieces({ piece: 100, turn: 1000 });
+  expect(p.add({ at: 3, delta: "", engine: "e", fresh: true, now: 0 })).toBeNull(); // nothing to say starts nothing
+  expect(p.live()).toBeNull();
+  expect(p.add({ at: 3, delta: "Hmm. ", engine: "e", fresh: true, now: 1000 })).toEqual({ at: 3, offset: 0, taken: "Hmm. " });
+  // the log moved on (a steer logged at 3): the open piece keeps its `at` and its engine
+  expect(p.add({ at: 4, delta: "Next.", engine: "other", fresh: true, now: 1500 })).toEqual({ at: 3, offset: 5, taken: "\n\nNext." });
+  expect(p.live()).toEqual({ at: 3, text: "Hmm. \n\nNext." });
+  expect(p.take(4, 3500)).toEqual({ at: 3, record: { date: new Date(3500).toISOString(), engine: "e", i: 4, ms: 2500, text: "Hmm. \n\nNext." } });
+  expect(p.take(5, 4000)).toBeNull(); // taken once
+  p.add({ at: 6, delta: "never said", engine: "e", fresh: true, now: 5000 });
+  expect(p.drop()).toBe(6);
+  expect(p.drop()).toBeNull();
+});
+
+test("pieces: the head of each up to the piece cap, of the run up to the turn cap, the rest counted as cut and never streamed", () => {
+  const p = makePieces({ piece: 10, turn: 25 });
+  expect(p.add({ at: 0, delta: "abcdefghijKLM", engine: "e", fresh: true, now: 0 })).toEqual({ at: 0, offset: 0, taken: "abcdefghij" });
+  expect(p.add({ at: 0, delta: "more", engine: "e", fresh: false, now: 0 })).toBeNull();
+  expect(p.take(0, 0)?.record).toMatchObject({ cut: 7, text: "abcdefghij" });
+  p.add({ at: 1, delta: "0123456789", engine: "e", fresh: true, now: 0 });
+  const whole = p.take(1, 0)?.record;
+  expect(whole && Object.keys(whole)).toEqual(["date", "engine", "i", "ms", "text"]); // nothing cut: no `cut` key at all
+  // 20 of the run's 25 spent: five more, then nothing
+  expect(p.add({ at: 2, delta: "vwxyz!!!", engine: "e", fresh: true, now: 0 })?.taken).toBe("vwxyz");
+  expect(p.take(2, 0)?.record).toMatchObject({ cut: 3, text: "vwxyz" });
+  expect(p.add({ at: 3, delta: "spent", engine: "e", fresh: true, now: 0 })).toBeNull();
+  expect(p.take(3, 0)?.record).toMatchObject({ cut: 5, text: "" }); // kept as a note that it thought
+  // a code point is never split at a cap
+  const q = makePieces({ piece: 3, turn: 10 });
+  expect(q.add({ at: 0, delta: "ab\u{1F680}", engine: "e", fresh: true, now: 0 })?.taken).toBe("ab");
+  expect(q.take(0, 0)?.record.cut).toBe(2);
+});
+
+test("a write a failure left unfinished doesn't swallow the next piece after a restart", async () => {
+  const dir = tmp();
+  const now = new Date().toISOString();
+  const side = await Effect.runPromise(openReasoning(dir, { keep: true, report: () => Effect.void }));
+  await Effect.runPromise(side.keep({ date: now, engine: "x", i: 1, ms: 1, text: "one" }));
+  // what an ENOSPC halfway through a write leaves: bytes without their newline
+  appendFileSync(`${dir}/chat/reasoning/${readdirSync(`${dir}/chat/reasoning`)[0] ?? ""}`, '{"i":3,"text":"half');
+  await Effect.runPromise(side.keep({ date: now, engine: "x", i: 5, ms: 1, text: "five" }));
+  expect(await Effect.runPromise(side.piece(5))).toMatchObject({ text: "five" });
+  const reports: string[] = [];
+  const again = await Effect.runPromise(openReasoning(dir, { keep: true, report: (m) => Effect.sync(() => void reports.push(m)) }));
+  expect(await Effect.runPromise(again.piece(5))).toMatchObject({ i: 5, text: "five" });
+  expect(again.heads(0, 10).map((h) => h.i)).toEqual([1, 5]);
+  expect(reports).toEqual([`reasoning: 1 unreadable lines in ${dir}/chat/reasoning, ignored`]); // the half line alone
+});
+
+test("reasoning.commit off leaves the side files out of persist's commits", () => {
+  expect(reasoningLeftOut(true)).toEqual([]);
+  expect(reasoningLeftOut(false)).toEqual(["/streams/*/chat/reasoning/"]);
 });

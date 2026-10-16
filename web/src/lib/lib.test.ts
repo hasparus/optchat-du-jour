@@ -9,7 +9,7 @@ import { openLink, STALE_MS, wakeOnReturn } from "./connection";
 import { sentKey } from "./draft";
 import { applyEvent, applyPage, emptyLog, hole, type Log, MAX_HELD, tip, trimHeld, visible, withDraft } from "./log";
 import { type Inbound, parseFrame } from "./protocol";
-import { applyThought, noThoughts, thoughtLabel } from "./reasoning";
+import { applyThought, noThoughts, thoughtLabel, toggled } from "./reasoning";
 import { chatRows, entryRows, rowIndexFor } from "./rows";
 import { makeSession, queued, type Session, UNSENT } from "./session";
 import { buckets, byModel, periodOf, totals } from "./stats";
@@ -623,8 +623,11 @@ describe("reasoning: what the model thought, beside the log", () => {
   test("live: one kept before another entry than expected moves there; one dropped, or left open at the run's end or a dropped link, goes", async () => {
     const { server, session } = await setup();
     const wire = relay();
-    server.play(...wire(think(2, 0, "moves"), kept(2, 3, 500, 40)));
+    server.play(...wire(think(2, 0, "moves")));
+    session.toggleThought(2, true); // opened while it streams: it stays open where it is kept
+    server.play(...wire(kept(2, 3, 500, 40)));
     expect(thoughtsOf(session)).toEqual([[3, "moves", false, 500, 40]]);
+    expect(session.get().thoughts.get(3)?.open).toBe(true);
     expect(thoughtLabel(session.get().thoughts.get(3)!)).toBe("Reasoning"); // under a second
     server.play(...wire(think(4, 0, "never said"), { at: 4, runId: "0", type: "reasoning-dropped" }));
     expect(session.get().thoughts.has(4)).toBe(false);
@@ -638,29 +641,47 @@ describe("reasoning: what the model thought, beside the log", () => {
 
   test("after a reload: the rows held get their thoughts without text, read when one is opened; an older page asks for its own; a server without the route shows none", async () => {
     const asked: string[] = [];
+    let flaky = 0;
     const server = fakeServer(() => [snapshot(all(150).slice(-50), 100), { snapshot: { ...IDLE, messages: 150 }, type: EventType.STATE_SNAPSHOT }]);
     const link = openLink("ws://x/ws", { socket: server.socket });
     const session = makeSession(link, {
       messages: async (before, limit) => ({ entries: all(150).slice(Math.max(0, before - limit), before).map((e, k) => entry(Math.max(0, before - limit) + k, e.kind, e.text)) }),
       reasoning: async (from, to) => {
         asked.push(`${from}-${to}`);
-        return [{ chars: 9, engine: "claude-code:opus", i: 120, ms: 3000 }, { chars: 9, engine: "claude-code:opus", i: 60, ms: 1000, cut: 7 }].filter((h) => h.i >= from && h.i < to);
+        return [{ chars: 9, engine: "claude-code:opus", i: 120, ms: 3000 }, { chars: 9, engine: "claude-code:opus", i: 130, ms: 2000 }, { chars: 9, engine: "claude-code:opus", i: 60, ms: 1000, cut: 7 }].filter((h) => h.i >= from && h.i < to);
       },
-      reasoningText: async (i) => (i === 120 ? { chars: 9, date: "2026-10-15T10:00:00Z", engine: "claude-code:opus", i, ms: 3000, text: "kept text" } : null),
+      reasoningText: async (i) => {
+        if (i === 130 && flaky++ === 0) throw new Error("offline");
+        return i === 60 ? null : { date: "2026-10-15T10:00:00Z", engine: "claude-code:opus", i, ms: 3000, text: `kept text ${i}` };
+      },
     });
     await tick();
     expect(asked).toEqual(["100-150"]);
-    expect(thoughtsOf(session)).toEqual([[120, null, false, 3000, 0]]);
-    session.openThought(120);
+    expect(thoughtsOf(session)).toEqual([
+      [120, null, false, 3000, 0],
+      [130, null, false, 2000, 0],
+    ]);
+    session.toggleThought(120, true);
+    expect(session.get().thoughts.get(120)?.open).toBe(true);
     await tick();
-    expect(session.get().thoughts.get(120)?.text).toBe("kept text");
+    expect(session.get().thoughts.get(120)?.text).toBe("kept text 120");
+    // a read that failed says so, and opening the line again tries again
+    session.toggleThought(130, true);
+    await tick();
+    expect(session.get().thoughts.get(130)?.failed).toBe("error");
+    session.toggleThought(130, false);
+    session.toggleThought(130, true);
+    await tick();
+    expect(session.get().thoughts.get(130)).toMatchObject({ failed: null, open: true, text: "kept text 130" });
     await session.loadOlder();
     await tick();
     expect(asked).toEqual(["100-150", "0-100"]);
     expect(session.get().thoughts.get(60)).toMatchObject({ cut: 7, text: null });
-    session.openThought(60); // the server has lost it: said, not loading for ever
+    session.toggleThought(60, true); // the server has none: said for good, not asked again
     await tick();
-    expect(session.get().thoughts.get(60)?.failed).toBe(true);
+    expect(session.get().thoughts.get(60)?.failed).toBe("missing");
+    session.toggleThought(60, false);
+    expect(toggled(session.get().thoughts, 60, true).read).toBe(false);
 
     const old = makeSession(openLink("ws://x/ws", { socket: fakeServer(() => [snapshot([{ kind: "talk", text: "hi" }])]).socket }), {
       reasoning: async () => {

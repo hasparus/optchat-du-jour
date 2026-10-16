@@ -14,6 +14,7 @@ Everything is built and tested against fakes. Each check below needs a real logi
 - [ ] Does `claude -p` take PDF `document` blocks in a stream-json user message? (SPEC Media)
 - [ ] Is Max 5× enough? Decide after two weeks of `usage.jsonl` (SPEC M2).
 - [ ] Does `claude -p` send thinking text (deltas, the block, or neither) on our models? One real turn, then `chat/reasoning/` (SPEC Reasoning).
+- [ ] api-key Anthropic keeps no thinking text on Opus 4.7+/5.x/Haiku 5.5, whose default `thinking.display` is `"omitted"`: decide whether to send `display: "summarized"` (no bill change, but part of the cached prefix), then check one real turn (SPEC Reasoning).
 
 ## ChatGPT plan
 

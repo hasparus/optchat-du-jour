@@ -5,7 +5,7 @@ import type { AGUIEvent, Message } from "@ag-ui/core";
 import { EventType } from "@ag-ui/core";
 import type { LiveRun, SessionEvent } from "../src/session.ts";
 import type { Entry } from "../src/tree.ts";
-import { reasoningId, type SessionState, splitTool, toolCallId } from "../src/wire.ts";
+import { reasoningId, type SessionState, splitTool, toolCallId, withCut } from "../src/wire.ts";
 
 export type AgUiEvent = AGUIEvent;
 
@@ -78,13 +78,11 @@ const whole = (id: string, role: "assistant" | "user", body: string): AgUiEvent[
 // a reasoning message opens: REASONING_START, then its REASONING_MESSAGE_START
 const opening = (id: string): AgUiEvent[] => [{ messageId: id, type: EventType.REASONING_START }, { messageId: id, role: "reasoning", type: EventType.REASONING_MESSAGE_START }];
 
-// where a piece of thinking went, on its REASONING_END: kept before entry `i` after `ms` (`cut`
-// only when characters were left out), or dropped
-const endOf = (how: { readonly i: number; readonly ms: number; readonly cut: number } | { readonly dropped: true }) => {
-  if ("dropped" in how) return { dropped: true };
-  const kept = { i: how.i, ms: how.ms };
-  return how.cut > 0 ? { ...kept, cut: how.cut } : kept;
-};
+// a reasoning message closes: REASONING_MESSAGE_END, then REASONING_END with where it went
+const closing = (id: string, metadata: Readonly<Record<string, number | boolean>>): AgUiEvent[] => [
+  { messageId: id, type: EventType.REASONING_MESSAGE_END },
+  { messageId: id, metadata, type: EventType.REASONING_END },
+];
 
 // What one connection is told. It starts with a snapshot of the log's last `window` entries and
 // the state; if a run is going on, its RUN_STARTED and the reply streamed so far follow, so a client
@@ -117,7 +115,7 @@ export function openStream(o: {
     const out: AgUiEvent[] = [];
     const id = reasoningId(at);
     if (thought?.id !== id) {
-      out.push(...endThought({ dropped: true }), ...opening(id));
+      out.push(...dropOpen(), ...opening(id));
       thought = { id, sent: offset };
     }
     const fresh = delta.slice(Math.max(0, thought.sent - offset));
@@ -125,21 +123,21 @@ export function openStream(o: {
     if (fresh !== "") out.push({ delta: fresh, messageId: id, type: EventType.REASONING_MESSAGE_CONTENT });
     return out;
   };
-  // The piece ends: kept before entry `i` (after `ms`, `cut` characters left out), or dropped.
-  // REASONING_END's metadata says which; a client drops a piece whose end names no entry.
-  function endThought(how: { readonly i: number; readonly ms: number; readonly cut: number } | { readonly dropped: true }, at?: number): AgUiEvent[] {
-    const id = at === undefined ? thought?.id : reasoningId(at);
-    if (id === undefined) return [];
-    const opened = thought?.id === id;
-    if ("dropped" in how && !opened) return [];
-    thought = opened ? null : thought;
-    return [
-      // a piece this connection never saw open (nothing of it streamed: all of it cut) opens here
-      ...(opened ? [] : opening(id)),
-      { messageId: id, type: EventType.REASONING_MESSAGE_END },
-      { messageId: id, metadata: endOf(how), type: EventType.REASONING_END },
-    ];
+  // The open piece came before nothing logged: it ends `dropped`, which a client drops
+  function dropOpen(): AgUiEvent[] {
+    if (thought === null) return [];
+    const { id } = thought;
+    thought = null;
+    return closing(id, { dropped: true });
   }
+  // The piece streamed at `at` was kept before entry `i` (after `ms`, `cut` characters left out); one
+  // this connection never saw open (nothing of it streamed: all of it cut) opens here first
+  const kept = (at: number, end: { readonly i: number; readonly ms: number; readonly cut: number }): AgUiEvent[] => {
+    const id = reasoningId(at);
+    const opened = thought?.id === id;
+    if (opened) thought = null;
+    return [...(opened ? [] : opening(id)), ...closing(id, withCut({ i: end.i, ms: end.ms }, end.cut))];
+  };
 
   const closeText = (): AgUiEvent[] => {
     if (text === null) return [];
@@ -214,9 +212,9 @@ export function openStream(o: {
       case "reasoning":
         return thinking(e.at, e.offset, e.delta);
       case "reasoning-kept":
-        return endThought({ cut: e.cut, i: e.i, ms: e.ms }, e.at);
+        return kept(e.at, e);
       case "reasoning-dropped":
-        return thought?.id === reasoningId(e.at) ? endThought({ dropped: true }) : [];
+        return thought?.id === reasoningId(e.at) ? dropOpen() : [];
       // the next text under that index starts the reply again (TEXT_MESSAGE_START clears a draft)
       case "reply-dropped":
         text = null;
@@ -228,7 +226,7 @@ export function openStream(o: {
       case "run-finished": {
         run = null;
         tool = null;
-        const dropped = endThought({ dropped: true }); // the session drops it first; a connection that missed that closes it here
+        const dropped = dropOpen(); // the session drops it first; a connection that missed that closes it here
         const end: AgUiEvent =
           e.error === null ? { runId: e.runId, threadId: o.thread, type: EventType.RUN_FINISHED } : { message: e.error, type: EventType.RUN_ERROR };
         from = Math.max(from, e.logged);

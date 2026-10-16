@@ -19,8 +19,11 @@ export type Thought = {
   // streaming now; `since` is when this page saw it begin (its own clock), for the live label
   readonly live: boolean;
   readonly since: number | null;
-  // its text could not be read
-  readonly failed: boolean;
+  // whether the reader has its line open (this page only); carried with it when it moves
+  readonly open: boolean;
+  // its text could not be read: the server has none for it ("missing", for good), or the read
+  // failed ("error": opening it again tries again)
+  readonly failed: "missing" | "error" | null;
 };
 export type Thoughts = ReadonlyMap<number, Thought>;
 export const noThoughts: Thoughts = new Map();
@@ -40,14 +43,14 @@ export function applyThought(thoughts: Thoughts, e: Inbound, now: number): Thoug
     case EventType.REASONING_MESSAGE_START: {
       const i = reasoningIndex(e.messageId);
       if (i === null || thoughts.get(i)?.live === true) return thoughts;
-      return set(thoughts, { cut: 0, failed: false, i, live: true, ms: null, since: now, text: "" });
+      return set(thoughts, { cut: 0, failed: null, i, live: true, ms: null, open: false, since: now, text: "" });
     }
     case EventType.REASONING_MESSAGE_CONTENT: {
       const i = reasoningIndex(e.messageId);
       if (i === null) return thoughts;
       const t = thoughts.get(i);
       // content without its start (a page that joined mid-thought): a piece from here on
-      if (t?.live !== true) return set(thoughts, { cut: 0, failed: false, i, live: true, ms: null, since: now, text: e.delta });
+      if (t?.live !== true) return set(thoughts, { cut: 0, failed: null, i, live: true, ms: null, open: false, since: now, text: e.delta });
       return set(thoughts, { ...t, text: (t.text ?? "") + e.delta });
     }
     case EventType.REASONING_END: {
@@ -89,15 +92,25 @@ export function withHeads(thoughts: Thoughts, heads: readonly ReasoningHead[]): 
   const fresh = heads.filter((h) => !thoughts.has(h.i));
   if (fresh.length === 0) return thoughts;
   const next = new Map(thoughts);
-  for (const h of fresh) next.set(h.i, { cut: h.cut ?? 0, failed: false, i: h.i, live: false, ms: h.ms, since: null, text: null });
+  for (const h of fresh) next.set(h.i, { cut: h.cut ?? 0, failed: null, i: h.i, live: false, ms: h.ms, open: false, since: null, text: null });
   return next;
 }
 
-// One piece's text, read when the reader opened it; null: it couldn't be read
-export function withText(thoughts: Thoughts, i: number, piece: ReasoningPiece | null): Thoughts {
+// One piece's text, read when the reader opened it: the piece, or why there is none
+export function withText(thoughts: Thoughts, i: number, piece: ReasoningPiece | "missing" | "error"): Thoughts {
   const t = thoughts.get(i);
   if (t === undefined || t.text !== null) return thoughts;
-  return set(thoughts, piece === null ? { ...t, failed: true } : { ...t, cut: piece.cut ?? 0, failed: false, ms: piece.ms, text: piece.text });
+  return set(thoughts, piece === "missing" || piece === "error" ? { ...t, failed: piece } : { ...t, cut: piece.cut ?? 0, failed: null, ms: piece.ms, text: piece.text });
+}
+
+// The reader opened or closed the line of the piece before entry i. Whether its text is to be
+// read now: opened, none held, and not known to be missing (a failed read is tried again).
+export type Toggled = { readonly thoughts: Thoughts; readonly read: boolean };
+export function toggled(thoughts: Thoughts, i: number, open: boolean): Toggled {
+  const t = thoughts.get(i);
+  if (t === undefined) return { read: false, thoughts };
+  const read = open && t.text === null && t.failed !== "missing";
+  return { read, thoughts: set(thoughts, { ...t, failed: read ? null : t.failed, open }) };
 }
 
 // only the pieces of the rows a page holds: those below `low` go with their rows

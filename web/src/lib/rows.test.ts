@@ -6,7 +6,7 @@ import { openStream } from "../../../server/agui.ts";
 import { type Entry, IDLE, snapshot } from "../test/fixture";
 import { applyEvent, applyPage, emptyLog, type Log, MAX_HELD, trimHeld, visible } from "./log";
 import { type Inbound, parseFrame } from "./protocol";
-import { chatRows, entryRows, planOf, planStates, rowFor, rowIndexFor, sourcesOfTool, toolStateOf, toolSummary, turnSources } from "./rows";
+import { chatRows, entryRows, planOf, planStates, rowFor, rowIndexFor, sourcesOfTool, thoughtHolder, toolStateOf, toolSummary, turnSources } from "./rows";
 import { runStart } from "./session";
 
 const entry = (i: number, kind: Kind, text: string) => ({ date: "2026-10-05T10:00:00Z", i, kind, text });
@@ -413,8 +413,40 @@ describe("a thought's own row (SPEC \"Reasoning\")", () => {
       ["e0", "user"],
       ["e1", "talk"],
     ]);
-    // none while nothing streams, or at an index a row already has
+    // none while nothing streams; one that began at a user row's index waits after it
     expect(chatRows(items, base, null, null)).toBe(base);
-    expect(chatRows(items, base, null, 0)).toBe(base);
+    expect(chatRows(items, base, null, 0).map((r) => r.key)).toEqual(["e0", "e1"]);
   });
+});
+
+test("a thought that began where a steered message was then logged waits after it, not on the user row", () => {
+  const items = [
+    { i: 0, kind: "user" as const, live: false, text: "hi" },
+    { i: 1, kind: "user" as const, live: true, text: "steer: also check tests" },
+  ];
+  const rows = chatRows(items, entryRows(items), null, 1);
+  expect(rows.map((r) => `${r.key} ${r.kind}`)).toEqual(["e0 user", "e1 user", "e2 thinking"]);
+  expect(thoughtHolder(rows, 1)?.key).toBe("e2");
+  // the reply comes at 2: it carries the thought, no row of its own beside it
+  const replying = chatRows(items, entryRows(items), { i: 2, kind: "talk", text: "Both." }, 1);
+  expect(replying.map((r) => `${r.key} ${r.kind}`)).toEqual(["e0 user", "e1 user", "e2 talk"]);
+  expect(thoughtHolder(replying, 1)?.key).toBe("e2");
+  // the same rows give the same thinking row back
+  expect(chatRows(items, entryRows(items), null, 1).at(-1)).toBe(rows.at(-1));
+});
+
+test("a thought's own row is neither a turn boundary nor a tool row: plans and sources read as without it", () => {
+  const items = [
+    { i: 0, kind: "user" as const, live: false, text: "plan it" },
+    { i: 1, kind: "tool" as const, live: false, text: `TodoWrite ${JSON.stringify({ todos: [{ content: "a", status: "in_progress" }] })}` },
+    { i: 2, kind: "echo" as const, live: false, text: "ok" },
+    { i: 3, kind: "tool" as const, live: false, text: 'WebFetch {"url":"https://example.com/a"}' },
+    { i: 4, kind: "echo" as const, live: false, text: "page" },
+    { i: 5, kind: "talk" as const, live: false, text: "done" },
+  ];
+  const base = entryRows(items);
+  const thinking = chatRows(items, base, null, 6);
+  expect(thinking.at(-1)?.kind).toBe("thinking");
+  expect([...planStates(thinking, 0)]).toEqual([...planStates(base, 0)]);
+  expect([...turnSources(thinking)]).toEqual([...turnSources(base)]);
 });

@@ -13,7 +13,7 @@ import type { Link, LinkStatus } from "./connection.ts";
 import { loadSent, saveSent } from "./draft.ts";
 import { applyEvent, applyPage, dropBelow, emptyLog, hole, type Log, lowest, tip, trimHeld } from "./log.ts";
 import type { Forwarded, Inbound, Patch } from "./protocol.ts";
-import { applyThought, dropLive, keepFrom, noThoughts, type Thoughts, withHeads, withText } from "./reasoning.ts";
+import { applyThought, dropLive, keepFrom, noThoughts, toggled, type Thoughts, withHeads, withText } from "./reasoning.ts";
 
 export type Marker = {
   readonly key: number;
@@ -294,20 +294,25 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
       // none to show
     }
   };
-  // the piece before entry i is opened: its text, read once
+  // The reader opened or closed the line of the piece before entry i: held here, so it stays as
+  // they left it when the piece moves or its row is drawn again. Opened without its text, the text
+  // is read: none on the server is said for good, a read that failed is tried at the next opening.
   const reading = new Set<number>();
-  const openThought = async (i: number) => {
-    const t = s.thoughts.get(i);
-    if (t === undefined || t.text !== null || reading.has(i)) return;
+  const toggleThought = (i: number, open: boolean) => {
+    const next = toggled(s.thoughts, i, open);
+    if (next.thoughts !== s.thoughts) set({ thoughts: next.thoughts });
+    if (!next.read || reading.has(i)) return;
     reading.add(i);
-    try {
-      const piece = await reasoningText(i);
-      set({ thoughts: withText(s.thoughts, i, piece) });
-    } catch {
-      set({ thoughts: withText(s.thoughts, i, null) });
-    } finally {
-      reading.delete(i);
-    }
+    reasoningText(i).then(
+      (piece) => {
+        reading.delete(i);
+        set({ thoughts: withText(s.thoughts, i, piece ?? "missing") });
+      },
+      () => {
+        reading.delete(i);
+        set({ thoughts: withText(s.thoughts, i, "error") });
+      },
+    );
   };
 
   // older entries a hole cuts off from the window (it moved up while this page slept): fetch the
@@ -463,10 +468,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
       const thoughts = keepFrom(s.thoughts, lowest(s.log));
       if (thoughts !== s.thoughts) set({ thoughts });
     },
-    // the reader opened what was thought before entry i: its text is read if this page lacks it
-    openThought: (i: number) => {
-      void openThought(i);
-    },
+    toggleThought,
     // one older page under what is shown; true while there may be more
     loadOlder: async () => {
       const low = lowest(s.log);
