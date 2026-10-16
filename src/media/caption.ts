@@ -8,7 +8,7 @@ import { baseArgs } from "../claude/args.ts";
 import { Runner } from "../claude/process.ts";
 import type { ProviderRef, Ref } from "../config.ts";
 import { failover, watchChain } from "../engines/chain.ts";
-import { type EngineError, fromResult, ModelError, UsageLimit } from "../engines/errors.ts";
+import { type EngineError, fromResult, ModelError, type Spent, UsageLimit } from "../engines/errors.ts";
 import { admitRequest } from "../engines/request-admission.ts";
 import { type EngineNeeds, providerOf } from "../engines/registry.ts";
 import { CAPTION } from "../prompts.ts";
@@ -87,8 +87,23 @@ const providerCaption = (ref: ProviderRef, o: CaptionNeeds): Describe => {
       if (ref.engine === "openai-plan" && !o.planImages) return yield* new UsageLimit({ message: "openai-plan is not sent images (media.planImages is off)" });
       const p = yield* provider;
       const started = Date.now();
-      const step = yield* p.call({ final: true, history: [{ parts: [input.picture, askOf(input)], type: "user" }], instructions: CAPTION, onText: () => Effect.void, tools: [] });
-      yield* o.log(record({ auth: p.auth, device: o.device, dollars: step.dollars, effort: p.effort, engine: p.engine, failoverFrom, model: step.model, started, usage: step.usage }));
+      let snapshot: Spent | undefined;
+      const log = (spent: Spent) =>
+        o.log(record({ auth: p.auth, device: o.device, dollars: spent.dollars, effort: p.effort, engine: p.engine, failoverFrom, model: spent.model, started, usage: spent.usage }));
+      const step = yield* p.call({
+        final: true,
+        history: [{ parts: [input.picture, askOf(input)], type: "user" }],
+        instructions: CAPTION,
+        onSettledUsage: (spent) => Effect.sync(() => { snapshot = spent; }),
+        onText: () => Effect.void,
+        tools: [],
+      }).pipe(Effect.onExit((exit) => {
+        if (exit._tag === "Success") return log(exit.value);
+        for (const reason of exit.cause.reasons) {
+          if (reason._tag === "Fail" && reason.error._tag !== "DeviceOffline" && reason.error.spent) return log(reason.error.spent);
+        }
+        return snapshot ? log(snapshot) : Effect.void;
+      }));
       return step.items.flatMap((i) => (i.type === "text" ? [i.text] : [])).join(" ");
     });
 };

@@ -18,7 +18,14 @@
 
     "paths": { "@/*": ["./src/*"], "@wire": ["../src/wire.ts"] },
     "types": ["bun", "vite/client", "vite-plugin-pwa/client"],
-    "plugins": [{ "name": "@effect/language-service" }]
+    "plugins": [{
+      "name": "@effect/language-service",
+      "allowedUnstableApis": [
+        "@effect/platform-bun/BunRuntime#runMain",
+        "effect/http/FetchHttpClient#layer"
+      ]
+    }]
   },
-  "include": ["src", "e2e", "*.ts"]
+  "include": ["src", "e2e", "*.ts"],
+  "exclude": ["../repos/**", "node_modules"]
 }

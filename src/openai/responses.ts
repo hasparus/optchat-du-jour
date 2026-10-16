@@ -14,7 +14,7 @@
 // docs/optchat.md §3.3 marks Anthropic's; the request end is cached implicitly (`prompt_cache_options` left at its default). A
 // model that refuses the breakpoint field (the reference measured that on the Codex route) gets
 // the request again without it, and is sent none from then on, said once.
-import { Context, Data, Effect, Layer, Option, Schema, Stream } from "effect";
+import { Cause, Context, Data, Effect, Layer, Option, Schema, Stream } from "effect";
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
 import { admitRequest } from "../engines/request-admission.ts";
@@ -57,6 +57,7 @@ export type Ask<E extends Tagged = never> = {
   // start of each item's part. Only clients see it (SPEC "Reasoning"); the item goes back as it came
   readonly onReasoning?: (delta: string, fresh: boolean) => Effect.Effect<void>;
   readonly onOut?: (out: Out) => Effect.Effect<void, E>; // each item of `output` as it completes
+  readonly onSettledUsage?: (spent: Spent) => Effect.Effect<void>;
   readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
 };
 export type Reply = { readonly text: string; readonly usage: Usage; readonly model: string; readonly output: readonly Out[] };
@@ -147,10 +148,10 @@ const ApiError = Schema.Struct({
   param: Schema.optional(Schema.NullOr(Schema.String)),
 });
 const ApiUsage = Schema.Struct({
-  input_tokens: Schema.Number,
-  output_tokens: Schema.Number,
-  input_tokens_details: Schema.optional(Schema.NullOr(Schema.Struct({ cached_tokens: Schema.optional(Schema.Number) }))),
-});
+  input_tokens: Schema.Natural,
+  output_tokens: Schema.Natural,
+  input_tokens_details: Schema.optional(Schema.NullOr(Schema.Struct({ cached_tokens: Schema.optional(Schema.Natural) }))),
+}).check(Schema.makeFilter((u) => (u.input_tokens_details?.cached_tokens ?? 0) <= u.input_tokens));
 const delta = json(Schema.Struct({ delta: Schema.String }));
 // a reasoning delta names its item, and a summary's its part: a new pair starts a new thought
 const reasoningDelta = json(
@@ -214,12 +215,13 @@ type Read = {
   readonly refusal: string;
   readonly output: readonly Out[];
   readonly done: Reply | null;
+  readonly spent: Spent | undefined;
 };
 
-type Hooks<E extends Tagged> = Pick<Ask<E>, "onOut" | "onReasoning" | "onStart" | "onText" | "onThinking">;
+type Hooks<E extends Tagged> = Pick<Ask<E>, "onSettledUsage" | "onOut" | "onReasoning" | "onStart" | "onText" | "onThinking">;
 
 const onEvent =
-  <E extends Tagged>(o: { readonly model: string; readonly label: string } & Hooks<E>) =>
+  <E extends Tagged>(o: { readonly model: string; readonly label: string; readonly reported: (spent: Spent | undefined) => void } & Hooks<E>) =>
   (r: Read, data: string): Effect.Effect<Read, E | EngineError | Schema.SchemaError> => {
     // an item of `output` is whole: it goes out now, so what follows it streams after it
     const out = (item: Out) => Effect.as(o.onOut ? o.onOut(item) : Effect.void, { ...r, output: [...r.output, item] });
@@ -262,17 +264,20 @@ const onEvent =
         }
         case "response.completed": {
           const { response } = yield* completed(data);
+          o.reported(spentOf(response, o.model));
           // a stream that never said which items it held: its text is the one item
           const said = r.output.some((x) => x.type !== "reasoning");
           const whole = !said && r.text ? yield* out({ text: r.text, type: "text" }) : r;
-          return { ...whole, done: { model: response.model ?? o.model, output: whole.output, text: r.text, usage: usageOf(response.usage) } };
+          return { ...whole, spent: spentOf(response, o.model), done: { model: response.model ?? o.model, output: whole.output, text: r.text, usage: usageOf(response.usage) } };
         }
         case "response.failed": {
           const { response } = yield* failed(data);
+          o.reported(spentOf(response, o.model));
           return yield* classify(null, response.error?.code, response.error?.message ?? "response.failed", o.label, spentOf(response, o.model));
         }
         case "response.incomplete": {
           const { response } = yield* incomplete(data);
+          o.reported(spentOf(response, o.model));
           const reason = response.incomplete_details?.reason ?? "no reason given";
           return yield* new ModelError({ message: `${o.label}: incomplete response (${reason})`, spent: spentOf(response, o.model) });
         }
@@ -283,19 +288,24 @@ const onEvent =
         default:
           return r;
       }
-    });
+    }).pipe(Effect.catchCause((cause) => Effect.failCause(Cause.map(cause, (e: E | EngineError | Schema.SchemaError): E | EngineError =>
+      e instanceof Schema.SchemaError ? new ModelError({ message: `${o.label}: invalid response event or usage counters` }) : e))));
   };
 
 // A stream counts only when it ends in response.completed, and ends there: whatever follows (a
 // `data: [DONE]` line, say) is never read. One that starts well can still fail.
 export const readStream = <E extends Tagged = never>(stream: Stream.Stream<Uint8Array, EngineError>, model: string, o: { readonly label?: string } & Hooks<E> = {}) =>
-  Effect.gen(function* () {
+  Effect.suspend(() => {
     const label = o.label ?? "openai-plan";
-    const init: Read = { done: null, output: [], part: null, reasoning: 0, refusal: "", text: "", told: false };
-    const r = yield* sseFold(label, stream, init, onEvent({ ...o, label, model }), (state) => state.done !== null, o.onStart);
-    if (r.refusal) return yield* new Refusal({ message: `${label} refused: ${r.refusal.slice(0, 300)}`, spent: r.done ? { model: r.done.model, usage: r.done.usage } : undefined });
-    if (r.done === null) return yield* new ModelError({ message: `${label}: the stream ended without response.completed` });
-    return r.done;
+    const init: Read = { done: null, output: [], part: null, reasoning: 0, refusal: "", spent: undefined, text: "", told: false };
+    let known: Spent | undefined;
+    const reported = (spent: Spent | undefined) => { if (spent) known = spent; };
+    return Effect.gen(function* () {
+      const r = yield* sseFold(label, stream, init, onEvent({ ...o, label, model, reported }), (state) => state.done !== null, o.onStart);
+      if (r.refusal) return yield* new Refusal({ message: `${label} refused: ${r.refusal.slice(0, 300)}`, spent: r.spent });
+      if (r.done === null) return yield* new ModelError({ message: `${label}: the stream ended without response.completed` });
+      return r.done;
+    }).pipe(Effect.onExit(() => known && o.onSettledUsage ? o.onSettledUsage(known) : Effect.void));
   });
 
 // How a client authenticates: a bearer token now, and a fresh one after a 401 with `stale`.
@@ -348,7 +358,7 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
             : classify(res.status, null, text.slice(0, 300), o.label);
         }
         const stream = res.stream.pipe(Stream.mapError((err) => new ModelError({ message: `${o.label}: ${err.message}` })));
-        return yield* readStream(stream, ask.model, { label: o.label, onOut: ask.onOut, onStart: ask.onStart, onReasoning: ask.onReasoning, onText: ask.onText, onThinking: ask.onThinking });
+        return yield* readStream(stream, ask.model, { label: o.label, onSettledUsage: ask.onSettledUsage, onOut: ask.onOut, onReasoning: ask.onReasoning, onStart: ask.onStart, onText: ask.onText, onThinking: ask.onThinking });
       }).pipe(Effect.catchIf(HttpClientError.isHttpClientError, (err) => Effect.fail(new ModelError({ message: `${o.label}: ${err.message}` }))));
 
     // a 401 renews the token once, then counts as signed out
