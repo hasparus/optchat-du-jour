@@ -28,6 +28,6 @@ export const api = {
   node: async (l: number, i: number) => get(`/api/node?l=${l}&i=${i}`, NodeView),
   usage: async () => get("/api/usage", Usage),
   devices: async () => get("/api/devices", Devices),
-  // a subagent and its side log from entry `from` on (SPEC M7a)
-  subagent: async (name: string, from = 0) => get(`/api/subagent?name=${encodeURIComponent(name)}&from=${from}`, SubagentLog),
+  // a subagent and its side log from entry `from` on, `limit` entries at most (SPEC M7a)
+  subagent: async (name: string, from = 0, limit = 100) => get(`/api/subagent?name=${encodeURIComponent(name)}&from=${from}&limit=${limit}`, SubagentLog),
 };

@@ -14,7 +14,7 @@ import type { Summarize } from "../src/compactor.ts";
 import { entryLabel, mediaSettings, reasoningSettings, type Settings } from "../src/config.ts";
 import type { DownList } from "../src/engines/chain.ts";
 import { makeGate } from "../src/engines/inflight.ts";
-import { turnEngine } from "../src/engines/registry.ts";
+import { SUBAGENT_POLICY, turnEngine } from "../src/engines/registry.ts";
 import { forbidden, mount } from "../src/http.ts";
 import { OpenAiPlan, openAiPlanLayer } from "../src/openai/responses.ts";
 import { makeCaptioner } from "../src/media/caption.ts";
@@ -120,7 +120,7 @@ export const routes = (o: ServerOptions) =>
         dir: stream,
         effort: settings.master.effort,
         // read when a run starts, long after `subagents` is set
-        engine: (ref) => turnEngine(ref, { ...needs, instructions, runnerFor: subagentRunnerFor, toolsFor: (device) => toolsWith(device, chat.mem, subagents.tools("subagent")), warms: () => false }, true),
+        engine: (ref) => turnEngine(ref, { ...needs, instructions, runnerFor: subagentRunnerFor, toolsFor: (device) => toolsWith(device, chat.mem, subagents.tools("subagent")), warms: () => false }, SUBAGENT_POLICY),
         host,
         logUsage: usage,
         mem: chat.mem,

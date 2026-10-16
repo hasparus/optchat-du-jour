@@ -10,10 +10,16 @@
 // On disk, beside the stream's chat/ (SPEC "Subagents"):
 //   streams/<device>/agents/<Name>/log.jsonl   its side log: one line per entry, the main log's
 //                                              records (records.ts Msg), append-only, fsynced
-//   streams/<device>/agents/<Name>/agent.json  what it is: task, model, state, times, and whether
-//                                              its last report is in the chat yet; replaced whole
+//   streams/<device>/agents/<Name>/agent.json  what it is: task, model, state, times, its log's
+//                                              length and newest line, and the text of a report
+//                                              not in the chat yet (`pending`); replaced whole
 // Both are committed with the data dir. A run that a restart cut short is found "running" at the
-// next start: it is marked stopped and reported so, and nothing resumes it.
+// next start: it is marked stopped and reported so, and nothing resumes it. A side log is held in
+// memory only while its subagent runs or is listed; the others are read again when asked for.
+//
+// A report is made once, as its run ends, before anything else can happen to the subagent (a tell
+// may start it again at once), and kept as `pending` until the chat has it: a restart sends the
+// same text, unless the chat already holds it.
 //
 // Each call of a run is one engine call: the view (the turn's that spawned it, or that told it,
 // cached as that turn's), then one opening text: who it is, its task, and on a later call what its
@@ -66,7 +72,7 @@ export type Subagents = {
   readonly tell: (name: string, text: string) => Effect.Effect<string | null>;
   readonly stop: (name: string) => Effect.Effect<string | null>;
   readonly pick: (name: string, model: string) => Effect.Effect<string | null>;
-  readonly log: (name: string) => SubagentLog | null;
+  readonly log: (name: string, from?: number, limit?: number) => SubagentLog | null;
   // after a restart: the runs it cut short are stopped, and every report not in the chat yet is sent
   readonly restore: Effect.Effect<void>;
 };
@@ -81,7 +87,12 @@ const Meta = Schema.Struct({
   ended: Schema.NullOr(Schema.String),
   why: Schema.NullOr(Schema.String),
   runs: Schema.Number,
-  reported: Schema.Boolean,
+  // the report made when its last run ended and not in the chat yet, word for word
+  pending: Schema.optional(Schema.NullOr(Schema.String)),
+  // its side log's length and newest line (LAST_LINE characters), so a subagent that isn't listed
+  // needn't be read; a file without them is read once at startup
+  entries: Schema.optional(Schema.Number),
+  lastLine: Schema.optional(Schema.NullOr(Schema.String)),
 });
 type Meta = typeof Meta.Type;
 const decodeMeta = Schema.decodeUnknownOption(Schema.fromJsonString(Meta));
@@ -101,8 +112,10 @@ type Agent = {
   ended: number | null;
   why: string | null;
   runs: number;
-  reported: boolean;
-  readonly entries: Entry[];
+  pending: string | null; // the report not in the chat yet
+  entries: Entry[] | null; // its side log, while in memory (`entriesOf` reads it again)
+  count: number; // its side log's length
+  lastLine: string | null; // its newest line, as the state shows it
   tells: Tell[];
   offerTo: Queue.Queue<Tell> | null;
   fiber: Fiber.Fiber<void, EngineError | StoreError> | null;
@@ -123,9 +136,24 @@ const took = (ms: number) => {
 };
 
 // What the first message of each call says after the view (one system prompt for every call,
-// docs/optchat.md §5, so who it is goes here)
+// docs/optchat.md §5, so who it is goes here). Claude Code may still run a command it classes as
+// read-only (`ls`, `git log`), so it is not told that none runs.
 const intro = (name: string) =>
-  `[optchat: You are the subagent "${name}", started by OptChat for the task below. The view above is OptChat's memory, context only: do what your task says, not what the user's last message says. You can read files (Read, Glob, Grep) and memory (zoom, date), and nothing else: you write no file and run no command. Messages from OptChat or the user may reach you while you work. Your final reply is your report to OptChat: what you found and what will matter later, in a few lines.]`;
+  `[optchat: You are the subagent "${name}", started by OptChat for the task below. The view above is OptChat's memory, context only: do what your task says, not what the user's last message says. You read files (Read, Glob, Grep) and memory (zoom, date) and change nothing: writing a file, and any command that could change something, is refused. Messages from OptChat or the user may reach you while you work. Your final reply is your report to OptChat: what you found and what will matter later, in a few lines.]`;
+
+// the line the state shows of a side log entry
+const lineOf = (e: Pick<Entry, "kind" | "text">) => headOf(flat(`${e.kind}: ${e.text}`), LAST_LINE);
+
+// a side log as its file holds it: the lines that read, in order
+const readLog = (path: string): Entry[] =>
+  existsSync(path)
+    ? readFileSync(path, "utf8")
+        .split("\n")
+        .flatMap((line) => {
+          const e = line.trim() === "" ? undefined : decodeEntry(line);
+          return e?._tag === "Some" ? [{ ...e.value, size: e.value.size ?? 0 }] : [];
+        })
+    : [];
 
 const shownEntry = (e: Pick<Entry, "i" | "kind" | "text">) => `${e.i}|${e.kind}: ${e.text}`;
 
@@ -194,8 +222,10 @@ export const makeSubagents = (o: {
     const metaOf = (a: Agent): Meta => ({
       effort: a.effort ?? null,
       ended: a.ended === null ? null : iso(a.ended),
+      entries: a.count,
+      lastLine: a.lastLine,
       name: a.name,
-      reported: a.reported,
+      pending: a.pending,
       ref: a.ref,
       runs: a.runs,
       started: iso(a.started),
@@ -204,10 +234,15 @@ export const makeSubagents = (o: {
       why: a.why,
     });
     const save = (a: Agent) => replaceFile(folder(a.name), "agent.json", `${JSON.stringify(metaOf(a))}\n`);
+    // its side log, read again from the file when it isn't in memory
+    const entriesOf = (a: Agent): Entry[] => {
+      a.entries ??= readLog(`${folder(a.name)}/log.jsonl`);
+      return a.entries;
+    };
     // one entry of its side log: written and synced before anything else knows it
     const append = (a: Agent, kind: Entry["kind"], text: string, error = false) =>
       Effect.suspend(() => {
-        const base = newMsg(a.entries.length, kind, text);
+        const base = newMsg(a.count, kind, text);
         const entry: Entry = error ? { ...base, error: true } : base;
         return Effect.try({
           catch: (e) => new StoreError({ message: `cannot log ${a.name}'s entry ${entry.i}: ${e instanceof Error ? e.message : String(e)}` }),
@@ -215,14 +250,22 @@ export const makeSubagents = (o: {
             appendLine(folder(a.name), "log.jsonl", `${JSON.stringify(entry)}\n`);
           },
         }).pipe(
-          Effect.tap(() => Effect.sync(() => a.entries.push(entry))),
+          Effect.tap(() =>
+            Effect.sync(() => {
+              a.entries?.push(entry);
+              a.count += 1;
+              a.lastLine = lineOf(entry);
+            }),
+          ),
           Effect.andThen(changed),
           Effect.uninterruptible,
         );
       });
 
-    // what an earlier run left: every agents/<Name>/ with an agent.json that reads (one that
-    // doesn't is reported and left alone), its side log's lines that read
+    // What an earlier run left: every agents/<Name>/ whose agent.json reads and names that folder
+    // (one that doesn't is reported and left alone). Its side log stays on disk unless it was
+    // running (a restart cut it short: its length on disk is the truth) or its agent.json is from
+    // before the length was kept.
     const loaded: Agent[] = [];
     const problems: string[] = [];
     if (existsSync(root))
@@ -235,23 +278,25 @@ export const makeSubagents = (o: {
           continue;
         }
         const m = meta.value;
-        const logPath = `${folder(name)}/log.jsonl`;
-        const lines = existsSync(logPath) ? readFileSync(logPath, "utf8").split("\n") : [];
-        const entries = lines.flatMap((line) => {
-          const e = line.trim() === "" ? undefined : decodeEntry(line);
-          return e?._tag === "Some" ? [{ ...e.value, size: e.value.size ?? 0 }] : [];
-        });
+        if (m.name !== name) {
+          problems.push(`subagent ${name}: agent.json names ${m.name}, not its folder; left alone`);
+          continue;
+        }
+        const entries = m.state === "running" || m.entries === undefined ? readLog(`${folder(name)}/log.jsonl`) : null;
+        const last = entries?.at(-1);
         const model = resolve(m.ref);
         loaded.push({
+          count: entries?.length ?? m.entries ?? 0,
           effort: Result.isSuccess(model) ? model.success.effort : m.effort !== null && isEffort(m.effort) ? m.effort : undefined,
           ended: m.ended === null ? null : Date.parse(m.ended),
           engineRef: Result.isSuccess(model) ? model.success.ref : null,
           entries,
           fiber: null,
-          name: m.name,
+          lastLine: entries === null ? (m.lastLine ?? null) : last === undefined ? null : lineOf(last),
+          name,
           offerTo: null,
+          pending: m.pending ?? null,
           ref: m.ref,
-          reported: m.reported,
           runs: m.runs,
           started: Date.parse(m.started),
           state: m.state,
@@ -269,12 +314,11 @@ export const makeSubagents = (o: {
     // ---- the state clients see ----
 
     const infoOf = (a: Agent): SubagentInfo => {
-      const last = a.entries.at(-1);
       const base: SubagentInfo = {
         device: o.device,
         effort: a.effort ?? null,
         elapsed: Math.max(0, (a.ended ?? now()) - a.started),
-        entries: a.entries.length,
+        entries: a.count,
         label: a.engineRef ? entryLabel(a.engineRef, o.effort) : a.ref,
         name: a.name,
         ref: a.ref,
@@ -282,25 +326,33 @@ export const makeSubagents = (o: {
         state: a.state,
         task: a.task,
       };
-      const withLast = last === undefined ? base : { ...base, lastLine: headOf(flat(`${last.kind}: ${last.text}`), LAST_LINE) };
+      const withLast = a.lastLine === null ? base : { ...base, lastLine: a.lastLine };
       return a.why === null ? withLast : { ...withLast, why: a.why };
     };
-    const list = () => {
+    // every running one, then the newest others, up to SUBAGENTS_SHOWN
+    const shown = () => {
       const all = [...agents.values()].toSorted((x, y) => y.started - x.started);
       const running = all.filter((a) => a.state === "running");
       const others = all.filter((a) => a.state !== "running").slice(0, Math.max(0, SUBAGENTS_SHOWN - running.length));
-      return [...running, ...others].map(infoOf);
+      return [...running, ...others];
+    };
+    const list = () => shown().map(infoOf);
+    // the side logs of subagents no longer listed leave memory (their cards are gone)
+    const evict = () => {
+      const kept = new Set(shown());
+      for (const a of agents.values()) if (!kept.has(a)) a.entries = null;
     };
 
     // ---- reports ----
 
     // What reaches the chat when a run ends: its final reply, or why there is none
-    const reportOf = (a: Agent) => {
+    // (as its run ends: `ended` is when)
+    const reportOf = (a: Agent, ended: number) => {
       const head = `[${a.name}] `;
-      const ran = took((a.ended ?? now()) - a.started);
-      const more = `zoom("${a.name}") reads its log (${a.entries.length} entries)`;
+      const ran = took(ended - a.started);
+      const more = `zoom("${a.name}") reads its log (${a.count} entries)`;
       if (a.state === "done") {
-        const reply = a.entries.findLast((e) => e.kind === "talk")?.text.trim() ?? "";
+        const reply = entriesOf(a).findLast((e) => e.kind === "talk")?.text.trim() ?? "";
         if (reply === "") return `${head}finished after ${ran} without a reply; ${more}.`;
         const kept = headOf(reply, REPORT_MAX);
         return kept === reply ? `${head}${reply}` : `${head}${kept}\n[… ${reply.length - kept.length} characters cut: ${more}]`;
@@ -309,33 +361,36 @@ export const makeSubagents = (o: {
       return `${head}stopped after ${ran}: ${a.why ?? "stopped"}. ${more}; tell("${a.name}", …) starts it again.`;
     };
 
-    // Into the chat once the session logs it; then marked reported, so a restart before that sends
-    // it again and one after doesn't. Forked: the session logs it when no turn runs.
-    const sendReport = (a: Agent) =>
+    // This report, word for word, into the chat once the session logs it; then no longer pending,
+    // unless a later run's report is pending by then. Forked: the session logs it when no turn runs.
+    const sendReport = (a: Agent, text: string) =>
       Effect.gen(function* () {
         const host = yield* Deferred.await(o.host);
-        yield* host.report(reportOf(a));
-        a.reported = true;
+        yield* host.report(text);
+        if (a.pending !== text) return;
+        a.pending = null;
         yield* save(a).pipe(Effect.catch((error) => info(error.message)));
       }).pipe(Effect.forkIn(scope), Effect.asVoid);
 
-    // a run ended: its state, saved and committed, then the report
+    // A run ended: its state and its report, made at once, before this fiber yields (a tell may
+    // start it again from the next step on), then saved, committed and sent.
     const ended = (a: Agent, runId: string, exit: Exit.Exit<void, EngineError | StoreError>): Effect.Effect<void> =>
-      Effect.gen(function* () {
+      Effect.suspend(() => {
         a.fiber = null;
         a.offerTo = null;
         for (const t of a.tells) t.state = "held";
         // a message that came as its last call ended: one more call, as if it had come a moment sooner
-        if (Exit.isSuccess(exit) && a.tells.length > 0) {
-          a.fiber = yield* Effect.forkIn(run(a, runId), scope);
-          return;
-        }
+        if (Exit.isSuccess(exit) && a.tells.length > 0)
+          return Effect.forkIn(run(a, runId), scope).pipe(
+            Effect.tap((fiber) => Effect.sync(() => (a.fiber = fiber))),
+            Effect.asVoid,
+          );
         if (Exit.isSuccess(exit)) {
           a.state = "done";
           a.why = null;
         } else if (Cause.hasInterruptsOnly(exit.cause)) {
           // the server is going down: left "running" on disk, for the next start to report
-          if (!a.stopping) return;
+          if (!a.stopping) return Effect.void;
           a.state = "stopped";
           a.why = "stopped by the user";
         } else {
@@ -346,14 +401,20 @@ export const makeSubagents = (o: {
         }
         a.stopping = false;
         a.ended = now();
-        a.reported = false;
-        yield* save(a).pipe(Effect.catch((error) => info(error.message)));
-        yield* a.state === "done"
-          ? o.publish({ name: a.name, report: reportOf(a), runId, type: "subagent-finished" })
-          : o.publish({ code: a.state === "stopped" ? "stopped" : "failed", message: a.why ?? a.state, name: a.name, runId, type: "subagent-error" });
-        yield* changed;
-        yield* o.commit.pipe(Effect.flatMap((failed) => (failed ? info(`git: ${failed}`) : Effect.void)));
-        yield* sendReport(a);
+        const report = reportOf(a, a.ended);
+        a.pending = report;
+        const told: SessionEvent =
+          a.state === "done"
+            ? { name: a.name, report, runId, type: "subagent-finished" }
+            : { code: a.state === "stopped" ? "stopped" : "failed", message: a.why ?? a.state, name: a.name, runId, type: "subagent-error" };
+        return Effect.gen(function* () {
+          yield* save(a).pipe(Effect.catch((error) => info(error.message)));
+          yield* o.publish(told);
+          evict();
+          yield* changed;
+          yield* o.commit.pipe(Effect.flatMap((failed) => (failed ? info(`git: ${failed}`) : Effect.void)));
+          yield* sendReport(a, report);
+        });
       });
 
     // ---- a run ----
@@ -372,7 +433,7 @@ export const makeSubagents = (o: {
 
     const run = (a: Agent, runId: string): Effect.Effect<void, EngineError | StoreError> =>
       Effect.gen(function* () {
-        for (let fresh = a.entries.length <= 1; ; fresh = false) {
+        for (let fresh = a.count <= 1; ; fresh = false) {
           if (a.engineRef === null) return yield* new StoreError({ message: `${a.ref} is not a model of the master's chain any more (${chainText()})` });
           const engine = yield* o.engine(a.engineRef);
           const { ref } = a;
@@ -382,7 +443,8 @@ export const makeSubagents = (o: {
           const sent = a.tells.filter((t) => t.state === "held");
           a.tells = a.tells.filter((t) => !sent.includes(t));
           for (const t of sent) yield* append(a, "user", t.text);
-          const opening = [intro(a.name), `Task: ${a.task}`, ...(fresh ? [] : [history(a.name, a.entries.slice(0, a.entries.length - sent.length))]), ...sent.map((t) => t.text)].join("\n\n");
+          const before = entriesOf(a);
+          const opening = [intro(a.name), `Task: ${a.task}`, ...(fresh ? [] : [history(a.name, before.slice(0, before.length - sent.length))]), ...sent.map((t) => t.text)].join("\n\n");
           const q = yield* Queue.unbounded<Tell>();
           a.offerTo = q;
           const asMid = (t: Tell): Mid => ({ media: [], seq: t.seq, text: t.text });
@@ -457,13 +519,15 @@ export const makeSubagents = (o: {
         const a: Agent = {
           effort,
           ended: null,
+          count: 0,
           engineRef: ref,
           entries: [],
           fiber: null,
+          lastLine: null,
           name,
           offerTo: null,
+          pending: null,
           ref: ref.ref,
-          reported: true,
           runs: 0,
           started: now(),
           state: "running",
@@ -525,17 +589,19 @@ export const makeSubagents = (o: {
       const a = find(name);
       if (!a) return `No subagent ${name}.${agents.size === 0 ? "" : ` Subagents: ${[...agents.values()].map((x) => x.name).join(", ")}.`}`;
       const start = Number.isSafeInteger(from) && from > 0 ? from : 0;
-      const head = `${a.name}: ${a.state}${a.why === null ? "" : ` (${a.why})`}, on ${a.ref}, ${a.entries.length} entries; its task is entry 0.`;
+      const entries = entriesOf(a);
+      const head = `${a.name}: ${a.state}${a.why === null ? "" : ` (${a.why})`}, on ${a.ref}, ${entries.length} entries; its task is entry 0.`;
       const lines: string[] = [];
       let size = 0;
       let k = start;
-      for (; k < a.entries.length; k++) {
-        const line = shownEntry(a.entries[k] ?? { i: k, kind: "note", text: "" });
+      for (; k < entries.length; k++) {
+        const line = shownEntry(entries[k] ?? { i: k, kind: "note", text: "" });
         if (lines.length > 0 && size + line.length > SIDE_PAGE) break;
         lines.push(line);
         size += line.length + 1;
       }
-      const more = k < a.entries.length ? `\n[more: zoom("${a.name}", ${k})]` : "";
+      const more = k < entries.length ? `\n[more: zoom("${a.name}", ${k})]` : "";
+      if (!shown().includes(a)) a.entries = null; // read for this answer only
       return [head, ...lines].join("\n") + more;
     };
 
@@ -582,23 +648,46 @@ export const makeSubagents = (o: {
         return null;
       });
 
-    const log = (name: string): SubagentLog | null => {
+    // its entries from `from`, at most `limit` of them; one no longer listed is read for this answer only
+    const log = (name: string, from = 0, limit = Number.POSITIVE_INFINITY): SubagentLog | null => {
       const a = find(name);
-      return a ? { entries: [...a.entries], subagent: infoOf(a) } : null;
+      if (!a) return null;
+      const entries = entriesOf(a).slice(from, from + limit);
+      if (!shown().includes(a)) a.entries = null;
+      return { entries, subagent: infoOf(a) };
+    };
+
+    // whether the chat holds this report already, since the run ended: a restart between the
+    // chat's line and agent.json's would otherwise send it twice
+    const inChat = (text: string, since: number) => {
+      const { root: chatLog } = o.mem;
+      for (let k = chatLog.length - 1; k >= 0; k--) {
+        const e = chatLog[k];
+        if (e === undefined || Date.parse(e.date) < since) return false;
+        if (e.kind === "user" && e.text === text) return true;
+      }
+      return false;
     };
 
     const restore = Effect.gen(function* () {
       for (const p of problems) yield* info(p);
       for (const a of agents.values()) {
         if (a.state === "running" && a.fiber === null) {
+          const last = entriesOf(a).at(-1);
           a.state = "stopped";
           a.why = "the server restarted while it ran; nothing resumes it";
-          a.ended = a.entries.at(-1) ? Date.parse(a.entries.at(-1)?.date ?? "") || now() : now();
-          a.reported = false;
+          a.ended = last === undefined ? now() : Date.parse(last.date) || now();
+          a.pending = reportOf(a, a.ended);
           yield* save(a).pipe(Effect.catch((error) => info(error.message)));
         }
-        if (!a.reported && a.state !== "running") yield* sendReport(a);
+        const { ended, pending } = a;
+        if (pending === null || a.state === "running") continue;
+        if (ended !== null && inChat(pending, ended)) {
+          a.pending = null;
+          yield* save(a).pipe(Effect.catch((error) => info(error.message)));
+        } else yield* sendReport(a, pending);
       }
+      evict();
       yield* changed;
     });
 

@@ -192,6 +192,11 @@ export const makeSession = (o: {
     // the loop stopped on an error (the log refused, or a defect), why, and the last message in by
     // then: those wait for a newer message instead of starting the loop again at once
     let halted: { readonly why: string; readonly upTo: number } | null = null;
+    // once that loop has ended, the last message in by then: the ones up to it start no turn until a
+    // newer one comes, also when a subagent's report starts the loop to be logged (null: none waits)
+    let parked: number | null = null;
+    // a turn is due: a held message, and not only ones parked after an error
+    const turnsDue = () => held(inbox).length > 0 && (parked === null || inbox.some((m) => m.seq > (parked ?? 0)));
 
 
     // when the phase clients see began, on this server's clock: stamped as a state with a new phase
@@ -547,16 +552,14 @@ export const makeSession = (o: {
 
     const turn = Effect.gen(function* () {
       yield* FiberSet.clear(primes).pipe(Effect.forkIn(scope)); // not waited for: the killed claude may take a moment
+      // A failed call is tried again at the next message (docs/optchat.md §4); while the turn
+      // waits for one, none comes, so it is also tried every WAIT_RETRY, only while it waits (E24)
+      const retrying = chat.retry.pipe(Effect.delay(o.waitRetry ?? WAIT_RETRY), Effect.forever);
+      const summaries = Effect.suspend(() => (unbuilt(chat.mem) ? enter("waiting").pipe(Effect.andThen(Effect.raceFirst(settle(chat.mem), retrying))) : Effect.void));
       // reports that came in are logged first, so the next turn's view has them
-      for (yield* logReports; held(inbox).length > 0; yield* logReports) {
-        if (unbuilt(chat.mem)) {
-          device = nextTurn(inbox, o.defaultDevice).on; // shown while it waits; read again after, with what came in meanwhile
-          yield* enter("waiting");
-          // A failed call is tried again at the next message (docs/optchat.md §4); while the turn
-          // waits for one, none comes, so it is also tried every WAIT_RETRY, only while it waits (E24)
-          const retrying = chat.retry.pipe(Effect.delay(o.waitRetry ?? WAIT_RETRY), Effect.forever);
-          yield* Effect.raceFirst(settle(chat.mem), retrying);
-        }
+      for (yield* logReports; turnsDue(); yield* logReports) {
+        if (unbuilt(chat.mem)) device = nextTurn(inbox, o.defaultDevice).on; // shown while it waits; read again after, with what came in meanwhile
+        yield* summaries;
         // This turn's device, engine and messages are read once the summaries are in, and picked at
         // once, so none can be taken back any more; their captions are waited for together,
         // briefly, before any is logged. One that comes in meanwhile waits for the call below, where
@@ -566,6 +569,8 @@ export const makeSession = (o: {
         device = on;
         for (const m of batch) m.state = "picked";
         yield* captioned(batch);
+        // a report that came in meanwhile goes before the view too, once summarized like any message
+        if (reports.length > 0) yield* logReports.pipe(Effect.andThen(summaries));
         const view = render(chat.mem); // BEFORE the new messages are logged (docs/optchat.md §6)
         sentView = view;
         yield* enter("running");
@@ -668,6 +673,7 @@ export const makeSession = (o: {
         loop = null;
         const stop = halted;
         halted = null;
+        if (stop !== null) parked = stop.upTo;
         // a report that came in meanwhile is logged by the loop too, unless the log just refused
         if (inbox.some((m) => stop === null || m.seq > stop.upTo) || (stop === null && reports.length > 0)) return start;
         phase = "idle";
@@ -704,7 +710,7 @@ export const makeSession = (o: {
       running = true;
       // until the loop says what it waits for: never "idle" while it is on, unless all it has to do
       // is log reports, which is no turn
-      if (held(inbox).length > 0) phase = "running";
+      if (turnsDue()) phase = "running";
       return turn.pipe(
         Effect.onExit((exit) => (Exit.isFailure(exit) ? stopped(exit.cause) : Effect.void)),
         Effect.ensuring(afterLoop),
@@ -729,6 +735,7 @@ export const makeSession = (o: {
         const sentFor = on && o.devices.includes(on) ? on : deviceOf(text, o.devices);
         const steer = (how ?? followUp) === "steer";
         inbox.push({ clientId: clientId ?? null, described: null, device: sentFor, engine: named?.ref ?? head, media, seq: ++seq, state: "held", steer, text });
+        parked = null; // a newer message: the ones parked after an error go with it
         yield* chat.retry; // the next message: failed summaries are tried again (docs/optchat.md §4)
         if (accepting) steerIn(accepting);
         yield* start; // nothing to do while the loop is on: it takes held messages as it goes

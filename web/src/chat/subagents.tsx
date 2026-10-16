@@ -11,7 +11,7 @@ import type { Link } from "@/lib/connection";
 import type { SessionStore } from "@/lib/session";
 import { type Msg, type SessionState, splitTool, type SubagentInfo } from "@wire";
 import { NetworkIcon } from "lucide-react";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { elapsed, Group, useNow } from "./background-work";
 import { ModelPicker } from "./pickers";
 
@@ -44,31 +44,63 @@ export const runOf = (info: SubagentInfo, entries: readonly Msg[], shownElapsed:
   task: info.task,
 });
 
-// its side log as this page has it: the entries read so far, and the next ones as the server
-// counts more (`entries`); a read that fails is tried again at the next count
+// entries per read of a side log
+export const SIDE_PAGE = 50;
+
+// Its side log as this page has it: the entries read so far, and the next ones while the server
+// counts more (`entries`), a page at a time. One read at a time: a count that grows while one is
+// on its way doesn't drop it (it starts where this page's log ends, so it is right whatever came
+// since), and when it lands the next one starts if there is more. A read that fails is tried again
+// at the next count; one that lands after the card is gone is dropped. A card is keyed by its
+// subagent's name, so the name never changes under it.
 function useSideLog(name: string, count: number) {
   const [log, setLog] = useState<readonly Msg[]>([]);
+  const [failed, setFailed] = useState(0); // reads that failed, so the next count tries again
+  const reading = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const have = log.length;
   useEffect(() => {
-    if (have >= count) return;
-    let live = true;
+    if (have >= count || reading.current) return;
+    reading.current = true;
     const read = async () => {
       try {
-        const page = await api.subagent(name, have);
-        if (live) setLog((before) => [...before, ...page.entries.filter((e) => e.i >= before.length)]);
+        const page = await api.subagent(name, have, SIDE_PAGE);
+        reading.current = false;
+        if (mounted.current) setLog((before) => [...before, ...page.entries.filter((e) => e.i >= before.length)]);
       } catch {
-        // offline, or the server restarted: the next count reads again
+        reading.current = false; // offline, or the server restarted
+        if (mounted.current) setFailed((n) => n + 1);
       }
     };
     void read();
-    return () => {
-      live = false;
-    };
-  }, [name, count, have]);
+  }, [name, count, have, failed]);
   return log;
 }
 
-function SubagentCard({ info, state, link, now, stateAt }: { readonly info: SubagentInfo; readonly state: SessionState; readonly link: Link; readonly now: number; readonly stateAt: number }) {
+// what the controls say while the link to the server is down: a frame then would go nowhere
+const OFFLINE = "Not connected to the server";
+
+function SubagentCard({
+  info,
+  state,
+  link,
+  now,
+  stateAt,
+  online,
+}: {
+  readonly info: SubagentInfo;
+  readonly state: SessionState;
+  readonly link: Link;
+  readonly now: number;
+  readonly stateAt: number;
+  readonly online: boolean;
+}) {
   const log = useSideLog(info.name, info.entries ?? 0);
   const running = info.state === "running";
   const run = runOf(info, log, info.elapsed + (running ? Math.max(0, now - stateAt) : 0));
@@ -77,6 +109,7 @@ function SubagentCard({ info, state, link, now, stateAt }: { readonly info: Suba
       <Subagent
         model={
           <ModelPicker
+            disabled={!online}
             label={`Model of ${info.name}`}
             model={info.ref}
             onModel={(model) => {
@@ -95,6 +128,7 @@ function SubagentCard({ info, state, link, now, stateAt }: { readonly info: Suba
           link.subagent({ name, text, type: "tell" });
         }}
         run={run}
+        unavailable={online ? undefined : OFFLINE}
       />
     </div>
   );
@@ -110,7 +144,7 @@ export function Subagents({ session, link }: { readonly session: SessionStore; r
   return (
     <Group count={list.length} icon={<NetworkIcon className="size-3.5" />} title="Subagents">
       {list.map((info) => (
-        <SubagentCard info={info} key={info.name} link={link} now={now} state={state} stateAt={s.stateAt} />
+        <SubagentCard info={info} key={info.name} link={link} now={now} online={s.status === "open"} state={state} stateAt={s.stateAt} />
       ))}
     </Group>
   );

@@ -102,31 +102,40 @@ export const providerOf = (ref: ProviderRef, o: EngineNeeds, effort?: string): E
 
 // What a subagent's claude-code may use without asking (SPEC M7a): Read, Glob and Grep need no
 // permission anyway; zoom and date are MCP tools, which do. Its permission mode is "default", so
-// with -p and no settings everything else (Bash, Edit, Write, WebFetch, WebSearch, spawn, tell) is
-// refused when called, while `--tools` stays the master's list, the same bytes in the request.
+// with -p and no settings what needs a permission (Edit, Write, WebFetch, WebSearch, spawn, tell,
+// and Bash, but for a command Claude Code classes as read-only) is refused when called, while
+// `--tools` stays the master's list, the same bytes in the request.
 export const SUBAGENT_ALLOWED: readonly string[] = ["Read", "Glob", "Grep", "mcp__optchat__zoom", "mcp__optchat__date"];
 
-// `child`: the engine of a subagent (SPEC M7a), on `o`'s placements and tools (the subagents'
-// /mcp key and box, which refuse spawn and tell): read-only, never warm, never primed
-export const turnEngine = (ref: Ref, o: TurnNeeds, child = false): Effect.Effect<TurnEngine> => {
+// How a turn engine's claude runs: in its own permission mode (none: the master's, from the
+// config), with tools let through without asking, kept warm (and so primed) when the session says
+// so, or never (`pooled: false`: no warm process is started for it or handed to it, E18)
+export type TurnPolicy = { readonly permissionMode?: string; readonly allowedTools?: readonly string[]; readonly pooled: boolean };
+export const MASTER_POLICY: TurnPolicy = { pooled: true };
+// a subagent's (SPEC M7a), on its needs' placements and tools (the subagents' /mcp key and box,
+// which refuse spawn and tell): read-only, never warm, never primed
+export const SUBAGENT_POLICY: TurnPolicy = { allowedTools: SUBAGENT_ALLOWED, permissionMode: "default", pooled: false };
+
+export const turnEngine = (ref: Ref, o: TurnNeeds, policy: TurnPolicy = MASTER_POLICY): Effect.Effect<TurnEngine> => {
   const { permissionMode, tools } = o.settings.master;
   const effort = runEffort(ref, o.settings.master.effort); // the entry's own, else the master's as its model takes it, or none
   switch (ref.engine) {
     case "claude-code":
       return claudeCodeTurn({
-        allowedTools: child ? SUBAGENT_ALLOWED : undefined,
+        allowedTools: policy.allowedTools,
         effort,
         instructions: o.instructions,
         logUsage: o.log,
         model: ref.model,
-        permissionMode: child ? "default" : permissionMode,
+        permissionMode: policy.permissionMode ?? permissionMode,
+        pooled: policy.pooled,
         primeTtl: o.settings.cache.primeTtl,
         ref: ref.ref,
         report: o.report,
         runnerFor: o.runnerFor,
         tools: tools ?? MASTER_TOOLS,
         ttl: o.settings.cache.claudeCodeTtl,
-        warms: child ? () => false : o.warms,
+        warms: policy.pooled ? o.warms : () => false,
       });
     case "openai-plan":
     case "api-key":

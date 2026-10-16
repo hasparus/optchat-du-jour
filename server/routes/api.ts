@@ -25,7 +25,9 @@ const Index = Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThan
 const Range = Schema.Struct({ from: Index, to: Index });
 const MAX_RANGE = 5000;
 const At = Schema.Struct({ i: Index });
-const Named = Schema.Struct({ name: Schema.String, from: Schema.optional(Index) });
+const Named = Schema.Struct({ name: Schema.String, from: Schema.optional(Index), limit: Schema.optional(Index) });
+// a subagent's entries per /api/subagent answer unless the client asks for fewer (or more)
+const SIDE_LIMIT = 100;
 const badRequest = () => HttpServerResponse.empty({ status: 400 });
 const serverError = () => HttpServerResponse.empty({ status: 500 });
 
@@ -46,17 +48,17 @@ export const apiRoutes = (
     const { mem } = o;
     yield* router.add("GET", "/api/state", Effect.suspend(() => HttpServerResponse.schemaJson(SessionState)(o.session.state())));
 
-    // a subagent and its side log from entry `from` on, for its card (SPEC M7a); 404 for a name the
-    // server doesn't know
+    // a subagent and its side log from entry `from` on, `limit` entries at most (100 unless asked),
+    // for its card (SPEC M7a); 404 for a name the server doesn't know
     yield* router.add("GET", "/api/subagent", () =>
       Effect.gen(function* () {
         const query = yield* HttpServerRequest.schemaSearchParams(Named).pipe(Effect.result);
         if (query._tag === "Failure") return badRequest();
-        const found = o.subagents?.log(query.success.name) ?? null;
+        // `from`: the entries a client has already are not sent again; `limit`: a page at a time
+        const { from = 0, limit = SIDE_LIMIT, name } = query.success;
+        const found = o.subagents?.log(name, from, limit) ?? null;
         if (found === null) return HttpServerResponse.empty({ status: 404 });
-        // `from`: the entries a client has already are not sent again
-        const page = { ...found, entries: found.entries.slice(query.success.from ?? 0) };
-        return yield* HttpServerResponse.schemaJson(SubagentLog)(page).pipe(Effect.orElseSucceed(serverError));
+        return yield* HttpServerResponse.schemaJson(SubagentLog)(found).pipe(Effect.orElseSucceed(serverError));
       }),
     );
 

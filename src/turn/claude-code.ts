@@ -50,11 +50,11 @@ export type ClaudeCodeTurnOptions = {
   // before any, E18): the session has only its spawns started ahead, so only it starts them again
   // when a device moves to another MCP transport. Asked each time, since each turn can change it.
   readonly warms: () => boolean;
-  // A subagent's engine (SPEC M7a): its permission mode is "default", so with -p and no settings
-  // every tool that needs a permission is refused, and these few are let through (Read, Glob and
-  // Grep need none; zoom and date are MCP tools, which do). `--tools` stays the master's, so the
-  // tool list the model is sent is the same bytes. Never kept warm or handed a warm process.
+  // Tools let through without asking (`--allowedTools`; a subagent's, SPEC M7a, whose permission
+  // mode is "default"); `--tools` stays as given, so the tool list the model is sent is the same bytes
   readonly allowedTools?: readonly string[] | undefined;
+  // false: never kept warm or handed a warm process (a subagent's, E18); true unless said
+  readonly pooled?: boolean;
 };
 
 // One argv for the turn and its priming call: any difference between the two would cost the
@@ -280,8 +280,7 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
     // devices, and priming adds DISABLE_PROMPT_CACHING=1. A warm process is handed out only for
     // the very same spawn, so both are built here and nowhere else.
     const env = { CLAUDE_CODE_PROMPT_CACHE_TTL: o.ttl };
-    const child = o.allowedTools !== undefined;
-    const turnSpawn = (p: Placement): Spawn => ({ args: masterArgs({ ...o, mcpConfig: p.mcpConfig }), cwd: p.cwd, env, pooled: !child });
+    const turnSpawn = (p: Placement): Spawn => ({ args: masterArgs({ ...o, mcpConfig: p.mcpConfig }), cwd: p.cwd, env, pooled: o.pooled ?? true });
     const primeSpawn = (p: Placement): Spawn => ({ ...turnSpawn(p), env: { ...env, DISABLE_PROMPT_CACHING: "1" } });
 
     // the next turn and priming on `device`, for a Runner that starts processes ahead (E18)

@@ -29,7 +29,7 @@ export const TOOLS = [
   },
   {
     description:
-      'Start a subagent called name on task, in the background, and return at once. It reads files and memory but writes nothing. Its report reaches the chat as a message starting "[name] ". model: an engine:model@effort ref of your chain; this turn\'s when left out.',
+      'Start a subagent called name on task, in the background, and return at once. It reads files and memory and changes nothing. Its report reaches the chat as a message starting "[name] ". model: an engine:model@effort ref of your chain; this turn\'s when left out.',
     inputSchema: {
       properties: { model: { type: "string" }, name: { type: "string" }, task: { type: "string" } },
       required: ["name", "task"],

@@ -60,6 +60,8 @@ export type SubagentProps = Omit<ComponentProps<typeof TraceCollapsible>, "open"
   readonly onStop?: ((name: string) => void) | undefined;
   // a picker for the model of its next call, in place of the engine's badge
   readonly model?: ReactNode;
+  // its Stop and Tell can't be sent now (the link to the server is down); `why` says so in their titles
+  readonly unavailable?: string | undefined;
 };
 
 const TITLES = {
@@ -72,7 +74,7 @@ const TITLES = {
 const ICONS = { failed: CircleXIcon, finished: CircleCheckIcon, running: BotIcon, stopped: CircleSlashIcon } satisfies Record<SubagentStatus, LucideIcon>;
 
 // a running run is open, the others closed, until the reader chooses
-export const Subagent = ({ className, run, onTell, onStop, model, ...props }: SubagentProps) => {
+export const Subagent = ({ className, run, onTell, onStop, model, unavailable, ...props }: SubagentProps) => {
   const running = run.status === "running";
   const Icon = ICONS[run.status];
   const lastStep = run.steps.at(-1)?.key;
@@ -94,11 +96,12 @@ export const Subagent = ({ className, run, onTell, onStop, model, ...props }: Su
             <Button
               aria-label={`Stop ${run.name}`}
               className="shrink-0 rounded-full bg-soft text-foreground hover:bg-soft-strong"
+              disabled={unavailable !== undefined}
               onClick={() => {
                 onStop(run.name);
               }}
               size="icon-sm"
-              title={`Stop ${run.name}`}
+              title={unavailable ?? `Stop ${run.name}`}
               variant="ghost"
             >
               <SquareIcon className="size-3 fill-current" strokeWidth={0} />
@@ -142,7 +145,7 @@ export const Subagent = ({ className, run, onTell, onStop, model, ...props }: Su
               {run.reason}
             </p>
           )}
-          {(running || run.resumable === true) && onTell !== undefined && <TellSubagent again={!running} name={run.name} onTell={onTell} />}
+          {(running || run.resumable === true) && onTell !== undefined && <TellSubagent again={!running} name={run.name} onTell={onTell} unavailable={unavailable} />}
         </TraceCollapsibleContent>
       </TraceCollapsible>
     </Trace>
@@ -151,11 +154,11 @@ export const Subagent = ({ className, run, onTell, onStop, model, ...props }: Su
 
 // a line to tell the subagent something (`again`: it has ended, and this starts it again); sent on
 // Enter or the arrow, then cleared
-function TellSubagent({ again, name, onTell }: { readonly again: boolean; readonly name: string; readonly onTell: (name: string, text: string) => void }) {
+function TellSubagent({ again, name, onTell, unavailable }: { readonly again: boolean; readonly name: string; readonly onTell: (name: string, text: string) => void; readonly unavailable: string | undefined }) {
   const [text, setText] = useState("");
   const id = useId();
   const send = () => {
-    if (text.trim() === "") return;
+    if (text.trim() === "" || unavailable !== undefined) return;
     onTell(name, text);
     setText("");
   };
@@ -180,7 +183,7 @@ function TellSubagent({ again, name, onTell }: { readonly again: boolean; readon
           value={text}
         />
         <InputGroupAddon align="inline-end">
-          <InputGroupButton aria-label={`Send to ${name}`} className="rounded-full" disabled={text.trim() === ""} size="icon-sm" type="submit" variant="default">
+          <InputGroupButton aria-label={`Send to ${name}`} className="rounded-full" disabled={text.trim() === "" || unavailable !== undefined} size="icon-sm" title={unavailable} type="submit" variant="default">
             <ArrowUpIcon />
           </InputGroupButton>
         </InputGroupAddon>

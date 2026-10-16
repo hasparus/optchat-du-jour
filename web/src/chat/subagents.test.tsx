@@ -14,9 +14,11 @@ import { runOf, stepsOf, Subagents } from "./subagents";
 
 const links: { readonly close: () => void }[] = [];
 const realFetch = globalThis.fetch;
-// what /api/subagent answers: each subagent's side log, and which entries each read asked from
+// what /api/subagent answers: each subagent's side log, and which entries each read asked from;
+// `hold`, when set, is what each answer waits for first
 const LOGS = new Map<string, Msg[]>();
 const reads: string[] = [];
+let hold: Promise<boolean> | null = null;
 beforeEach(() => {
   globalThis.fetch = Object.assign(
     async (input: string | URL | Request) => {
@@ -24,11 +26,13 @@ beforeEach(() => {
       if (url.pathname !== "/api/subagent") return new Response(null, { status: 404 });
       const name = url.searchParams.get("name") ?? "";
       const from = Number(url.searchParams.get("from") ?? "0");
+      const limit = Number(url.searchParams.get("limit") ?? "100");
       reads.push(`${name}@${from}`);
+      if (hold) await hold;
       const entries = LOGS.get(name);
       if (!entries) return new Response(null, { status: 404 });
       const info = SCOUT.name === name ? SCOUT : NOTES;
-      return Response.json({ entries: entries.slice(from), subagent: info });
+      return Response.json({ entries: entries.slice(from, from + limit), subagent: info });
     },
     { preconnect: realFetch.preconnect },
   );
@@ -39,6 +43,7 @@ afterEach(() => {
   globalThis.fetch = realFetch;
   LOGS.clear();
   reads.length = 0;
+  hold = null;
 });
 
 const entry = (i: number, kind: Msg["kind"], text: string): Msg => ({ date: "2026-10-16T10:00:00Z", i, kind, text });
@@ -186,4 +191,59 @@ test("the header's mark counts a running subagent as busy", async () => {
     expect(session.get().state?.subagents?.length).toBe(2);
   });
   expect(busyWith(session.get())).toBe(1);
+});
+
+test("a read on its way when more entries are counted is kept, and the next one starts where it ends", async () => {
+  LOGS.set("scout", [entry(0, "user", SCOUT.task), entry(1, "tool", 'Grep {"pattern":"trip"}'), entry(2, "echo", "notes.md:3")]);
+  const { promise, resolve } = Promise.withResolvers<boolean>();
+  hold = promise;
+  const { server } = sheet([SCOUT]);
+  await waitFor(() => {
+    expect(reads).toEqual(["scout@0"]);
+  });
+  // two more entries counted while the first read is on its way: no second read yet
+  LOGS.get("scout")?.push(entry(3, "tool", 'Read {"file_path":"~/demo/notes.md"}'), entry(4, "echo", "trip: Oct 3"));
+  act(() => {
+    server.play(state({ subagents: [{ ...SCOUT, entries: 4 }] }));
+  });
+  act(() => {
+    server.play(state({ subagents: [{ ...SCOUT, entries: 5 }] }));
+  });
+  await new Promise((r) => {
+    setTimeout(r, 30);
+  });
+  expect(reads).toEqual(["scout@0"]);
+  hold = null;
+  resolve(true);
+  const scout = await screen.findByTestId("subagent-scout");
+  await waitFor(() => {
+    expect(within(scout).getByText("Read")).toBeTruthy();
+  });
+  expect(reads[0]).toBe("scout@0");
+  expect(reads.length).toBeLessThanOrEqual(2); // the first read's answer kept, then one for the rest
+});
+
+test("a long side log is read a page at a time", async () => {
+  const many = Array.from({ length: 120 }, (_, i) => (i === 0 ? entry(0, "user", SCOUT.task) : entry(i, i % 2 === 1 ? "tool" : "echo", i % 2 === 1 ? `Grep {"pattern":"p${i}"}` : `hit ${i}`)));
+  LOGS.set("scout", many);
+  sheet([{ ...SCOUT, entries: 120 }]);
+  await waitFor(() => {
+    expect(reads).toEqual(["scout@0", "scout@50", "scout@100"]);
+  });
+});
+
+test("while the link is down a card's Stop, Tell and model can't be used", async () => {
+  LOGS.set("scout", []);
+  const { server } = sheet([{ ...SCOUT, entries: 0 }]);
+  const scout = await screen.findByTestId("subagent-scout");
+  expect(within(scout).getByRole("button", { name: "Stop scout" })).toHaveProperty("disabled", false);
+  act(() => {
+    server.drop();
+  });
+  await waitFor(() => {
+    expect(within(scout).getByRole("button", { name: "Stop scout" })).toHaveProperty("disabled", true);
+  });
+  expect(within(scout).getByTestId("subagent-model-scout")).toHaveProperty("disabled", true);
+  fireEvent.change(within(scout).getByLabelText("Tell scout"), { target: { value: "hello" } });
+  expect(within(scout).getByRole("button", { name: "Send to scout" })).toHaveProperty("disabled", true);
 });

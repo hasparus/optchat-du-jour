@@ -122,6 +122,7 @@ type PickerProps = {
   readonly shown?: string;
   readonly testId?: string;
   readonly purpose?: string; // what the picked model is for, in its title
+  readonly disabled?: boolean;
 };
 export function ModelPicker(props: PickerProps) {
   return useCoarsePointer() ? <NativeModelPicker {...props} /> : <ModelSelector {...props} />;
@@ -157,13 +158,13 @@ const byWhere = (engines: readonly MasterEngine[]) => {
 // controls are (bare-control). No second menu for the effort: an effort is part of a chain entry
 // (`claude-code:opus@xhigh` is an engine of its own), so each item names its own. A down engine is
 // disabled and says why in muted text, which stays AA (the registry's 50% opacity would not).
-function ModelSelector({ model, onModel, state, label = "Model", shown, testId = "model-picker", purpose }: PickerProps) {
+function ModelSelector({ model, onModel, state, label = "Model", shown, testId = "model-picker", purpose, disabled = false }: PickerProps) {
   const current = state.engines.find((e) => e.ref === model);
   const down = current !== undefined && current.down !== null;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button aria-label={`${label}: ${current?.label ?? shown ?? model}`} className="bare-control max-w-44 cursor-pointer text-ui font-medium" data-testid={testId} title={pickerTitle(current, purpose)} type="button">
+        <button aria-label={`${label}: ${current?.label ?? shown ?? model}`} className="bare-control max-w-44 cursor-pointer text-ui font-medium disabled:cursor-default disabled:text-muted-foreground" data-testid={testId} disabled={disabled} title={pickerTitle(current, purpose)} type="button">
           {down && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-destructive" data-testid="picker-down" />}
           <span className="flex min-w-0 items-baseline gap-1.5 truncate">
             <ModelShown label={current?.label ?? shown ?? model} />
@@ -207,11 +208,12 @@ function ModelSelector({ model, onModel, state, label = "Model", shown, testId =
   );
 }
 
-function NativeModelPicker({ model, onModel, state, label = "Model", shown, testId = "model-picker", purpose }: PickerProps) {
+function NativeModelPicker({ model, onModel, state, label = "Model", shown, testId = "model-picker", purpose, disabled = false }: PickerProps) {
   const current = state.engines.find((e) => e.ref === model);
   return (
     <CompactSelect
       wide
+      disabled={disabled}
       down={current !== undefined && current.down !== null}
       label={label}
       onChange={(e) => {

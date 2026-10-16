@@ -4,7 +4,7 @@
 // short, and the chat's own log and tree, which see nothing of a subagent's work but its report.
 import { afterAll, expect, test } from "bun:test";
 import { Deferred, Effect, PubSub, Schema, type Scope } from "effect";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
 import { entryLabel, parseSettings, type Ref } from "../src/config.ts";
@@ -54,7 +54,7 @@ const answers =
 
 // a side log's line, and agent.json, as a test reads them
 const decodeLine = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ i: Schema.Number, kind: Schema.String, text: Schema.String })));
-const decodeMeta = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ state: Schema.String, ref: Schema.String, reported: Schema.Boolean, why: Schema.NullOr(Schema.String) })));
+const decodeMeta = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ state: Schema.String, ref: Schema.String, pending: Schema.NullOr(Schema.String), why: Schema.NullOr(Schema.String), entries: Schema.Number })));
 
 const usageOf = (): UsageRecord => ({
   attempt: 1,
@@ -79,6 +79,8 @@ const rig = (o: {
   readonly dir?: string;
   readonly master?: (call: (tool: "spawn" | "tell", args: Record<string, string>) => Effect.Effect<{ readonly text: string; readonly error: boolean }>) => Effect.Effect<void>;
   readonly child?: Record<string, Child>;
+  // what each commit does besides being counted (a slow git, say)
+  readonly commit?: Effect.Effect<void>;
 }) =>
   Effect.gen(function* () {
     const dir = o.dir ?? mkdtempSync(`${tmpdir()}/oc-sub-`);
@@ -94,7 +96,7 @@ const rig = (o: {
     );
     const usage: UsageRecord[] = [];
     const counts = { commits: 0 };
-    const commit = Effect.sync(() => ((counts.commits += 1), null));
+    const commit = (o.commit ?? Effect.void).pipe(Effect.andThen(Effect.sync(() => ((counts.commits += 1), null))));
     // every call of a subagent's engine: on which ref, at which effort, with what input
     const calls: { readonly ref: string; readonly effort: string | undefined; readonly name: string; readonly input: TurnInput }[] = [];
     const host = yield* Deferred.make<SubagentHost>();
@@ -193,8 +195,9 @@ test("spawn starts a read-only run that outlives the turn; its report reaches th
         "2 echo: the notes",
         "3 talk: scout found it",
       ]);
-      const meta = decodeMeta(readFileSync(`${r.dir}/agents/scout/agent.json`, "utf8"));
-      expect(meta).toMatchObject({ ref: "claude-code:opus", reported: true, state: "done" });
+      const meta = () => decodeMeta(readFileSync(`${r.dir}/agents/scout/agent.json`, "utf8"));
+      yield* until("its report delivered", () => meta().pending === null);
+      expect(meta()).toMatchObject({ entries: 4, pending: null, ref: "claude-code:opus", state: "done" });
       // committed when its run ended, as the main log is after a turn
       expect(r.counts.commits).toBeGreaterThanOrEqual(2);
       // the state lists it, done, with its model
@@ -401,7 +404,7 @@ test("a restart finds a run it cut short: stopped, reported once, never resumed"
       yield* until("the report", () => r.log().some((l) => l.startsWith("user: [slow] stopped")));
       expect(r.log().at(-1)).toContain("the server restarted while it ran; nothing resumes it");
       expect(r.calls).toEqual([]);
-      expect(meta()).toMatchObject({ reported: true, state: "stopped" });
+      expect(meta()).toMatchObject({ pending: null, state: "stopped" });
       expect(r.stateOf("slow")?.state).toBe("stopped");
     }),
   );
@@ -512,6 +515,84 @@ test("a turn's spawns are listed: running first, then the newest others", async 
       yield* r.session.input("go", { clientId: "c1" });
       yield* until("a and b done", () => r.stateOf("a")?.state === "done" && r.stateOf("b")?.state === "done" && r.stateOf("c")?.state === "running");
       expect(r.session.state().subagents?.map((x) => x.name)).toEqual(["c", "b", "a"]);
+    }),
+  );
+});
+
+test("a report is made as its run ends: a tell that starts it again during the commit doesn't change it", async () => {
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const committing = yield* Deferred.make<true>();
+      let slow = false;
+      const r = yield* rig({
+        child: {
+          scout: (_input, out, call) => (call === 1 ? out.log("talk", "THE ANSWER").pipe(Effect.orDie, Effect.andThen(Effect.sync(() => (slow = true)))) : Effect.never),
+        },
+        // the commit as its run ends takes a while, as a git commit does
+        commit: Effect.suspend(() => (slow ? Deferred.succeed(committing, true).pipe(Effect.andThen(Effect.sleep("150 millis"))) : Effect.void)),
+        master: (call) => Effect.asVoid(call("spawn", { name: "scout", task: "find it" })),
+        scope,
+      });
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* Deferred.await(committing); // its run is over; the commit runs
+      expect(yield* r.subagents.tell("scout", "one more thing")).toBeNull(); // the user's tell, from the card
+      yield* until("the report", () => r.log().some((l) => l.startsWith("user: [scout]")));
+      expect(r.log().filter((l) => l.startsWith("user: [scout]"))).toEqual(["user: [scout] THE ANSWER"]);
+      expect(r.stateOf("scout")?.state).toBe("running"); // its second run goes on
+    }),
+  );
+});
+
+test("after a restart a pending report is sent word for word, unless the chat holds it already", async () => {
+  const dir = mkdtempSync(`${tmpdir()}/oc-sub-`);
+  dirs.push(dir);
+  const path = `${dir}/agents/scout/agent.json`;
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const r = yield* rig({ dir, master: (call) => Effect.asVoid(call("spawn", { name: "scout", task: "find it" })), scope });
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("delivered", () => r.log().includes("user: [scout] scout found it") && decodeMeta(readFileSync(path, "utf8")).pending === null);
+    }),
+  );
+  // a crash between the chat's line and agent.json's: the report is still pending on disk
+  const pendingAs = (text: string) => {
+    const meta = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)))(readFileSync(path, "utf8"));
+    writeFileSync(path, `${JSON.stringify({ ...meta, pending: text })}\n`);
+  };
+  pendingAs("[scout] scout found it");
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const r = yield* rig({ dir, scope });
+      yield* until("no longer pending", () => decodeMeta(readFileSync(path, "utf8")).pending === null);
+      expect(r.log().filter((l) => l.startsWith("user: [scout]"))).toEqual(["user: [scout] scout found it"]);
+      // listed from agent.json alone, its side log read only when asked for
+      expect(r.stateOf("scout")).toMatchObject({ entries: 4, lastLine: "talk: scout found it", state: "done" });
+      expect(r.subagents.tools("master").zoom("scout", 3)).toContain("3|talk: scout found it");
+    }),
+  );
+  // one the chat never got is sent as it was made
+  pendingAs("[scout] the words it had");
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const r = yield* rig({ dir, scope });
+      yield* until("sent", () => r.log().includes("user: [scout] the words it had"));
+      yield* until("no longer pending", () => decodeMeta(readFileSync(path, "utf8")).pending === null);
+    }),
+  );
+});
+
+test("an agent.json that names another folder than its own is left alone, and said so", async () => {
+  const dir = mkdtempSync(`${tmpdir()}/oc-sub-`);
+  dirs.push(dir);
+  mkdirSync(`${dir}/agents/scout`, { recursive: true });
+  const meta = { effort: "high", ended: null, name: "other", pending: null, ref: "claude-code:opus", runs: 1, started: "2026-10-16T10:00:00.000Z", state: "running", task: "t", why: null };
+  writeFileSync(`${dir}/agents/scout/agent.json`, `${JSON.stringify(meta)}\n`);
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const r = yield* rig({ dir, scope });
+      yield* until("said", () => r.said.some((e) => e.type === "info" && e.message === "subagent scout: agent.json names other, not its folder; left alone"));
+      expect(r.session.state().subagents).toEqual([]);
+      expect(r.log()).toEqual([]); // no report for it
     }),
   );
 });
