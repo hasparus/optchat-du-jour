@@ -67,7 +67,7 @@ Every `ui/*` file below imports `cn` from `@/lib/utils` (see CLI); that is not r
 | ai-elements/prompt-input | ours on Input Group, its tiles on ui/attachment's `tile` size | progress bar, HD toggle | Glass composer, held tray, iOS file inputs inside the tap, drafts. Attachment has states but no progress |
 | ui/attachment | radix-vega | a `tile` size (ours): the media alone, 64 px, no card; for the composer's tray | The tray's thumbnails. A failed tile takes the registry's error look (a red tint, the icon in red) under our red ring. A message's thumbnails are plain links: nothing for Attachment to carry, and its image media crops square |
 | ui/dropdown-menu | radix-vega | — | The Model Selector. A disabled item's 50% opacity is set back at the call site (muted text instead, AA) |
-| ai-elements/plan | the Plan pattern on Trace | a turn's last TodoWrite is its plan, the earlier calls plain tool lines; live only in the turn that runs now (from RUN_STARTED); pending steps not dimmed; the call as logged behind one line; the newest plan open until the reader chooses | One list per turn, not "0 of 3" above "3 of 3". AA (Trace's `pending` is 60% opacity). SPEC: rendering never hides what the model wrote |
+| ai-elements/plan | the Plan pattern on Trace | a turn's last TodoWrite is its plan, the earlier calls plain tool lines; live only in the run that goes on now (from RUN_STARTED), and there only its newest plan; pending steps not dimmed; the call as logged behind one line; the newest plan open until the reader chooses | One list per turn, not "0 of 3" above "3 of 3"; one live list per run, though a steered message starts a turn of its own. AA (Trace's `pending` is 60% opacity). SPEC: rendering never hides what the model wrote |
 | ai-elements/reasoning | the Reasoning pattern on Trace | collapsed by default, also while it streams (the pattern opens itself then); plain text, not markdown; open state per row in memory only; its text read from the server when first opened after a reload; what the caps cut said under it | A phone has no room for a long think pushing the reply down; SPEC: rendering never hides what the model wrote, and a 1,500-row history loads no thinking it doesn't open. Its shimmer is Trace's running status, as a running tool's |
 | ai-elements/sources | the Sources pattern on Trace | collapsed by default; the host beside a title; a turn ends at a user row | Tool lines are collapsed too; a title alone doesn't say where a link goes. The log keeps no turn boundaries, so a steered message (and later a subagent's report) starts the next turn's sources |
 | ai-elements/subagent | the Subagent pattern on Trace, Badge and our Tool | presentational, wired to nothing; Tell is a line inside it | SPEC M7 isn't built. Only the story page imports it: Background work's `extra` slot is empty in the app, so it isn't in the app's bundle. A button can't sit in a trigger, so Stop is beside the line (the pattern's PlanAction) |
@@ -113,10 +113,10 @@ this round.
 | Terminal | had, as Tool | A Bash call is a Tool line with its command and output. The pattern's extras need what we don't have: output streamed while it runs (Claude Code sends a tool's result whole) and an exit code (the log keeps the output and the E28 flag, not a code) |
 | Model Selector | (a) built | With a mouse; the native select stays on touch |
 | Attachment | (a) built | The composer tray's tiles (a message's thumbnails stay plain links) |
-| Plan | (a) built | A TodoWrite call's row, from its logged input. The default `master.tools` has no TodoWrite, so plans show only where the config adds it (below) |
+| Plan | (a) built | A TodoWrite call's row, from its logged input. TodoWrite is in the default `master.tools` (below) |
 | Sources | (a) built | WebFetch addresses and WebSearch result links, under the turn's last reply |
 | Subagent | (c), presentational part built | M7 (below). The user chose to build the component now, wired to nothing |
-| Task | (c) | Below, with TodoWrite |
+| Task | (c) | Below, with TodoWrite: no title per group of tool lines in the log |
 | Reasoning | (b) built | Above the reply or tool call it came before, from the thinking kept beside the log (below; SPEC "Reasoning") |
 | Chain of Thought | (c) | Its "Researched in 3 steps" summary over a turn's tool lines would fold the work log DESIGN.md keeps as one line per call |
 | Confirmation | (c), no data | Turns run with `permissionMode: "bypassPermissions"` (ref D9) under `claude -p`, which can't stop for an answer: there is no approval to show |
@@ -156,11 +156,16 @@ M7's own: where a subagent's log lives (a stream of its own under `streams/`?), 
 steps are kept after it ends (Background work keeps no history today), and whether its report
 should be marked in the chat as one rather than read as a user message.
 
-**TodoWrite, and with it Task.** Plan is built but has nothing to show by default: the turn's
-`--tools` is `master.tools`, which defaults to Bash, Read, Edit, Write, Glob, Grep, WebFetch and
-WebSearch. Adding TodoWrite (to the config or the default) is a one-line change with costs: every
-turn's and compaction's request gains a tool definition (one cache rewrite, then stable); every
+**TodoWrite, and with it Task.** The user chose to turn TodoWrite on, so Plan shows in real
+claude-code turns: the turn's `--tools` is `master.tools`, which defaults to Bash, Read, Edit, Write, Glob,
+Grep, WebFetch, WebSearch and TodoWrite (`MASTER_TOOLS`, src/config.ts). What it costs: every
+claude-code turn's and compaction's request carries one more tool definition (the tools are part of the cached
+prefix, so the first request after the change rewrites the cache once, then it is stable); every
 TodoWrite call becomes a `tool` and `echo` pair in the log, so in memory, summarized and zoomable
-like any other call, and Claude Code calls it often on longer work. Task (the steps under what the agent is doing) needs a title per group of tool lines that
-the log doesn't hold; with TodoWrite on, the step in progress at the time could be that title for
-the calls after it. Both are the same decision.
+like any other call, and Claude Code calls it often on longer work. A config that sets its own
+`master.tools` keeps its list. OpenAI-plan and API-key turns and compactors use the device's
+`ToolDef`s instead, so their tool prefix is unchanged. After deployment, watch existing usage logs
+and failover notices for "the compactor called a tool": TodoWrite may be used proactively, but
+compaction still kills a try as soon as any tool call starts. Task (the steps under what the agent is doing) needs a title per
+group of tool lines that the log doesn't hold; the step in progress at the time could be that title
+for the calls after it. Not built.

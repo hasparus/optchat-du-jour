@@ -59,15 +59,15 @@ function Stories() {
         </Button>
         <BackgroundWork
           devices={devices}
-          extra={
-            <Group count={RUNS.length} icon={<NetworkIcon className="size-3.5" />} title="Subagents">
+          extra={[
+            <Group count={RUNS.length} icon={<NetworkIcon className="size-3.5" />} key="subagents" title="Subagents">
               {RUNS.map((run) => (
                 <div data-testid="work-subagent" key={run.name} role="listitem">
                   <Subagent onStop={stop} onTell={tell} run={run} />
                 </div>
               ))}
-            </Group>
-          }
+            </Group>,
+          ]}
           link={link}
           onOpenChange={setOpen}
           open={open}

@@ -290,7 +290,9 @@ export const defineConfig = (settings: typeof Settings.Encoded) => settings;
 // settings from their written form, for settings built in code (tests, dev scripts); throws
 export const parseSettings = Schema.decodeSync(Settings);
 
-export const MASTER_TOOLS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "WebFetch", "WebSearch"];
+// a turn's `--tools` when master.tools names none, and the compactor's too (they share the cached
+// prefix). TodoWrite is Claude Code's todo list, which the web UI shows as the turn's plan
+export const MASTER_TOOLS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "WebFetch", "WebSearch", "TodoWrite"];
 
 export class ConfigError extends Data.TaggedError("ConfigError")<{ readonly message: string }> {}
 

@@ -310,8 +310,10 @@ Built on shadcn/ui's Trace and Code Block (`components/ui/trace.tsx`, `code-bloc
   its present tense and shimmers while the turn runs. Pending steps are not dimmed (Trace's 60%
   would take muted text under AA). The call's input and output sit behind one more closed line,
   "Input and output". A turn has one plan, its last TodoWrite call: the calls before it read as
-  plain tool lines. It is live (shimmering, its step in its present tense) only in the turn that
-  runs now. The chat's newest plan is open, the others closed, until the reader chooses.
+  plain tool lines. It is live (shimmering, its step in its present tense) only while its run goes
+  on, and only the run's newest plan: a steered message starts a turn of its own, and the plan
+  before it closes rather than shimmer beside the new one. The chat's newest plan is open, the
+  others closed, until the reader chooses.
 - **Sources** (AI Elements' Sources): under a turn's last reply, a line with a globe, "Used 3
   sources". Open: a link per source, its title in ink, its host in muted 12 px, an up-right arrow;
   28 px rows, 40 px on touch. Plain links: no favicons, nothing fetched.
