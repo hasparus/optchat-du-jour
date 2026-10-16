@@ -242,6 +242,13 @@ export function openStream(o: {
         return [{ name: "taken-back", type: EventType.CUSTOM, value: { clientId: e.clientId, error: e.error, media: e.message?.media ?? [], text: e.message?.text ?? null } }];
       case "usage":
         return [{ name: "usage", type: EventType.CUSTOM, value: e.record }];
+      // a subagent's run (SPEC M7a), AG-UI's own events; its state is in STATE_DELTA too
+      case "subagent-started":
+        return [{ description: e.task, name: e.name, subagentRunId: e.runId, type: EventType.SUBAGENT_STARTED }];
+      case "subagent-finished":
+        return [{ result: e.report, subagentRunId: e.runId, type: EventType.SUBAGENT_FINISHED }];
+      case "subagent-error":
+        return [{ code: e.code, message: e.message, subagentRunId: e.runId, type: EventType.SUBAGENT_ERROR }];
       case "state": {
         const ops = delta(state, e.state);
         state = e.state;

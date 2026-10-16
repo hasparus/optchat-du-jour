@@ -77,6 +77,9 @@ export function applyThought(thoughts: Thoughts, e: Inbound, now: number): Thoug
     case EventType.RUN_STARTED:
     case EventType.RUN_FINISHED:
     case EventType.RUN_ERROR:
+    case EventType.SUBAGENT_STARTED:
+    case EventType.SUBAGENT_FINISHED:
+    case EventType.SUBAGENT_ERROR:
       return thoughts;
   }
 }

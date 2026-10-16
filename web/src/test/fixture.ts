@@ -88,6 +88,10 @@ const Sent = Schema.Struct({
   clientId: Schema.optional(Schema.String),
   followUp: Schema.optional(Schema.String),
   engine: Schema.optional(Schema.String),
+  // a subagent card's tell, stop or model (SPEC M7a)
+  name: Schema.optional(Schema.String),
+  text: Schema.optional(Schema.String),
+  model: Schema.optional(Schema.String),
 });
 // the server's word on a message: logged at `at`, or (with an error) not
 export const ack = (clientId: string, at: number | null, error: string | null = null): Inbound => ({

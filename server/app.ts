@@ -3,7 +3,7 @@
 // WebSocket or POST, ./routes/mcp.ts), /api/* (read-only JSON, ./routes/api.ts) and / (the built
 // web UI, ./routes/web.ts). This file builds the parts and hands them to the routes.
 import { BunHttpServer, BunServices } from "@effect/platform-bun";
-import { Context, Effect, Layer, PubSub } from "effect";
+import { Context, Deferred, Effect, Layer, PubSub } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServerRequest } from "effect/http";
 import { makeBudget } from "../src/apikey/budget.ts";
 import { ApiKeys, apiKeysLayer } from "../src/apikey/clients.ts";
@@ -14,7 +14,7 @@ import type { Summarize } from "../src/compactor.ts";
 import { entryLabel, mediaSettings, reasoningSettings, type Settings } from "../src/config.ts";
 import type { DownList } from "../src/engines/chain.ts";
 import { makeGate } from "../src/engines/inflight.ts";
-import { turnEngine } from "../src/engines/registry.ts";
+import { SUBAGENT_POLICY, turnEngine } from "../src/engines/registry.ts";
 import { forbidden, mount } from "../src/http.ts";
 import { OpenAiPlan, openAiPlanLayer } from "../src/openai/responses.ts";
 import { makeCaptioner } from "../src/media/caption.ts";
@@ -24,6 +24,7 @@ import { systemPrompt } from "../src/prompts.ts";
 import { openReasoning, reasoningLeftOut } from "../src/reasoning.ts";
 import { type Secrets, SecretsLive } from "../src/secrets.ts";
 import { makeSession, type SessionEvent } from "../src/session.ts";
+import { makeSubagents, type SubagentHost, type Subagents } from "../src/subagents.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
 import { loadChoices, saveChoices, startingChoices } from "../src/choices.ts";
 import { makeMaster } from "../src/master.ts";
@@ -56,6 +57,7 @@ export const routes = (o: ServerOptions) =>
       const choicesPath = `${o.home}/session.json`; // the clients' choices: follow-ups
       const stream = `${o.home}/streams/${o.device}`;
       const secret = crypto.randomUUID();
+      const subagentSecret = crypto.randomUUID(); // a subagent's claude reaches /mcp with this one (SPEC M7a)
       const local = yield* Runner;
 
       // every client is told what goes wrong, and so is the server's own log (no client may be connected)
@@ -81,7 +83,7 @@ export const routes = (o: ServerOptions) =>
       );
       const needs = { apiKeys, budget, log: usage, plan, report, settings };
       const instructions = systemPrompt(o.home); // one text for every engine, device, turn and compaction (docs/optchat.md §5)
-      const { defsFor, runnerFor, toolsFor: toolsWith, unreachable } = yield* makePlacements({ device: o.device, local, port: o.port, report, secret, settings });
+      const { defsFor, runnerFor, subagentRunnerFor, toolsFor: toolsWith, unreachable } = yield* makePlacements({ device: o.device, local, port: o.port, report, secret, settings, subagentSecret });
       // The session shows the compactor's engines that are down, for clients that connect later.
       // Compactions send a turn's system prompt and tools (docs/optchat.md §4): the default device's
       // on a provider, this machine's claude-code turn's on claude-code, which runs here.
@@ -89,7 +91,6 @@ export const routes = (o: ServerOptions) =>
         ? { summarize: o.summarize }
         : yield* makeSummarize({ ...needs, device: o.device, gate: makeGate(), instructions, placement: runnerFor(o.device), tools: defsFor(settings.defaultDevice) });
       const chat = yield* openChat(stream, { report, summarize: compactor.summarize });
-      const toolsFor = (device: string) => toolsWith(device, chat.mem);
       // a turn's thinking, kept beside the log in the stream's chat/reasoning/ (SPEC "Reasoning")
       const thinking = reasoningSettings(settings);
       const reasoning = yield* openReasoning(stream, { keep: thinking.keep, report });
@@ -97,9 +98,6 @@ export const routes = (o: ServerOptions) =>
       // ask whether the warm processes follow it: the most recent turn's (E18)
       const master = yield* makeMaster(settings.master.chain.map((r) => ({ label: entryLabel(r, settings.master.effort), ref: r.ref })), settings.master.effort);
       const choices = startingChoices({ followUp: settings.master.followUp }, yield* loadChoices(choicesPath, report));
-      const engines = yield* Effect.forEach(settings.master.chain, (ref) =>
-        turnEngine(ref, { ...needs, instructions, runnerFor, toolsFor, warms: () => master.latest() === ref.ref }),
-      );
       // attachments: the shared asset store under the home, captions by their own chain (SPEC "Media")
       const mediaConfig = mediaSettings(settings);
       const captioner = makeCaptioner(mediaConfig.caption, { ...needs, device: o.device, planImages: mediaConfig.planImages, runner: local });
@@ -110,10 +108,32 @@ export const routes = (o: ServerOptions) =>
         ...media.unreferenced(chat.mem.root.flatMap((e) => (e.kind === "user" ? [e.text] : []))).map((path) => `/assets/${path}`),
         ...reasoningLeftOut(thinking.commit),
       ]);
+      // The subagents (SPEC M7a): they run on this machine through the engines a turn has, with
+      // their own /mcp key and tool box, and need the session (for reports and the turn's view),
+      // which needs their list: it is handed to them once it exists.
+      const commit = Effect.suspend(() => persist(o.home, `chore(chat): ${chat.mem.root.length} messages`));
+      const host = yield* Deferred.make<SubagentHost>();
+      const subagents: Subagents = yield* makeSubagents({
+        chain: settings.master.chain,
+        commit,
+        device: o.device,
+        dir: stream,
+        effort: settings.master.effort,
+        // read when a run starts, long after `subagents` is set
+        engine: (ref) => turnEngine(ref, { ...needs, instructions, runnerFor: subagentRunnerFor, toolsFor: (device) => toolsWith(device, chat.mem, subagents.tools("subagent")) }, SUBAGENT_POLICY),
+        host,
+        logUsage: usage,
+        mem: chat.mem,
+        publish: (e) => PubSub.publish(events, e).pipe(Effect.asVoid),
+      });
+      const toolsFor = (device: string) => toolsWith(device, chat.mem, subagents.tools("master"));
+      const engines = yield* Effect.forEach(settings.master.chain, (ref) =>
+        turnEngine(ref, { ...needs, instructions, runnerFor, toolsFor, warms: () => master.latest() === ref.ref }),
+      );
       const session = yield* makeSession({
         chat,
         media,
-        commit: Effect.suspend(() => persist(o.home, `chore(chat): ${chat.mem.root.length} messages`)),
+        commit,
         compactorDown: compactor.down,
         defaultDevice: settings.defaultDevice,
         devices: Object.keys(settings.devices),
@@ -124,7 +144,10 @@ export const routes = (o: ServerOptions) =>
         master,
         saveChoices: saveChoices(choicesPath, report),
         logUsage: usage,
+        subagents,
       });
+      yield* Deferred.succeed(host, { lastView: session.lastView, report: session.report, turnNow: session.turnNow });
+      yield* subagents.restore; // runs a restart cut short are stopped, and reported
       for (const p of chat.problems) yield* report(p);
       if (unreachable.length > 0) {
         const notice = `server.publicUrl is not set: turns on ${unreachable.join(", ")} are refused, since claude there could not reach zoom and date`;
@@ -140,12 +163,12 @@ export const routes = (o: ServerOptions) =>
         Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => (guard(request) ? handle : Effect.succeed(forbidden))),
       );
 
-      yield* wsRoute(router, { assets: { find: media.find, report }, entries: chat.mem.root, session, thread: o.device, window: o.window ?? 200 });
-      yield* mcpRoutes(router, { attached: media.zoomContent, mem: chat.mem, secret });
+      yield* wsRoute(router, { assets: { find: media.find, report }, entries: chat.mem.root, session, subagents, thread: o.device, window: o.window ?? 200 });
+      yield* mcpRoutes(router, { agents: subagents.tools, attached: media.zoomContent, mem: chat.mem, secret, subagentSecret });
       yield* assetRoutes(router, { media, settings: mediaConfig });
-      yield* apiRoutes(router, { device: o.device, mem: chat.mem, reasoning, report, session, settings, usagePath });
+      yield* apiRoutes(router, { device: o.device, mem: chat.mem, reasoning, report, session, settings, subagents, usagePath });
       yield* webRoute(router, o.web);
-      return { chat, session };
+      return { chat, session, subagents };
     }),
   );
 

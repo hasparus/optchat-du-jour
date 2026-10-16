@@ -5,13 +5,15 @@ import { EventType } from "@ag-ui/core";
 import { type HttpRouter, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 import type { Session } from "../../src/session.ts";
+import type { Subagents } from "../../src/subagents.ts";
 import type { Entry } from "../../src/tree.ts";
 import { type Asset, FollowUp, shortSha } from "../../src/wire.ts";
 import { type AgUiEvent, openStream } from "../agui.ts";
 
 // What a client sends: AG-UI's RunAgentInput (its user messages not seen before are the ones to
 // answer), an abort, a take-back of a held message by the id its sender gave it, a change to the
-// session's settings, or the resume of a turn waiting for a model on an engine of the master's chain. A user message's content is its text, or AG-UI's parts: text, and image
+// session's settings, the resume of a turn waiting for a model on an engine of the master's chain,
+// or a subagent card's tell, stop or model (SPEC M7a). A user message's content is its text, or AG-UI's parts: text, and image
 // or video parts whose source is a URL "asset:<sha256>", an upload PUT /api/assets stored
 // (SPEC "Media"). The server finds each in its own store; a client never names a path.
 // `forwardedProps.followUp` asks for the other follow-up behavior for this one message;
@@ -30,6 +32,10 @@ const Inbound = Schema.Union([
   // `lead`: an out-of-date client's model pick (the server no longer has one): it is told to reload
   Schema.Struct({ type: Schema.Literal("settings"), followUp: Schema.optional(FollowUp), lead: Schema.optional(Schema.Unknown) }),
   Schema.Struct({ type: Schema.Literal("resume"), engine: Schema.String }),
+  // a subagent's card (SPEC M7a): a message to it, its stop, the model of its next call
+  Schema.Struct({ type: Schema.Literal("tell"), name: Schema.String, text: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("stop-subagent"), name: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("subagent-model"), name: Schema.String, model: Schema.String }),
   Schema.Struct({
     forwardedProps: Schema.optional(Schema.Struct({ device: Schema.optional(Schema.String), followUp: Schema.optional(FollowUp), engine: Schema.optional(Schema.String) })),
     messages: Schema.Array(InboundMessage),
@@ -83,6 +89,7 @@ export const wsRoute = (
   router: HttpRouter.HttpRouter,
   o: {
     readonly session: Session;
+    readonly subagents?: Pick<Subagents, "pick" | "stop" | "tell">; // none: a card's frames are answered that there are none
     readonly entries: readonly Entry[];
     readonly thread: string;
     readonly window: number;
@@ -112,6 +119,19 @@ export const wsRoute = (
           if (asset?.kind === kind) return Effect.succeed([asset]);
           return o.assets.report(`${kind} ${shortSha(sha)} is not on the server: left out of the message`).pipe(Effect.as([]));
         }).pipe(Effect.map((found) => found.flat()));
+      // a card's action; what went wrong is told to this client alone
+      const subagent = (m: Extract<Inbound, { readonly type: "tell" | "stop-subagent" | "subagent-model" }>) => {
+        const agents = o.subagents;
+        const done =
+          agents === undefined
+            ? Effect.succeed("there are no subagents on this server")
+            : m.type === "tell"
+              ? agents.tell(m.name, m.text)
+              : m.type === "stop-subagent"
+                ? agents.stop(m.name)
+                : agents.pick(m.name, m.model);
+        return done.pipe(Effect.flatMap((error) => (error === null ? Effect.void : send([{ name: "info", type: EventType.CUSTOM, value: error }]))));
+      };
       const handle = (m: Inbound) => {
         if ("messages" in m) {
           const { device, engine, followUp } = m.forwardedProps ?? {};
@@ -130,6 +150,10 @@ export const wsRoute = (
               .pipe(Effect.andThen(m.lead === undefined ? Effect.void : send([{ name: "info", type: EventType.CUSTOM, value: OUT_OF_DATE }])));
           case "resume":
             return o.session.resume(m.engine);
+          case "tell":
+          case "stop-subagent":
+          case "subagent-model":
+            return subagent(m);
         }
       };
       const pull = yield* Socket.readerString(socket);

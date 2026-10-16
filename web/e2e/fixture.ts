@@ -9,7 +9,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-export { FETCHED, PLAN_DONE, PLAN_START, REPLY, SEARCH_LINKS, SOL_REPLY, THOUGHT, TOOL_ERROR } from "./replies.ts";
+export { FETCHED, NOTES_REPORT, NOTES_TASK, PLAN_DONE, PLAN_START, REPLY, SCOUT_REPORT, SCOUT_TASK, SEARCH_LINKS, SOL_REPLY, SPAWNED, THOUGHT, TOOL_ERROR } from "./replies.ts";
 
 type LogEntry = MessagesPage["entries"][number];
 const decodePage = Schema.decodeUnknownSync(MessagesPage);
@@ -79,7 +79,9 @@ async function stop(child: ChildProcess) {
   await exited;
 }
 
-async function startServer(seeded: number, spent: boolean, toolError: boolean, patterns: boolean, thinking: boolean): Promise<Server & { readonly stop: () => Promise<void> }> {
+type Options = { readonly seeded: number; readonly spent: boolean; readonly toolError: boolean; readonly patterns: boolean; readonly thinking: boolean; readonly subagents: boolean };
+
+async function startServer({ patterns, seeded, spent, subagents, thinking, toolError }: Options): Promise<Server & { readonly stop: () => Promise<void> }> {
   const home = mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
   let port = 0; // the server picks it on the first start; a restart asks for the one the page knows
   let total = seeded;
@@ -91,6 +93,7 @@ async function startServer(seeded: number, spent: boolean, toolError: boolean, p
     if (toolError) env.E2E_TOOL_ERROR = "1";
     if (patterns) env.E2E_PATTERNS = "1";
     if (thinking) env.E2E_THINKING = "1";
+    if (subagents) env.E2E_SUBAGENTS = "1";
     const child = spawn("bun", ["e2e/server.ts"], { cwd: web, env, stdio: ["ignore", "pipe", "pipe"] });
     let said = "";
     for (const stream of [child.stdout, child.stderr]) {
@@ -145,14 +148,15 @@ async function startServer(seeded: number, spent: boolean, toolError: boolean, p
   };
 }
 
-export const test = base.extend<{ seeded: number; spent: boolean; toolError: boolean; patterns: boolean; thinking: boolean; server: Server }>({
+export const test = base.extend<Options & { server: Server }>({
   seeded: [0, { option: true }], // user messages in the log before the server starts
   spent: [false, { option: true }], // every Claude turn ends on a usage limit
   toolError: [false, { option: true }], // every Claude turn's tool call fails (TOOL_ERROR)
   patterns: [false, { option: true }], // every Claude turn plans, searches and fetches (E2E_PATTERNS)
   thinking: [false, { option: true }], // every Claude turn thinks before its tool call (E2E_THINKING)
-  server: async ({ seeded, spent, toolError, patterns, thinking }, provide) => {
-    const server = await startServer(seeded, spent, toolError, patterns, thinking);
+  subagents: [false, { option: true }], // every Claude turn spawns two subagents (E2E_SUBAGENTS)
+  server: async ({ seeded, spent, toolError, patterns, thinking, subagents }, provide) => {
+    const server = await startServer({ patterns, seeded, spent, subagents, thinking, toolError });
     await provide(server);
     await server.stop();
   },

@@ -8,10 +8,8 @@
 // the messages held for a later turn (each with take-back), the compactor's calls per level of the
 // tree (SessionState.compactions) and the device runners' connection (/api/devices, read again
 // each time the sheet opens). Nothing is kept once it ends: there is no "finished" history, since
-// the server has none to give. Subagents (SPEC M7) will be a group of their own: `extra` is the
-// slot, which the app leaves empty until the server tells of them; the story page
-// (src/stories/stories.tsx) fills it with AI Elements' Subagent lines in a `Group`, so the
-// component isn't in the app's bundle until M7 uses it.
+// the server has none to give, but for the subagents (SPEC M7a), which the server lists done too:
+// they come in `extra` (./subagents.tsx), a group of AI Elements' Subagent cards.
 import { SheetDrawer } from "@/components/sheet-drawer";
 import { Button } from "@/components/ui/button";
 import { TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceDescription, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace";
@@ -49,7 +47,7 @@ export const elapsed = (ms: number) => {
 };
 
 // the clock, once a second while something runs
-function useNow(ticking: boolean) {
+export function useNow(ticking: boolean) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!ticking) return;
@@ -66,9 +64,13 @@ function useNow(ticking: boolean) {
 
 const engineName = (state: SessionState, ref: string) => shortLabel(state.engines.find((e) => e.ref === ref)?.label ?? engineLabel(ref));
 
-// what the server is busy with, for the header's mark: a turn, a compactor call, a held message
+// what the server is busy with, for the header's mark: a turn, a compactor call, a held message,
+// a subagent running
 export const busyWith = (s: Session) =>
-  (s.state !== null && s.state.phase !== "idle" ? 1 : 0) + (s.state?.compactions ?? []).filter((c) => c.running > 0).length + queued(s).filter((q) => q.where === "queued").length;
+  (s.state !== null && s.state.phase !== "idle" ? 1 : 0) +
+  (s.state?.compactions ?? []).filter((c) => c.running > 0).length +
+  queued(s).filter((q) => q.where === "queued").length +
+  (s.state?.subagents ?? []).filter((a) => a.state === "running").length;
 
 // one collapsible group of lines, open by default, with its count
 export function Group({ title, count, icon, children }: { readonly title: string; readonly count: number; readonly icon: ReactNode; readonly children: ReactNode }) {
@@ -125,7 +127,7 @@ export function BackgroundWork({
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly trigger?: ReactNode;
-  // more groups, after the running work (SPEC M7's subagents; empty in the app until then)
+  // more groups, after the running work: the subagents (SPEC M7a, ./subagents.tsx)
   readonly extra?: readonly ReactElement[];
 }) {
   const s = useSyncExternalStore(session.subscribe, session.get);
@@ -145,7 +147,7 @@ export function BackgroundWork({
   return (
     <SheetDrawer
       className={side === "bottom" ? "max-h-[85dvh]" : undefined}
-      description="What the server is doing besides this chat: the running turn, held messages, the compactor and the devices"
+      description="What the server is doing besides this chat: the running turn, held messages, the compactor, the subagents and the devices"
       onOpenChange={onOpenChange}
       open={open}
       side={side}

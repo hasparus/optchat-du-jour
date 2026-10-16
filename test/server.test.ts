@@ -216,7 +216,7 @@ test("/mcp over a WebSocket: one JSON-RPC message per frame each way; a wrong ke
   ws.close();
   expect(replies).toMatchObject([
     { id: 1, result: { protocolVersion: "2025-06-18", serverInfo: { name: "optchat" } } },
-    { id: 2, result: { tools: [{ name: "zoom" }, { name: "date" }] } },
+    { id: 2, result: { tools: [{ name: "zoom" }, { name: "date" }, { name: "spawn" }, { name: "tell" }] } },
     { id: 3, result: { content: [{ text: "0+0|user: hello", type: "text" }] } },
   ]);
 

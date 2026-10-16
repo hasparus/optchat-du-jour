@@ -88,6 +88,12 @@ export const Inbound = Schema.Union([
       Schema.Struct({ i: Schema.optional(Schema.Number), ms: Schema.optional(Schema.Number), cut: Schema.optional(Schema.Number), dropped: Schema.optional(Schema.Boolean) }),
     ),
   }),
+  // A subagent's run (SPEC M7a) began, ended with its report, or ended without one (failed, or
+  // stopped). The app follows subagents by the state's `subagents` list; these are read so they
+  // aren't dropped as unknown, and so a card can read its side log again when its run ends.
+  Schema.Struct({ type: Schema.Literal(EventType.SUBAGENT_STARTED), subagentRunId: Schema.String, name: Schema.String, description: Schema.optional(Schema.String) }),
+  Schema.Struct({ type: Schema.Literal(EventType.SUBAGENT_FINISHED), subagentRunId: Schema.String, result: Schema.optional(Schema.Unknown) }),
+  Schema.Struct({ type: Schema.Literal(EventType.SUBAGENT_ERROR), subagentRunId: Schema.String, message: Schema.String, code: Schema.optional(Schema.String) }),
   Schema.Struct({ type: Schema.Literal(EventType.CUSTOM), name: Schema.Literal("info"), value: Schema.String }),
   Schema.Struct({ type: Schema.Literal(EventType.CUSTOM), name: Schema.Literal("thinking"), value: Schema.Struct({ tokens: Schema.Number }) }),
   Schema.Struct({ type: Schema.Literal(EventType.CUSTOM), name: Schema.Literal("usage"), value: Schema.Json }),
@@ -143,3 +149,10 @@ export const takeBackFrame = (clientId: string) => JSON.stringify({ clientId, ty
 export type Settings = { readonly followUp?: FollowUp };
 export const settingsFrame = (change: Settings) => JSON.stringify({ ...change, type: "settings" });
 export const resumeFrame = (engine: string) => JSON.stringify({ engine, type: "resume" });
+// A subagent card's action (SPEC M7a, server/routes/ws.ts): a message to it, its stop, the model of
+// its next call. What goes wrong comes back as an `info` to this client.
+export type SubagentAction =
+  | { readonly type: "tell"; readonly name: string; readonly text: string }
+  | { readonly type: "stop-subagent"; readonly name: string }
+  | { readonly type: "subagent-model"; readonly name: string; readonly model: string };
+export const subagentFrame = (action: SubagentAction) => JSON.stringify(action);

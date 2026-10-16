@@ -59,7 +59,7 @@ test("Read, Glob and Grep stay inside the folders through .., symlinks and absol
 
   for (const name of ["Write", "Edit", "Bash"]) expect(await call(name, { command: "touch x", file_path: "x" })).toStartWith(`Error: there is no tool named ${name}`);
   const box = toolBox({ device: "mini", files: run, folders: [inside], mem: newMem() });
-  expect(box.defs.map((d) => d.name)).toEqual(["Read", "Glob", "Grep", "zoom", "date"]);
+  expect(box.defs.map((d) => d.name)).toEqual(["Read", "Glob", "Grep", "zoom", "date", "spawn", "tell"]);
   // input that isn't JSON fails; zoom of a node that isn't there answers, as /mcp does (no isError)
   expect(await Effect.runPromise(box.run("Read", "{not json"))).toEqual({ error: true, text: "Error: the input of Read is not JSON" });
   expect(await Effect.runPromise(box.run("zoom", '{"id":5,"n":1}'))).toMatchObject({ error: false });

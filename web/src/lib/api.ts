@@ -1,6 +1,6 @@
 // The read-only JSON of /api/* (SPEC "Server, WebSocket API and CLI"), decoded at the boundary with
 // the server's own schemas (src/wire.ts).
-import { Devices, MessagesPage, NodeView, ReasoningHeads, ReasoningPiece, Usage, View } from "@wire";
+import { Devices, MessagesPage, NodeView, ReasoningHeads, ReasoningPiece, SubagentLog, Usage, View } from "@wire";
 import { Schema } from "effect";
 
 async function get<S extends Schema.Top & { readonly DecodingServices: never }>(path: string, schema: S): Promise<S["Type"]> {
@@ -28,4 +28,6 @@ export const api = {
   node: async (l: number, i: number) => get(`/api/node?l=${l}&i=${i}`, NodeView),
   usage: async () => get("/api/usage", Usage),
   devices: async () => get("/api/devices", Devices),
+  // a subagent and its side log from entry `from` on, `limit` entries at most (SPEC M7a)
+  subagent: async (name: string, from = 0, limit = 100) => get(`/api/subagent?name=${encodeURIComponent(name)}&from=${from}&limit=${limit}`, SubagentLog),
 };

@@ -1,4 +1,4 @@
-// AI Elements' Subagent (SPEC M7's presentational part, wired to nothing yet): each state from the
+// AI Elements' Subagent (SPEC M7a's presentational part, chat/subagents.tsx wires it): each state from the
 // runs the story page shows, and its Tell and Stop callbacks
 import { afterEach, describe, expect, test } from "bun:test";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";

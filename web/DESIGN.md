@@ -418,14 +418,15 @@ header's activity button (an ivy dot on it while anything runs): a phone's heade
 fifth target beside the tabs, the theme and, in the iOS app, the server button. Groups of trace lines (shadcn's Trace), each group collapsible with its count: "Running" (the
 turn: the engine's short name, then "Turn · on mini, 1 min 05 s", a Stop on a soft circle beside it;
 the compactor, a line per busy level of the tree), "Waiting for a turn" (each held message, its
-take-back beside it), "Subagents" (SPEC M7: a Subagent line per run, "Running scout" with Stop
-beside it, open to its task, device and engine as badges, its steps as tool lines, a line to tell
-it something; "Ran", "Failed to run" or "Stopped" once over; built and on the story page, not in
-the app until the server reports subagents) and "Devices" (each runner, connected, offline or
+take-back beside it), "Subagents" (SPEC M7a: a Subagent line per subagent the server lists,
+"Running scout" with Stop beside it and how long it has run, open to its device as a badge and its
+model as the composer's Model Selector (for its next call), its task, its steps as tool lines, its
+report, and a line to tell it something; "Ran", "Failed to run" or "Stopped" once over, closed,
+with the same line to tell it to go on) and "Devices" (each runner, connected, offline or
 refused). A line is a 14 px
 icon, the title in ink and its kind and state in 12 px muted under it; a failed one is red. Only
-what the server tells: no group without lines, no history of finished work; with nothing running it
-says so in one muted line.
+what the server tells: no group without lines, and no history of finished work but the subagents
+the server still lists; with nothing running it says so in one muted line.
 
 ### Navigation
 - **Segmented control** (`components/ui/segmented.tsx`): text choices (13 px, 500), 28 px tall,

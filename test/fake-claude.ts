@@ -2,11 +2,17 @@
 // Our fake `claude`: it speaks the stream-json of `claude -p` on stdin and stdout (ref §10,
 // §16.4). The code under test runs it when OPTCHAT_CLAUDE names this file. No model, no network.
 //
-// It tells the four kinds of call apart the way optchat starts them:
+// It tells the five kinds of call apart the way optchat starts them:
 //   caption   --system-prompt is the caption prompt (an attachment's caption, SPEC "Media")
 //   compact   DISABLE_PROMPT_CACHING=1 without --replay-user-messages (the compactor)
 //   prime     DISABLE_PROMPT_CACHING=1 with --replay-user-messages (a priming call, the turn's argv)
+//   subagent  --allowedTools (a subagent's call, SPEC M7a)
 //   turn      anything else
+//
+// Permissions, as `claude -p` with `--setting-sources ""` has them: under --permission-mode
+// default a tool call is refused (an error tool_result saying so, in place of any the script
+// gives) unless the tool needs no permission (Read, Glob, Grep, TodoWrite) or --allowedTools
+// names it; bypassPermissions lets everything run.
 //
 // FAKE_CLAUDE_LOG: a JSONL file it appends to, one record per thing that happened, each with its
 // time `t` (ms since the epoch):
@@ -14,7 +20,10 @@
 //   {type: "in", pid, content}                          every user message read from stdin
 //   {type: "exit", pid, code}                           a normal end (not after SIGKILL)
 //
-// FAKE_CLAUDE_SCRIPT: a JSON file {turn?, prime?, compact?, caption?}. Each role holds a list of calls: the
+// FAKE_CLAUDE_SCRIPT: a JSON file {turn?, prime?, compact?, caption?, subagent?}. `subagent` may
+// instead be an object by the subagent's name, {scout: call, …}: a subagent's call is then picked by
+// the name its opening message gives it (`You are the subagent "scout"`), not by the order processes
+// started in, which two subagents spawned at once can't be relied on for. Each role holds a list of calls: the
 // k-th process of that role plays call k, and the last call repeats. A call is a list of replies,
 // reply k answering the k-th message the call starts work on (the last reply repeats); a call
 // may also be written as one reply, a plain list of actions. Actions:
@@ -25,6 +34,12 @@
 //   {thought: "...", streamed?}   a thought with its text: thinking deltas carrying it (unless
 //                                 streamed is false), then the thinking block holding it whole
 //   {tool: {name, input}}         a tool_use block: its content_block_start, then the assistant block
+//                                 (and the refusal, when the permission mode refuses it)
+//   {mcp: {name, input}}          a call of the MCP server optchat's tool `name` (zoom, date, spawn,
+//                                 tell): its tool_use block as mcp__optchat__<name>, then, unless
+//                                 the permission mode refuses it, a real POST to the URL its
+//                                 --mcp-config names (ws:// read as http://), whose answer is the
+//                                 tool_result
 //   {toolResult: "...", is_error?}  the user event carrying that tool's result; is_error: true
 //                                 marks it failed, as Claude Code does (a Bash exit code, a
 //                                 <tool_use_error>); any other JSON value goes out as given, to
@@ -69,6 +84,7 @@ const Action = Schema.Union([
   Schema.Struct({ thinking: Schema.Number }),
   Schema.Struct({ thought: Schema.String, streamed: Schema.optional(Schema.Boolean) }),
   Schema.Struct({ tool: Schema.Struct({ input: Schema.Json, name: Schema.String }) }),
+  Schema.Struct({ mcp: Schema.Struct({ input: Schema.Json, name: Schema.String }) }),
   Schema.Struct({ toolResult: Schema.String, is_error: Schema.optional(Schema.Json) }),
   Schema.Struct({ waitInput: Schema.Literal(true) }),
   Schema.Struct({ take: Schema.Literal(true) }),
@@ -94,12 +110,18 @@ const Script = Schema.Struct({
   caption: Schema.optional(Schema.Array(Call)),
   compact: Schema.optional(Schema.Array(Call)),
   prime: Schema.optional(Schema.Array(Call)),
+  subagent: Schema.optional(Schema.Union([Schema.Array(Call), Schema.Record(Schema.String, Call)])),
   turn: Schema.optional(Schema.Array(Call)),
 });
 const Input = Schema.fromJsonString(Schema.Struct({ message: Schema.optional(Schema.Struct({ content: Schema.optional(Schema.Json) })) }));
-const McpConfig = Schema.fromJsonString(Schema.Struct({ mcpServers: Schema.optional(Schema.Record(Schema.String, Schema.Struct({ type: Schema.optional(Schema.String) }))) }));
+const McpConfig = Schema.fromJsonString(
+  Schema.Struct({ mcpServers: Schema.optional(Schema.Record(Schema.String, Schema.Struct({ type: Schema.optional(Schema.String), url: Schema.optional(Schema.String) }))) }),
+);
+const McpAnswer = Schema.Struct({
+  result: Schema.optional(Schema.Struct({ content: Schema.Array(Schema.Struct({ text: Schema.optional(Schema.String), type: Schema.String })), isError: Schema.optional(Schema.Boolean) })),
+});
 
-type Role = "caption" | "compact" | "prime" | "turn";
+type Role = "caption" | "compact" | "prime" | "subagent" | "turn";
 type Json = Schema.Json;
 type LogRecord =
   | { readonly type: "start"; readonly role: Role; readonly call: number; readonly argv: readonly string[]; readonly cwd: string; readonly env: Json }
@@ -115,11 +137,18 @@ const role: Role = system === CAPTION
     ? "compact"
     : env.DISABLE_PROMPT_CACHING === "1"
       ? "prime"
-      : "turn";
+      : argv.includes("--allowedTools")
+        ? "subagent"
+        : "turn";
 const flag = (name: string) => {
   const at = argv.indexOf(name);
   return at === -1 ? undefined : argv[at + 1];
 };
+// what runs without asking: everything under bypassPermissions; else the tools that need no
+// permission, and those --allowedTools names
+const FREE = new Set(["Read", "Glob", "Grep", "TodoWrite"]);
+const allowed = new Set((flag("--allowedTools") ?? "").split(",").filter((t) => t !== ""));
+const permitted = (tool: string) => flag("--permission-mode") === "bypassPermissions" || FREE.has(tool) || allowed.has(tool);
 const model = flag("--model") ?? "fake";
 const replaying = argv.includes("--replay-user-messages");
 
@@ -142,6 +171,7 @@ const DEFAULTS = {
   caption: [{ text: "a picture from the fake claude" }],
   compact: [{ text: "talk: a short summary line" }],
   prime: [{ emit: messageStart({ cache_creation_input_tokens: 100, input_tokens: 3 }) }, { hang: true }],
+  subagent: [{ text: "done: nothing to report" }],
   turn: [{ text: "ok" }],
 } satisfies Record<Role, Reply>;
 
@@ -151,12 +181,19 @@ const shown = { CLAUDE_CODE_PROMPT_CACHE_TTL: env.CLAUDE_CODE_PROMPT_CACHE_TTL ?
 record({ argv, call: callIndex, cwd: process.cwd(), env: shown, role, type: "start" });
 
 const servers = Object.entries(Schema.decodeUnknownSync(McpConfig)(flag("--mcp-config") ?? "{}").mcpServers ?? {});
+const mcpUrl = servers.find(([name]) => name === "optchat")?.[1].url?.replace(/^ws/, "http");
 const overWs = servers.filter(([, c]) => c.type === "ws").map(([name]) => name);
 
-const calls = script[role] ?? [];
-const call = calls[Math.min(callIndex, calls.length - 1)] ?? DEFAULTS[role];
 const isReply = Schema.is(Reply);
-const replies: readonly Reply[] = isReply(call) ? [call] : call;
+const repliesOf = (call: typeof Call.Type): readonly Reply[] => (isReply(call) ? [call] : call);
+const scripted = script[role] ?? [];
+// by name (subagents only): picked once the opening says who this is
+const ByName = Schema.Record(Schema.String, Call);
+const byName = !Array.isArray(scripted) && Schema.is(ByName)(scripted) ? scripted : null;
+const isCalls = Schema.is(Schema.Array(Call));
+const calls: readonly (typeof Call.Type)[] = isCalls(scripted) ? scripted : [];
+let replies: readonly Reply[] = repliesOf(calls[Math.min(callIndex, calls.length - 1)] ?? DEFAULTS[role]);
+const nameIn = (content: Json) => /You are the subagent \\?"([^"\\]+)\\?"/.exec(JSON.stringify(content))?.[1];
 const replyFor = (k: number): Reply => replies[Math.min(k, replies.length - 1)] ?? DEFAULTS[role];
 
 const quit = (code: number) => {
@@ -210,6 +247,19 @@ const start = () => {
   emit(messageStart(usageOf()));
 };
 
+// one tools/call of the MCP server optchat, over HTTP, as claude would make it
+const callMcp = async (name: string, args: Json): Promise<{ readonly text: string; readonly error: boolean }> => {
+  if (mcpUrl === undefined) return { error: true, text: "no MCP server optchat" };
+  const body = JSON.stringify({ id: 1, jsonrpc: "2.0", method: "tools/call", params: { arguments: args, name } });
+  const res = await fetch(mcpUrl, { body, headers: { "content-type": "application/json" }, method: "POST" });
+  const answer = Schema.decodeUnknownSync(McpAnswer)(await res.json());
+  const text = (answer.result?.content ?? []).map((c) => c.text ?? `[${c.type}]`).join("\n");
+  return { error: answer.result?.isError === true || !res.ok, text: res.ok ? text : `HTTP ${res.status}` };
+};
+
+// the last tool call was refused for want of a permission: the refusal is its result
+let refused = false;
+
 // plays one reply; false when the process is to stop answering (it hangs or exits)
 async function play(reply: Reply): Promise<boolean> {
   started = false;
@@ -232,11 +282,25 @@ async function play(reply: Reply): Promise<boolean> {
         for (const piece of a.thought.match(/[\s\S]{1,24}/gu) ?? [])
           emit({ event: { delta: { thinking: piece, type: "thinking_delta" }, index: 0, type: "content_block_delta" }, type: "stream_event" });
       emit({ message: { content: [{ signature: "sig", thinking: a.thought, type: "thinking" }], model, role: "assistant" }, type: "assistant" });
-    } else if ("tool" in a) {
+    } else if ("tool" in a || "mcp" in a) {
       start();
-      emit({ event: { content_block: { id: "toolu_1", input: {}, name: a.tool.name, type: "tool_use" }, index: 0, type: "content_block_start" }, type: "stream_event" });
-      emit({ message: { content: [{ id: "toolu_1", input: a.tool.input, name: a.tool.name, type: "tool_use" }], model, role: "assistant" }, type: "assistant" });
+      const name = "tool" in a ? a.tool.name : `mcp__optchat__${a.mcp.name}`;
+      const input = "tool" in a ? a.tool.input : a.mcp.input;
+      emit({ event: { content_block: { id: "toolu_1", input: {}, name, type: "tool_use" }, index: 0, type: "content_block_start" }, type: "stream_event" });
+      emit({ message: { content: [{ id: "toolu_1", input, name, type: "tool_use" }], model, role: "assistant" }, type: "assistant" });
+      refused = !permitted(name);
+      if (refused) {
+        const said = `Claude requested permissions to use ${name}, but you haven't granted it yet.`;
+        emit({ message: { content: [{ content: said, is_error: true, tool_use_id: "toolu_1", type: "tool_result" }], role: "user" }, type: "user" });
+      } else if ("mcp" in a) {
+        const answer = await callMcp(a.mcp.name, input);
+        emit({ message: { content: [{ content: answer.text, is_error: answer.error, tool_use_id: "toolu_1", type: "tool_result" }], role: "user" }, type: "user" });
+      }
     } else if ("toolResult" in a) {
+      if (refused) {
+        refused = false; // its refusal answered the call already
+        continue;
+      }
       const result = { content: a.toolResult, tool_use_id: "toolu_1", type: "tool_result" };
       const block: Json = a.is_error === undefined ? result : { ...result, is_error: a.is_error };
       emit({ message: { content: [block], role: "user" }, type: "user" });
@@ -280,6 +344,10 @@ let initSent = false;
 for (let k = 0; ; k++) {
   await unused();
   const content = inbox[used++] ?? null;
+  if (k === 0 && byName) {
+    const own = byName[nameIn(content) ?? ""];
+    replies = own === undefined ? [DEFAULTS[role]] : repliesOf(own);
+  }
   if (!initSent) {
     initSent = true;
     const wsStatus = env.FAKE_CLAUDE_WS_STATUS ?? "connected";

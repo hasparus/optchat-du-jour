@@ -20,7 +20,7 @@ import { makePieces, noReasoning, type Pieces, type Reasoning } from "./reasonin
 import { BLIND, type Mid, type TurnEngine, type TurnEvents } from "./turn/engine.ts";
 import type { UsageRecord } from "./usage.ts";
 import { allBuilt, render, settle, unbuilt, viewSize } from "./view.ts";
-import { type Asset, canonicalRef, engineLabel, type FollowUp, MAX_ATTACHMENTS, markerOf, NOT_DESCRIBED, type Phase, type SessionState, withMarkers } from "./wire.ts";
+import { type Asset, canonicalRef, engineLabel, type FollowUp, MAX_ATTACHMENTS, markerOf, NOT_DESCRIBED, type Phase, type SessionState, type SubagentInfo, withMarkers } from "./wire.ts";
 
 // the state every client is shown (STATE_SNAPSHOT, STATE_DELTA, /api/state): src/wire.ts
 export type { FollowUp, Phase, SessionState } from "./wire.ts";
@@ -58,7 +58,13 @@ export type SessionEvent =
       readonly error: string | null;
     }
   | { readonly type: "usage"; readonly record: UsageRecord }
-  | { readonly type: "state"; readonly state: SessionState };
+  | { readonly type: "state"; readonly state: SessionState }
+  // A subagent's run began (spawned, or started again by a tell), ended with its final reply, or
+  // ended without one: failed or stopped (`code`). AG-UI's SUBAGENT_* events (SPEC M7a); `runId`
+  // is "<name>+<n>", its n-th run
+  | { readonly type: "subagent-started"; readonly runId: string; readonly name: string; readonly task: string }
+  | { readonly type: "subagent-finished"; readonly runId: string; readonly name: string; readonly report: string }
+  | { readonly type: "subagent-error"; readonly runId: string; readonly name: string; readonly message: string; readonly code: "failed" | "stopped" };
 
 export type Session = {
   // a message from a client: it starts a turn, or joins the running one (InputOptions say how)
@@ -78,7 +84,20 @@ export type Session = {
   readonly primeSoon: Effect.Effect<void>;
   // the run going on, and the reply it is streaming (not logged yet), for a client joining now
   readonly live: () => LiveRun | null;
+  // A subagent's report (SPEC M7a): logged as a user entry, never while a turn runs and never
+  // starting one: at once when the session is idle, else before the next turn renders its view,
+  // or once the loop winds down. Resolves when it is in the log.
+  readonly report: (text: string) => Effect.Effect<void>;
+  // the turn running now: its engine and the view it was sent (what a subagent it spawns starts
+  // from); null between turns
+  readonly turnNow: () => { readonly ref: string; readonly view: string } | null;
+  // the view the most recent turn was sent, whatever runs now; null before any turn
+  readonly lastView: () => string | null;
 };
+
+// What the session shows of the subagents (src/subagents.ts): the list in the state, and a ping
+// each time it changes
+export type SubagentList = { readonly list: () => readonly SubagentInfo[]; readonly changes: PubSub.PubSub<true> };
 
 // A message's options, shaped like the RunAgentInput's forwardedProps it came with: `device` and
 // `engine` (a ref of the master's chain; the chain's first when none) it is for, and `followUp`,
@@ -136,6 +155,7 @@ export const makeSession = (o: {
   readonly compactorDown?: DownList; // makeSummarize's `down`: shown in the state, published again as it changes
   readonly events?: PubSub.PubSub<SessionEvent>; // the server's, made first so it can report into it; else the session's own
   readonly reasoning?: Reasoning; // the side file thinking is kept in (src/reasoning.ts); none: only streamed
+  readonly subagents?: SubagentList; // shown in the state (SPEC M7a); none: the state has no list
 }): Effect.Effect<Session, never, Scope.Scope> =>
   Effect.gen(function* () {
     const { chat } = o;
@@ -145,6 +165,10 @@ export const makeSession = (o: {
 
     // every message not logged yet, in the order they came in (src/inbox.ts has its rules)
     const inbox: Incoming[] = [];
+    // subagents' reports not logged yet, oldest first, each with what its sender waits on (SPEC M7a)
+    const reports: { readonly text: string; readonly logged: Deferred.Deferred<true> }[] = [];
+    // the view the most recent turn was sent (`turnNow`, `lastView`)
+    let sentView: string | null = null;
     let seq = 0;
     let phase: Phase = "idle", device = o.defaultDevice, engine: string | null = null;
     // the setting every client shares (`configure`): what a mid-run message does
@@ -168,6 +192,11 @@ export const makeSession = (o: {
     // the loop stopped on an error (the log refused, or a defect), why, and the last message in by
     // then: those wait for a newer message instead of starting the loop again at once
     let halted: { readonly why: string; readonly upTo: number } | null = null;
+    // once that loop has ended, the last message in by then: the ones up to it start no turn until a
+    // newer one comes, also when a subagent's report starts the loop to be logged (null: none waits)
+    let parked: number | null = null;
+    // a turn is due: a held message, and not only ones parked after an error
+    const turnsDue = () => held(inbox).length > 0 && (parked === null || inbox.some((m) => m.seq > (parked ?? 0)));
 
 
     // when the phase clients see began, on this server's clock: stamped as a state with a new phase
@@ -196,7 +225,8 @@ export const makeSession = (o: {
         stopped: stalled && { label: master.label(stalled.ref), ref: stalled.ref, why: stalled.why },
         compactions: chat.activity(),
       };
-      return since === null ? told : { ...told, elapsed: Math.max(0, clock.currentTimeMillisUnsafe() - since) };
+      const withAgents = o.subagents ? { ...told, subagents: o.subagents.list() } : told;
+      return since === null ? withAgents : { ...withAgents, elapsed: Math.max(0, clock.currentTimeMillisUnsafe() - since) };
     };
     const stamp = Effect.sync(() => {
       if (phase === sincePhase) return;
@@ -217,6 +247,12 @@ export const makeSession = (o: {
     if (o.compactorDown) {
       const downs = yield* PubSub.subscribe(o.compactorDown.changes);
       yield* PubSub.take(downs).pipe(Effect.andThen(tell), Effect.forever, Effect.forkScoped);
+    }
+    // a subagent started, logged a line or ended: clients see it in the state, at most ten times a
+    // second (its changes slide, so a burst of lines is one tell)
+    if (o.subagents) {
+      const agents = yield* PubSub.subscribe(o.subagents.changes);
+      yield* PubSub.take(agents).pipe(Effect.andThen(Effect.sleep("100 millis")), Effect.andThen(tell), Effect.forever, Effect.forkScoped);
     }
 
     // the run whose RUN_STARTED went out, the text it is streaming at log index `at`, and its
@@ -241,6 +277,24 @@ export const makeSession = (o: {
         Effect.uninterruptible,
       );
     const published = (runId: string | null) => (entry: Entry) => publish({ entry, runId, type: "logged" });
+
+    // The subagents' reports waiting, logged in order, outside any run (SPEC M7a): each is a user
+    // entry starting "[Name] " (E23). Each write and its leaving the queue are one step; one the log
+    // refuses stays first in the queue, and the loop stops on the refusal like any other.
+    const logReports = Effect.gen(function* () {
+      for (let next = reports[0]; next !== undefined; next = reports[0]) {
+        const { logged, text } = next;
+        yield* log("user", text, null).pipe(
+          Effect.tap((entry) =>
+            Effect.suspend(() => {
+              reports.shift();
+              return published(null)(entry).pipe(Effect.andThen(Deferred.succeed(logged, true)));
+            }),
+          ),
+          Effect.uninterruptible,
+        );
+      }
+    });
 
     const scope = yield* Effect.scope;
 
@@ -498,15 +552,14 @@ export const makeSession = (o: {
 
     const turn = Effect.gen(function* () {
       yield* FiberSet.clear(primes).pipe(Effect.forkIn(scope)); // not waited for: the killed claude may take a moment
-      while (held(inbox).length > 0) {
-        if (unbuilt(chat.mem)) {
-          device = nextTurn(inbox, o.defaultDevice).on; // shown while it waits; read again after, with what came in meanwhile
-          yield* enter("waiting");
-          // A failed call is tried again at the next message (docs/optchat.md §4); while the turn
-          // waits for one, none comes, so it is also tried every WAIT_RETRY, only while it waits (E24)
-          const retrying = chat.retry.pipe(Effect.delay(o.waitRetry ?? WAIT_RETRY), Effect.forever);
-          yield* Effect.raceFirst(settle(chat.mem), retrying);
-        }
+      // A failed call is tried again at the next message (docs/optchat.md §4); while the turn
+      // waits for one, none comes, so it is also tried every WAIT_RETRY, only while it waits (E24)
+      const retrying = chat.retry.pipe(Effect.delay(o.waitRetry ?? WAIT_RETRY), Effect.forever);
+      const summaries = Effect.suspend(() => (unbuilt(chat.mem) ? enter("waiting").pipe(Effect.andThen(Effect.raceFirst(settle(chat.mem), retrying))) : Effect.void));
+      // reports that came in are logged first, so the next turn's view has them
+      for (yield* logReports; turnsDue(); yield* logReports) {
+        if (unbuilt(chat.mem)) device = nextTurn(inbox, o.defaultDevice).on; // shown while it waits; read again after, with what came in meanwhile
+        yield* summaries;
         // This turn's device, engine and messages are read once the summaries are in, and picked at
         // once, so none can be taken back any more; their captions are waited for together,
         // briefly, before any is logged. One that comes in meanwhile waits for the call below, where
@@ -516,7 +569,10 @@ export const makeSession = (o: {
         device = on;
         for (const m of batch) m.state = "picked";
         yield* captioned(batch);
+        // a report that came in meanwhile goes before the view too, once summarized like any message
+        if (reports.length > 0) yield* logReports.pipe(Effect.andThen(summaries));
         const view = render(chat.mem); // BEFORE the new messages are logged (docs/optchat.md §6)
+        sentView = view;
         yield* enter("running");
         let runId = yield* logQueued(batch, on); // a resumed run gets one of its own (`stall`)
         const since = chat.mem.root.length; // what this turn's engines log starts here
@@ -617,7 +673,11 @@ export const makeSession = (o: {
         loop = null;
         const stop = halted;
         halted = null;
-        if (inbox.some((m) => stop === null || m.seq > stop.upTo)) return start;
+        if (stop !== null) parked = stop.upTo;
+        // Again only for a turn that is due (`turnsDue`: a held message newer than any parked one),
+        // or for a report that came in meanwhile, unless the log just refused. Messages parked after
+        // an error are no reason: the loop would find nothing to do, end and start again, for ever.
+        if (turnsDue() || (stop === null && reports.length > 0)) return start;
         phase = "idle";
         const told = stop === null ? Effect.void : Effect.forEach(inbox, (m) => ack(m, null, stop.why), { discard: true });
         return told.pipe(Effect.andThen(tell), Effect.andThen(primeLater), Effect.andThen(warm));
@@ -650,7 +710,9 @@ export const makeSession = (o: {
     const start: Effect.Effect<void> = Effect.suspend(() => {
       if (running) return Effect.void;
       running = true;
-      phase = "running"; // until the loop says what it waits for: never "idle" while it is on
+      // until the loop says what it waits for: never "idle" while it is on, unless all it has to do
+      // is log reports, which is no turn
+      if (turnsDue()) phase = "running";
       return turn.pipe(
         Effect.onExit((exit) => (Exit.isFailure(exit) ? stopped(exit.cause) : Effect.void)),
         Effect.ensuring(afterLoop),
@@ -675,6 +737,7 @@ export const makeSession = (o: {
         const sentFor = on && o.devices.includes(on) ? on : deviceOf(text, o.devices);
         const steer = (how ?? followUp) === "steer";
         inbox.push({ clientId: clientId ?? null, described: null, device: sentFor, engine: named?.ref ?? head, media, seq: ++seq, state: "held", steer, text });
+        parked = null; // a newer message: the ones parked after an error go with it
         yield* chat.retry; // the next message: failed summaries are tried again (docs/optchat.md §4)
         if (accepting) steerIn(accepting);
         yield* start; // nothing to do while the loop is on: it takes held messages as it goes
@@ -713,7 +776,18 @@ export const makeSession = (o: {
     const cancel = Effect.suspend(() => (loop ? Fiber.interrupt(loop) : Effect.void));
     const primeSoon = Effect.asVoid(primeNow);
 
-    return { cancel, configure, events, input, live, primeSoon, resume, state, takeBack };
+    // A report waits for the loop: it is logged before the next turn, or by a loop started for it
+    // alone, which runs no turn and leaves the phase as it was. It never offers itself to a call.
+    const report = (text: string) =>
+      Effect.suspend(() => {
+        const logged = Deferred.makeUnsafe<true>();
+        reports.push({ logged, text });
+        return start.pipe(Effect.andThen(Deferred.await(logged)), Effect.asVoid);
+      });
+    const turnNow = () => (engine === null || sentView === null ? null : { ref: engine, view: sentView });
+    const lastView = () => sentView;
+
+    return { cancel, configure, events, input, lastView, live, primeSoon, report, resume, state, takeBack, turnNow };
   });
 
 // A message's text as the log keeps it: what was typed, then a marker line per attachment with
@@ -742,7 +816,7 @@ const thrown = (cause: Cause.Cause<unknown>) => {
 // what stops a turn until a client resumes it on an engine, rather than ending it (E4)
 const waitsForResume = (e: EngineError | StoreError) => e._tag === "UsageLimit" || e._tag === "DeviceOffline";
 
-const failureText = (e: EngineError | StoreError) => {
+export const failureText = (e: EngineError | StoreError) => {
   switch (e._tag) {
     case "Refusal":
       return `declined: ${e.message}`;

@@ -1,6 +1,7 @@
-// The story page (web/stories.html, src/stories): UI the server has no data for yet, served by
-// Vite's dev server (the build never takes it). Today AI Elements' Subagent, which SPEC M7 will
-// feed: each state alone, and the Background work sheet's slot filled with them.
+// The story page (web/stories.html, src/stories): UI in each of its states with fixture data, served
+// by Vite's dev server (the build never takes it). Today AI Elements' Subagent, which the app wires
+// to the server's subagents (SPEC M7a): each state alone, and the Background work sheet's slot
+// filled with them.
 import { type ChildProcess, spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
@@ -92,7 +93,7 @@ test("the Background work sheet's subagent slot: a group of its own, Stop and Te
   await page.goto(stories);
   await page.getByRole("button", { name: "Background work with subagents" }).click();
   const sheet = page.getByTestId("background-work");
-  await expect(sheet.getByText("Subagents")).toBeVisible();
+  await expect(sheet.getByRole("button", { name: "Subagents" })).toBeVisible();
   await expect(sheet.getByTestId("work-subagent")).toHaveCount(4);
   // the running one is open; the others are one line each
   await expect(sheet.getByLabel("Tell scout")).toBeVisible();

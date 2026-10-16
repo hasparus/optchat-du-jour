@@ -411,6 +411,9 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
       case EventType.REASONING_MESSAGE_CONTENT:
       case EventType.REASONING_MESSAGE_END:
       case EventType.REASONING_END:
+      case EventType.SUBAGENT_STARTED: // a subagent's card follows the state's list and reads its side log itself (SPEC M7a)
+      case EventType.SUBAGENT_FINISHED:
+      case EventType.SUBAGENT_ERROR:
         return;
     }
   };

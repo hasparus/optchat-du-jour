@@ -4,7 +4,7 @@
 // lost or logged twice, and the loop never spins.
 import { afterAll, expect, test } from "bun:test";
 import { type AGUIEvent, EventType } from "@ag-ui/core";
-import { Deferred, type Duration, Effect, PubSub } from "effect";
+import { Deferred, type Duration, Effect, Fiber, PubSub } from "effect";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
@@ -1349,6 +1349,68 @@ test("an engine marked down is not primed: a cancel while waiting for a model le
       yield* r.session.primeSoon;
       yield* Effect.sleep("50 millis");
       expect(primed).toBe(1);
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("a subagent's report after the log refused a message is logged alone: it starts no turn on the parked message", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      let runs = 0;
+      const engine: TurnEngine = { ref: "fake:x", run: (_input, out) => Effect.sync(() => (runs += 1)).pipe(Effect.andThen(out.log("talk", "an answer"))), vision: false, warm: () => Effect.void };
+      const r = yield* rig(engine);
+      r.disk.full = true;
+      yield* r.session.input("parked", { clientId: "c1" });
+      yield* until("idle", r.idle);
+      r.disk.full = false;
+      // the disk is back; a subagent finishes: its report is logged, the parked message waits on
+      const before = r.counts.commits;
+      yield* r.session.report("[scout] found it");
+      expect(r.log()).toEqual([["user", "[scout] found it"]]);
+      yield* until("its commit", () => r.counts.commits > before);
+      yield* Effect.sleep("200 millis");
+      // one loop, one commit: the parked message doesn't start the loop again and again
+      expect(r.counts.commits).toBe(before + 1);
+      expect(runs).toBe(0);
+      expect(r.session.state().phase).toBe("idle");
+      // a newer message takes the parked one with it
+      yield* r.session.input("and now?", { clientId: "c2" });
+      yield* until("the run's end", () => r.events.some((e) => e.type === "run-finished"));
+      expect(r.log()).toEqual([
+        ["user", "[scout] found it"],
+        ["user", "parked"],
+        ["user", "and now?"],
+        ["talk", "an answer"],
+      ]);
+      expect(runs).toBe(1);
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("a report that comes while a turn waits for summaries goes before that turn's view", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const gate = Deferred.makeUnsafe<true, CompactError>();
+      const views: string[] = [];
+      const engine: TurnEngine = {
+        ref: "fake:x",
+        run: (input, out) => Effect.sync(() => views.push(input.view)).pipe(Effect.andThen(out.log("talk", "an answer"))),
+        vision: false,
+        warm: () => Effect.void,
+      };
+      const r = yield* rig(engine, { summarize: Effect.asVoid(Deferred.await(gate)) });
+      // a long first message: its summary waits at the gate, so the second turn waits for it
+      yield* r.session.input("w".repeat(4000), { clientId: "c1" });
+      yield* until("the first turn", () => views.length === 1 && r.idle());
+      yield* r.session.input("second", { clientId: "c2" });
+      yield* until("waiting", () => r.session.state().phase === "waiting");
+      const reported = yield* r.session.report("[scout] short report").pipe(Effect.forkScoped);
+      yield* Effect.sleep("30 millis");
+      yield* Deferred.succeed(gate, true);
+      yield* Fiber.join(reported);
+      yield* until("the second turn", () => views.length === 2);
+      expect(views[1]).toContain("[scout] short report");
+      expect(r.log().map(([, text]) => (text ?? "").slice(0, 20))).toEqual(["w".repeat(20), "an answer", "[scout] short report", "second", "an answer"]);
     }).pipe(Effect.scoped),
   );
 });
