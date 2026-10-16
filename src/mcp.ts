@@ -8,13 +8,16 @@ import { wireJson } from "./text.ts";
 import { type Built, children, type Coord, type Entry, getNode, label, localTime, type Mem } from "./tree.ts";
 import { flat } from "./view.ts";
 
-// The descriptions are docs/optchat.md §6's, word for word; the input schemas carry no descriptions (ref §9).
+// zoom's and date's descriptions are docs/optchat.md §6's, word for word; the input schemas carry
+// no descriptions (ref §9). zoom's id may also be a subagent's name (docs/optchat.md §5's
+// zoom("Name"), SPEC M7a), which the system prompt explains; spawn and tell are the earlier gist's
+// (§9), ours in words. Nothing here changes from call to call: the list is part of every cached prefix.
 export const TOOLS = [
   {
     description: "Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole.",
     inputSchema: {
-      properties: { id: { type: "integer" }, n: { type: "integer" } },
-      required: ["id", "n"],
+      properties: { id: { type: ["integer", "string"] }, n: { type: "integer" } },
+      required: ["id"],
       type: "object",
     },
     name: "zoom",
@@ -24,7 +27,35 @@ export const TOOLS = [
     inputSchema: { properties: { id: { type: "integer" } }, required: ["id"], type: "object" },
     name: "date",
   },
+  {
+    description:
+      'Start a subagent called name on task, in the background, and return at once. It reads files and memory but writes nothing. Its report reaches the chat as a message starting "[name] ". model: an engine:model@effort ref of your chain; this turn\'s when left out.',
+    inputSchema: {
+      properties: { model: { type: "string" }, name: { type: "string" }, task: { type: "string" } },
+      required: ["name", "task"],
+      type: "object",
+    },
+    name: "spawn",
+  },
+  {
+    description: "Send text to the subagent called name: a running one reads it between its tool calls; one that has ended starts again with it.",
+    inputSchema: { properties: { name: { type: "string" }, text: { type: "string" } }, required: ["name", "text"], type: "object" },
+    name: "tell",
+  },
 ] as const;
+
+// What the tools that reach subagents (SPEC M7a) need: zoom("Name", from) reads a side log from
+// memory, at once; spawn and tell go to the supervisor (src/subagents.ts). `error`: the answer is
+// a refusal (an unknown model, the cap, a name taken), which the model reads as a tool error.
+export type AgentTools = {
+  readonly zoom: (name: string, from: number) => string;
+  readonly call: (tool: "spawn" | "tell", args: Readonly<Record<string, Schema.Json>>) => Effect.Effect<{ readonly text: string; readonly error: boolean }>;
+};
+// a server without subagents (tests, the CLI's local commands): a name opens nothing, spawn and tell refuse
+export const noAgents: AgentTools = {
+  call: (tool) => Effect.succeed({ error: true, text: `${tool}: there are no subagents here.` }),
+  zoom: (name) => `No subagent ${name}.`,
+};
 
 // what the model asked for, shown back as it was written
 const shown = (x: Schema.Json | undefined) => (x === undefined ? "undefined" : JSON.stringify(x));
@@ -78,8 +109,13 @@ const Initialize = Schema.Struct({ protocolVersion: Schema.optional(Schema.Strin
 const decodeInitialize = Schema.decodeUnknownOption(Initialize);
 const Call = Schema.Struct({ arguments: Schema.optional(Schema.Record(Schema.String, Schema.Json)), name: Schema.String });
 const decodeCall = Schema.decodeUnknownOption(Call);
-// zoom and date take integers; zoom() and date() check the rest
+// zoom and date take integers; zoom() and date() check the rest. zoom("Name") and zoom("Name", n)
+// open a subagent's side log, from its entry n on.
 const decodeZoom = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.Number, n: Schema.Number }));
+// A subagent's name (SPEC M7a): a letter, then up to 31 letters, digits, "-" or "_": a folder name
+// on every system, and one that can't end a report's "[Name] " early. Any other string is no name.
+export const SUBAGENT_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
+const decodeAgentZoom = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.String.check(Schema.isPattern(SUBAGENT_NAME)), n: Schema.optional(Schema.Number) }));
 const decodeDate = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.Number }));
 
 // what the server says it speaks when the client names no version
@@ -119,16 +155,19 @@ function zoomed(mem: Mem, id: number, n: number, attached: Attached): ToolResult
   return { content: [...text.content, ...attached(found.message.text)] };
 }
 
-function call(mem: Mem, params: Schema.Json | undefined, attached: Attached): ToolResult {
+function call(mem: Mem, params: Schema.Json | undefined, attached: Attached, agents: AgentTools): ToolResult {
   const found = decodeCall(params);
   if (Option.isNone(found)) return refuse("tools/call needs a tool name.");
   const { arguments: args = {}, name } = found.value;
   switch (name) {
-    case "zoom":
+    case "zoom": {
+      const named = decodeAgentZoom(args);
+      if (Option.isSome(named)) return answer(agents.zoom(named.value.id, named.value.n ?? 0));
       return Option.match(decodeZoom(args), {
         onNone: () => answer(noLine(shown(args.id), shown(args.n))),
         onSome: ({ id, n }) => zoomed(mem, id, n, attached),
       });
+    }
     case "date":
       return answer(
         Option.match(decodeDate(args), {
@@ -144,14 +183,14 @@ function call(mem: Mem, params: Schema.Json | undefined, attached: Attached): To
 // zoom and date for an engine with its own tool loop (M5): the same answers, run on the server
 // from memory, with no pictures (function-call outputs with images are not wired). The text the
 // tool returns, or null for a tool that isn't one of these.
-export const MEMORY_TOOLS: readonly string[] = TOOLS.map((t) => t.name);
-export const memoryTool = (mem: Mem, name: string, args: Schema.Json): string | null =>
-  MEMORY_TOOLS.includes(name) ? call(mem, { arguments: args, name }, noAttached).content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("\n") : null;
+export const MEMORY_TOOLS: readonly string[] = ["zoom", "date"];
+export const memoryTool = (mem: Mem, name: string, args: Schema.Json, agents: AgentTools = noAgents): string | null =>
+  MEMORY_TOOLS.includes(name) ? call(mem, { arguments: args, name }, noAttached, agents).content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("\n") : null;
 
 // One message in (a POST's body or a WebSocket frame), the HTTP status and body out. A
 // notification (no id) or a client's response gets 202 and no body, as MCP's HTTP transport asks;
 // over a WebSocket, no frame.
-export function handleMcp(mem: Mem, body: string, attached: Attached): Reply {
+export function handleMcp(mem: Mem, body: string, attached: Attached, agents: AgentTools = noAgents): Reply {
   const found = decodeRequest(body);
   if (Option.isNone(found)) return failure(null, -32_700, "Parse error: one JSON-RPC message per request", 400);
   const { id, method, params } = found.value;
@@ -170,11 +209,22 @@ export function handleMcp(mem: Mem, body: string, attached: Attached): Reply {
     case "tools/list":
       return respond(id, { tools: TOOLS });
     case "tools/call":
-      return respond(id, call(mem, params, attached));
+      return respond(id, call(mem, params, attached, agents));
     default:
       return failure(id, -32_601, `Method not found: ${method}`);
   }
 }
+
+// handleMcp, with spawn and tell (SPEC M7a), which go to the supervisor and so take an effect;
+// every other message is answered as handleMcp answers it.
+export const answerMcp = (mem: Mem, body: string, attached: Attached, agents: AgentTools = noAgents): Effect.Effect<Reply> => {
+  const found = decodeRequest(body);
+  if (Option.isNone(found) || found.value.id === undefined || found.value.method !== "tools/call") return Effect.succeed(handleMcp(mem, body, attached, agents));
+  const { id, params } = found.value;
+  const tool = decodeCall(params);
+  if (Option.isNone(tool) || (tool.value.name !== "spawn" && tool.value.name !== "tell")) return Effect.succeed(handleMcp(mem, body, attached, agents));
+  return agents.call(tool.value.name, tool.value.arguments ?? {}).pipe(Effect.map(({ error, text }) => respond(id, error ? refuse(text) : answer(text))));
+};
 
 // The --mcp-config JSON for `url`, the http(s) URL of /mcp with its key; over "ws" the same URL
 // as ws(s). Passed to the turn and the priming call alike: the name `optchat` makes the tools

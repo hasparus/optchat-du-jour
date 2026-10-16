@@ -100,24 +100,33 @@ export const providerOf = (ref: ProviderRef, o: EngineNeeds, effort?: string): E
   }
 };
 
-export const turnEngine = (ref: Ref, o: TurnNeeds): Effect.Effect<TurnEngine> => {
+// What a subagent's claude-code may use without asking (SPEC M7a): Read, Glob and Grep need no
+// permission anyway; zoom and date are MCP tools, which do. Its permission mode is "default", so
+// with -p and no settings everything else (Bash, Edit, Write, WebFetch, WebSearch, spawn, tell) is
+// refused when called, while `--tools` stays the master's list, the same bytes in the request.
+export const SUBAGENT_ALLOWED: readonly string[] = ["Read", "Glob", "Grep", "mcp__optchat__zoom", "mcp__optchat__date"];
+
+// `child`: the engine of a subagent (SPEC M7a), on `o`'s placements and tools (the subagents'
+// /mcp key and box, which refuse spawn and tell): read-only, never warm, never primed
+export const turnEngine = (ref: Ref, o: TurnNeeds, child = false): Effect.Effect<TurnEngine> => {
   const { permissionMode, tools } = o.settings.master;
   const effort = runEffort(ref, o.settings.master.effort); // the entry's own, else the master's as its model takes it, or none
   switch (ref.engine) {
     case "claude-code":
       return claudeCodeTurn({
+        allowedTools: child ? SUBAGENT_ALLOWED : undefined,
         effort,
         instructions: o.instructions,
         logUsage: o.log,
         model: ref.model,
-        permissionMode,
+        permissionMode: child ? "default" : permissionMode,
         primeTtl: o.settings.cache.primeTtl,
         ref: ref.ref,
         report: o.report,
         runnerFor: o.runnerFor,
         tools: tools ?? MASTER_TOOLS,
         ttl: o.settings.cache.claudeCodeTtl,
-        warms: o.warms,
+        warms: child ? () => false : o.warms,
       });
     case "openai-plan":
     case "api-key":

@@ -34,7 +34,7 @@ const Rec = Schema.Struct({
   env: Schema.optional(Schema.Record(Schema.String, Schema.NullOr(Schema.String))),
   pid: Schema.Number,
   t: Schema.Number,
-  role: Schema.optional(Schema.Literals(["compact", "prime", "turn"])),
+  role: Schema.optional(Schema.Literals(["compact", "prime", "subagent", "turn"])),
   type: Schema.Literals(["start", "in", "exit"]),
 });
 type Rec = typeof Rec.Type;
@@ -64,7 +64,7 @@ export const alive = (pid: number) => {
 };
 
 
-export type Script = { turn?: unknown[]; prime?: unknown[]; compact?: unknown[] };
+export type Script = { turn?: unknown[]; prime?: unknown[]; compact?: unknown[]; subagent?: unknown[] };
 
 // a fake with its script, and a Runner that starts it with that script and its own log
 export function scripted(script: Script = {}, extraEnv: Record<string, string> = {}) {
@@ -84,7 +84,7 @@ export function scripted(script: Script = {}, extraEnv: Record<string, string> =
       };
     }),
   ).pipe(Layer.provide(LocalRunner), Layer.provide(BunServices.layer));
-  const of = (role: "compact" | "prime" | "turn") => {
+  const of = (role: "compact" | "prime" | "subagent" | "turn") => {
     const all = records(f.log);
     return all
       .filter((r) => r.type === "start" && r.role === role)

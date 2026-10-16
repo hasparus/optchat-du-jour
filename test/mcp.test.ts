@@ -1,7 +1,7 @@
 // zoom and date as the model reaches them: JSON-RPC over the /mcp handler (docs/optchat.md §6, ref §9, E8).
 import { expect, test } from "bun:test";
 import { Effect, Schema } from "effect";
-import { handleMcp, type McpSeen, mcpConfig, mcpTransports, noAttached } from "../src/mcp.ts";
+import { handleMcp, type McpSeen, mcpConfig, mcpTransports, noAttached, TOOLS } from "../src/mcp.ts";
 import { newMsg } from "../src/store.ts";
 import { type Mem, newMem } from "../src/tree.ts";
 import { addMessage, addNode } from "../src/view.ts";
@@ -53,7 +53,11 @@ test("zoom and date over JSON-RPC: the handshake, the verbatim tools, a zoom dow
   expect(tools.map((t) => [t.name, t.description])).toEqual([
     ["zoom", "Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole."],
     ["date", "The date and time of message id."],
+    ["spawn", TOOLS[2].description],
+    ["tell", TOOLS[3].description],
   ]);
+  // zoom's id may be a subagent's name (SPEC M7a): a server with none says so
+  expect(callTool(mem, "zoom", { id: "scout" })).toBe("No subagent scout.");
 
   // from the view's 0+4 down to message 0, newlines flattened on the way and kept at the end
   expect(callTool(mem, "zoom", { id: 0, n: 4 })).toBe("0+2|user: fix the importer; talk: looking\n2+2|tool: ls; echo: src test");

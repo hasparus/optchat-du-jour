@@ -7,10 +7,11 @@ import type { Settings } from "../../src/config.ts";
 import { openNode } from "../../src/mcp.ts";
 import type { Reasoning } from "../../src/reasoning.ts";
 import type { Session } from "../../src/session.ts";
+import type { Subagents } from "../../src/subagents.ts";
 import { getNode, localTime, type Mem } from "../../src/tree.ts";
 import { readUsage } from "../../src/usage.ts";
 import { PLACEHOLDER, render, viewSize } from "../../src/view.ts";
-import { Devices, MessagesPage, NodeView, ReasoningHeads, ReasoningPiece, SessionState, span, Usage, View } from "../../src/wire.ts";
+import { Devices, MessagesPage, NodeView, ReasoningHeads, ReasoningPiece, SessionState, span, SubagentLog, Usage, View } from "../../src/wire.ts";
 import { deviceStatuses, versionWarning } from "../devices.ts";
 
 const Before = Schema.Struct({ before: Schema.optional(Schema.NumberFromString), limit: Schema.optional(Schema.NumberFromString) });
@@ -24,6 +25,7 @@ const Index = Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThan
 const Range = Schema.Struct({ from: Index, to: Index });
 const MAX_RANGE = 5000;
 const At = Schema.Struct({ i: Index });
+const Named = Schema.Struct({ name: Schema.String, from: Schema.optional(Index) });
 const badRequest = () => HttpServerResponse.empty({ status: 400 });
 const serverError = () => HttpServerResponse.empty({ status: 500 });
 
@@ -37,11 +39,26 @@ export const apiRoutes = (
     readonly settings: Settings;
     readonly device: string; // this machine
     readonly report: (message: string) => Effect.Effect<void>;
+    readonly subagents?: Pick<Subagents, "log">; // SPEC M7a: a subagent and its side log
   },
 ) =>
   Effect.gen(function* () {
     const { mem } = o;
     yield* router.add("GET", "/api/state", Effect.suspend(() => HttpServerResponse.schemaJson(SessionState)(o.session.state())));
+
+    // a subagent and its side log from entry `from` on, for its card (SPEC M7a); 404 for a name the
+    // server doesn't know
+    yield* router.add("GET", "/api/subagent", () =>
+      Effect.gen(function* () {
+        const query = yield* HttpServerRequest.schemaSearchParams(Named).pipe(Effect.result);
+        if (query._tag === "Failure") return badRequest();
+        const found = o.subagents?.log(query.success.name) ?? null;
+        if (found === null) return HttpServerResponse.empty({ status: 404 });
+        // `from`: the entries a client has already are not sent again
+        const page = { ...found, entries: found.entries.slice(query.success.from ?? 0) };
+        return yield* HttpServerResponse.schemaJson(SubagentLog)(page).pipe(Effect.orElseSucceed(serverError));
+      }),
+    );
 
     // the log, a page at a time, newest last; `before` is a message id
     yield* router.add("GET", "/api/messages", () =>

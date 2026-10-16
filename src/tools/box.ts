@@ -1,8 +1,9 @@
 // A turn's tools on an engine with its own loop (SPEC "Engines", tools on non-Claude engines; M5):
-// the read-only file tools of the turn's device, and zoom and date answered from memory on the
-// server, as /mcp answers them for claude (E8). Write tools are not offered in M5.
+// the read-only file tools of the turn's device, zoom and date answered from memory on the server,
+// and spawn and tell (SPEC M7a), as /mcp answers them for claude (E8). Write tools are not offered
+// in M5. A subagent's box offers the same list (the cached prefix), and its spawn and tell refuse.
 import { Effect, Option, Schema } from "effect";
-import { memoryTool, TOOLS } from "../mcp.ts";
+import { type AgentTools, memoryTool, noAgents, TOOLS } from "../mcp.ts";
 import type { Mem } from "../tree.ts";
 import { type FileTools, type ToolDef, type ToolOutput, fileToolDefs, toolError, toolOk } from "./files.ts";
 
@@ -18,13 +19,21 @@ export const toolDefs = (o: { readonly device: string; readonly folders: readonl
   ...TOOLS.map((t) => ({ description: t.description, name: t.name, parameters: t.inputSchema })),
 ];
 
-export const toolBox = (o: { readonly device: string; readonly folders: readonly string[]; readonly files: FileTools; readonly mem: Mem }): ToolBox => ({
+const decodeArgs = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Json));
+
+export const toolBox = (o: { readonly device: string; readonly folders: readonly string[]; readonly files: FileTools; readonly mem: Mem; readonly agents?: AgentTools }): ToolBox => ({
   defs: toolDefs(o),
   run: (name, input) => {
     const args = decodeInput(input);
     if (Option.isNone(args)) return Effect.succeed(toolError(`Error: the input of ${name} is not JSON`));
+    const agents = o.agents ?? noAgents;
+    if (name === "spawn" || name === "tell") {
+      const fields = decodeArgs(args.value);
+      if (Option.isNone(fields)) return Effect.succeed(toolError(`Error: the input of ${name} is not an object`));
+      return agents.call(name, fields.value).pipe(Effect.map(({ error, text }) => (error ? toolError(text) : toolOk(text))));
+    }
     // zoom and date answer as /mcp does, never with isError: "No line …" is an answer
-    const answer = memoryTool(o.mem, name, args.value);
+    const answer = memoryTool(o.mem, name, args.value, agents);
     return answer === null ? o.files(name, args.value) : Effect.succeed(toolOk(answer));
   },
 });

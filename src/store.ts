@@ -116,6 +116,21 @@ export function saveView(dir: string, mem: Mem) {
   });
 }
 
+// A small file replaced whole, as view.json is: a temp file, synced, renamed over the old one, the
+// folder synced. A subagent's agent.json (src/subagents.ts) is written this way.
+export function replaceFile(folder: string, name: string, text: string) {
+  const target = `${folder}/${name}`, temp = `${target}.tmp`;
+  return io(`cannot save ${target}`, () => {
+    const synced = makeDir(folder);
+    withFd(temp, "w", (fd) => {
+      writeAll(fd, Buffer.from(text, "utf8"), temp);
+    });
+    renameSync(temp, target);
+    fsyncPath(folder);
+    synced();
+  });
+}
+
 // the saved view, or why there is none to use
 function readView(dir: string): Found {
   const target = `${dir}/chat/${VIEW_FILE}`;

@@ -79,6 +79,38 @@ export const engineLabel = (ref: string, runs?: string | null) => {
   return `${name} (${where}${effort === null ? "" : `, ${effort}`})`;
 };
 
+// A subagent (SPEC M7a): a background run the master started with spawn(name, task, model?),
+// on the server's own device, read-only. `state`: running, done (it gave its final reply),
+// stopped (by the user, or by a server restart) or failed (`why` says). `ref` is the engine it
+// runs on, as the master's chain spells it (canonicalRef), `label` that ref for people, `effort`
+// the effort it runs at (null: its model takes none); a model the user picks on its card is the
+// ref from its next call. `started` is an ISO date; `elapsed`, how long it has run (ms) as of
+// when the state was made, on the server's clock: a running one's grows. `entries`: how many
+// lines its side log has (a client reads them from /api/subagent); `lastLine`, the newest one,
+// short. Every field past `elapsed` is optional, so a server that sends less still decodes.
+export const SubagentState = Schema.Literals(["running", "done", "stopped", "failed"]);
+export type SubagentState = typeof SubagentState.Type;
+export const SubagentInfo = Schema.Struct({
+  name: Schema.String,
+  task: Schema.String,
+  ref: Schema.String,
+  effort: Schema.NullOr(Schema.String),
+  state: SubagentState,
+  started: Schema.String,
+  elapsed: Schema.Number,
+  label: Schema.optional(Schema.String),
+  device: Schema.optional(Schema.String),
+  entries: Schema.optional(Schema.Number),
+  lastLine: Schema.optional(Schema.String),
+  why: Schema.optional(Schema.String),
+});
+export type SubagentInfo = typeof SubagentInfo.Type;
+
+// /api/subagent?name: one subagent and its side log, oldest first (records.ts Msg, as the main
+// log's lines are)
+export const SubagentLog = Schema.Struct({ subagent: SubagentInfo, entries: Schema.Array(Msg) });
+export type SubagentLog = typeof SubagentLog.Type;
+
 export const SessionState = Schema.Struct({
   phase: Phase,
   device: Schema.String, // where the next or current turn runs
@@ -116,6 +148,9 @@ export const SessionState = Schema.Struct({
   // how long the current phase has run, in ms, as of when this state was made (measured on the
   // server's own clock, so no two clocks are compared): a client adds the time since it got it
   elapsed: Schema.optional(Schema.Number),
+  // the subagents (SPEC M7a): every running one, then the most recent others, newest first.
+  // Optional: a server from before them sends none, and a client from before them ignores it
+  subagents: Schema.optional(Schema.Array(SubagentInfo)),
 });
 export type SessionState = typeof SessionState.Type;
 
@@ -262,6 +297,10 @@ export const UsageRecord = Schema.Struct({
   // src/config.ts runEffort), so one model at two efforts reads apart; left out when none was
   // sent, and in records written before it was kept
   effort: Schema.optional(Schema.String),
+  // a subagent's call (role "subagent", SPEC M7a): its name and the ref it ran on, as the master's
+  // chain spells it; left out of every other record
+  subagent: Schema.optional(Schema.String),
+  ref: Schema.optional(Schema.String),
 });
 export type UsageRecord = typeof UsageRecord.Type;
 export const Usage = Schema.Array(UsageRecord);
