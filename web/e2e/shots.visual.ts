@@ -3,7 +3,7 @@
 // didn't exist before this round's patterns (the model menu).
 import type { Page } from "@playwright/test";
 import sharp from "sharp";
-import { answered, attach, expect, open, send, test } from "./fixture";
+import { answered, attach, expect, open, send, test, THOUGHT } from "./fixture";
 
 const dir = process.env.SHOTS_DIR ?? "shots";
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
@@ -143,3 +143,30 @@ test.describe("sent photo", () => {
     await shot(page, "sent-photo");
   });
 });
+
+// What the model thought (SPEC "Reasoning"): a turn of the fake claude that thinks before its tool
+// call (E2E_THINKING), live and shimmering, opened, and after a reload
+for (const theme of ["light", "dark"] as const) {
+  for (const [form, viewport] of [["phone", { height: 844, width: 390 }], ["desktop", { height: 800, width: 1280 }]] as const) {
+    test.describe(`reasoning ${form} ${theme}`, () => {
+      test.use({ thinking: true, viewport });
+      test("reasoning", async ({ page }) => {
+        await themed(page, theme);
+        await open(page);
+        await send(page, "what is here?");
+        const line = page.locator('[data-slot="reasoning"]');
+        await expect(line.getByRole("button")).toHaveText("Thinking…");
+        await page.waitForTimeout(700);
+        await page.screenshot({ caret: "hide", path: `${dir}/reasoning-${form}-${theme}-live.png` }); // the sweep caught mid-way
+        await answered(page, "what is here?");
+        await shot(page, `reasoning-${form}-${theme}-done`);
+        await line.getByRole("button").click();
+        await expect(line.locator('[data-slot="reasoning-text"]')).toHaveText(THOUGHT);
+        await shot(page, `reasoning-${form}-${theme}-open`);
+        await page.reload();
+        await expect(page.locator('[data-slot="reasoning"]')).toHaveCount(1);
+        await shot(page, `reasoning-${form}-${theme}-reloaded`);
+      });
+    });
+  }
+}

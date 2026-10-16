@@ -132,6 +132,14 @@ export const splitTool = (text: string) => {
 export const joinTool = (name: string, args: string) => (args === "" ? name : `${name} ${args}`);
 export const toolCallId = (i: number) => `t${i}`;
 
+// A turn's thinking before an entry (SPEC "Reasoning") is an AG-UI reasoning message `r<index>`:
+// live, the index its entry is expected at; once kept, REASONING_END's metadata names the entry
+export const reasoningId = (i: number) => `r${i}`;
+export const reasoningIndex = (id: string): number | null => {
+  const digits = /^r(\d+)$/.exec(id)?.[1];
+  return digits === undefined ? null : Number(digits);
+};
+
 // a message id or tool call id back to its log index; null for an id that isn't one
 export const logIndex = (id: string): number | null => {
   const digits = /^t?(\d+)$/.exec(id)?.[1];
@@ -150,6 +158,29 @@ export const span = ({ l, i }: { readonly l: number; readonly i: number }) => {
 // /api/messages: log entries (records.ts Msg, with the size the server adds), oldest first
 export const MessagesPage = Schema.Struct({ entries: Schema.Array(Msg), total: Schema.Number });
 export type MessagesPage = typeof MessagesPage.Type;
+
+// A piece of a turn's thinking (SPEC "Reasoning"), one shape for the side file's lines and
+// /api/reasoning/text?i: `i` the log index of the reply or tool call it came before, how long it
+// took (`ms`), and `cut`, the characters past the caps, only when some were.
+export const ReasoningPiece = Schema.Struct({
+  i: Schema.Number,
+  text: Schema.String,
+  engine: Schema.String,
+  date: Schema.String,
+  ms: Schema.Number,
+  cut: Schema.optional(Schema.Number),
+});
+export type ReasoningPiece = typeof ReasoningPiece.Type;
+// /api/reasoning?from&to: a piece without its text, its length in `chars` instead. A long history
+// never loads every turn's thinking: the text is read when the reader opens one.
+export const ReasoningHead = Schema.Struct({ i: Schema.Number, ms: Schema.Number, chars: Schema.Number, engine: Schema.String, cut: Schema.optional(Schema.Number) });
+export type ReasoningHead = typeof ReasoningHead.Type;
+export const ReasoningHeads = Schema.Struct({ pieces: Schema.Array(ReasoningHead) });
+
+// The one rule for `cut`, wherever a piece or its end is written: present when some was cut,
+// absent otherwise (absent, not undefined, which the /api JSON codec would write as null)
+export const withCut = <A extends object>(o: A, cut: number | undefined): A | (A & { readonly cut: number }) => (cut !== undefined && cut > 0 ? { ...o, cut } : o);
+export const toHead = (p: ReasoningPiece): ReasoningHead => withCut({ chars: p.text.length, engine: p.engine, i: p.i, ms: p.ms }, p.cut);
 
 // /api/view: each view line with its range, dates and size
 export const ViewLine = Schema.Struct({

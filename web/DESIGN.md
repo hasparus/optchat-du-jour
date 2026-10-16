@@ -317,6 +317,19 @@ Built on shadcn/ui's Trace and Code Block (`components/ui/trace.tsx`, `code-bloc
 - **Sources** (AI Elements' Sources): under a turn's last reply, a line with a globe, "Used 3
   sources". Open: a link per source, its title in ink, its host in muted 12 px, an up-right arrow;
   28 px rows, 40 px on touch. Plain links: no favicons, nothing fetched.
+- **Reasoning** (AI Elements' Reasoning, SPEC "Reasoning"): above the reply or tool call the model
+  thought before, a line with a brain, "Thought for 12 s" ("Reasoning" under a second), in the same
+  row as what follows it: 6 px above a reply, 2 px above a tool line, so before a tool call it reads
+  as one more line of the work log. Closed by default, also while it streams, when it reads
+  "Thinking…" under the `shimmer` sweep (Trace's running status) and holds the row its entry then
+  takes, so nothing jumps when the reply or call arrives. Open: the thought under Trace's indented
+  rule in UI type, muted, plain text as written (no markdown: nothing hides what the model wrote,
+  so no Raw toggle), and "N more characters were not kept" in muted 12 px when the caps cut it.
+  Open or closed is the reader's per row, for this page only. After a reload the text is read when
+  the line is first opened ("loading…" shimmering meanwhile); "It wasn't kept." when the server has
+  none, "It couldn't be read. Close and open it to try again." when the read failed, which reopening
+  does. Open or closed is held by the session store with the piece, so it stays as the reader left
+  it when a steered message comes in mid-thought and the thought moves to the row after it.
 
 ### Glass
 One surface, `glass-surface` in `index.css`, for the composer, the tray on its top edge and every
@@ -444,7 +457,7 @@ says so in one muted line.
 
 150-200 ms for state; `cubic-bezier(0.22, 1, 0.36, 1)` (`--ease-fluid`) for anything that moves in.
 Live state is told by small motion: shadcn's `shimmer` (a 2 s sweep, from `shadcn/tailwind.css`)
-over status text and a running tool's title, a 1.6 s breathing dot. Buttons press to 95-97%. A tool line opens with Trace's
+over status text, a running tool's title and a thought streaming in, a 1.6 s breathing dot. Buttons press to 95-97%. A tool line opens with Trace's
 accordion slide. No entrance choreography on load. Under `prefers-reduced-motion` every animation and
 transition stops; state still reads from text and colour (the shimmer stands still in its own colour).
 

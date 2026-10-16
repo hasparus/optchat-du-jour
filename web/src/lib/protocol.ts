@@ -73,6 +73,21 @@ export const Inbound = Schema.Union([
     role: Schema.optional(Schema.Literal("tool")),
     metadata: Schema.optional(ToolMetadata),
   }),
+  // A turn's thinking (SPEC "Reasoning"): a reasoning message `r<index>` per piece, opened, streamed
+  // and ended; REASONING_END's metadata says which entry it was kept before (`i`, after `ms`, with
+  // `cut` characters left out) or that it was `dropped`. Each key is optional, so a server that
+  // sends less, or more, still decodes.
+  Schema.Struct({ type: Schema.Literal(EventType.REASONING_START), messageId: Schema.String }),
+  Schema.Struct({ type: Schema.Literal(EventType.REASONING_MESSAGE_START), messageId: Schema.String, role: Schema.optional(Schema.String) }),
+  Schema.Struct({ type: Schema.Literal(EventType.REASONING_MESSAGE_CONTENT), messageId: Schema.String, delta: Schema.String }),
+  Schema.Struct({ type: Schema.Literal(EventType.REASONING_MESSAGE_END), messageId: Schema.String }),
+  Schema.Struct({
+    type: Schema.Literal(EventType.REASONING_END),
+    messageId: Schema.String,
+    metadata: Schema.optional(
+      Schema.Struct({ i: Schema.optional(Schema.Number), ms: Schema.optional(Schema.Number), cut: Schema.optional(Schema.Number), dropped: Schema.optional(Schema.Boolean) }),
+    ),
+  }),
   Schema.Struct({ type: Schema.Literal(EventType.CUSTOM), name: Schema.Literal("info"), value: Schema.String }),
   Schema.Struct({ type: Schema.Literal(EventType.CUSTOM), name: Schema.Literal("thinking"), value: Schema.Struct({ tokens: Schema.Number }) }),
   Schema.Struct({ type: Schema.Literal(EventType.CUSTOM), name: Schema.Literal("usage"), value: Schema.Json }),

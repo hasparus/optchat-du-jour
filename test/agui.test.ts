@@ -46,7 +46,7 @@ test("a reply cut off by a cancel is closed and dropped by a snapshot before its
 
 test("a client that joins mid-reply gets the reply so far, then the rest without a repeat", () => {
   const entries = [newMsg(0, "user", "hello")];
-  const c = connect(entries, { reply: { at: 1, text: "Hello wo" }, runId: "0" });
+  const c = connect(entries, { reasoning: null, reply: { at: 1, text: "Hello wo" }, runId: "0" });
   expect(c.out.map((e) => e.type)).toEqual([
     EventType.MESSAGES_SNAPSHOT,
     EventType.STATE_SNAPSHOT,
@@ -78,7 +78,7 @@ test("a take-back is a CUSTOM event every client gets: the message with its atta
 
 test("a client that joins while a tool runs gets its result under the call's id", () => {
   const entries = [newMsg(0, "user", "list it"), newMsg(1, "tool", 'Glob {"pattern":"*"}')];
-  const c = connect(entries, { reply: null, runId: "0" });
+  const c = connect(entries, { reasoning: null, reply: null, runId: "0" });
   const snap = c.out.find((e) => e.type === EventType.MESSAGES_SNAPSHOT);
   const call = snap?.type === EventType.MESSAGES_SNAPSHOT ? snap.messages.at(-1) : undefined;
   const id = call?.role === "assistant" ? call.toolCalls?.[0]?.id : undefined;

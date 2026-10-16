@@ -5,11 +5,12 @@ import { type HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/h
 import { claudeBinary, claudeVersion } from "../../src/claude/process.ts";
 import type { Settings } from "../../src/config.ts";
 import { openNode } from "../../src/mcp.ts";
+import type { Reasoning } from "../../src/reasoning.ts";
 import type { Session } from "../../src/session.ts";
 import { getNode, localTime, type Mem } from "../../src/tree.ts";
 import { readUsage } from "../../src/usage.ts";
 import { PLACEHOLDER, render, viewSize } from "../../src/view.ts";
-import { Devices, MessagesPage, NodeView, SessionState, span, Usage, View } from "../../src/wire.ts";
+import { Devices, MessagesPage, NodeView, ReasoningHeads, ReasoningPiece, SessionState, span, Usage, View } from "../../src/wire.ts";
 import { deviceStatuses, versionWarning } from "../devices.ts";
 
 const Before = Schema.Struct({ before: Schema.optional(Schema.NumberFromString), limit: Schema.optional(Schema.NumberFromString) });
@@ -18,6 +19,11 @@ const NodeAt = Schema.Struct({
   i: Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   l: Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ maximum: 52, minimum: 0 })),
 });
+const Index = Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
+// a range of log indexes, at most MAX_RANGE wide (a page of the chat is far less)
+const Range = Schema.Struct({ from: Index, to: Index });
+const MAX_RANGE = 5000;
+const At = Schema.Struct({ i: Index });
 const badRequest = () => HttpServerResponse.empty({ status: 400 });
 const serverError = () => HttpServerResponse.empty({ status: 500 });
 
@@ -26,6 +32,7 @@ export const apiRoutes = (
   o: {
     readonly session: Session;
     readonly mem: Mem;
+    readonly reasoning: Reasoning; // the thinking kept beside the log (SPEC "Reasoning")
     readonly usagePath: string;
     readonly settings: Settings;
     readonly device: string; // this machine
@@ -46,6 +53,26 @@ export const apiRoutes = (
         const end = Math.min(q.before ?? mem.root.length, mem.root.length);
         const start = Math.max(0, end - (q.limit ?? 100));
         return yield* HttpServerResponse.schemaJson(MessagesPage)({ entries: mem.root.slice(start, end), total: mem.root.length }).pipe(Effect.orElseSucceed(serverError));
+      }),
+    );
+
+    // The thinking kept before the entries in [from, to), without its text, for the rows a page
+    // shows; the text of one piece when the reader opens it (SPEC "Reasoning")
+    yield* router.add("GET", "/api/reasoning", () =>
+      Effect.gen(function* () {
+        const query = yield* HttpServerRequest.schemaSearchParams(Range).pipe(Effect.result);
+        if (query._tag === "Failure" || query.success.to < query.success.from || query.success.to - query.success.from > MAX_RANGE) return badRequest();
+        const { from, to } = query.success;
+        return yield* HttpServerResponse.schemaJson(ReasoningHeads)({ pieces: o.reasoning.heads(from, to) }).pipe(Effect.orElseSucceed(serverError));
+      }),
+    );
+    yield* router.add("GET", "/api/reasoning/text", () =>
+      Effect.gen(function* () {
+        const query = yield* HttpServerRequest.schemaSearchParams(At).pipe(Effect.result);
+        if (query._tag === "Failure") return badRequest();
+        const piece = yield* o.reasoning.piece(query.success.i);
+        if (piece === null) return HttpServerResponse.empty({ status: 404 });
+        return yield* HttpServerResponse.schemaJson(ReasoningPiece)(piece).pipe(Effect.orElseSucceed(serverError));
       }),
     );
 

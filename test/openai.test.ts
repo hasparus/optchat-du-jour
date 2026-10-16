@@ -468,6 +468,7 @@ test("a tool loop on the Responses API keeps its reasoning: sent back encrypted 
     info: () => Effect.void,
     log: (kind, text) => Effect.sync(() => void logged.push(`${kind}: ${text}`)),
     text: () => Effect.void,
+    reasoning: () => Effect.void,
     thinking: () => Effect.void,
     took: (m) => Effect.sync(() => void logged.push(`user: ${m.text}`)),
     usage: () => Effect.void,
@@ -499,6 +500,52 @@ test("a tool loop on the Responses API keeps its reasoning: sent back encrypted 
   for (const i of replayed) expect([...fake.state.issued]).toContain(encryptedOf(i));
 });
 
+// a turn's input with nothing offered mid-run
+const turnInput = (texts: string[]): TurnInput => ({ device: "mini", earlier: [], media: [], mid: { next: Effect.never, ready: Effect.succeed([]) }, texts, view: LONG_VIEW });
+
+test("a reasoning summary the Responses API sends goes to the session as text, streamed or whole; the item goes back as it came and nothing is logged", async () => {
+  const secrets = memorySecrets();
+  const e = await signedIn(secrets);
+  const respond = await Effect.runPromise(
+    Effect.gen(function* () {
+      return (yield* OpenAiPlan).respond;
+    }).pipe(Effect.provide(plan(e, secrets))),
+  );
+  const provider = responsesProvider({ auth: "chatgpt-pro", effort: "high", engine: "openai-plan", model: "gpt-6.1-sol", respond });
+  const tools = { defs: [{ description: "Read a file", name: "Read", parameters: { properties: { file_path: { type: "string" } }, type: "object" } }], run: () => Effect.succeed(toolOk("file text")) };
+  const engine = toolLoop({ instructions: "MASTER", provider, ref: "openai-plan:gpt-6.1-sol", toolsFor: () => tools, vision: false });
+  const logged: string[] = [];
+  const reasoned: [string, boolean][] = [];
+  const out: TurnEvents = {
+    info: () => Effect.void,
+    log: (kind, text) => Effect.sync(() => void logged.push(`${kind}: ${text}`)),
+    reasoning: (delta, fresh) => Effect.sync(() => void reasoned.push([delta, fresh])),
+    text: () => Effect.void,
+    thinking: () => Effect.void,
+    took: () => Effect.void,
+    usage: () => Effect.void,
+  };
+  fake.state.seen.length = 0;
+  fake.state.script = [
+    { calls: [{ arguments: '{"file_path":"a.ts"}', name: "Read" }], reasoning: "encrypted thought", summary: "**Reading a.ts** to see what the build does." },
+    { reasoning: "x", summary: "The file explains it.", summaryWhole: true, text: "fixed" },
+    { text: "no reasoning at all" },
+  ];
+  await Effect.runPromise(engine.run(turnInput(["fix the build"]), out, null));
+  expect(logged).toEqual(['tool: Read {"file_path":"a.ts"}', "echo: file text", "talk: fixed"]);
+  // streamed in pieces, a new thought marked; the second came only inside its finished item
+  expect(reasoned.map(([d]) => d).join("|")).toBe("**Reading a.ts** to |see what the build d|oes.|The file explains it.");
+  expect(reasoned.map(([, fresh]) => fresh)).toEqual([true, false, false, true]);
+  // the summary's item is sent back verbatim, as before
+  const second = decodeCached(fake.state.seen[1]!.body);
+  expect(kindsOf(second.input)).toEqual(["user", "reasoning", "function_call", "function_call_output"]);
+  expect(JSON.stringify(second.input[1])).toContain("Reading a.ts");
+  // a reply with no summary has no text to give: nothing is said
+  reasoned.length = 0;
+  await Effect.runPromise(engine.run(turnInput(["again"]), out, null));
+  expect(reasoned).toEqual([]);
+});
+
 test("openai-plan: a turn of our tool loop and a compaction send the same instructions and tools, byte for byte; the compaction may call none", async () => {
   const secrets = memorySecrets();
   const e = await signedIn(secrets);
@@ -510,7 +557,7 @@ test("openai-plan: a turn of our tool loop and a compaction send the same instru
   const provider = responsesProvider({ auth: "chatgpt-pro", effort: "high", engine: "openai-plan", model: "gpt-6.1-sol", respond });
   const engine = toolLoop({ instructions: "SYSTEM", provider, ref: "openai-plan:gpt-6.1-sol", toolsFor: () => ({ defs: [READ], run: () => Effect.succeed(toolOk("")) }), vision: false });
   const compact = openAiPlanCompactor({ ...compactorBase, effort: "medium", log: () => Effect.void, model: "gpt-6.1-sol", plan: { respond } });
-  const out: TurnEvents = { info: () => Effect.void, log: () => Effect.void, text: () => Effect.void, thinking: () => Effect.void, took: () => Effect.void, usage: () => Effect.void };
+  const out: TurnEvents = { info: () => Effect.void, log: () => Effect.void, text: () => Effect.void, reasoning: () => Effect.void, thinking: () => Effect.void, took: () => Effect.void, usage: () => Effect.void };
   fake.state.seen.length = 0;
   fake.state.script = [{ text: "hi" }, { text: line(300) }];
   await Effect.runPromise(engine.run({ device: "mini", earlier: [], media: [], mid: { next: Effect.never, ready: Effect.succeed([]) }, texts: ["hi"], view: LONG_VIEW }, out, null));

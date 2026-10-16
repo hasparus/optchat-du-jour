@@ -1,5 +1,7 @@
 // The chat as rows (SPEC "Web UI", Chat): `user` and `talk` entries are messages, a `note` a user
-// message marked as such, a `tool` entry and the `echo` answering it one tool row. Every row is
+// message marked as such, a `tool` entry and the `echo` answering it one tool row, and a turn's
+// thinking with nothing after it yet a `thinking` row at the index its entry is expected at (SPEC
+// "Reasoning"), which that entry's row then takes over under the same key. Every row is
 // keyed by the log index it starts at, so a row keeps its key (and a tool row its open state) from
 // the first streamed event to the snapshot that confirms it.
 import { splitTool } from "@wire";
@@ -8,6 +10,7 @@ import { type Draft, draftItem, type Item, withDraft } from "./log.ts";
 
 export type Row =
   | { readonly kind: "user" | "note" | "talk"; readonly key: string; readonly id: number; readonly text: string }
+  | { readonly kind: "thinking"; readonly key: string; readonly id: number }
   | {
       readonly kind: "tool";
       readonly key: string;
@@ -70,12 +73,30 @@ export function entryRows(entries: readonly Pick<Item, "error" | "i" | "kind" | 
 }
 
 // The rows with the draft streaming after them. `base` is entryRows(items), which a streamed token
-// doesn't change: the draft is one row more, unless it rewrites an entry already held.
-export function chatRows(items: readonly Item[], base: readonly Row[], draft: Draft | null): readonly Row[] {
-  if (!draft) return base;
-  if (draft.i > (items.at(-1)?.i ?? -1)) return [...base, ...entryRows([draftItem(draft)])];
-  return entryRows(withDraft(items, draft));
+// doesn't change: the draft is one row more, unless it rewrites an entry already held. `thinking`:
+// the index a live thought began at. Until a reply or tool call comes at or after it (the row that
+// then carries it, thoughtHolder), it is a row of its own after the last row: at its index, or past
+// a message steered in meanwhile, which took that index and is not the thought's.
+export function chatRows(items: readonly Item[], base: readonly Row[], draft: Draft | null, thinking: number | null = null): readonly Row[] {
+  const rows = draft ? (draft.i > (items.at(-1)?.i ?? -1) ? [...base, ...entryRows([draftItem(draft)])] : entryRows(withDraft(items, draft))) : base;
+  if (thinking === null || rows.some((r) => r.id >= thinking && carriesThought(r))) return rows;
+  return [...rows, thinkingRow(Math.max(thinking, (rows.at(-1)?.id ?? -1) + 1))];
 }
+
+// the rows a thought shows above: a reply, a tool call, or its own row while nothing came yet
+const carriesThought = (r: Row) => r.kind === "talk" || r.kind === "tool";
+// The row that carries the live thought that began at `at`: the first reply or tool call at or
+// after it (a user row a steer put there is not it), else the thought's own row
+export const thoughtHolder = (rows: readonly Row[], at: number): Row | undefined => rows.find((r) => r.id >= at && (carriesThought(r) || r.kind === "thinking"));
+
+// The row of a thought streaming at index i, through rowOf like every row: one key object per
+// index (one thought streams at a time), so a streamed token gives the same row back and ChatRow's
+// memo holds; the thought itself is a prop of its own, so a change to it is never hidden.
+let thinkingAt: { readonly i: number } | null = null;
+const thinkingRow = (i: number): Row => {
+  if (thinkingAt?.i !== i) thinkingAt = { i };
+  return rowOf(thinkingAt, null, () => ({ id: i, key: `e${i}`, kind: "thinking" }));
+};
 
 // the index in `rows` of the last row starting at or before log index i; -1 when i is above all
 export function rowIndexFor(rows: readonly Row[], i: number): number {

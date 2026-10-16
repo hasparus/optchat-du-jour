@@ -4,7 +4,8 @@
 // text is logged as `talk` and each tool call as `tool` "name json" as it completes; the tools run
 // (read-only file tools on the turn's device, zoom and date from memory) and their output is
 // logged as `echo`, capped as Claude Code's is, flagged `error` when the call failed or never ran
-// (E28). A thought goes out only as its size. A message sent mid-run is taken after the current tool
+// (E28). A thought goes out as its size and, when the provider sends its text, as reasoning, which
+// the session keeps beside the log, never in it (SPEC "Reasoning"). A message sent mid-run is taken after the current tool
 // results, before the next request, and logged as `user` then (SPEC "Mid-run messages on
 // openai-plan"). The turn ends at the first reply that calls no tool; the last allowed request
 // may not call any.
@@ -78,6 +79,7 @@ export const toolLoop = (o: {
     };
     const live = (delta: string) => (track.refused === null ? out.text(delta) : Effect.void);
     const thinking = (tokens: number) => (track.refused === null ? out.thinking(tokens) : Effect.void);
+    const reasoning = (delta: string, fresh: boolean) => (track.refused === null ? out.reasoning(delta, fresh) : Effect.void);
     // `error`: the call failed or never ran, kept on the echo for clients (E28); the model reads the text only
     const answer = (text: string, error: boolean) => out.log("echo", text, { error }).pipe(Effect.tap(() => Effect.sync(() => void track.open--)));
     // A turn that ends early (the provider failed, a cancel) leaves no tool entry without its echo,
@@ -120,7 +122,7 @@ export const toolLoop = (o: {
           });
         const final = round >= rounds;
         const reply = yield* o.provider
-          .call({ final, history, instructions: o.instructions, onItem: logged, onText: live, onThinking: thinking, tools: box.defs })
+          .call({ final, history, instructions: o.instructions, onItem: logged, onReasoning: reasoning, onText: live, onThinking: thinking, tools: box.defs })
           .pipe(Effect.result);
         // what the call cost is recorded first, whether it failed or the log refused its items
         if (reply._tag === "Success") yield* record(reply.success);

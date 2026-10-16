@@ -2,14 +2,18 @@
 // bubble on the right, a note likewise and marked as one, a reply as plain prose (markdown) with
 // copy and a raw-text toggle under it (rendering never hides what the model wrote), a tool call as
 // one work-log line with its input and output collapsed under it; a TodoWrite call as a plan, and
-// the links a turn's web tools used as its reply's sources.
+// the links a turn's web tools used as its reply's sources. What the model thought before a reply
+// or a tool call is a Reasoning line above it (SPEC "Reasoning").
 import { MessageAction, MessageActions, MessageResponse } from "@/components/ai-elements/message";
 import { Plan, PlanContent, PlanHeader, PlanLogged, PlanSteps } from "@/components/ai-elements/plan";
+import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import { Source, Sources, SourcesContent, SourcesTrigger } from "@/components/ai-elements/sources";
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from "@/components/ai-elements/tool";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Message, MessageContent, MessageHeader } from "@/components/ui/message";
+import { type Thought, thoughtLabel } from "@/lib/reasoning";
 import { type PlanState, type PlanStep, planOf, type Row, type ToolState, toolSummary, type WebSource } from "@/lib/rows";
+import { cn } from "@/lib/utils";
 import { splitMarkers } from "@wire";
 import { CheckIcon, CodeIcon, CopyIcon, NotebookPenIcon, TextIcon } from "lucide-react";
 import { Component, createContext, memo, type ReactNode, use, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -222,6 +226,25 @@ function PlanRow({ row, steps, toolState, plan }: { row: Extract<Row, { kind: "t
   );
 }
 
+// The Reasoning line above a reply or a tool call: closed until the reader opens it, also while it
+// streams; the label says "Thinking" while it streams, then how long it took. Controlled: whether it
+// is open, and reading its text when it is opened, are the session store's (`onThought`, its
+// toggleThought), so the reader's choice stays with the piece when it moves or its row is drawn again.
+function ThoughtLine({ thought, onThought }: { readonly thought: Thought; readonly onThought: (i: number, open: boolean) => void }) {
+  return (
+    <Reasoning
+      isStreaming={thought.live}
+      onOpenChange={(next) => {
+        onThought(thought.i, next);
+      }}
+      open={thought.open}
+    >
+      <ReasoningTrigger isStreaming={thought.live} label={thoughtLabel(thought)} />
+      <ReasoningContent cut={thought.cut} failed={thought.failed} text={thought.text} />
+    </Reasoning>
+  );
+}
+
 // a row that fails to render shows its text as logged, and the rest of the chat stays up
 class RowBoundary extends Component<{ readonly text: string; readonly children: ReactNode }, { readonly failed: boolean }> {
   override state = { failed: false };
@@ -237,7 +260,8 @@ class RowBoundary extends Component<{ readonly text: string; readonly children: 
  * `plan` follows planStates: the chat's newest ("newest", initially open), only the newest plan
  * of the active RUN_STARTED run, even across a steer ("live"), or an older turn's ("turn", closed).
  * Earlier TodoWrite rows within a turn stay plain tool lines. `sources` is turnSources' list
- * under the turn's last reply.
+ * under the turn's last reply. `thought` is what the model thought before this reply or tool call
+ * (SPEC "Reasoning"); a `thinking` row is that alone, until its entry comes.
  */
 export type ChatRowProps = {
   row: Row;
@@ -245,18 +269,48 @@ export type ChatRowProps = {
   toolState: ToolState;
   plan?: PlanState | undefined;
   sources?: readonly WebSource[] | undefined;
+  thought?: Thought | undefined;
+  onThought?: ((i: number, open: boolean) => void) | undefined;
 };
 
-export const ChatRow = memo(function ChatRow({ row, streaming, toolState, plan, sources }: ChatRowProps) {
+const noToggle = () => {
+  // a row outside a chat (the story page): nothing to open
+};
+
+const rowText = (row: Row) => {
+  switch (row.kind) {
+    case "tool":
+      return `${row.name} ${row.args}\n${row.output ?? ""}`;
+    case "thinking":
+      return "";
+    case "user":
+    case "note":
+    case "talk":
+      return row.text;
+  }
+};
+
+export const ChatRow = memo(function ChatRow({ row, streaming, toolState, plan, sources, thought, onThought = noToggle }: ChatRowProps) {
+  const thinks = thought !== undefined && (row.kind === "talk" || row.kind === "tool" || row.kind === "thinking");
+  const view = <RowView plan={plan} row={row} sources={sources} streaming={streaming} toolState={toolState} />;
   return (
-    <RowBoundary text={row.kind === "tool" ? `${row.name} ${row.args}\n${row.output ?? ""}` : row.text}>
-      <RowView plan={plan} row={row} sources={sources} streaming={streaming} toolState={toolState} />
+    <RowBoundary text={rowText(row)}>
+      {thinks ? (
+        <div className={cn("flex min-w-0 flex-col", row.kind === "talk" ? "gap-1.5" : "gap-0.5")}>
+          <ThoughtLine onThought={onThought} thought={thought} />
+          {view}
+        </div>
+      ) : (
+        view
+      )}
     </RowBoundary>
   );
 });
 
 function RowView({ row, streaming, toolState, plan, sources }: ChatRowProps) {
   switch (row.kind) {
+    case "thinking":
+      return null;
     case "user":
       return <UserMessage text={row.text} />;
     case "note":

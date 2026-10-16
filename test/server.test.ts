@@ -8,10 +8,12 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { type Inbound, parseInbound } from "../cli/repl.ts";
 import { OUT_OF_DATE } from "../server/routes/ws.ts";
+import { ReasoningHeads, ReasoningPiece } from "../src/wire.ts";
 
 const ROOT = `${import.meta.dir}/../`;
 const FAKE = `${ROOT}test/fake-claude.ts`;
 const REPLY = "hi from the fake";
+const THOUGHT = "They said hello; a greeting back will do.";
 const PUBLIC = "https://mini.example.ts.net";
 
 const dir = mkdtempSync(`${tmpdir()}/odj-e2e-`);
@@ -30,7 +32,8 @@ let server: Bun.Subprocess<"ignore", "pipe", "pipe">;
 
 beforeAll(async () => {
   // the second turn (the REPL's) is slow: the REPL must wait for its answer, not for an idle state
-  writeFileSync(env.FAKE_CLAUDE_SCRIPT, JSON.stringify({ turn: [[{ text: REPLY }], [{ sleep: 1500 }, { text: REPLY }]] }));
+  // the first turn thinks before it answers (SPEC "Reasoning")
+  writeFileSync(env.FAKE_CLAUDE_SCRIPT, JSON.stringify({ turn: [[{ thought: THOUGHT }, { text: REPLY }], [{ sleep: 1500 }, { text: REPLY }]] }));
   const settings = {
     master: { chain: ["claude-code:opus"], effort: "high", permissionMode: "bypassPermissions" },
     compactor: { byLevel: [{ from: 0, chain: ["claude-code:sonnet"] }], effort: "medium" },
@@ -85,8 +88,10 @@ const mcpUrl = () => {
 // a /ws client that keeps every event it gets
 function client() {
   const events: Inbound[] = [];
+  const frames: string[] = []; // as sent, also those the REPL's schema doesn't read
   const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
   ws.addEventListener("message", (m) => {
+    frames.push(String(m.data));
     for (const e of Option.toArray(parseInbound(String(m.data)))) events.push(e);
   });
   const opened = new Promise((resolve) => {
@@ -99,8 +104,12 @@ function client() {
       await Bun.sleep(20);
     }
   };
-  return { events, opened, until, ws };
+  return { events, frames, opened, until, ws };
 }
+// a frame as AG-UI sent it, read for its reasoning events (the REPL's schema leaves them out)
+const decodeFrame = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Struct({ type: Schema.String, delta: Schema.optional(Schema.String), metadata: Schema.optional(Schema.Struct({ i: Schema.optional(Schema.Number) })) })),
+);
 const texts = (es: readonly Inbound[]) => es.flatMap((e) => (e.type === "TEXT_MESSAGE_CONTENT" ? [e.delta] : []));
 const finished = (es: readonly Inbound[]) => es.filter((e) => e.type === "RUN_FINISHED").length;
 // a RunAgentInput frame
@@ -112,6 +121,21 @@ test("a turn over /ws streams to every client; the REPL is one of them; the mast
   web.ws.send(JSON.stringify({ messages: [{ content: "hello", id: "m1", role: "user" }], runId: "r1", threadId: "t" }));
   await web.until((es) => finished(es) === 1);
   expect(texts(web.events)).toEqual(["hello", REPLY]);
+  // the thought streamed as an AG-UI reasoning message before the reply, kept before entry 1
+  const reasoning = web.frames.filter((f) => f.includes('"type":"REASONING')).map((f) => decodeFrame(f));
+  expect(reasoning.map((e) => e.type)).toEqual(["REASONING_START", "REASONING_MESSAGE_START", "REASONING_MESSAGE_CONTENT", "REASONING_MESSAGE_CONTENT", "REASONING_MESSAGE_END", "REASONING_END"]);
+  expect(reasoning.flatMap((e) => (e.delta === undefined ? [] : [e.delta])).join("")).toBe(THOUGHT);
+  expect(reasoning.at(-1)?.metadata?.i).toBe(1);
+  // and read back after the turn: which entries have some, then the text of one
+  const heads = await fetch(`${base}/api/reasoning?from=0&to=50`);
+  // exactly what the client's schema reads: no `cut` key when nothing was cut (not null)
+  expect(Object.keys(Schema.decodeUnknownSync(Schema.Struct({ pieces: Schema.Array(Schema.Record(Schema.String, Schema.Json)) }))(await heads.json()).pieces[0] ?? {}).toSorted()).toEqual(["chars", "engine", "i", "ms"]);
+  const decoded = await fetch(`${base}/api/reasoning?from=0&to=50`);
+  expect(Schema.decodeUnknownSync(ReasoningHeads)(await decoded.json()).pieces).toMatchObject([{ chars: THOUGHT.length, engine: "claude-code:opus", i: 1 }]);
+  const piece = await fetch(`${base}/api/reasoning/text?i=1`);
+  expect(Schema.decodeUnknownSync(ReasoningPiece)(await piece.json())).toMatchObject({ i: 1, text: THOUGHT });
+  const statuses = await Promise.all(["text?i=0", "?from=5&to=1", "?from=0&to=999999"].map(async (q) => fetch(`${base}/api/reasoning${q.startsWith("?") ? "" : "/"}${q}`)));
+  expect(statuses.map((r) => r.status)).toEqual([404, 400, 400]);
 
   // the master got an --mcp-config whose server answers zoom with the logged message; over HTTP here
   const url = mcpUrl().replace(/^ws/, "http");
@@ -144,6 +168,11 @@ test("a turn over /ws streams to every client; the REPL is one of them; the mast
     if (Date.now() > deadline) throw new Error(`no commit of 4 messages; the log has: ${commits()}`);
     await Bun.sleep(50);
   }
+  // the side file is committed with the log (reasoning.commit defaults to true); the log has no thought in it
+  const tracked = spawnSync("git", ["-C", env.OPTCHAT_HOME, "ls-files"], { encoding: "utf8" }).stdout;
+  expect(tracked).toMatch(/streams\/mini\/chat\/reasoning\/\d{4}-\d{2}-\d{2}\.jsonl/);
+  const logged = spawnSync("git", ["-C", env.OPTCHAT_HOME, "grep", "-l", "a greeting back", "HEAD"], { encoding: "utf8" }).stdout;
+  expect(logged.trim()).toMatch(/^HEAD:streams\/mini\/chat\/reasoning\/[^\n]+$/);
 }, 30_000);
 
 // whether a WebSocket to /mcp opens, as claude dials it

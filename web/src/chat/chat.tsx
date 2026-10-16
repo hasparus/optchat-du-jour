@@ -28,7 +28,7 @@ import {
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import type { Link } from "@/lib/connection";
 import { visible } from "@/lib/log";
-import { chatRows, entryRows, planStates, type Row, rowFor, rowIndexFor, toolStateOf, turnSources } from "@/lib/rows";
+import { chatRows, entryRows, planStates, type Row, rowFor, rowIndexFor, thoughtHolder, toolStateOf, turnSources } from "@/lib/rows";
 import { type Marker as StatusMarker, type Queued, queued, type Session, type SessionStore } from "@/lib/session";
 import { canonicalRef, type Device, engineLabel, type SessionState, shortSha } from "@wire";
 import { cn } from "@/lib/utils";
@@ -243,7 +243,13 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
   const { base, draft, items: held } = state.log;
   const items = useMemo(() => visible({ base, items: held }), [base, held]);
   const settled = useMemo(() => entryRows(items), [items]);
-  const rows = useMemo(() => chatRows(items, settled, draft), [items, settled, draft]);
+  // a thought streaming in before anything it came before has arrived is a row of its own (rows.ts)
+  const { thoughts } = state;
+  const live = useMemo(() => [...thoughts.values()].find((t) => t.live), [thoughts]);
+  const thinkingAt = live?.i ?? null;
+  const rows = useMemo(() => chatRows(items, settled, draft, thinkingAt), [items, settled, draft, thinkingAt]);
+  // the row the live thought shows above, given to it as is (rows.ts thoughtHolder)
+  const holder = useMemo(() => (thinkingAt === null ? undefined : thoughtHolder(rows, thinkingAt)?.key), [rows, thinkingAt]);
   const placed = placeMarkers(state.markers, rows);
   const draftKey = draft ? `e${draft.i}` : null;
   const first = rows[0]?.id ?? 0;
@@ -349,6 +355,8 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
                       row={row}
                       sources={sources.get(row.key)}
                       streaming={row.key === draftKey}
+                      onThought={session.toggleThought}
+                      thought={row.key === holder ? live : row.kind === "talk" || row.kind === "tool" ? thoughts.get(row.id) : undefined}
                       toolState={row.kind === "tool" ? toolStateOf(row, busy, row.key === lastTool) : "done"}
                     />
                   </MessageScrollerItem>

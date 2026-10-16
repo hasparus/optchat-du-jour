@@ -16,6 +16,7 @@
 //   E2E_TOOL_ERROR=1  every Claude turn's tool fails: Claude Code's is_error on its result (E28)
 //   E2E_PATTERNS=1  every Claude turn plans (TodoWrite), searches the web and fetches a page before
 //             its reply, as Claude Code logs them (e2e/replies.ts PLAN, SEARCH_RESULT)
+//   E2E_THINKING=1  every Claude turn thinks (THOUGHT, streamed slowly) before its tool call
 import { BunRuntime } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -28,7 +29,7 @@ import { login } from "../../src/openai/auth.ts";
 import { memorySecrets } from "../../src/secrets.ts";
 import { fakeOpenAi } from "../../test/fake-openai.ts";
 import { freePort } from "../../test/ports.ts";
-import { FETCHED, PLAN_DONE, PLAN_START, SEARCH_RESULT, SOL_REPLY, TOOL_ERROR } from "./replies.ts";
+import { FETCHED, PLAN_DONE, PLAN_START, SEARCH_RESULT, SOL_REPLY, THOUGHT, TOOL_ERROR } from "./replies.ts";
 
 const root = new URL("../..", import.meta.url).pathname;
 const home = Bun.env.E2E_HOME ?? mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
@@ -58,7 +59,15 @@ const patterns = [
   { result: { text: words.join("") } },
 ];
 const spent = [{ result: { is_error: true, text: "Claude AI usage limit reached" } }];
-const turn = Bun.env.E2E_SPENT ? spent : Bun.env.E2E_PATTERNS ? patterns : reply;
+// a thought streamed a few words at a time, then its whole block, as Claude Code sends one
+const thinkingDelta = (thinking: string) => ({ emit: { event: { delta: { thinking, type: "thinking_delta" }, index: 0, type: "content_block_delta" }, type: "stream_event" } });
+const thoughtWords = THOUGHT.match(/\S+\s*/g) ?? [];
+const thinks = [
+  ...thoughtWords.flatMap((w) => [thinkingDelta(w), { sleep: 150 }]),
+  { emit: { message: { content: [{ signature: "sig", thinking: THOUGHT, type: "thinking" }], role: "assistant" }, type: "assistant" } },
+  ...reply,
+];
+const turn = Bun.env.E2E_SPENT ? spent : Bun.env.E2E_PATTERNS ? patterns : Bun.env.E2E_THINKING ? thinks : reply;
 writeFileSync(`${home}/script.json`, JSON.stringify({ turn: [[turn]] }));
 writeFileSync(`${home}/fake.jsonl`, "");
 Object.assign(process.env, {

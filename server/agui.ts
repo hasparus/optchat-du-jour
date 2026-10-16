@@ -5,7 +5,7 @@ import type { AGUIEvent, Message } from "@ag-ui/core";
 import { EventType } from "@ag-ui/core";
 import type { LiveRun, SessionEvent } from "../src/session.ts";
 import type { Entry } from "../src/tree.ts";
-import { type SessionState, splitTool, toolCallId } from "../src/wire.ts";
+import { reasoningId, type SessionState, splitTool, toolCallId, withCut } from "../src/wire.ts";
 
 export type AgUiEvent = AGUIEvent;
 
@@ -75,6 +75,15 @@ const whole = (id: string, role: "assistant" | "user", body: string): AgUiEvent[
   { messageId: id, type: EventType.TEXT_MESSAGE_END },
 ];
 
+// a reasoning message opens: REASONING_START, then its REASONING_MESSAGE_START
+const opening = (id: string): AgUiEvent[] => [{ messageId: id, type: EventType.REASONING_START }, { messageId: id, role: "reasoning", type: EventType.REASONING_MESSAGE_START }];
+
+// a reasoning message closes: REASONING_MESSAGE_END, then REASONING_END with where it went
+const closing = (id: string, metadata: Readonly<Record<string, number | boolean>>): AgUiEvent[] => [
+  { messageId: id, type: EventType.REASONING_MESSAGE_END },
+  { messageId: id, metadata, type: EventType.REASONING_END },
+];
+
 // What one connection is told. It starts with a snapshot of the log's last `window` entries and
 // the state; if a run is going on, its RUN_STARTED and the reply streamed so far follow, so a client
 // that joins mid-reply has all of it. Then `translate` turns each session event into AG-UI events.
@@ -95,6 +104,40 @@ export function openStream(o: {
   // the tool call its next echo answers, from where its snapshot ends (openCall)
   let tool: string | null = null;
   for (const e of upTo(from)) tool = openCall(tool, e);
+
+  // the thinking streaming in (SPEC "Reasoning"): its reasoning message id and how much went out
+  let thought: { id: string; sent: number } | null = null;
+
+  // A piece of thinking before the entry expected at `at`, starting `offset` characters into it:
+  // REASONING_START and REASONING_MESSAGE_START open it, REASONING_MESSAGE_CONTENT carries it; what
+  // this connection has already had is not sent again.
+  const thinking = (at: number, offset: number, delta: string): AgUiEvent[] => {
+    const out: AgUiEvent[] = [];
+    const id = reasoningId(at);
+    if (thought?.id !== id) {
+      out.push(...dropOpen(), ...opening(id));
+      thought = { id, sent: offset };
+    }
+    const fresh = delta.slice(Math.max(0, thought.sent - offset));
+    thought.sent = Math.max(thought.sent, offset + delta.length);
+    if (fresh !== "") out.push({ delta: fresh, messageId: id, type: EventType.REASONING_MESSAGE_CONTENT });
+    return out;
+  };
+  // The open piece came before nothing logged: it ends `dropped`, which a client drops
+  function dropOpen(): AgUiEvent[] {
+    if (thought === null) return [];
+    const { id } = thought;
+    thought = null;
+    return closing(id, { dropped: true });
+  }
+  // The piece streamed at `at` was kept before entry `i` (after `ms`, `cut` characters left out); one
+  // this connection never saw open (nothing of it streamed: all of it cut) opens here first
+  const kept = (at: number, end: { readonly i: number; readonly ms: number; readonly cut: number }): AgUiEvent[] => {
+    const id = reasoningId(at);
+    const opened = thought?.id === id;
+    if (opened) thought = null;
+    return [...(opened ? [] : opening(id)), ...closing(id, withCut({ i: end.i, ms: end.ms }, end.cut))];
+  };
 
   const closeText = (): AgUiEvent[] => {
     if (text === null) return [];
@@ -153,6 +196,7 @@ export function openStream(o: {
   if (o.live) {
     run = o.live.runId;
     first.push({ runId: run, threadId: o.thread, type: EventType.RUN_STARTED });
+    if (o.live.reasoning && o.live.reasoning.at >= from) first.push(...thinking(o.live.reasoning.at, 0, o.live.reasoning.text));
     if (o.live.reply && o.live.reply.at >= from) first.push(...reply(o.live.reply.at, 0, o.live.reply.text));
   }
 
@@ -162,8 +206,15 @@ export function openStream(o: {
         return logged(e.entry);
       case "text":
         return reply(e.at, e.offset, e.delta);
+      // the status line's "thinking…", from its size, whether or not its text comes too
       case "thinking":
         return [{ name: "thinking", type: EventType.CUSTOM, value: { tokens: e.tokens } }];
+      case "reasoning":
+        return thinking(e.at, e.offset, e.delta);
+      case "reasoning-kept":
+        return kept(e.at, e);
+      case "reasoning-dropped":
+        return thought?.id === reasoningId(e.at) ? dropOpen() : [];
       // the next text under that index starts the reply again (TEXT_MESSAGE_START clears a draft)
       case "reply-dropped":
         text = null;
@@ -175,10 +226,11 @@ export function openStream(o: {
       case "run-finished": {
         run = null;
         tool = null;
+        const dropped = dropOpen(); // the session drops it first; a connection that missed that closes it here
         const end: AgUiEvent =
           e.error === null ? { runId: e.runId, threadId: o.thread, type: EventType.RUN_FINISHED } : { message: e.error, type: EventType.RUN_ERROR };
         from = Math.max(from, e.logged);
-        return [...closeText(), end, { messages: toMessages(upTo(e.logged)), type: EventType.MESSAGES_SNAPSHOT }];
+        return [...dropped, ...closeText(), end, { messages: toMessages(upTo(e.logged)), type: EventType.MESSAGES_SNAPSHOT }];
       }
       case "info":
         return [{ name: "info", type: EventType.CUSTOM, value: e.message }];

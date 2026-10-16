@@ -12,7 +12,17 @@ import { createHash } from "node:crypto";
 // what the next /v1/responses call does
 export type Call = { readonly name: string; readonly arguments: string };
 export type Answer =
-  | { readonly text?: string; readonly calls?: readonly Call[]; readonly cached?: number; readonly gate?: Promise<unknown>; readonly reasoning?: string }
+  // `summary`: the reasoning item's summary, streamed as reasoning_summary_text deltas (unless
+  // `summaryWhole`, which sends it only inside the finished item) ahead of the item
+  | {
+      readonly text?: string;
+      readonly calls?: readonly Call[];
+      readonly cached?: number;
+      readonly gate?: Promise<unknown>;
+      readonly reasoning?: string;
+      readonly summary?: string;
+      readonly summaryWhole?: boolean;
+    }
   | { readonly status: number; readonly code: string } // an HTTP error with an OpenAI error body
   | { readonly failed: string } // the stream starts, then response.failed, with usage
   | { readonly incomplete: string }; // the stream starts, then response.incomplete, with usage
@@ -71,12 +81,13 @@ export function fakeOpenAi() {
   };
   let counter = 0;
   // a reasoning item, its encrypted content only when asked for; what it issues is remembered
-  const reasoningItem = (thought: string, encrypted: boolean): Json => {
+  const reasoningItem = (thought: string, encrypted: boolean, said?: string): Json => {
     const id = `rs_${state.seen.length}`;
-    if (!encrypted) return { id, summary: [], type: "reasoning" };
+    const summary = said === undefined ? [] : [{ text: said, type: "summary_text" }];
+    if (!encrypted) return { id, summary, type: "reasoning" };
     const content = `enc:${state.seen.length}:${Buffer.from(thought).toString("base64")}`;
     state.issued.add(content);
-    return { encrypted_content: content, id, summary: [], type: "reasoning" };
+    return { encrypted_content: content, id, summary, type: "reasoning" };
   };
   const pending = new Map<string, { challenge: string; nonce: string; redirect: string }>();
   const iss = (): string => `http://127.0.0.1:${server.port ?? 0}`;
@@ -145,7 +156,12 @@ export function fakeOpenAi() {
               ? [{ type: "response.created" }, { response: { incomplete_details: { reason: answer.incomplete }, model: "fake-luna", usage }, type: "response.incomplete" }]
               : [
                 { type: "response.created" },
-                ...(answer.reasoning === undefined ? [] : [{ item: reasoningItem(answer.reasoning, (sent.include ?? []).includes("reasoning.encrypted_content")), type: "response.output_item.done" }]),
+                ...(answer.summary === undefined || answer.summaryWhole === true
+                  ? []
+                  : [...answer.summary.match(/[\s\S]{1,20}/gu) ?? []].map((delta) => ({ delta, item_id: `rs_${state.seen.length}`, summary_index: 0, type: "response.reasoning_summary_text.delta" }))),
+                ...(answer.reasoning === undefined && answer.summary === undefined
+                  ? []
+                  : [{ item: reasoningItem(answer.reasoning ?? "", (sent.include ?? []).includes("reasoning.encrypted_content"), answer.summary), type: "response.output_item.done" }]),
                 ...[...(answer.text ?? "").match(/.{1,40}/gsu) ?? []].map((delta) => ({ delta, type: "response.output_text.delta" })),
                 ...(answer.text ? [{ item: { content: [{ text: answer.text, type: "output_text" }], type: "message" }, type: "response.output_item.done" }] : []),
                 ...(answer.calls ?? []).map((c, k) => ({

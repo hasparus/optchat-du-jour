@@ -13,6 +13,8 @@ Everything is built and tested against fakes. Each check below needs a real logi
 - [ ] A `zoom` image seen by the model in the same turn, at image cost (SPEC Media).
 - [ ] Does `claude -p` take PDF `document` blocks in a stream-json user message? (SPEC Media)
 - [ ] Is Max 5× enough? Decide after two weeks of `usage.jsonl` (SPEC M2).
+- [ ] Does `claude -p` send thinking text (deltas, the block, or neither) on our models? One real turn, then `chat/reasoning/` (SPEC Reasoning).
+- [ ] api-key Anthropic keeps no thinking text on Opus 4.7+/5.x/Haiku 5.5, whose default `thinking.display` is `"omitted"`: decide whether to send `display: "summarized"` (no bill change, but part of the cached prefix), then check one real turn (SPEC Reasoning).
 
 ## ChatGPT plan
 
@@ -22,6 +24,7 @@ Everything is built and tested against fakes. Each check below needs a real logi
 - [x] Function tools and `tool_choice` on the plan route (SPEC M5).
 - [ ] Our Responses cache fields (from the gist's earlier revision; docs/optchat.md has none): `prompt_cache_breakpoint`, `reasoning.encrypted_content`, `reasoning.context` (SPEC M5).
 - [ ] `input_image` and PDFs on the plan route, before `media.planImages` goes on (SPEC Media).
+- [ ] `reasoning.summary: "auto"` on the plan route: accepted, and summaries streamed? Until then plan turns keep no reasoning text (SPEC Reasoning).
 - [ ] Does prefix caching count against limits at a discount, and stay warm across bursts? (SPEC M3)
 - [ ] Does the compactor fit the ChatGPT Pro weekly limit alongside Codex work? (SPEC Usage and cost tracking)
 - [x] One real compactor call on the plan route, with `instructions` seen on the wire (SPEC M3)

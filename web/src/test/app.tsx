@@ -24,13 +24,28 @@ export const DEVICES = [
   { claudeVersion: null, folders: ["~/repos"], local: false, name: "macbook", status: "offline", url: "http://optchat-macbook:7710" },
 ];
 
-// /api for each test: the devices, and the page before message 100 of a long log
+// What /api/reasoning answers in a test: the pieces kept, by the entry they came before (none
+// unless a test puts some here; emptied after each test), and how often a piece's text was read
+export const THOUGHTS = new Map<number, { readonly ms: number; readonly text: string }>();
+export const thoughtReads: number[] = [];
+
+// /api for each test: the devices, the page before message 100 of a long log, and THOUGHTS
 export function stubApi() {
   const realFetch = globalThis.fetch;
   beforeEach(() => {
     globalThis.fetch = Object.assign(async (input: string | URL | Request) => {
       const path = new URL(input instanceof Request ? input.url : input, "http://127.0.0.1:7700/").pathname;
       if (path === "/api/devices") return Response.json(DEVICES);
+      if (path === "/api/reasoning") {
+        const pieces = [...THOUGHTS].map(([i, t]) => ({ chars: t.text.length, engine: "claude-code:opus", i, ms: t.ms }));
+        return Response.json({ pieces });
+      }
+      if (path === "/api/reasoning/text") {
+        const i = Number(new URL(input instanceof Request ? input.url : input, "http://127.0.0.1:7700/").searchParams.get("i"));
+        thoughtReads.push(i);
+        const t = THOUGHTS.get(i);
+        return t ? Response.json({ chars: t.text.length, date: "2026-10-15T10:00:00Z", engine: "claude-code:opus", i, ms: t.ms, text: t.text }) : new Response(null, { status: 404 });
+      }
       if (path === "/api/messages") {
         // the page before message 100 of a long log: two entries are enough
         const entries = [98, 99].map((i) => ({ date: "2026-10-05T10:00:00Z", i, kind: "user", text: `older message ${i}` }));
@@ -41,6 +56,8 @@ export function stubApi() {
   });
   afterEach(() => {
     globalThis.fetch = realFetch;
+    THOUGHTS.clear();
+    thoughtReads.length = 0;
   });
 }
 

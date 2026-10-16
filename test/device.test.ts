@@ -396,7 +396,7 @@ test("a connection lost mid-turn is a ModelError, so the chain doesn't run the t
           warms: () => true,
         });
         const input = { device: "macbook", earlier: [], media: [], mid: { next: Effect.never, ready: Effect.succeed([]) }, texts: ["edit it"], view: "<chat>\n</chat>" };
-        const out = { info: () => Effect.void, log: () => Effect.void, text: () => Effect.void, thinking: () => Effect.void, took: () => Effect.void, usage: () => Effect.void };
+        const out = { info: () => Effect.void, log: () => Effect.void, text: () => Effect.void, reasoning: () => Effect.void, thinking: () => Effect.void, took: () => Effect.void, usage: () => Effect.void };
         return yield* failover(
           [
             { ref: "claude-code:opus", run: (from) => engine.run(input, out, from) },

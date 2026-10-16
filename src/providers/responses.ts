@@ -64,6 +64,7 @@ export const responsesProvider = (o: {
         ) : Effect.succeed(spent)).pipe(Effect.flatMap(onSettledUsage))),
         onStart: c.onStart,
         onText: c.onText,
+        onReasoning: c.onReasoning,
         onThinking: c.onThinking,
         toolChoice: c.final ? "none" : "auto",
         tools: c.tools.length === 0 ? undefined : c.tools, // a compactor's call has none

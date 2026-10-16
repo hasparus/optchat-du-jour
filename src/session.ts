@@ -16,6 +16,7 @@ import { giveBack as returned, handOver, held, type Incoming, nextTurn, offered,
 import { makeMaster, type Master } from "./master.ts";
 import { type Look, pictureBudget } from "./media/budget.ts";
 import type { Part } from "./media/part.ts";
+import { makePieces, noReasoning, type Pieces, type Reasoning } from "./reasoning.ts";
 import { BLIND, type Mid, type TurnEngine, type TurnEvents } from "./turn/engine.ts";
 import type { UsageRecord } from "./usage.ts";
 import { allBuilt, render, settle, unbuilt, viewSize } from "./view.ts";
@@ -30,6 +31,14 @@ export type SessionEvent =
   // `offset`: where the delta starts in that reply's text so far
   | { readonly type: "text"; readonly delta: string; readonly runId: string; readonly at: number; readonly offset: number }
   | { readonly type: "thinking"; readonly tokens: number; readonly runId: string }
+  // Thinking as it streams (SPEC "Reasoning"): `at` is the log index of the entry it is expected
+  // to come before, taken when the piece began; `offset`, where the delta starts in it
+  | { readonly type: "reasoning"; readonly delta: string; readonly runId: string; readonly at: number; readonly offset: number }
+  // the piece streamed at `at` is kept before entry `i` (normally `at`), after `ms`; `cut` characters
+  // past the caps were left out (never streamed)
+  | { readonly type: "reasoning-kept"; readonly runId: string; readonly at: number; readonly i: number; readonly ms: number; readonly cut: number }
+  // the piece streamed at `at` came before no reply or tool call (the turn stopped): it is not kept
+  | { readonly type: "reasoning-dropped"; readonly runId: string; readonly at: number }
   // the reply streaming in was dropped unlogged (a usage limit stopped it): the next one streams anew
   | { readonly type: "reply-dropped"; readonly runId: string }
   | { readonly type: "run-started"; readonly runId: string }
@@ -84,7 +93,12 @@ export type InputOptions = {
   readonly media?: readonly Asset[];
 };
 
-export type LiveRun = { readonly runId: string; readonly reply: { readonly at: number; readonly text: string } | null };
+export type LiveRun = {
+  readonly runId: string;
+  readonly reply: { readonly at: number; readonly text: string } | null;
+  // the thinking streaming in now, before the entry at `at` (SPEC "Reasoning")
+  readonly reasoning: { readonly at: number; readonly text: string } | null;
+};
 
 // "/on macbook ..." picks the device for that turn; the text stays as typed
 export const deviceOf = (text: string, devices: readonly string[]) => {
@@ -121,6 +135,7 @@ export const makeSession = (o: {
   readonly waitRetry?: Duration.Input; // WAIT_RETRY
   readonly compactorDown?: DownList; // makeSummarize's `down`: shown in the state, published again as it changes
   readonly events?: PubSub.PubSub<SessionEvent>; // the server's, made first so it can report into it; else the session's own
+  readonly reasoning?: Reasoning; // the side file thinking is kept in (src/reasoning.ts); none: only streamed
 }): Effect.Effect<Session, never, Scope.Scope> =>
   Effect.gen(function* () {
     const { chat } = o;
@@ -204,9 +219,11 @@ export const makeSession = (o: {
       yield* PubSub.take(downs).pipe(Effect.andThen(tell), Effect.forever, Effect.forkScoped);
     }
 
-    // the run whose RUN_STARTED went out, and the text it is streaming at log index `at`
-    let current: { runId: string; reply: { at: number; text: string } | null } | null = null;
-    const live = (): LiveRun | null => current && { reply: current.reply && { ...current.reply }, runId: current.runId };
+    // the run whose RUN_STARTED went out, the text it is streaming at log index `at`, and its
+    // thinking (src/reasoning.ts makePieces: a run's own, so its budget starts with it)
+    let current: { runId: string; reply: { at: number; text: string } | null; pieces: Pieces } | null = null;
+    const live = (): LiveRun | null => current && { reasoning: current.pieces.live(), reply: current.reply && { ...current.reply }, runId: current.runId };
+    const sideFile = o.reasoning ?? noReasoning;
 
     const ack = (m: Incoming, at: number | null, error: string | null) =>
       m.clientId === null ? Effect.void : publish({ at, clientId: m.clientId, error, type: "ack" });
@@ -224,9 +241,6 @@ export const makeSession = (o: {
         Effect.uninterruptible,
       );
     const published = (runId: string | null) => (entry: Entry) => publish({ entry, runId, type: "logged" });
-    // an entry of the turn's engine: written and published, or neither is cut short by a cancel
-    const logPublished = (kind: Entry["kind"], text: string, runId: string | null, on: string | null, error = false) =>
-      log(kind, text, on, error).pipe(Effect.flatMap(published(runId)), Effect.uninterruptible);
 
     const scope = yield* Effect.scope;
 
@@ -282,10 +296,32 @@ export const makeSession = (o: {
         return publish({ at, delta, offset, runId, type: "text" });
       });
 
+    // Thinking as it streams (SPEC "Reasoning"): the run's pieces (src/reasoning.ts) say what of it
+    // goes out, under the caps; once the reply or tool call it came before is logged, its piece is
+    // kept in the side file under that index, then clients are told. A write that fails is the side
+    // file's to report; the turn goes on. A piece the run logged nothing after is dropped.
+    const think = (delta: string, fresh: boolean, runId: string) =>
+      Effect.suspend(() => {
+        const out = current?.pieces.add({ at: chat.mem.root.length, delta, engine: engine ?? "", fresh, now: clock.currentTimeMillisUnsafe() });
+        return out ? publish({ at: out.at, delta: out.taken, offset: out.offset, runId, type: "reasoning" }) : Effect.void;
+      });
+    const keepThought = (entry: Entry, runId: string) =>
+      Effect.suspend(() => {
+        const taken = entry.kind === "talk" || entry.kind === "tool" ? current?.pieces.take(entry.i, clock.currentTimeMillisUnsafe()) : null;
+        if (!taken) return Effect.void;
+        const { at, record } = taken;
+        return sideFile.keep(record).pipe(Effect.andThen(publish({ at, cut: record.cut ?? 0, i: record.i, ms: record.ms, runId, type: "reasoning-kept" })));
+      });
+    const dropThought = (runId: string) =>
+      Effect.suspend(() => {
+        const at = current?.pieces.drop() ?? null;
+        return at === null ? Effect.void : publish({ at, runId, type: "reasoning-dropped" });
+      });
+
     // the one start of a run: `current` and RUN_STARTED together, so no end goes out without its start
     const beginRun = (runId: string) =>
       Effect.suspend(() => {
-        current = { reply: null, runId };
+        current = { pieces: makePieces(), reply: null, runId };
         return publish({ runId, type: "run-started" });
       }).pipe(Effect.uninterruptible);
 
@@ -298,8 +334,14 @@ export const makeSession = (o: {
       Effect.suspend(() => {
         if (!current) return Effect.void;
         const { runId } = current;
-        current = null;
-        return publish({ error, logged: chat.mem.root.length, runId, type: "run-finished" });
+        return dropThought(runId).pipe(
+          Effect.andThen(
+            Effect.suspend(() => {
+              current = null;
+              return publish({ error, logged: chat.mem.root.length, runId, type: "run-finished" });
+            }),
+          ),
+        );
       });
 
     // Priming happens only while idle, in fibers of `primes`. A turn that starts stops them
@@ -383,6 +425,7 @@ export const makeSession = (o: {
         engine = null;
         if (current?.reply) yield* publish({ runId, type: "reply-dropped" });
         if (current) current.reply = null;
+        yield* dropThought(runId);
         yield* giveBack(on);
         const done = chat.mem.root.length - since;
         // waiting for a resume before the run's end goes out: a client that resumes on seeing it is heard
@@ -482,9 +525,16 @@ export const makeSession = (o: {
         steerIn(accepting); // came in while the captions or the log were awaited
         const out: TurnEvents = {
           info,
-          log: (kind, text, flags) => logPublished(kind, text, runId, on, kind === "echo" && flags?.error === true),
+          // a reply or tool call is logged with the thinking before it kept beside it, in one step
+          log: (kind, text, flags) =>
+            log(kind, text, on, kind === "echo" && flags?.error === true).pipe(
+              Effect.tap(published(runId)),
+              Effect.flatMap((entry) => keepThought(entry, runId)),
+              Effect.uninterruptible,
+            ),
           text: (delta) => stream(delta, runId),
           thinking: (tokens) => publish({ runId, tokens, type: "thinking" }),
+          reasoning: (delta, fresh) => think(delta, fresh, runId),
           // the call passed this one to the model: logged now; a second report finds it gone (taken once)
           took: (mid) =>
             Effect.suspend(() => {

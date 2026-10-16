@@ -53,6 +53,9 @@ export type Ask<E extends Tagged = never> = {
   readonly toolChoice?: "auto" | "none";
   readonly onText?: (delta: string) => Effect.Effect<void>; // live text as it streams
   readonly onThinking?: (tokens: number) => Effect.Effect<void>; // the size of the reasoning streamed so far
+  // the reasoning's text, when the API sends any (a summary, or reasoning text); `fresh` at the
+  // start of each item's part. Only clients see it (SPEC "Reasoning"); the item goes back as it came
+  readonly onReasoning?: (delta: string, fresh: boolean) => Effect.Effect<void>;
   readonly onOut?: (out: Out) => Effect.Effect<void, E>; // each item of `output` as it completes
   readonly onSettledUsage?: (spent: Spent) => Effect.Effect<void>;
   readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
@@ -150,6 +153,13 @@ const ApiUsage = Schema.Struct({
   input_tokens_details: Schema.optional(Schema.NullOr(Schema.Struct({ cached_tokens: Schema.optional(Schema.Natural) }))),
 }).check(Schema.makeFilter((u) => (u.input_tokens_details?.cached_tokens ?? 0) <= u.input_tokens));
 const delta = json(Schema.Struct({ delta: Schema.String }));
+// a reasoning delta names its item, and a summary's its part: a new pair starts a new thought
+const reasoningDelta = json(
+  Schema.Struct({ delta: Schema.String, item_id: Schema.optional(Schema.String), summary_index: Schema.optional(Schema.Number), content_index: Schema.optional(Schema.Number) }),
+);
+// a reasoning item's summary, for one whose text came with no deltas
+const SummaryOf = Schema.Struct({ summary: Schema.optional(Schema.Array(Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String) }))) });
+const summaryOf = Schema.decodeUnknownOption(SummaryOf);
 const doneItem = json(
   Schema.Struct({
     item: Schema.Struct({
@@ -195,9 +205,20 @@ const spentOf = (r: { readonly model?: string | undefined; readonly usage?: type
 class Unauthorized extends Data.TaggedError("Unauthorized")<{ readonly message: string }> {}
 const isUnauthorized = (e: Tagged): e is Unauthorized => e._tag === "Unauthorized";
 
-type Read = { readonly text: string; readonly reasoning: number; readonly refusal: string; readonly output: readonly Out[]; readonly done: Reply | null; readonly spent: Spent | undefined };
+// `part`: the reasoning item and part its last delta came from; `told`: some reasoning text streamed
+// since the last reasoning item was whole (that item's, as they come one at a time)
+type Read = {
+  readonly text: string;
+  readonly reasoning: number;
+  readonly part: string | null;
+  readonly told: boolean;
+  readonly refusal: string;
+  readonly output: readonly Out[];
+  readonly done: Reply | null;
+  readonly spent: Spent | undefined;
+};
 
-type Hooks<E extends Tagged> = Pick<Ask<E>, "onSettledUsage" | "onOut" | "onStart" | "onText" | "onThinking">;
+type Hooks<E extends Tagged> = Pick<Ask<E>, "onSettledUsage" | "onOut" | "onReasoning" | "onStart" | "onText" | "onThinking">;
 
 const onEvent =
   <E extends Tagged>(o: { readonly model: string; readonly label: string; readonly reported: (spent: Spent | undefined) => void } & Hooks<E>) =>
@@ -212,12 +233,16 @@ const onEvent =
           if (o.onText) yield* o.onText(d);
           return { ...r, text: r.text + d };
         }
-        // reasoning is streamed only when the API is asked for it; its size is all that goes out
+        // reasoning text comes only when the API sends it (a summary when asked for one); it goes
+        // out to clients, its size to the status line
         case "response.reasoning_text.delta":
         case "response.reasoning_summary_text.delta": {
-          const reasoning = r.reasoning + (yield* delta(data)).delta.length;
+          const d = yield* reasoningDelta(data);
+          const reasoning = r.reasoning + d.delta.length;
+          const part = `${d.item_id ?? ""}:${d.summary_index ?? d.content_index ?? 0}`;
+          if (o.onReasoning && d.delta !== "") yield* o.onReasoning(d.delta, part !== r.part);
           if (o.onThinking) yield* o.onThinking(Math.ceil(reasoning / 4));
-          return { ...r, reasoning };
+          return { ...r, part, reasoning, told: r.told || d.delta !== "" };
         }
         case "response.refusal.delta":
           return { ...r, refusal: r.refusal + (yield* delta(data)).delta };
@@ -225,7 +250,14 @@ const onEvent =
           const { item } = yield* doneItem(data);
           if (item.type === "function_call") return yield* out({ arguments: item.arguments ?? "{}", id: item.call_id ?? "", name: item.name ?? "", type: "call" });
           // with store: false the API keeps nothing, so a reasoning item goes back whole, as it came
-          if (item.type === "reasoning") return yield* out({ item: (yield* doneReasoning(data)).item, type: "reasoning" });
+          if (item.type === "reasoning") {
+            const whole = (yield* doneReasoning(data)).item;
+            // a summary that came whole, with no deltas: its text goes out now
+            const summary = Option.getOrUndefined(summaryOf(whole));
+            const said = (summary?.summary ?? []).flatMap((p) => (p.type === "summary_text" && p.text ? [p.text] : [])).join("\n\n");
+            if (o.onReasoning && said !== "" && !r.told) yield* o.onReasoning(said, true);
+            return yield* out({ item: whole, type: "reasoning" }).pipe(Effect.map((next) => ({ ...next, told: false })));
+          }
           if (item.type !== "message") return r;
           const text = (item.content ?? []).flatMap((c) => (c.type === "output_text" && c.text !== undefined ? [c.text] : [])).join("");
           return text ? yield* out({ text, type: "text" }) : r;
@@ -265,7 +297,7 @@ const onEvent =
 export const readStream = <E extends Tagged = never>(stream: Stream.Stream<Uint8Array, EngineError>, model: string, o: { readonly label?: string } & Hooks<E> = {}) =>
   Effect.suspend(() => {
     const label = o.label ?? "openai-plan";
-    const init: Read = { done: null, output: [], reasoning: 0, refusal: "", spent: undefined, text: "" };
+    const init: Read = { done: null, output: [], part: null, reasoning: 0, refusal: "", spent: undefined, text: "", told: false };
     let known: Spent | undefined;
     const reported = (spent: Spent | undefined) => { if (spent) known = spent; };
     return Effect.gen(function* () {
@@ -326,7 +358,7 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
             : classify(res.status, null, text.slice(0, 300), o.label);
         }
         const stream = res.stream.pipe(Stream.mapError((err) => new ModelError({ message: `${o.label}: ${err.message}` })));
-        return yield* readStream(stream, ask.model, { label: o.label, onSettledUsage: ask.onSettledUsage, onOut: ask.onOut, onStart: ask.onStart, onText: ask.onText, onThinking: ask.onThinking });
+        return yield* readStream(stream, ask.model, { label: o.label, onSettledUsage: ask.onSettledUsage, onOut: ask.onOut, onReasoning: ask.onReasoning, onStart: ask.onStart, onText: ask.onText, onThinking: ask.onThinking });
       }).pipe(Effect.catchIf(HttpClientError.isHttpClientError, (err) => Effect.fail(new ModelError({ message: `${o.label}: ${err.message}` }))));
 
     // a 401 renews the token once, then counts as signed out

@@ -1,12 +1,16 @@
 import { EventType } from "@ag-ui/core";
 import { type Kind, type UsageRecord } from "@wire";
+import { Option } from "effect";
+import { openStream } from "../../../server/agui.ts";
+import type { SessionEvent } from "../../../src/session.ts";
 import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { ack, type Entry, fakeServer, IDLE, parseSent, said, snapshot, state } from "../test/fixture";
 import { openLink, STALE_MS, wakeOnReturn } from "./connection";
 import { sentKey } from "./draft";
 import { applyEvent, applyPage, emptyLog, hole, type Log, MAX_HELD, tip, trimHeld, visible, withDraft } from "./log";
-import { type Inbound } from "./protocol";
-import { entryRows, rowIndexFor } from "./rows";
+import { type Inbound, parseFrame } from "./protocol";
+import { applyThought, noThoughts, thoughtLabel, toggled } from "./reasoning";
+import { chatRows, entryRows, rowIndexFor } from "./rows";
 import { makeSession, queued, type Session, UNSENT } from "./session";
 import { buckets, byModel, periodOf, totals } from "./stats";
 
@@ -39,7 +43,7 @@ const entry = (i: number, kind: Kind, text: string) => ({ date: "2026-10-05T10:0
 
 // the log's rows as `key kind text` lines, the draft included
 const rowsOf = (log: Log) =>
-  entryRows(withDraft(visible(log), log.draft)).map((r) => `${r.key} ${r.kind} ${r.kind === "tool" ? `${r.name} ${r.args} -> ${r.output}` : r.text}`);
+  entryRows(withDraft(visible(log), log.draft)).map((r) => `${r.key} ${r.kind} ${r.kind === "tool" ? `${r.name} ${r.args} -> ${r.output}` : r.kind === "thinking" ? "" : r.text}`);
 const play = (log: Log, ...events: readonly Inbound[]) => {
   let out = log;
   for (const e of events) out = applyEvent(out, e);
@@ -586,5 +590,115 @@ describe("the running turn's start (Session.run)", () => {
     server.play({ runId: "7", threadId: "mini", type: EventType.RUN_STARTED });
     expect(at()).toBe(7);
     link.close();
+  });
+});
+
+// the server's translator (server/agui.ts) and the client's decoder, end to end: session events
+// in, what this page holds out
+const relay = () => {
+  const { translate } = openStream({ entries: [], live: null, state: IDLE, thread: "mini", window: 50 });
+  return (...es: SessionEvent[]): Inbound[] => es.flatMap((e) => translate(e)).flatMap((e) => Option.toArray(parseFrame(JSON.stringify(e))));
+};
+const think = (at: number, offset: number, delta: string): SessionEvent => ({ at, delta, offset, runId: "0", type: "reasoning" });
+const kept = (at: number, i: number, ms: number, cut = 0): SessionEvent => ({ at, cut, i, ms, runId: "0", type: "reasoning-kept" });
+const thoughtsOf = (session: { readonly get: () => Session }) =>
+  [...session.get().thoughts.values()].map((t) => [t.i, t.text, t.live, t.ms, t.cut]);
+
+describe("reasoning: what the model thought, beside the log", () => {
+  test("live: a thought streams under the index its entry is expected at, a row of its own until that entry comes; kept, it says how long it took", async () => {
+    const { server, session } = await setup();
+    const wire = relay();
+    server.play({ runId: "1", threadId: "mini", type: EventType.RUN_STARTED }, ...wire(think(1, 0, "Let me "), think(1, 7, "think.")));
+    expect(thoughtsOf(session)).toEqual([[1, "Let me think.", true, null, 0]]);
+    const { items, draft } = session.get().log;
+    const shownItems = visible({ base: 0, items });
+    // past every row: a thinking row keyed as its entry's row will be
+    expect(chatRows(shownItems, entryRows(shownItems), draft, 1).at(-1)).toEqual({ id: 1, key: "e1", kind: "thinking" });
+    expect(thoughtLabel(session.get().thoughts.get(1)!)).toBe("Thinking");
+    server.play(...said(1, "assistant", "Hello."), ...wire(kept(1, 1, 12_400)));
+    expect(thoughtsOf(session)).toEqual([[1, "Let me think.", false, 12_400, 0]]);
+    expect(thoughtLabel(session.get().thoughts.get(1)!)).toBe("Thought for 12 s");
+  });
+
+  test("live: one kept before another entry than expected moves there; one dropped, or left open at the run's end or a dropped link, goes", async () => {
+    const { server, session } = await setup();
+    const wire = relay();
+    server.play(...wire(think(2, 0, "moves")));
+    session.toggleThought(2, true); // opened while it streams: it stays open where it is kept
+    server.play(...wire(kept(2, 3, 500, 40)));
+    expect(thoughtsOf(session)).toEqual([[3, "moves", false, 500, 40]]);
+    expect(session.get().thoughts.get(3)?.open).toBe(true);
+    expect(thoughtLabel(session.get().thoughts.get(3)!)).toBe("Reasoning"); // under a second
+    server.play(...wire(think(4, 0, "never said"), { at: 4, runId: "0", type: "reasoning-dropped" }));
+    expect(session.get().thoughts.has(4)).toBe(false);
+    server.play(...wire(think(5, 0, "cut off")), { runId: "1", threadId: "mini", type: EventType.RUN_FINISHED });
+    expect(session.get().thoughts.has(5)).toBe(false);
+    server.play(...wire(think(6, 0, "the link drops")));
+    server.drop();
+    await tick();
+    expect([...session.get().thoughts.keys()]).toEqual([3]);
+  });
+
+  test("after a reload: the rows held get their thoughts without text, read when one is opened; an older page asks for its own; a server without the route shows none", async () => {
+    const asked: string[] = [];
+    let flaky = 0;
+    const server = fakeServer(() => [snapshot(all(150).slice(-50), 100), { snapshot: { ...IDLE, messages: 150 }, type: EventType.STATE_SNAPSHOT }]);
+    const link = openLink("ws://x/ws", { socket: server.socket });
+    const session = makeSession(link, {
+      messages: async (before, limit) => ({ entries: all(150).slice(Math.max(0, before - limit), before).map((e, k) => entry(Math.max(0, before - limit) + k, e.kind, e.text)) }),
+      reasoning: async (from, to) => {
+        asked.push(`${from}-${to}`);
+        return [{ chars: 9, engine: "claude-code:opus", i: 120, ms: 3000 }, { chars: 9, engine: "claude-code:opus", i: 130, ms: 2000 }, { chars: 9, engine: "claude-code:opus", i: 60, ms: 1000, cut: 7 }].filter((h) => h.i >= from && h.i < to);
+      },
+      reasoningText: async (i) => {
+        if (i === 130 && flaky++ === 0) throw new Error("offline");
+        return i === 60 ? null : { date: "2026-10-15T10:00:00Z", engine: "claude-code:opus", i, ms: 3000, text: `kept text ${i}` };
+      },
+    });
+    await tick();
+    expect(asked).toEqual(["100-150"]);
+    expect(thoughtsOf(session)).toEqual([
+      [120, null, false, 3000, 0],
+      [130, null, false, 2000, 0],
+    ]);
+    session.toggleThought(120, true);
+    expect(session.get().thoughts.get(120)?.open).toBe(true);
+    await tick();
+    expect(session.get().thoughts.get(120)?.text).toBe("kept text 120");
+    // a read that failed says so, and opening the line again tries again
+    session.toggleThought(130, true);
+    await tick();
+    expect(session.get().thoughts.get(130)?.failed).toBe("error");
+    session.toggleThought(130, false);
+    session.toggleThought(130, true);
+    await tick();
+    expect(session.get().thoughts.get(130)).toMatchObject({ failed: null, open: true, text: "kept text 130" });
+    await session.loadOlder();
+    await tick();
+    expect(asked).toEqual(["100-150", "0-100"]);
+    expect(session.get().thoughts.get(60)).toMatchObject({ cut: 7, text: null });
+    session.toggleThought(60, true); // the server has none: said for good, not asked again
+    await tick();
+    expect(session.get().thoughts.get(60)?.failed).toBe("missing");
+    session.toggleThought(60, false);
+    expect(toggled(session.get().thoughts, 60, true).read).toBe(false);
+
+    const old = makeSession(openLink("ws://x/ws", { socket: fakeServer(() => [snapshot([{ kind: "talk", text: "hi" }])]).socket }), {
+      reasoning: async () => {
+        throw new Error("/api/reasoning: 404 Not Found");
+      },
+    });
+    await tick();
+    expect(old.get().thoughts).toEqual(noThoughts);
+    expect(old.get().log.items.size).toBe(1);
+  });
+
+  test("the pure store: content without its start starts a piece; an end that names no entry drops it", () => {
+    const content: Inbound = { delta: "joined late", messageId: "r7", type: EventType.REASONING_MESSAGE_CONTENT };
+    const started = applyThought(noThoughts, content, 0);
+    expect(started.get(7)).toMatchObject({ live: true, text: "joined late" });
+    expect(applyThought(started, { messageId: "r7", type: EventType.REASONING_END }, 0).has(7)).toBe(false);
+    // an id that isn't a reasoning message's, or another event, changes nothing
+    expect(applyThought(started, { delta: "x", messageId: "7", type: EventType.REASONING_MESSAGE_CONTENT }, 0)).toBe(started);
   });
 });
