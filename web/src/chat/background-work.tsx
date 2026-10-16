@@ -21,7 +21,7 @@ import type { Loaded } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 import { engineLabel, type Device, type SessionState } from "@wire";
 import { BotIcon, ClockIcon, LayersIcon, LaptopIcon, ServerIcon, SquareIcon, Undo2Icon } from "lucide-react";
-import { type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
+import { type ReactElement, type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
 import { shortLabel } from "./pickers";
 
 const WIDE = "(min-width: 768px)";
@@ -126,7 +126,7 @@ export function BackgroundWork({
   readonly onOpenChange: (open: boolean) => void;
   readonly trigger?: ReactNode;
   // more groups, after the running work (SPEC M7's subagents; empty in the app until then)
-  readonly extra?: ReactNode;
+  readonly extra?: readonly ReactElement[];
 }) {
   const s = useSyncExternalStore(session.subscribe, session.get);
   const side = useWide() ? "right" : "bottom";
@@ -141,8 +141,7 @@ export function BackgroundWork({
   }, [open, reload]);
 
   const running = (turn === null ? 0 : 1) + levels.length;
-  // what React draws nothing for is no group: the sheet still says nothing runs
-  const none = extra === undefined || extra === null || extra === false;
+  const none = (extra?.length ?? 0) === 0;
   return (
     <SheetDrawer
       className={side === "bottom" ? "max-h-[85dvh]" : undefined}

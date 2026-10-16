@@ -1,14 +1,12 @@
-// Background work's empty state with M7's `extra` slot: whatever React draws nothing for (undefined,
-// null, false) is no group, so the sheet still says nothing runs; a group in it is something
 import { afterEach, expect, test } from "bun:test";
 import { EventType } from "@ag-ui/core";
 import { cleanup, render, screen, within } from "@testing-library/react";
-import type { ReactNode } from "react";
+import type { ComponentProps } from "react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { openLink } from "@/lib/connection";
 import { makeSession } from "@/lib/session";
 import { fakeServer, IDLE, snapshot } from "@/test/fixture";
-import { BackgroundWork } from "./background-work";
+import { BackgroundWork, Group } from "./background-work";
 
 const links: { readonly close: () => void }[] = [];
 afterEach(() => {
@@ -19,24 +17,20 @@ afterEach(() => {
 const devices = {
   data: [],
   error: null,
-  reload: () => {
-    // no devices here
-  },
+  reload: () => null,
 };
 
-const sheet = async (extra: ReactNode) => {
+const sheet = async (groups: Pick<ComponentProps<typeof BackgroundWork>, "extra"> = {}) => {
   const server = fakeServer(() => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT }]);
   const link = openLink("ws://x/ws", { socket: server.socket });
   links.push(link);
   render(
     <TooltipProvider>
       <BackgroundWork
+        {...groups}
         devices={devices}
-        extra={extra}
         link={link}
-        onOpenChange={() => {
-          // stays open
-        }}
+        onOpenChange={() => { /** Keep the fixture sheet open. */ }}
         open
         session={makeSession(link)}
       />
@@ -45,18 +39,24 @@ const sheet = async (extra: ReactNode) => {
   return screen.findByRole("dialog", { name: "Background work" });
 };
 
-for (const [name, extra] of [
-  ["undefined", undefined],
-  ["null", null],
-  ["false", false],
-] as const) {
-  test(`an empty slot (${name}) still says nothing is running`, async () => {
-    expect(within(await sheet(extra)).getByText(/Nothing is running/)).toBeTruthy();
+test("an absent group list still says nothing is running", async () => {
+  expect(within(await sheet()).getByText(/Nothing is running/)).toBeTruthy();
+});
+
+test("an empty group list still says nothing is running", async () => {
+  expect(within(await sheet({ extra: [] })).getByText(/Nothing is running/)).toBeTruthy();
+});
+
+for (const names of [["scout"], ["scout", "builder"]]) {
+  test(`${names.length} extra groups render without the empty state`, async () => {
+    const open = await sheet({
+      extra: names.map((name) => (
+        <Group count={1} icon={null} key={name} title={name}>
+          <div data-testid={`work-${name}`}>{name} running</div>
+        </Group>
+      )),
+    });
+    for (const name of names) expect(within(open).getByTestId(`work-${name}`)).toBeTruthy();
+    expect(within(open).queryByText(/Nothing is running/)).toBeNull();
   });
 }
-
-test("a group in the slot is something: no empty state", async () => {
-  const open = await sheet(<div data-testid="work-subagent">scout</div>);
-  expect(within(open).getByTestId("work-subagent")).toBeTruthy();
-  expect(within(open).queryByText(/Nothing is running/)).toBeNull();
-});

@@ -68,6 +68,14 @@ export function trimHeld(log: Log): Log {
   return { ...log, items };
 }
 
+/** Reuse only canonical equality at this index, including live provenance: a confirmed item
+ * must not later be dropped below a snapshot window as though it were still live-only.
+ */
+const heldItem = (log: Log, fresh: Item): Item => {
+  const held = log.items.get(fresh.i);
+  return held !== undefined && held.kind === fresh.kind && held.text === fresh.text && held.error === fresh.error && held.live === fresh.live ? held : fresh;
+};
+
 // A snapshot is the log's last window: it replaces everything from its first index up, and the
 // draft (a reconnect or the end of a run; what was streaming is in the log now, or never will be).
 // Older pages below it stay, except entries only live events told of: those are read again. With
@@ -78,7 +86,7 @@ function applySnapshot(log: Log, messages: readonly Message[], trim: boolean): L
   const base = fresh[0]?.i ?? 0;
   const items = new Map<number, Item>();
   if (fresh.length > 0) for (const [i, item] of log.items) if (i < base && !item.live) items.set(i, item);
-  for (const item of fresh) items.set(item.i, item);
+  for (const item of fresh) items.set(item.i, heldItem(log, item));
   const next = { base, draft: null, items, newest: fresh.at(-1)?.i ?? -1 };
   return trim ? trimHeld(next) : next;
 }
@@ -91,7 +99,7 @@ export function applyPage(log: Log, entries: readonly { readonly i: number; read
   if (first === undefined || last === undefined) return log;
   const items = new Map<number, Item>();
   for (const [i, item] of log.items) if (i < first || i > last) items.set(i, item);
-  for (const e of entries) items.set(e.i, { i: e.i, kind: e.kind, live: false, text: e.text, ...flag(e.error === true) });
+  for (const e of entries) items.set(e.i, heldItem(log, { i: e.i, kind: e.kind, live: false, text: e.text, ...flag(e.error === true) }));
   return { ...log, draft: log.draft && log.draft.i <= last ? null : log.draft, items, newest: Math.max(log.newest, last) };
 }
 

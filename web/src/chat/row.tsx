@@ -9,7 +9,7 @@ import { Source, Sources, SourcesContent, SourcesTrigger } from "@/components/ai
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from "@/components/ai-elements/tool";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Message, MessageContent, MessageHeader } from "@/components/ui/message";
-import { type PlanStep, planOf, type Row, type ToolState, toolSummary, type WebSource } from "@/lib/rows";
+import { type PlanState, type PlanStep, planOf, type Row, type ToolState, toolSummary, type WebSource } from "@/lib/rows";
 import { splitMarkers } from "@wire";
 import { CheckIcon, CodeIcon, CopyIcon, NotebookPenIcon, TextIcon } from "lucide-react";
 import { Component, createContext, memo, type ReactNode, use, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -233,18 +233,17 @@ class RowBoundary extends Component<{ readonly text: string; readonly children: 
   }
 }
 
-// memo: a streamed token changes one row, and the rows above it (their objects are kept, rows.ts
-// chatRows) are not drawn again
-// chatRows) are not drawn again. `plan`: this row is its turn's plan (rows.ts turnPlans), the
-// chat's newest ("newest", open until the reader chooses), in the turn that runs now ("live"), or
-// an older turn's ("turn", closed); a TodoWrite row without it is a plain tool line, an earlier
-// state of its turn's plan. `sources`: what the turn's web tools used, under its last reply (rows.ts
-// turnSources)
+/** Memo keeps unchanged rows above a streamed token (rows.ts chatRows).
+ * `plan` follows planStates: the chat's newest ("newest", initially open), only the newest plan
+ * of the active RUN_STARTED run, even across a steer ("live"), or an older turn's ("turn", closed).
+ * Earlier TodoWrite rows within a turn stay plain tool lines. `sources` is turnSources' list
+ * under the turn's last reply.
+ */
 export type ChatRowProps = {
   row: Row;
   streaming: boolean;
   toolState: ToolState;
-  plan?: "newest" | "live" | "turn" | undefined;
+  plan?: PlanState | undefined;
   sources?: readonly WebSource[] | undefined;
 };
 

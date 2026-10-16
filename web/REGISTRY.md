@@ -168,12 +168,15 @@ steps are kept after it ends (Background work keeps no history today), and wheth
 should be marked in the chat as one rather than read as a user message.
 
 **TodoWrite, and with it Task.** The user chose to turn TodoWrite on, so Plan shows in real
-turns: the turn's `--tools` is `master.tools`, which defaults to Bash, Read, Edit, Write, Glob,
+claude-code turns: the turn's `--tools` is `master.tools`, which defaults to Bash, Read, Edit, Write, Glob,
 Grep, WebFetch, WebSearch and TodoWrite (`MASTER_TOOLS`, src/config.ts). What it costs: every
-turn's and compaction's request carries one more tool definition (the tools are part of the cached
+claude-code turn's and compaction's request carries one more tool definition (the tools are part of the cached
 prefix, so the first request after the change rewrites the cache once, then it is stable); every
 TodoWrite call becomes a `tool` and `echo` pair in the log, so in memory, summarized and zoomable
 like any other call, and Claude Code calls it often on longer work. A config that sets its own
-`master.tools` keeps its list. Task (the steps under what the agent is doing) needs a title per
+`master.tools` keeps its list. OpenAI-plan and API-key turns and compactors use the device's
+`ToolDef`s instead, so their tool prefix is unchanged. After deployment, watch existing usage logs
+and failover notices for "the compactor called a tool": TodoWrite may be used proactively, but
+compaction still kills a try as soon as any tool call starts. Task (the steps under what the agent is doing) needs a title per
 group of tool lines that the log doesn't hold; the step in progress at the time could be that title
 for the calls after it. Not built.
