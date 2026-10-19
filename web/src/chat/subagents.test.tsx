@@ -10,6 +10,7 @@ import { makeSession } from "@/lib/session";
 import { fakeServer, IDLE, parseSent, snapshot, state } from "@/test/fixture";
 import type { Msg, SubagentInfo } from "@wire";
 import { BackgroundWork, busyWith } from "./background-work";
+import { diffstat, mergeText } from "@/components/ai-elements/subagent";
 import { retryAfter, runOf, stepsOf, Subagents } from "./subagents";
 
 const links: { readonly close: () => void }[] = [];
@@ -272,4 +273,76 @@ test("a side log read that keeps failing waits before it is tried again, longer 
     { timeout: 2000 },
   );
   expect([1, 2, 3, 4, 5, 6, 9].map(retryAfter)).toEqual([1000, 2000, 4000, 8000, 16_000, 30_000, 30_000]);
+});
+
+// M7b (SPEC "Subagents"): where each works, an isolated one's branch and how it went back, who
+// spawned it, and Stop all. Fake data only.
+const ISOLATED: SubagentInfo = {
+  ...NOTES,
+  folder: "~/demo/repo",
+  isolated: true,
+  merge: { deletions: 2, detail: "main fast-forwarded to optchat/fixer; its worktree and branch are removed", files: 3, insertions: 40, into: "main", outcome: "fast-forward" },
+  name: "fixer",
+  task: "Fix the failing test in the demo repo.",
+};
+const CONFLICTED: SubagentInfo = {
+  ...ISOLATED,
+  merge: { conflicts: ["src/a.ts", "README.md"], deletions: 1, detail: "optchat/clash conflicts with main", files: 2, insertions: 5, into: "main", outcome: "conflict" },
+  name: "clash",
+  worktree: { base: "0123456789abcdef0123456789abcdef01234567", branch: "optchat/clash", path: "/home/demo/.optchat-worktrees/clash", repo: "/home/demo/repo" },
+};
+const NESTED: SubagentInfo = { ...SCOUT, device: "macbook", folder: "~/repos/site", name: "helper", parent: "scout" };
+
+test("a card shows where it works: its device and folder, its branch when isolated, how the branch went back, and who spawned it", async () => {
+  for (const name of ["fixer", "clash", "helper"]) LOGS.set(name, []);
+  sheet([NESTED, { ...ISOLATED, entries: 0 }, { ...CONFLICTED, entries: 0 }]);
+  const dialog = await screen.findByRole("dialog", { name: "Background work" });
+  const fixer = await within(dialog).findByTestId("subagent-fixer");
+  fireEvent.click(within(fixer).getByText("Ran fixer"));
+  await waitFor(() => {
+    expect(within(fixer).getByText("optchat/fixer")).toBeTruthy();
+  });
+  expect(within(fixer).getByText("from ~/demo/repo")).toBeTruthy();
+  expect(fixer.querySelector('[data-slot="subagent-merge"]')?.textContent).toBe("Merged into main (fast-forward): 3 files changed, +40 −2");
+  const clash = within(dialog).getByTestId("subagent-clash");
+  fireEvent.click(within(clash).getByText("Ran clash"));
+  await waitFor(() => {
+    expect(clash.querySelector('[data-slot="subagent-merge"]')?.textContent).toBe("Not merged: conflicts with main in src/a.ts, README.md. optchat/clash is kept: 2 files changed, +5 −1");
+  });
+  expect(clash.querySelector<HTMLElement>('[data-slot="subagent-merge"]')?.dataset.outcome).toBe("conflict");
+  // nested, on the other machine, working directly in its folder: no branch, no merge
+  const helper = within(dialog).getByTestId("subagent-helper");
+  expect(within(helper).getByText("on macbook")).toBeTruthy();
+  expect(within(helper).getByText("in ~/repos/site")).toBeTruthy();
+  expect(within(helper).getByText("spawned by scout")).toBeTruthy();
+  expect(helper.querySelector('[data-slot="subagent-branch"]')).toBeNull();
+  expect(helper.querySelector('[data-slot="subagent-merge"]')).toBeNull();
+});
+
+test("the run says the branch, the merge and the parent; an isolated one keeps its branch name once merged", () => {
+  expect(runOf(ISOLATED, [], 1000)).toMatchObject({ branch: "optchat/fixer", folder: "~/demo/repo", isolated: true, merge: { files: 3, outcome: "fast-forward" }, parent: null });
+  expect(runOf(CONFLICTED, [], 1000)).toMatchObject({ branch: "optchat/clash", merge: { outcome: "conflict" } });
+  expect(runOf(NESTED, [], 1000)).toMatchObject({ branch: null, device: "macbook", isolated: false, merge: null, parent: "scout" });
+  expect(mergeText({ deletions: 0, detail: "d", files: 1, insertions: 1, into: "main", outcome: "merged" }, "optchat/x")).toBe("Merged into main: 1 file changed, +1 −0");
+  expect(mergeText({ deletions: 0, detail: "the folder is on no branch", files: 1, insertions: 1, into: null, outcome: "not-merged" }, "optchat/x")).toBe("Not merged: the folder is on no branch");
+  expect(diffstat({ deletions: 2, files: 3, insertions: 40 })).toBe("3 files changed, +40 −2");
+});
+
+test("Stop all, while a subagent runs, sends one frame for the turn and every subagent", async () => {
+  LOGS.set("scout", []);
+  LOGS.set("notes", []);
+  const { server } = sheet([{ ...SCOUT, entries: 0 }, NOTES]);
+  const stop = await screen.findByTestId("stop-all");
+  expect(stop.getAttribute("aria-label")).toBe("Stop all: 1 subagent");
+  fireEvent.click(stop);
+  await waitFor(() => {
+    expect(server.sent.map((f) => parseSent(f))).toContainEqual({ type: "stop-all" });
+  });
+});
+
+test("with nothing running there is no Stop all", async () => {
+  LOGS.set("notes", []);
+  sheet([NOTES]);
+  await screen.findByTestId("subagent-notes");
+  expect(screen.queryByTestId("stop-all")).toBeNull();
 });

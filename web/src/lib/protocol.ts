@@ -145,6 +145,8 @@ export const runInput = (text: string, id: string, { attachments = [], ...forwar
     tools: [],
   });
 export const ABORT = JSON.stringify({ type: "abort" });
+// Background work's Stop all (SPEC "Subagents"): the turn and every running subagent
+export const STOP_ALL = JSON.stringify({ type: "stop-all" });
 export const takeBackFrame = (clientId: string) => JSON.stringify({ clientId, type: "take-back" });
 export type Settings = { readonly followUp?: FollowUp };
 export const settingsFrame = (change: Settings) => JSON.stringify({ ...change, type: "settings" });

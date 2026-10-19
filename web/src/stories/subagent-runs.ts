@@ -1,5 +1,5 @@
-// Subagent runs as SPEC M7a tells them, for the story page (stories.html) and the tests. Fake
-// data only: the names, tasks, paths and reports are made up.
+// Subagent runs as SPEC "Subagents" tells them, for the story page (stories.html) and the tests.
+// Fake data only: the names, tasks, paths and reports are made up.
 import type { SubagentRun } from "@/components/ai-elements/subagent";
 
 export const RUNS: readonly SubagentRun[] = [
@@ -47,5 +47,49 @@ export const RUNS: readonly SubagentRun[] = [
     status: "stopped",
     steps: [],
     task: "Read the release notes and list breaking changes.",
+  },
+];
+
+// M7b's: where each works, an isolated one's branch and how it went back, a nested one
+export const PLACED: readonly SubagentRun[] = [
+  {
+    branch: "optchat/fixer",
+    device: "mini",
+    elapsed: "2 min 10 s",
+    engine: "Claude Opus (Claude Code)",
+    folder: "~/repos/demo",
+    isolated: true,
+    merge: { deletions: 2, detail: "main fast-forwarded to optchat/fixer", files: 3, insertions: 40, into: "main", outcome: "fast-forward" },
+    name: "fixer",
+    report: "Fixed the flaky retry test and committed it on optchat/fixer.",
+    status: "finished",
+    steps: [{ args: '{"command":"bun test retry"}', failed: false, key: "f0", name: "Bash", output: "3 pass, 0 fail" }],
+    task: "Fix the flaky retry test in the demo repo.",
+  },
+  {
+    branch: "optchat/clash",
+    device: "macbook",
+    elapsed: "58 s",
+    engine: "Claude Opus (Claude Code)",
+    folder: "~/repos/demo",
+    isolated: true,
+    merge: { conflicts: ["src/app.ts"], deletions: 1, detail: "optchat/clash conflicts with main in src/app.ts", files: 2, insertions: 5, into: "main", outcome: "conflict" },
+    name: "clash",
+    report: "Renamed the retry option; main changed the same line meanwhile.",
+    status: "finished",
+    steps: [],
+    task: "Rename the retry option to attempts.",
+  },
+  {
+    device: "mini",
+    elapsed: "9 s",
+    engine: "Claude Opus (Claude Code)",
+    folder: "~/repos/demo/docs",
+    name: "helper",
+    parent: "fixer",
+    report: null,
+    status: "running",
+    steps: [],
+    task: "Update the docs for the retry change.",
   },
 ];

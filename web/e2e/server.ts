@@ -19,12 +19,18 @@
 //   E2E_THINKING=1  every Claude turn thinks (THOUGHT, streamed slowly) before its tool call
 //   E2E_SUBAGENTS=1  every Claude turn spawns two subagents (SPEC M7a): "notes", which reads and
 //             reports NOTES_REPORT, then "scout", which waits for a message from its card, reads
-//             and reports SCOUT_REPORT (e2e/replies.ts)
+//             and reports SCOUT_REPORT (e2e/replies.ts); every later turn (a report wakes the
+//             master) answers as a plain turn does
+//   E2E_ISOLATED=1  the first Claude turn spawns "fixer" isolated in a demo git repository of its
+//             own (a temporary one, not the data dir), which commits a file in its worktree and
+//             reports FIXER_REPORT; its branch is merged back, and the report wakes the master,
+//             whose next turn answers WOKEN
 import { BunRuntime } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/http";
 import type { Summarize } from "../../src/compactor.ts";
-import { mkdtempSync, renameSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { serverLayer } from "../../server/app.ts";
 import { parseSettings } from "../../src/config.ts";
@@ -32,7 +38,7 @@ import { login } from "../../src/openai/auth.ts";
 import { memorySecrets } from "../../src/secrets.ts";
 import { fakeOpenAi } from "../../test/fake-openai.ts";
 import { freePort } from "../../test/ports.ts";
-import { FETCHED, NOTES_REPORT, NOTES_TASK, PLAN_DONE, PLAN_START, SCOUT_REPORT, SCOUT_TASK, SEARCH_RESULT, SOL_REPLY, SPAWNED, THOUGHT, TOOL_ERROR } from "./replies.ts";
+import { FETCHED, FIXER_REPORT, FIXER_TASK, NOTES_REPORT, NOTES_TASK, PLAN_DONE, PLAN_START, SCOUT_REPORT, SCOUT_TASK, SEARCH_RESULT, SOL_REPLY, SPAWNED, SPAWNED_ISOLATED, THOUGHT, TOOL_ERROR, WOKEN } from "./replies.ts";
 
 const root = new URL("../..", import.meta.url).pathname;
 const home = Bun.env.E2E_HOME ?? mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
@@ -79,8 +85,28 @@ const spawns = [
 ];
 const notes = [{ tool: { input: { pattern: "trip", path: home }, name: "Grep" } }, { toolResult: "notes/oct.md:4: trip dates" }, { text: NOTES_REPORT }];
 const scout = [{ take: true }, { tool: { input: { file_path: `${home}/notes/oct.md` }, name: "Read" } }, { toolResult: "trip: Oct 3 to Oct 9" }, { sleep: 500 }, { text: SCOUT_REPORT }];
-const turn = Bun.env.E2E_SPENT ? spent : Bun.env.E2E_PATTERNS ? patterns : Bun.env.E2E_THINKING ? thinks : Bun.env.E2E_SUBAGENTS ? spawns : reply;
-writeFileSync(`${home}/script.json`, JSON.stringify({ subagent: { notes: [notes], scout: [scout] }, turn: [[turn]] }));
+// E2E_ISOLATED: a demo repository outside the data dir (which is a git repository itself), and
+// where its worktrees go, both temporary
+const demo = Bun.env.E2E_ISOLATED ? `${mkdtempSync(`${tmpdir()}/oc-e2e-repo-`)}` : null;
+const git = (dir: string, ...args: string[]) => spawnSync("git", ["-c", "user.name=Demo", "-c", "user.email=demo@example.com", ...args], { cwd: dir });
+if (demo !== null) {
+  mkdirSync(`${demo}/repo`);
+  git(`${demo}/repo`, "init", "-q", "-b", "main");
+  writeFileSync(`${demo}/repo/CHANGELOG.md`, "# Changelog\n");
+  git(`${demo}/repo`, "add", "-A");
+  git(`${demo}/repo`, "commit", "-q", "-m", "start");
+}
+const isolated = [{ mcp: { input: { folder: `${demo}/repo`, isolate: true, name: "fixer", task: FIXER_TASK }, name: "spawn" } }, { text: SPAWNED_ISOLATED }];
+const fixer = [
+  { sleep: 3000 },
+  { run: { input: { command: "printf -- '- a demo entry\\n' >> CHANGELOG.md && git -c user.name=Demo -c user.email=demo@example.com commit -qam 'changelog: a demo entry'" }, name: "Bash" } },
+  { text: FIXER_REPORT },
+];
+const turn = Bun.env.E2E_SPENT ? spent : Bun.env.E2E_PATTERNS ? patterns : Bun.env.E2E_THINKING ? thinks : Bun.env.E2E_SUBAGENTS ? spawns : demo === null ? reply : isolated;
+// a turn that spawns plays once; the turns after it (a report wakes the master) answer plainly
+const later = demo === null ? reply : [{ text: WOKEN }];
+const turns = Bun.env.E2E_SUBAGENTS || demo !== null ? [[turn], [later]] : [[turn]];
+writeFileSync(`${home}/script.json`, JSON.stringify({ subagent: { fixer: [fixer], notes: [notes], scout: [scout] }, turn: turns }));
 writeFileSync(`${home}/fake.jsonl`, "");
 Object.assign(process.env, {
   FAKE_CLAUDE_LOG: `${home}/fake.jsonl`,
@@ -101,8 +127,9 @@ const settings = parseSettings({
   cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
   compactor: { byLevel: [{ chain: ["claude-code:sonnet"], from: 0 }], effort: "medium" },
   defaultDevice: "mini",
-  devices: { macbook: { folders: ["~/repos"], url: "http://optchat-macbook:7710" }, mini: { folders: [home], url: "http://optchat-mini:7710" } },
+  devices: { macbook: { folders: ["~/repos"], url: "http://optchat-macbook:7710" }, mini: { folders: demo === null ? [home] : [home, demo], url: "http://optchat-mini:7710" } },
   master: { chain: ["claude-code:opus", "openai-plan:gpt-6.1-sol"], effort: "high", permissionMode: "bypassPermissions" },
+  subagents: { worktrees: `${demo ?? home}-worktrees` },
 });
 
 // written whole (a rename), and only when `serverLayer` has bound its port: a layer provided with

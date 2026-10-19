@@ -9,7 +9,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-export { FETCHED, NOTES_REPORT, NOTES_TASK, PLAN_DONE, PLAN_START, REPLY, SCOUT_REPORT, SCOUT_TASK, SEARCH_LINKS, SOL_REPLY, SPAWNED, THOUGHT, TOOL_ERROR } from "./replies.ts";
+export { FETCHED, FIXER_REPORT, FIXER_TASK, NOTES_REPORT, NOTES_TASK, PLAN_DONE, PLAN_START, REPLY, SCOUT_REPORT, SCOUT_TASK, SEARCH_LINKS, SOL_REPLY, SPAWNED, SPAWNED_ISOLATED, THOUGHT, TOOL_ERROR, WOKEN } from "./replies.ts";
 
 type LogEntry = MessagesPage["entries"][number];
 const decodePage = Schema.decodeUnknownSync(MessagesPage);
@@ -79,9 +79,9 @@ async function stop(child: ChildProcess) {
   await exited;
 }
 
-type Options = { readonly seeded: number; readonly spent: boolean; readonly toolError: boolean; readonly patterns: boolean; readonly thinking: boolean; readonly subagents: boolean };
+type Options = { readonly seeded: number; readonly spent: boolean; readonly toolError: boolean; readonly patterns: boolean; readonly thinking: boolean; readonly subagents: boolean; readonly isolated: boolean };
 
-async function startServer({ patterns, seeded, spent, subagents, thinking, toolError }: Options): Promise<Server & { readonly stop: () => Promise<void> }> {
+async function startServer({ isolated, patterns, seeded, spent, subagents, thinking, toolError }: Options): Promise<Server & { readonly stop: () => Promise<void> }> {
   const home = mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
   let port = 0; // the server picks it on the first start; a restart asks for the one the page knows
   let total = seeded;
@@ -94,6 +94,7 @@ async function startServer({ patterns, seeded, spent, subagents, thinking, toolE
     if (patterns) env.E2E_PATTERNS = "1";
     if (thinking) env.E2E_THINKING = "1";
     if (subagents) env.E2E_SUBAGENTS = "1";
+    if (isolated) env.E2E_ISOLATED = "1";
     const child = spawn("bun", ["e2e/server.ts"], { cwd: web, env, stdio: ["ignore", "pipe", "pipe"] });
     let said = "";
     for (const stream of [child.stdout, child.stderr]) {
@@ -155,8 +156,9 @@ export const test = base.extend<Options & { server: Server }>({
   patterns: [false, { option: true }], // every Claude turn plans, searches and fetches (E2E_PATTERNS)
   thinking: [false, { option: true }], // every Claude turn thinks before its tool call (E2E_THINKING)
   subagents: [false, { option: true }], // every Claude turn spawns two subagents (E2E_SUBAGENTS)
-  server: async ({ seeded, spent, toolError, patterns, thinking, subagents }, provide) => {
-    const server = await startServer({ patterns, seeded, spent, subagents, thinking, toolError });
+  isolated: [false, { option: true }], // the first Claude turn spawns an isolated subagent (E2E_ISOLATED)
+  server: async ({ isolated, seeded, spent, toolError, patterns, thinking, subagents }, provide) => {
+    const server = await startServer({ isolated, patterns, seeded, spent, subagents, thinking, toolError });
     await provide(server);
     await server.stop();
   },
