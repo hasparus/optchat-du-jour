@@ -34,6 +34,8 @@ Everything is built and tested against fakes. Each check below needs a real logi
 - [ ] iOS app (WKWebView): the wrapper and its `sandbox="allow-scripts"` frame load (both are the server's pages, which `loadsInApp` lets in; no `data:` frame), the page runs its scripts, the heartbeat keeps it, a link in a page opens through `window.open` (in the Safari sheet, as the app's other links do, or not at all), WebKit ignores `credentialless` without breaking the frame, and the draft frame (same-origin, no scripts) is patched. Copy through `ClipboardItem` with a promise; download is hidden in the app.
 - [ ] The pane's sheet on the phone: full height on vaul, a drag down closes it, the frame scrolls inside it without dragging the sheet, and the keyboard never opens over it.
 - [ ] A long page's live draft on the phone: patching up to 512 KB every 150 ms stays smooth.
+- [ ] The frame guard on WebKit (Safari, the iOS app's WKWebView): a `srcdoc` frame a page makes is removed before it runs, as on Chromium (the e2e probe with a UDP listener runs on Chromium only), so its WebRTC never sends STUN. Known residual until then.
+- [ ] `Sec-Fetch-Dest: iframe` on the artifact page and draft loads in WKWebView (Safari sends Fetch Metadata from 16.4; an older one would get 404s and show no artifact).
 
 ## ChatGPT plan
 

@@ -5,7 +5,8 @@
 // createDraftBatch (lib/design-draft.ts), both Apache-2.0, © Vercel, modified: on an Effect fiber
 // instead of a timer, and an edit's draft is the latest version with the edits written so far.
 import { Effect, Fiber, Option, Schema, type Scope } from "effect";
-import { artifactTool } from "../wire.ts";
+import { type ArtifactDraft, artifactTool } from "../wire.ts";
+import { MAX_ARTIFACT_BYTES } from "./html.ts";
 import { applyEdits, type Edit } from "./store.ts";
 
 // how often a draft goes out while it streams, at most
@@ -100,20 +101,10 @@ export const editsIn = (raw: string): Edit[] => {
   return edits;
 };
 
-// What clients are told of one call's draft: the page so far from `offset` on (`replace`: the
-// whole page, which replaces what they hold), and `closed` once the call's input is whole. `id` is
-// the call's own; `name`, the artifact's once the model has written it.
-export type DraftOut = {
-  readonly id: string;
-  readonly tool: "publish" | "edit";
-  readonly name: string | null;
-  readonly offset: number;
-  readonly delta: string;
-  readonly replace: boolean;
-  readonly closed: boolean;
-};
-// a draft as it stands, for a client that joins while it streams
-export type DraftNow = { readonly id: string; readonly tool: "publish" | "edit"; readonly name: string | null; readonly html: string; readonly closed: boolean };
+// What clients are told of one call's draft (src/wire.ts ArtifactDraft); a draft as it stands, for
+// a client that joins while it streams
+export type DraftOut = ArtifactDraft;
+export type DraftNow = Pick<ArtifactDraft, "closed" | "id" | "name" | "tool"> & { readonly html: string };
 
 type Call = {
   readonly id: string;
@@ -123,7 +114,8 @@ type Call = {
   sent: number; // how much of `html` clients have (publish: it only grows)
   base: string | null | undefined; // edit: the latest version (undefined: not read yet)
   edits: number; // edit: the edits applied to `base` so far
-  timer: Fiber.Fiber<void> | null;
+  due: boolean; // a flush is scheduled and has not started
+  last: Fiber.Fiber<void> | null; // the newest flush's fiber, scheduled, running or done
   feed: ((delta: string) => void) | null; // publish: the html field's decoder
   closed: boolean;
 };
@@ -131,6 +123,7 @@ type Call = {
 // One run's drafts. `base`: an artifact's latest version, for an edit's draft. `send`: a draft
 // goes out (each call's at most every DRAFT_EVERY while it streams, and once more as it closes).
 export const makeDrafts = (o: {
+  readonly runId: string;
   readonly base: (name: string) => Effect.Effect<string | null>;
   readonly send: (d: DraftOut) => Effect.Effect<void>;
   readonly scope: Scope.Scope;
@@ -139,7 +132,7 @@ export const makeDrafts = (o: {
 
   const flush = (call: Call): Effect.Effect<void> =>
     Effect.gen(function* () {
-      call.timer = null;
+      call.due = false;
       const name = nameIn(call.raw);
       if (call.tool === "edit") {
         if (name !== null && call.base === undefined) call.base = yield* o.base(name);
@@ -155,13 +148,13 @@ export const makeDrafts = (o: {
           }
           call.html = html;
         }
-        return yield* o.send({ closed: call.closed, delta: call.html, id: call.id, name, offset: 0, replace: true, tool: "edit" });
+        return yield* o.send({ closed: call.closed, delta: call.html, id: call.id, name, offset: 0, replace: true, runId: o.runId, tool: "edit" });
       }
       const delta = call.html.slice(call.sent);
       if (delta === "" && !call.closed) return;
       const offset = call.sent;
       call.sent = call.html.length;
-      yield* o.send({ closed: call.closed, delta, id: call.id, name, offset, replace: false, tool: "publish" });
+      yield* o.send({ closed: call.closed, delta, id: call.id, name, offset, replace: false, runId: o.runId, tool: "publish" });
     });
 
   // a piece of a call's input: an artifact tool's goes into its draft, any other is not looked at
@@ -171,7 +164,7 @@ export const makeDrafts = (o: {
       if (!call) {
         const tool = artifactTool(c.name);
         if (tool !== "publish_artifact" && tool !== "edit_artifact") return Effect.void;
-        const made: Call = { base: undefined, closed: false, edits: 0, feed: null, html: "", id: c.id, raw: "", sent: 0, timer: null, tool: tool === "publish_artifact" ? "publish" : "edit" };
+        const made: Call = { base: undefined, closed: false, due: false, edits: 0, feed: null, html: "", id: c.id, last: null, raw: "", sent: 0, tool: tool === "publish_artifact" ? "publish" : "edit" };
         if (made.tool === "publish")
           made.feed = fieldExtractor("html", (chunk) => {
             made.html += chunk;
@@ -182,32 +175,47 @@ export const makeDrafts = (o: {
       if (call.closed) return Effect.void;
       call.raw += piece;
       call.feed?.(piece);
-      if (call.timer !== null) return Effect.void;
+      // A page past what a version may hold is refused when the call ends anyway: its draft stops
+      // here, closed, so no client holds or is sent more than MAX_ARTIFACT_BYTES of it
+      if (call.html.length > MAX_ARTIFACT_BYTES || call.raw.length > 2 * MAX_ARTIFACT_BYTES) return end(call.id);
+      if (call.due) return Effect.void;
       const it = call;
+      it.due = true;
       return Effect.sleep(DRAFT_EVERY).pipe(
         // whole or not at all: a close that comes meanwhile waits for it, so no piece is lost
         Effect.andThen(Effect.uninterruptible(Effect.suspend(() => flush(it)))),
         Effect.forkIn(o.scope),
-        Effect.tap((fiber) => Effect.sync(() => void (it.timer = fiber))),
+        Effect.tap((fiber) => Effect.sync(() => void (it.last = fiber))),
         Effect.asVoid,
       );
     });
 
-  // the call's input is whole: what is left goes out at once, closed, and no timer stays behind
-  const end = (id: string): Effect.Effect<void> =>
-    Effect.suspend(() => {
+  // The call's input is whole: a flush still waiting is called off, one running is waited for, and
+  // what is left goes out at once, closed; no timer stays behind
+  function end(id: string): Effect.Effect<void> {
+    return Effect.suspend(() => {
       const call = calls.get(id);
       if (!call || call.closed) return Effect.void;
-      call.closed = true;
-      const { timer } = call;
-      return (timer === null ? Effect.void : Fiber.interrupt(timer)).pipe(Effect.andThen(flush(call)));
+      const settle = Effect.suspend(() => (call.last === null ? Effect.void : Fiber.interrupt(call.last)));
+      // the flush in flight first, as it was (open), then nothing more is taken, then the close
+      return settle.pipe(
+        Effect.andThen(
+          Effect.suspend(() => {
+            if (call.closed) return Effect.void; // another end got here first
+            call.closed = true;
+            if (call.tool === "publish" && call.html.length > MAX_ARTIFACT_BYTES) call.html = call.html.slice(0, call.sent);
+            return settle.pipe(Effect.andThen(flush(call)));
+          }),
+        ),
+      );
     });
+  }
 
   // every draft as it stands, for a client that joins now
   const now = (): DraftNow[] => [...calls.values()].map((c) => ({ closed: c.closed, html: c.html, id: c.id, name: nameIn(c.raw), tool: c.tool }));
 
   // the run is over: no timer stays behind
-  const stop = Effect.suspend(() => Effect.forEach([...calls.values()], (c) => (c.timer === null ? Effect.void : Fiber.interrupt(c.timer)), { discard: true })).pipe(
+  const stop = Effect.suspend(() => Effect.forEach([...calls.values()], (c) => (c.last === null ? Effect.void : Fiber.interrupt(c.last)), { discard: true })).pipe(
     Effect.andThen(
       Effect.sync(() => {
         calls.clear();

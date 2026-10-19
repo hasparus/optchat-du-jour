@@ -10,7 +10,8 @@
 //                                markup, served under a CSP header that sandboxes it again and lets
 //                                nothing load or connect, framed only by the wrapper
 //   GET /artifact/draft          the empty scriptless document a live draft is drawn into (web/src
-//                                /lib/draft-preview.ts); no scripts run in it
+//                                /lib/draft-preview.ts); no scripts run in it. It and the page
+//                                answer only a frame's load (Sec-Fetch-Dest: iframe)
 //   GET /api/artifact?name&v     the HTML itself, for copy and download: plain text, an
 //                                attachment, `default-src 'none'; sandbox` and nosniff
 //   GET /api/artifacts           every artifact and its versions (src/wire.ts ArtifactList)
@@ -19,10 +20,10 @@
 // checked as a name (src/artifacts/store.ts ARTIFACT_NAME) before it goes near the disk, and an
 // unknown or malformed name or version is a 404, the same either way.
 import { Effect } from "effect";
-import { type HttpRouter, HttpServerResponse } from "effect/http";
+import { type HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { ARTIFACT_EMBEDDED_CSP, prepareArtifactHtml } from "../../src/artifacts/html.ts";
 import { ARTIFACT_NAME, type Artifacts } from "../../src/artifacts/store.ts";
-import { ArtifactList } from "../../src/wire.ts";
+import { ARTIFACT_DRAFT_CSP, ArtifactList } from "../../src/wire.ts";
 
 // the wrapper's own policy: its inline script and style, and frames of the artifact page only
 export const wrapperCsp = (host: string) =>
@@ -41,16 +42,22 @@ export const wrapperCsp = (host: string) =>
 export const PAGE_CSP = `sandbox allow-scripts; ${ARTIFACT_EMBEDDED_CSP}; frame-ancestors 'self'`;
 // the HTML as a file: never rendered here
 export const RAW_CSP = "default-src 'none'; sandbox";
-// the live draft's document: styles and embedded assets, no script at all (fx0's DRAFT_CSP)
-export const DRAFT_CSP = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
+// the live draft's document: styles and embedded assets, no script at all (fx0's DRAFT_CSP), framed
+// only here
+export const DRAFT_CSP = `${ARTIFACT_DRAFT_CSP}; frame-ancestors 'self'`;
 export const PERMISSIONS =
   "accelerometer=(), camera=(), clipboard-read=(), clipboard-write=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), usb=()";
 const SHARED = { "cache-control": "private, no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff" };
 
-// fx0's EMPTY_DRAFT_DOCUMENT: what a draft is patched into (its own CSP is the header's twin)
-export const EMPTY_DRAFT_DOCUMENT = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${DRAFT_CSP.replace("; frame-ancestors 'self'", "")}"><meta name="color-scheme" content="light dark"></head><body></body></html>`;
+// fx0's EMPTY_DRAFT_DOCUMENT: what a draft is patched into (a meta tag can't say frame-ancestors)
+export const EMPTY_DRAFT_DOCUMENT = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${ARTIFACT_DRAFT_CSP}"><meta name="color-scheme" content="light dark"></head><body></body></html>`;
 
 const TOKEN = /^[0-9a-f-]{36}$/;
+// The page and the draft document are only ever loaded into a frame: the wrapper's frame-src is
+// what keeps a page's own navigations in (a meta refresh, a self-navigation, a ping, a speculation
+// rule's prefetch), and opened as a tab it would have none. A browser says how it loads a document
+// (Fetch Metadata); anything but a frame's load gets a 404.
+const framed = (request: HttpServerRequest.HttpServerRequest) => request.headers["sec-fetch-dest"] === "iframe";
 const notFound = () => HttpServerResponse.empty({ status: 404 });
 
 // `name` and `v` from the query: a name as names go, and a version as a whole number from 1; v
@@ -154,7 +161,7 @@ export const artifactRoutes = (router: HttpRouter.HttpRouter, o: { readonly arti
     yield* router.add("GET", "/artifact/page", (request) =>
       Effect.gen(function* () {
         const q = wanted(request.url);
-        if (q?.v === undefined || q.token === null || !TOKEN.test(q.token)) return notFound();
+        if (!framed(request) || q?.v === undefined || q.token === null || !TOKEN.test(q.token)) return notFound();
         const found = yield* artifacts.read(q.name, q.v);
         if (found === null) return notFound();
         return HttpServerResponse.text(prepareArtifactHtml(found.html, ARTIFACT_EMBEDDED_CSP, q.token), {
@@ -167,11 +174,13 @@ export const artifactRoutes = (router: HttpRouter.HttpRouter, o: { readonly arti
     yield* router.add(
       "GET",
       "/artifact/draft",
-      Effect.sync(() =>
-        HttpServerResponse.text(EMPTY_DRAFT_DOCUMENT, {
-          contentType: "text/html; charset=utf-8",
-          headers: { ...SHARED, "content-security-policy": DRAFT_CSP, "permissions-policy": PERMISSIONS },
-        }),
+      Effect.map(HttpServerRequest.HttpServerRequest, (request) =>
+        framed(request)
+          ? HttpServerResponse.text(EMPTY_DRAFT_DOCUMENT, {
+              contentType: "text/html; charset=utf-8",
+              headers: { ...SHARED, "content-security-policy": DRAFT_CSP, "permissions-policy": PERMISSIONS },
+            })
+          : notFound(),
       ),
     );
   });

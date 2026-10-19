@@ -7,6 +7,7 @@
 // as `earlier`, and on `mid` the messages the engine before never took, then any new ones.
 import type { Effect } from "effect";
 import type { EngineError } from "../engines/errors.ts";
+import type { ToolInputHooks } from "../engines/tool-input.ts";
 import type { Part } from "../media/part.ts";
 import type { Kind } from "../records.ts";
 import type { StoreError } from "../store.ts";
@@ -65,10 +66,7 @@ export type TurnEvents = {
   // of its JSON, under the call's own id; `end` once it is whole (or the reply stopped). Only what
   // an artifact's live draft needs (SPEC "Artifacts"): an engine that streams no tool input never
   // calls it, and a caller that shows no drafts (a subagent) leaves it out.
-  readonly toolInput?: {
-    readonly delta: (call: { readonly id: string; readonly name: string }, delta: string) => Effect.Effect<void>;
-    readonly end: (id: string) => Effect.Effect<void>;
-  };
+  readonly toolInput?: ToolInputHooks;
 };
 
 export type TurnEngine = {

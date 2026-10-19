@@ -22,7 +22,7 @@
 //             and reports SCOUT_REPORT (e2e/replies.ts)
 //   E2E_ARTIFACTS=ui  a Claude turn publishes LANDING, its input streamed slowly, unless its
 //             message says "long weekend": that one edits it (LANDING_EDIT). =hostile: every turn
-//             publishes HOSTILE (SPEC "Artifacts")
+//             publishes hostile(E2E_STUN_PORT), whose WebRTC aims at that UDP port (SPEC "Artifacts")
 import { BunRuntime } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -39,7 +39,7 @@ import {
   ARTIFACT,
   EDITED,
   FETCHED,
-  HOSTILE,
+  hostile as hostilePage,
   LANDING,
   LANDING_EDIT,
   NOTES_REPORT,
@@ -105,7 +105,7 @@ const turn = Bun.env.E2E_SPENT ? spent : Bun.env.E2E_PATTERNS ? patterns : Bun.e
 // the artifacts. turns: a publish streamed in 64-character pieces 300 ms apart (about 5 s), an edit
 const publishes = [{ mcp: { input: { name: ARTIFACT, html: LANDING }, name: "publish_artifact" }, pace: 300 }, { text: PUBLISHED }];
 const edits = [{ mcp: { input: LANDING_EDIT, name: "edit_artifact" } }, { text: EDITED }];
-const hostile = [{ mcp: { input: { name: "hostile", html: HOSTILE }, name: "publish_artifact" } }, { text: PUBLISHED }];
+const hostile = [{ mcp: { input: { name: "hostile", html: hostilePage(Number(Bun.env.E2E_STUN_PORT ?? 9)) }, name: "publish_artifact" } }, { text: PUBLISHED }];
 // by a word of the message: a warm process starts ahead of its turn, so not by the order they start
 const turns = Bun.env.E2E_ARTIFACTS === "ui" ? { "*": [publishes], "long weekend": [edits] } : Bun.env.E2E_ARTIFACTS === "hostile" ? [[hostile]] : [[turn]];
 writeFileSync(`${home}/script.json`, JSON.stringify({ subagent: { notes: [notes], scout: [scout] }, turn: turns }));

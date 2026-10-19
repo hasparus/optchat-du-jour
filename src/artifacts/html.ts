@@ -1,5 +1,7 @@
-// From fx0 lib/design-artifact.ts (Apache-2.0, © Vercel, modified). An artifact (SPEC "Artifacts")
-// is one self-contained HTML file: what it may hold (`validateArtifactHtml`), the CSP it runs
+// From fx0 lib/design-artifact.ts (Apache-2.0, © Vercel, modified).
+// Changed from fx0's: the tags are read by HTMLRewriter, not fx0's tokenizer; CSS and ping are
+// checked; frames are refused at run time (FRAME_GUARD). An artifact (SPEC "Artifacts") is one
+// self-contained HTML file: what it may hold (`validateArtifactHtml`), the CSP it runs
 // under, and the bootstrap put in front of its own markup when it is shown (`prepareArtifactHtml`):
 // WebRTC gone, a heartbeat for the wrapper, and links opened through the parent.
 
@@ -26,13 +28,39 @@ export const ARTIFACT_EMBEDDED_CSP = [
   "form-action 'none'",
 ].join("; ");
 
+// No frame of the artifact's own, ever (ours, not fx0's). The bootstrap takes WebRTC's constructors
+// from the page's window, but a frame it makes (a srcdoc frame: frame-src can't stop it, nothing is
+// fetched) would have a window of its own with them, and STUN reaches any host; Chromium ignores
+// CSP's `webrtc 'block'`. So every iframe, frame, fencedframe, object, embed or portal is taken out
+// of the document by a MutationObserver before its document commits (the observer runs at the
+// microtask checkpoint; a frame's navigation commits later, and its window is cross-origin until
+// then), and the same is done in every shadow root. Every native it needs is taken before the
+// page's own script can replace it, and createElement refuses those tags outright.
+const FRAME_GUARD = `const g=globalThis,apply=Reflect.apply,own=Object.getOwnPropertyDescriptor;
+const FRAMES=new Set(["IFRAME","FRAME","FENCEDFRAME","OBJECT","EMBED","PORTAL"]);
+const MO=g.MutationObserver,observe=MO.prototype.observe,removeChild=Node.prototype.removeChild;
+const parentOf=own(Node.prototype,"parentNode").get,nameOf=own(Node.prototype,"nodeName").get,typeOf=own(Node.prototype,"nodeType").get;
+const walker=Document.prototype.createTreeWalker,nextNode=TreeWalker.prototype.nextNode,attach=Element.prototype.attachShadow;
+const createElement=Document.prototype.createElement,createElementNS=Document.prototype.createElementNS;
+const framing=n=>FRAMES.has(String(apply(nameOf,n,[])).toUpperCase());
+const drop=n=>{const p=apply(parentOf,n,[]);if(p)apply(removeChild,p,[n])};
+const sweep=n=>{if(apply(typeOf,n,[])!==1&&apply(typeOf,n,[])!==11)return;if(framing(n))return drop(n);const found=[],w=apply(walker,document,[n,1]);for(let e=apply(nextNode,w,[]);e;e=apply(nextNode,w,[]))if(framing(e))found.push(e);for(const e of found)drop(e)};
+const mo=new MO(records=>{for(const r of records)for(const n of r.addedNodes)sweep(n)});
+const watch=root=>apply(observe,mo,[root,{childList:true,subtree:true}]);
+watch(document);
+Element.prototype.attachShadow=function(init){const root=apply(attach,this,[init]);watch(root);return root};
+for(const [owner,name] of [[Element.prototype,"setHTMLUnsafe"],[ShadowRoot.prototype,"setHTMLUnsafe"],[Document,"parseHTMLUnsafe"]])if(name in owner)Object.defineProperty(owner,name,{configurable:false,value:function(){throw new DOMException("no declarative shadow roots in an artifact","NotSupportedError")},writable:false});
+const refuse=()=>{throw new DOMException("no frames in an artifact","NotSupportedError")};
+Document.prototype.createElement=function(name,o){if(FRAMES.has(String(name).toUpperCase()))refuse();return apply(createElement,this,[name,o])};
+Document.prototype.createElementNS=function(ns,name,o){if(FRAMES.has(String(name).split(":").pop().toUpperCase()))refuse();return apply(createElementNS,this,[ns,name,o])};`;
+
 function artifactBootstrap(readyToken?: string): string {
   // The sandbox grants no popups, so a clicked https link asks the trusted wrapper to open it
   // (server/routes/artifacts.ts) instead of navigating the preview away.
   const heartbeat = readyToken
     ? `const token=${JSON.stringify(readyToken)};const send=type=>parent.postMessage({type,token},"*");send("heartbeat");setInterval(()=>send("heartbeat"),500);addEventListener("load",()=>{send("ready");requestAnimationFrame(()=>requestAnimationFrame(()=>send("painted")))},{once:true});addEventListener("click",event=>{const link=event.target instanceof Element&&event.target.closest("a[href]");const url=link?link.getAttribute("href")||"":"";if(/^https:/i.test(url)){event.preventDefault();parent.postMessage({type:"open",token,url},"*")}},true);`
     : "";
-  return `<script>(()=>{for(const name of ["RTCPeerConnection","webkitRTCPeerConnection","RTCIceGatherer"]){try{Object.defineProperty(globalThis,name,{value:undefined,writable:false,configurable:false})}catch{}}${heartbeat}})()</script>`;
+  return `<script>(()=>{for(const name of ["RTCPeerConnection","webkitRTCPeerConnection","RTCIceGatherer"]){try{Object.defineProperty(globalThis,name,{value:undefined,writable:false,configurable:false})}catch{}}${FRAME_GUARD}${heartbeat}})()</script>`;
 }
 
 function escapeAttribute(value: string): string {
@@ -58,75 +86,51 @@ const PROHIBITED_TAGS = new Map([
   ["base", "<base> elements"],
   ["form", "forms"],
   ["iframe", "<iframe> elements"],
+  ["frame", "<frame> elements"],
+  ["frameset", "<frameset> elements"],
+  ["fencedframe", "<fencedframe> elements"],
+  ["portal", "<portal> elements"],
   ["object", "<object> elements"],
   ["embed", "<embed> elements"],
 ]);
 
-function findTagEnd(source: string, start: number): number {
-  let quote = "";
-  for (let index = start; index < source.length; index++) {
-    const character = source[index];
-    if (quote) {
-      if (character === quote) quote = "";
-    } else if (character === '"' || character === "'") {
-      quote = character;
-    } else if (character === ">") {
-      return index;
-    }
-  }
-  return -1;
-}
-
-function parseAttributes(source: string): Pick<HtmlTag, "attributes" | "duplicateAttribute"> {
-  const attributes = new Map<string, string>();
-  let duplicateAttribute: string | null = null;
-  const pattern = /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
-  for (const match of source.matchAll(pattern)) {
-    const name = (match[1] ?? "").toLowerCase();
-    if (attributes.has(name)) {
-      duplicateAttribute ??= name;
-      continue;
-    }
-    attributes.set(name, match[2] ?? match[3] ?? match[4] ?? "");
-  }
-  return { attributes, duplicateAttribute };
-}
-
-function parseOpeningTags(source: string): HtmlTag[] {
+// Every opening tag of the page, as a browser's parser reads them, and the text of its <style>
+// elements. fx0 walked the tags with a tokenizer of its own, which a browser can disagree with (a
+// quote inside an attribute's name hid the rest of a tag; <svg>'s <script> and <style> are not raw
+// text, so a tag inside them breaks out): Bun's HTMLRewriter is lol-html, a spec tokenizer that
+// follows foreign content. Null when it can't read the page at all.
+function parsePage(source: string): { readonly tags: readonly HtmlTag[]; readonly styles: readonly string[] } | null {
   const tags: HtmlTag[] = [];
-  const normalized = source.toLowerCase();
-  let cursor = 0;
-  while (cursor < source.length) {
-    const start = source.indexOf("<", cursor);
-    if (start === -1) break;
-    if (source.startsWith("<!--", start)) {
-      const end = source.indexOf("-->", start + 4);
-      cursor = end === -1 ? source.length : end + 3;
-      continue;
-    }
-    const marker = source[start + 1];
-    if (!marker || marker === "/" || marker === "!" || marker === "?") {
-      cursor = start + 2;
-      continue;
-    }
-    const nameMatch = /^([a-z][a-z0-9:-]*)/i.exec(source.slice(start + 1));
-    if (!nameMatch) {
-      cursor = start + 1;
-      continue;
-    }
-    const end = findTagEnd(source, start + 1 + nameMatch[0].length);
-    if (end === -1) break;
-    const name = (nameMatch[1] ?? "").toLowerCase();
-    const attributeSource = source.slice(start + 1 + nameMatch[0].length, end);
-    tags.push({ name, ...parseAttributes(attributeSource) });
-    if (name === "script" || name === "style") {
-      const closing = normalized.indexOf(`</${name}`, end + 1);
-      cursor = closing === -1 ? source.length : closing;
-    } else {
-      cursor = end + 1;
-    }
+  const styles: string[] = [];
+  let style = "";
+  try {
+    new HTMLRewriter()
+      .on("*", {
+        element: (element) => {
+          const attributes = new Map<string, string>();
+          let duplicateAttribute: string | null = null;
+          for (const [raw, value] of element.attributes) {
+            const name = raw.toLowerCase();
+            if (attributes.has(name)) duplicateAttribute ??= name;
+            else attributes.set(name, value);
+          }
+          tags.push({ attributes, duplicateAttribute, name: element.tagName.toLowerCase() });
+        },
+      })
+      .on("style", {
+        text: (chunk) => {
+          style += chunk.text;
+          if (chunk.lastInTextNode) {
+            styles.push(style);
+            style = "";
+          }
+        },
+      })
+      .transform(source);
+  } catch {
+    return null;
   }
-  return tags;
+  return { styles, tags };
 }
 
 function decodeCodePoint(digits: string, radix: number): string {
@@ -174,6 +178,28 @@ function isEmbeddedSrcset(tag: string, value: string): boolean {
   return /^data:image\/[a-z0-9.+-]+(?:;[^,\s]*)*$/i.test(metadata) && /^\S+(?:\s+\d+(?:\.\d+)?[wx])?$/.test(payload);
 }
 
+// CSS escapes decoded (`\75 rl(` is url(), as a browser reads it)
+const cssText = (css: string) =>
+  css.replaceAll(/\\([0-9a-f]{1,6})\s?/gi, (_, hex: string) => decodeCodePoint(hex, 16)).replaceAll(/\\(.)/g, "$1");
+
+// What a style sheet or a style attribute would load: an @import, or a url() or image-set() of
+// anything but an embedded data: URL or a fragment (ours: fx0 checked no CSS; the CSP stops these
+// loads anyway, this keeps them out of a saved version)
+function cssProblem(css: string): string | null {
+  const text = cssText(css);
+  if (/@import/i.test(text)) return "artifact styles must not @import";
+  for (const found of text.matchAll(/url\(\s*(["']?)([^"')]*)\1\s*\)/gi)) {
+    const target = (found[2] ?? "").trim();
+    if (!/^(?:data:|#)/i.test(target)) return "artifact styles may load only embedded data: URLs";
+  }
+  for (const found of text.matchAll(/image-set\(([^)]*)\)/gi)) {
+    for (const quoted of (found[1] ?? "").matchAll(/(["'])(.*?)\1/g)) {
+      if (!/^data:/i.test(quoted[2] ?? "")) return "artifact styles may load only embedded data: URLs";
+    }
+  }
+  return null;
+}
+
 function validateTag(tag: HtmlTag): string | null {
   if (tag.duplicateAttribute) return `artifact must not repeat the ${tag.duplicateAttribute} attribute`;
 
@@ -188,7 +214,11 @@ function validateTag(tag: HtmlTag): string | null {
   for (const [name, rawValue] of tag.attributes) {
     const compactValue = compactUrlScheme(rawValue);
     if (compactValue.startsWith("javascript:") || compactValue.startsWith("vbscript:")) return "artifact must not use scripted URLs";
-    if (name === "action" || name === "formaction") return `artifact must not contain ${name} attributes`;
+    if (name === "action" || name === "formaction" || name === "ping") return `artifact must not contain ${name} attributes`;
+    if (name === "style") {
+      const problem = cssProblem(decodeAttribute(rawValue));
+      if (problem) return problem;
+    }
     if (name === "href" || name === "xlink:href") {
       const value = decodeAttribute(rawValue);
       const isSafeSvgImage = tag.name === "image" && /^data:image\//i.test(value);
@@ -228,8 +258,14 @@ export function validateArtifactHtml(html: string): ArtifactValidation {
     return { error: "artifact must be one complete html document with head and body", ok: false };
   }
 
-  for (const tag of parseOpeningTags(source)) {
+  const parsed = parsePage(source);
+  if (parsed === null) return { error: "artifact could not be parsed as HTML", ok: false };
+  for (const tag of parsed.tags) {
     const error = validateTag(tag);
+    if (error) return { error, ok: false };
+  }
+  for (const style of parsed.styles) {
+    const error = cssProblem(style);
     if (error) return { error, ok: false };
   }
   return { bytes, ok: true };

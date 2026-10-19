@@ -3,10 +3,9 @@
 // chat. They sit on /mcp beside zoom and date for a claude-code turn and in the tool loop's box on
 // the other engines; a subagent's calls of publish and edit are refused, as its spawn and tell are.
 // Also the log's stubs (E31): what the log keeps of these calls instead of the HTML.
-import { Clock, Effect, Option, Schema } from "effect";
-import type { Entry, Mem } from "../tree.ts";
-import { artifactTool, type ArtifactTool, type ArtifactVersion, splitTool } from "../wire.ts";
-import { type Artifacts, kb, MAX_EDITS } from "./store.ts";
+import { Effect, Option, Schema } from "effect";
+import { artifactTool, type ArtifactTool, type ArtifactVersion, kb, savedTag, splitTool } from "../wire.ts";
+import { type Artifacts, MAX_EDITS } from "./store.ts";
 import { readStyle, STYLE_PREFIX, STYLES } from "./styles.ts";
 
 // The three tools as MCP lists them; the tool loop offers the same (src/tools/box.ts). Nothing here
@@ -43,10 +42,6 @@ export const ARTIFACT_TOOL_DEFS = [
 // characters of a page per read_artifact answer: under CAP, which the tool loop's model and the
 // log's echo get at most
 export const READ_PAGE = 28_000;
-// how long a publish waits for its own tool call to reach the log (claude-code's stream is read
-// beside the MCP request), so its version can name it; past that it names none
-const CALL_WAIT = 2000;
-
 export type ArtifactCall = (tool: ArtifactTool, args: Readonly<Record<string, Schema.Json>>) => Effect.Effect<{ readonly text: string; readonly error: boolean }>;
 // the tools as a caller may use them: the master all three, a subagent read_artifact only
 export type ArtifactTools = { readonly call: ArtifactCall };
@@ -64,53 +59,20 @@ const ok = (text: string) => ({ error: false, text });
 const refused = (text: string) => ({ error: true, text });
 const dateOf = (iso: string) => iso.slice(0, 16).replace("T", " ");
 
-// the artifact a logged publish or edit call names, from its input as logged (stub or not)
-const decodeNamed = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ name: Schema.String })));
-const calledName = (e: Pick<Entry, "kind" | "text">): string | null => {
-  if (e.kind !== "tool") return null;
-  const { args, name } = splitTool(e.text);
-  const tool = artifactTool(name);
-  if (tool !== "publish_artifact" && tool !== "edit_artifact") return null;
-  return Option.getOrNull(decodeNamed(args))?.name ?? null;
-};
-
-// The log index of the call that is making a version of `name` now: the newest publish or edit
-// call of it in the log that no version names yet. On the tool loop it is logged before the call
-// runs; on claude-code the MCP request and the stream race, so it is waited for, briefly.
-const callOf = (mem: Mem, name: string, claimed: ReadonlySet<number>, wait: number) =>
-  Effect.gen(function* () {
-    const deadline = (yield* Clock.currentTimeMillis) + wait;
-    for (;;) {
-      for (let k = mem.root.length - 1; k >= Math.max(0, mem.root.length - 64); k--) {
-        const e = mem.root[k];
-        if (e && !claimed.has(e.i) && calledName(e)?.toLowerCase() === name.toLowerCase()) return e.i;
-      }
-      if ((yield* Clock.currentTimeMillis) >= deadline) return null;
-      yield* Effect.sleep("25 millis");
-    }
-  });
-
-// The tools over the store. `changed`: a new version was saved (clients are told). `mem`: the log,
-// to name each version's call.
-export const makeArtifactTools = (o: {
-  readonly artifacts: Artifacts;
-  readonly mem: Mem;
-  readonly changed: (name: string, version: ArtifactVersion) => Effect.Effect<void>;
-  readonly callWait?: number; // CALL_WAIT, in ms
-}) => {
-  const wait = o.callWait ?? CALL_WAIT;
-  const claimed = (name: string) => new Set((o.artifacts.info(name)?.versions ?? []).flatMap((v) => (v.i === null ? [] : [v.i])));
+// The tools over the store. `changed`: a new version was saved (clients are told). A publish's or
+// an edit's echo ends with the version it saved, or found unchanged (src/wire.ts savedTag): the
+// one record of which call made which version.
+export const makeArtifactTools = (o: { readonly artifacts: Artifacts; readonly changed: (name: string, version: ArtifactVersion) => Effect.Effect<void> }) => {
   const saved = (verb: string) => (out: { readonly ok: true; readonly name: string; readonly version: ArtifactVersion; readonly changed: boolean }) =>
     out.changed
-      ? o.changed(out.name, out.version).pipe(Effect.as(ok(`${verb} ${out.name} v${out.version.v} (${kb(out.version.bytes)}).`)))
-      : Effect.succeed(ok(`${out.name} is unchanged: v${out.version.v} is this HTML already.`));
+      ? o.changed(out.name, out.version).pipe(Effect.as(ok(`${verb} ${out.name} (${kb(out.version.bytes)})${savedTag(out.version.v)}`)))
+      : Effect.succeed(ok(`${out.name} is unchanged: its latest version is this HTML already${savedTag(out.version.v)}`));
 
   const publish = (args: Readonly<Record<string, Schema.Json>>) =>
     Option.match(decodePublish(args), {
       onNone: () => Effect.succeed(refused("publish_artifact needs name and html, both strings.")),
       onSome: ({ html, name }) =>
-        callOf(o.mem, name, claimed(name), wait).pipe(
-          Effect.flatMap((at) => o.artifacts.publish(name, html, at)),
+        o.artifacts.publish(name, html).pipe(
           Effect.flatMap((out) => (out.ok ? saved("Published")(out) : Effect.succeed(refused(`publish_artifact: ${out.error}`)))),
           Effect.catch((error) => Effect.succeed(refused(`publish_artifact: nothing was saved: ${error.message}`))),
         ),
@@ -120,9 +82,8 @@ export const makeArtifactTools = (o: {
     Option.match(decodeEdit(args), {
       onNone: () => Effect.succeed(refused('edit_artifact needs name and edits, a list of {"old", "new"} strings.')),
       onSome: ({ edits, name }) =>
-        callOf(o.mem, name, claimed(name), wait).pipe(
-          Effect.flatMap((at) => o.artifacts.edit(name, edits, at)),
-          Effect.flatMap((out) => (out.ok ? saved("Edited; saved")(out) : Effect.succeed(refused(`edit_artifact: ${out.error}`)))),
+        o.artifacts.edit(name, edits).pipe(
+          Effect.flatMap((out) => (out.ok ? saved("Edited")(out) : Effect.succeed(refused(`edit_artifact: ${out.error}`)))),
           Effect.catch((error) => Effect.succeed(refused(`edit_artifact: nothing was saved: ${error.message}`))),
         ),
     });

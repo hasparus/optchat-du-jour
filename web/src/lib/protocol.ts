@@ -2,7 +2,7 @@
 // the boundary, and the frames a client sends. The state they carry and the JSON of /api/* are
 // the server's own schemas (src/wire.ts, imported as @wire), not a copy.
 import { EventType } from "@ag-ui/core";
-import { ArtifactVersion, Asset, type FollowUp } from "@wire";
+import { ArtifactDraft, ArtifactVersion, Asset, type FollowUp } from "@wire";
 import { Option, Schema } from "effect";
 
 const ToolCall = Schema.Struct({
@@ -103,22 +103,8 @@ export const Inbound = Schema.Union([
     name: Schema.Literal("ack"),
     value: Schema.Struct({ clientId: Schema.String, messageId: Schema.NullOr(Schema.String), error: Schema.NullOr(Schema.String) }),
   }),
-  // An artifact's live draft while the model writes a publish or an edit (SPEC "Artifacts"): the
-  // page from `offset` on, or with `replace` the whole page; `closed` once the call's input is whole
-  Schema.Struct({
-    type: Schema.Literal(EventType.CUSTOM),
-    name: Schema.Literal("artifact-draft"),
-    value: Schema.Struct({
-      runId: Schema.String,
-      id: Schema.String,
-      tool: Schema.Literals(["publish", "edit"]),
-      name: Schema.NullOr(Schema.String),
-      offset: Schema.Number,
-      delta: Schema.String,
-      replace: Schema.Boolean,
-      closed: Schema.Boolean,
-    }),
-  }),
+  // An artifact's live draft while the model writes a publish or an edit (SPEC "Artifacts")
+  Schema.Struct({ type: Schema.Literal(EventType.CUSTOM), name: Schema.Literal("artifact-draft"), value: ArtifactDraft }),
   // a version of an artifact was saved
   Schema.Struct({ type: Schema.Literal(EventType.CUSTOM), name: Schema.Literal("artifact"), value: Schema.Struct({ name: Schema.String, version: ArtifactVersion }) }),
   // a held message a client took back: its text and attachments again (`text` null and `error`

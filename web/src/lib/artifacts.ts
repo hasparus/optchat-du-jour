@@ -2,7 +2,7 @@
 // The artifacts as this client sees them (SPEC "Artifacts"): the live drafts of the run going on,
 // from CUSTOM "artifact-draft" frames (fx0's applyDesignDraft, one draft per tool call here, held
 // by its id), and what a tool row says of the version it made.
-import { artifactTool, type ArtifactInfo, type ArtifactVersion } from "@wire";
+import { type ArtifactDraft, artifactTool, type ArtifactInfo, type ArtifactVersion, savedVersion } from "@wire";
 import { Option, Schema } from "effect";
 import type { Row } from "./rows.ts";
 
@@ -18,16 +18,8 @@ export type Draft = {
 export type Drafts = ReadonlyMap<string, Draft>;
 export const noDrafts: Drafts = new Map();
 
-export type DraftPiece = {
-  readonly runId: string;
-  readonly id: string;
-  readonly tool: "publish" | "edit";
-  readonly name: string | null;
-  readonly offset: number;
-  readonly delta: string;
-  readonly replace: boolean;
-  readonly closed: boolean;
-};
+// one CUSTOM "artifact-draft" frame (src/wire.ts)
+export type DraftPiece = ArtifactDraft;
 
 /** Offsets are UTF-16 positions, as in String.slice, including across JSON escapes. A piece that
  * leaves a gap, or disagrees with what is held, is not applied; one already held is not doubled
@@ -58,8 +50,8 @@ const Named = Schema.fromJsonString(Schema.Struct({ name: Schema.String }));
 const decodeNamed = Schema.decodeUnknownOption(Named);
 
 // What a publish or an edit row made: the artifact's name (from its input as logged, a stub
-// holding no HTML, E31) and its version, from the list (the version whose call is this row) or
-// else from what its echo says ("Published landing v3 (12.4 KB)."). Null for any other row, and
+// holding no HTML, E31) and its version, which its echo alone says, at its end ("… [v3]", src/wire.ts
+// savedVersion); its size and date are that version's in the list. Null for any other row, and
 // for a call the server refused (its echo, flagged, says why: the row stays a tool line).
 export type Made = { readonly name: string; readonly tool: "publish" | "edit"; readonly v: number | null; readonly version: ArtifactVersion | null };
 // read once per row object and list, so a memoized row isn't drawn again on every streamed token
@@ -79,13 +71,11 @@ function readMade(row: Row, list: readonly ArtifactInfo[]): Made | null {
   const name = Option.getOrUndefined(decodeNamed(row.args))?.name;
   if (name === undefined) return null;
   const info = list.find((a) => a.name.toLowerCase() === name.toLowerCase());
-  const said = row.output === null ? null : /\bv(\d+)\b/.exec(row.output)?.[1];
-  const version = info?.versions.find((v) => v.i === row.id) ?? (said === undefined || said === null ? undefined : info?.versions.find((v) => v.v === Number(said))) ?? null;
-  return { name: info?.name ?? name, tool: tool === "publish_artifact" ? "publish" : "edit", v: version?.v ?? (said === undefined || said === null ? null : Number(said)), version };
+  const v = row.output === null ? null : savedVersion(row.output);
+  const version = v === null ? null : (info?.versions.find((x) => x.v === v) ?? null);
+  return { name: info?.name ?? name, tool: tool === "publish_artifact" ? "publish" : "edit", v, version };
 }
 
-// "12.4 KB", as the server says sizes
-export const kb = (bytes: number) => `${(bytes / 1024).toFixed(1)} KB`;
 
 // the routes (server/routes/artifacts.ts)
 export const frameUrl = (name: string, v: number | null) => `/artifact/frame?${new URLSearchParams(v === null ? { name } : { name, v: String(v) })}`;

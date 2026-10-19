@@ -74,17 +74,24 @@ describe("the draft document", () => {
 const row = (name: string, args: string, output: string | null, failed = false, id = 7): Row => ({ args, failed, id, key: `e${id}`, kind: "tool", name, output });
 
 describe("a tool row's artifact", () => {
-  const list = [{ name: "landing", versions: [{ by: "publish" as const, bytes: 2048, date: "2026-10-19T10:00:00.000Z", i: 7, v: 1 }] }];
+  const list = [{ name: "landing", versions: [{ by: "publish" as const, bytes: 2048, date: "2026-10-19T10:00:00.000Z", v: 1 }] }];
 
-  test("a publish row names its artifact and the version its call made", () => {
-    const made = madeBy(row("mcp__optchat__publish_artifact", '{"name":"landing","html":"<2.0 KB of HTML, not kept in the log: read_artifact>"}', "Published landing v1 (2.0 KB)."), list);
+  test("a publish row names its artifact and the version its echo says it saved", () => {
+    const made = madeBy(row("mcp__optchat__publish_artifact", '{"name":"landing","html":"<2.0 KB of HTML, not kept in the log: read_artifact>"}', "Published landing (2.0 KB) [v1]"), list);
     expect(made).toMatchObject({ name: "landing", tool: "publish", v: 1, version: { bytes: 2048 } });
   });
 
-  test("an edit row read from its echo when the list has not caught up; a running one has no version yet", () => {
-    expect(madeBy(row("edit_artifact", '{"name":"landing","edits":"<1 edit>"}', "Edited; saved landing v2 (2.1 KB).", false, 9), list)).toMatchObject({ tool: "edit", v: 2, version: null });
-    expect(madeBy(row("edit_artifact", '{"name":"landing","edits":"<1 edit>"}', null), list)).toMatchObject({ v: 1 }); // by its log index
-    expect(madeBy(row("edit_artifact", '{"name":"other","edits":"<1 edit>"}', null), list)).toMatchObject({ name: "other", v: null });
+  test("the echo is the only record: a list that has not caught up gives no size yet; a running call no version", () => {
+    expect(madeBy(row("edit_artifact", '{"name":"landing","edits":"<1 edit>"}', "Edited landing (2.1 KB) [v2]", false, 9), list)).toMatchObject({ tool: "edit", v: 2, version: null });
+    expect(madeBy(row("edit_artifact", '{"name":"landing","edits":"<1 edit>"}', null), list)).toMatchObject({ v: null, version: null });
+    // an unchanged publish names the version it found, never the next one
+    expect(madeBy(row("publish_artifact", '{"name":"landing","html":"<1 KB>"}', "landing is unchanged: its latest version is this HTML already [v1]", false, 5), list)).toMatchObject({ v: 1 });
+  });
+
+  test("a name like plan-v2 is not a version", () => {
+    expect(madeBy(row("mcp__optchat__publish_artifact", '{"name":"plan-v2","html":"<1 KB>"}', "Published plan-v2 (0.1 KB) [v1]", false, 12), [])?.v).toBe(1);
+    // an echo in the old words says no version rather than the one in the name
+    expect(madeBy(row("mcp__optchat__publish_artifact", '{"name":"plan-v2","html":"<1 KB>"}', "Published plan-v2 v1 (0.1 KB).", false, 12), [])?.v).toBeNull();
   });
 
   test("a refused call, a read and any other tool make no card", () => {

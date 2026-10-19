@@ -7,11 +7,11 @@
 // has painted, and the export menu's actions as the pane's own buttons. Loaded only when a pane
 // opens.
 import { Button } from "@/components/ui/button";
-import { DRAFT_URL, type Draft, fileName, frameUrl, kb, rawUrl } from "@/lib/artifacts";
+import { DRAFT_URL, type Draft, fileName, frameUrl, rawUrl } from "@/lib/artifacts";
 import { patchDraftDocument, renderable } from "@/lib/draft-preview";
 import { nativeShell } from "@/lib/shell";
 import { cn } from "@/lib/utils";
-import type { ArtifactInfo } from "@wire";
+import { type ArtifactInfo, kb } from "@wire";
 import { Schema } from "effect";
 import { CheckIcon, CopyIcon, DownloadIcon, ExternalLinkIcon, RotateCwIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";

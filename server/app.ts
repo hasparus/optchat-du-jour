@@ -118,7 +118,6 @@ export const routes = (o: ServerOptions) =>
       const artifactTools = makeArtifactTools({
         artifacts,
         changed: (name, version) => PubSub.publish(events, { name, type: "artifact", version }).pipe(Effect.asVoid),
-        mem: chat.mem,
       });
       // The subagents (SPEC M7a): they run on this machine through the engines a turn has, with
       // their own /mcp key and tool box, and need the session (for reports and the turn's view),

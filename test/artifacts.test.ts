@@ -10,7 +10,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node
 import { tmpdir } from "node:os";
 import { editsIn, fieldExtractor, makeDrafts, nameIn, type DraftOut } from "../src/artifacts/draft.ts";
 import { ARTIFACT_EMBEDDED_CSP, MAX_ARTIFACT_BYTES, prepareArtifactHtml, validateArtifactHtml } from "../src/artifacts/html.ts";
-import { applyEdits, ARTIFACTS_UNCOMMITTED, artifactsLeftOut, badName, kb, openArtifacts } from "../src/artifacts/store.ts";
+import { applyEdits, ARTIFACT_NAME, ARTIFACTS_UNCOMMITTED, artifactsLeftOut, badName, openArtifacts } from "../src/artifacts/store.ts";
 import { readStyle, STYLES } from "../src/artifacts/styles.ts";
 import { ARTIFACT_TOOL_DEFS, loggedText, makeArtifactTools, stubEcho, stubToolEntry } from "../src/artifacts/tools.ts";
 import { openChat } from "../src/chat.ts";
@@ -19,10 +19,9 @@ import { TOOLS } from "../src/mcp.ts";
 import { makePersist } from "../src/persist.ts";
 import { makeSession, noMedia, type SessionEvent } from "../src/session.ts";
 import type { StoreError } from "../src/store.ts";
-import { newMem } from "../src/tree.ts";
 import type { TurnEngine, TurnEvents } from "../src/turn/engine.ts";
 import { allBuilt } from "../src/view.ts";
-import { ArtifactInfo } from "../src/wire.ts";
+import { ArtifactInfo, kb, savedVersion, SUBAGENT_NAME } from "../src/wire.ts";
 
 const dirs: string[] = [];
 afterAll(() => {
@@ -130,7 +129,8 @@ test("an edit replaces text that matches exactly once; no match or more than one
   expect(applyEdits("ab", [{ new: "$&$&", old: "a" }])).toEqual({ html: "$&$&b" });
 });
 
-test("names: a letter, then up to 31 letters, digits, - or _; nothing that could be a path", () => {
+test("names: a subagent's, a letter, then up to 31 letters, digits, - or _; nothing that could be a path", () => {
+  expect(ARTIFACT_NAME).toBe(SUBAGENT_NAME);
   for (const ok of ["landing", "L", "a-b_c9", `a${"b".repeat(31)}`]) expect(badName(ok)).toBeNull();
   for (const bad of ["", "9lives", "-x", "../etc", "a/b", "a.b", "a b", `a${"b".repeat(32)}`, "x\u0000", "style/linear"]) expect(badName(bad)).not.toBeNull();
 });
@@ -145,18 +145,18 @@ test("the store keeps a version per publish and edit, written atomically, and re
     Effect.gen(function* () {
       const store = yield* openArtifacts(dir, { report: report([]) });
       const v1 = page("<h1>One</h1>");
-      const first = yield* store.publish("landing", v1, 4);
-      expect(first).toMatchObject({ changed: true, name: "landing", ok: true, version: { by: "publish", i: 4, v: 1 } });
+      const first = yield* store.publish("landing", v1);
+      expect(first).toMatchObject({ changed: true, name: "landing", ok: true, version: { by: "publish", v: 1 } });
       // the same HTML again is no new version
-      expect(yield* store.publish("landing", v1, 9)).toMatchObject({ changed: false, ok: true, version: { v: 1 } });
-      expect(yield* store.edit("landing", [{ new: "Two", old: "One" }], 11)).toMatchObject({ changed: true, ok: true, version: { by: "edit", i: 11, v: 2 } });
+      expect(yield* store.publish("landing", v1)).toMatchObject({ changed: false, ok: true, version: { v: 1 } });
+      expect(yield* store.edit("landing", [{ new: "Two", old: "One" }])).toMatchObject({ changed: true, ok: true, version: { by: "edit", v: 2 } });
       // an edit that doesn't match saves nothing
-      expect(yield* store.edit("landing", [{ new: "x", old: "One" }], 12)).toEqual({ error: "edit 1: old matched 0 times; it must match exactly once (nothing was saved)", ok: false });
+      expect(yield* store.edit("landing", [{ new: "x", old: "One" }])).toEqual({ error: "edit 1: old matched 0 times; it must match exactly once (nothing was saved)", ok: false });
       // an invalid page saves nothing, and says why
-      expect(yield* store.publish("landing", "<p>no</p>", 13)).toEqual({ error: "artifact must start with <!doctype html>", ok: false });
+      expect(yield* store.publish("landing", "<p>no</p>")).toEqual({ error: "artifact must start with <!doctype html>", ok: false });
       // another spelling of the same name is refused
-      expect(yield* store.publish("Landing", v1, 14)).toEqual({ error: "there is an artifact named landing: use that name", ok: false });
-      expect(yield* store.edit("nope", [{ new: "x", old: "y" }], 15)).toEqual({ error: "there is no artifact named nope: publish_artifact makes one", ok: false });
+      expect(yield* store.publish("Landing", v1)).toEqual({ error: "there is an artifact named landing: use that name", ok: false });
+      expect(yield* store.edit("nope", [{ new: "x", old: "y" }])).toEqual({ error: "there is no artifact named nope: publish_artifact makes one", ok: false });
       expect((yield* store.read("landing", 1))?.html).toBe(v1);
       expect((yield* store.read("LANDING"))?.html).toBe(page("<h1>Two</h1>"));
       expect(yield* store.read("landing", 3)).toBeNull();
@@ -166,10 +166,12 @@ test("the store keeps a version per publish and edit, written atomically, and re
   const folder = `${dir}/artifacts/landing`;
   expect(readdirSync(folder).toSorted()).toEqual(["artifact.json", "v1.html", "v2.html"]); // no temp file left behind
   const meta = Schema.decodeUnknownSync(Schema.fromJsonString(ArtifactInfo))(readFileSync(`${folder}/artifact.json`, "utf8"));
-  expect(meta.versions.map((v) => [v.v, v.by, v.i])).toEqual([
-    [1, "publish", 4],
-    [2, "edit", 11],
+  expect(meta.versions.map((v) => [v.v, v.by])).toEqual([
+    [1, "publish"],
+    [2, "edit"],
   ]);
+  // nothing on disk names a log index: the echo says which call made which version
+  expect(readFileSync(`${folder}/artifact.json`, "utf8")).not.toContain('"i"');
   // a restart reads it again
   await run(
     Effect.gen(function* () {
@@ -185,7 +187,7 @@ test("the artifacts are committed with the data dir, unless artifacts.commit is 
   await run(
     Effect.gen(function* () {
       const store = yield* openArtifacts(`${home}/streams/mini`, { report: report([]) });
-      yield* store.publish("chart", page("<p>1</p>"), null);
+      yield* store.publish("chart", page("<p>1</p>"));
       const persist = yield* makePersist(report([]));
       expect(yield* persist(home, "turn")).toBeNull();
     }),
@@ -200,7 +202,7 @@ test("the artifacts are committed with the data dir, unless artifacts.commit is 
   await run(
     Effect.gen(function* () {
       const store = yield* openArtifacts(`${other}/streams/mini`, { report: report([]) });
-      yield* store.publish("chart", page("<p>1</p>"), null);
+      yield* store.publish("chart", page("<p>1</p>"));
       const persist = yield* makePersist(report([]), () => artifactsLeftOut(false));
       expect(yield* persist(other, "turn")).toBeNull();
     }),
@@ -220,10 +222,9 @@ test("the tools: publish, edit and read_artifact by version; a subagent may read
   await run(
     Effect.gen(function* () {
       const artifacts = yield* openArtifacts(dir, { report: report([]) });
-      const mem = newMem();
-      const tools = makeArtifactTools({ artifacts, callWait: 0, changed: (name, v) => Effect.sync(() => void told.push(`${name} v${v.v}`)), mem });
-      expect(yield* call(tools, "master", "publish_artifact", { html: page("<h1>Hi</h1>"), name: "card" })).toEqual({ error: false, text: "Published card v1 (0.1 KB)." });
-      expect(yield* call(tools, "master", "edit_artifact", { edits: [{ new: "Bye", old: "Hi" }], name: "card" })).toEqual({ error: false, text: "Edited; saved card v2 (0.1 KB)." });
+      const tools = makeArtifactTools({ artifacts, changed: (name, v) => Effect.sync(() => void told.push(`${name} v${v.v}`)) });
+      expect(yield* call(tools, "master", "publish_artifact", { html: page("<h1>Hi</h1>"), name: "card" })).toEqual({ error: false, text: "Published card (0.1 KB) [v1]" });
+      expect(yield* call(tools, "master", "edit_artifact", { edits: [{ new: "Bye", old: "Hi" }], name: "card" })).toEqual({ error: false, text: "Edited card (0.1 KB) [v2]" });
       const v1 = yield* call(tools, "master", "read_artifact", { name: "card", version: 1 });
       expect(v1.error).toBe(false);
       expect(v1.text).toMatch(/^card v1 of 2 \(0\.1 KB, \d{4}-\d\d-\d\d \d\d:\d\d\):\n<!doctype html>/);
@@ -297,7 +298,7 @@ test("the log and the tree never hold an artifact's HTML; the live draft streams
       for (const piece of input.match(/[\s\S]{1,500}/gu) ?? []) yield* out.toolInput?.delta({ id, name: "mcp__optchat__publish_artifact" }, piece) ?? Effect.void;
       yield* out.toolInput?.end(id) ?? Effect.void;
       yield* out.log("tool", `mcp__optchat__publish_artifact ${input}`);
-      yield* out.log("echo", "Published landing v1 (47.0 KB).", { tool: "mcp__optchat__publish_artifact" });
+      yield* out.log("echo", "Published landing (46.9 KB) [v1]", { tool: "mcp__optchat__publish_artifact" });
       yield* out.log("tool", 'mcp__optchat__read_artifact {"name":"landing"}');
       yield* out.log("echo", `landing v1 of 1 (47.0 KB, 2026-10-19 14:03):\n${BIG}`, { tool: "mcp__optchat__read_artifact" });
       yield* out.log("talk", "Here it is.");
@@ -378,7 +379,7 @@ test("an edit's draft is the latest version with the edits so far; a close sends
   await run(
     Effect.gen(function* () {
       const scope = yield* Effect.scope;
-      const drafts = makeDrafts({ base: () => Effect.succeed(page("<p>a</p><p>c</p>")), scope, send: (d) => Effect.sync(() => void sent.push(d)) });
+      const drafts = makeDrafts({ base: () => Effect.succeed(page("<p>a</p><p>c</p>")), runId: "7", scope, send: (d) => Effect.sync(() => void sent.push(d)) });
       const raw = JSON.stringify({ edits: [{ new: "<p>A</p>", old: "<p>a</p>" }, { new: "<p>C</p>", old: "<p>c</p>" }], name: "x" });
       yield* drafts.delta({ id: "c1", name: "edit_artifact" }, raw);
       yield* drafts.delta({ id: "c2", name: "Bash" }, '{"command":"ls"}'); // not an artifact: not looked at
@@ -387,5 +388,90 @@ test("an edit's draft is the latest version with the edits so far; a close sends
       yield* drafts.stop;
     }),
   );
-  expect(sent).toEqual([{ closed: true, delta: page("<p>A</p><p>C</p>"), id: "c1", name: "x", offset: 0, replace: true, tool: "edit" }]);
+  expect(sent).toEqual([{ closed: true, delta: page("<p>A</p><p>C</p>"), id: "c1", name: "x", offset: 0, replace: true, runId: "7", tool: "edit" }]);
+});
+
+test("each echo names the version its own call saved, also when another call of the name is unchanged (no guess at the log)", async () => {
+  const dir = tmp();
+  await run(
+    Effect.gen(function* () {
+      const artifacts = yield* openArtifacts(dir, { report: report([]) });
+      const tools = makeArtifactTools({ artifacts, changed: () => Effect.void });
+      const publish = (body: string) => call(tools, "master", "publish_artifact", { html: page(body), name: "card" });
+      const first = yield* publish("<p>1</p>");
+      const same = yield* publish("<p>1</p>");
+      const next = yield* publish("<p>2</p>");
+      expect(same.text).toBe("card is unchanged: its latest version is this HTML already [v1]");
+      expect([first.text, same.text, next.text].map(savedVersion)).toEqual([1, 1, 2]);
+      // a name that looks like a version is still the name
+      const plan = yield* call(tools, "master", "publish_artifact", { html: page("<p>p</p>"), name: "plan-v2" });
+      expect(plan.text).toBe("Published plan-v2 (0.1 KB) [v1]");
+      expect(savedVersion(plan.text)).toBe(1);
+      expect(savedVersion("Published plan-v2 v1 (0.1 KB).")).toBeNull();
+      expect(savedVersion("publish_artifact: artifact must start with <!doctype html>")).toBeNull();
+    }),
+  );
+});
+
+test("a draft past MAX_ARTIFACT_BYTES stops, closed, and holds no more; a close waits for a flush that is running", async () => {
+  const sent: DraftOut[] = [];
+  await run(
+    Effect.gen(function* () {
+      const scope = yield* Effect.scope;
+      const drafts = makeDrafts({ base: () => Effect.succeed(null), runId: "1", scope, send: (d) => Effect.sync(() => void sent.push(d)) });
+      const big = "x".repeat(200_000);
+      yield* drafts.delta({ id: "p", name: "publish_artifact" }, '{"name":"huge","html":"<p>');
+      for (let k = 0; k < 4; k++) yield* drafts.delta({ id: "p", name: "publish_artifact" }, big);
+      yield* drafts.delta({ id: "p", name: "publish_artifact" }, big); // after the stop: not taken
+      yield* drafts.end("p");
+      const [now] = drafts.now();
+      expect(now?.closed).toBe(true);
+      expect(now?.html.length ?? 0).toBeLessThanOrEqual(600_000);
+      yield* drafts.stop;
+    }),
+  );
+  expect(sent.at(-1)?.closed).toBe(true);
+  expect(sent.filter((d) => d.closed)).toHaveLength(1);
+  const total = sent.reduce((n, d) => n + d.delta.length, 0);
+  expect(total).toBeLessThanOrEqual(600_000);
+
+  // an edit whose base read is slow: the close comes while the flush waits on it, and is sent after it
+  const order: string[] = [];
+  await run(
+    Effect.gen(function* () {
+      const scope = yield* Effect.scope;
+      const drafts = makeDrafts({
+        base: () => Effect.sleep("300 millis").pipe(Effect.as(page("<p>a</p>"))),
+        runId: "1",
+        scope,
+        send: (d) => Effect.sync(() => void order.push(d.closed ? "closed" : "open")),
+      });
+      yield* drafts.delta({ id: "e", name: "edit_artifact" }, JSON.stringify({ edits: [{ new: "<p>A</p>", old: "<p>a</p>" }], name: "x" }));
+      yield* Effect.sleep("200 millis"); // the flush has started, and waits on the base
+      yield* drafts.end("e");
+      yield* drafts.stop;
+    }),
+  );
+  expect(order).toEqual(["open", "closed"]);
+});
+
+test("the validator reads tags as a browser does: no tag hides behind a quote in a name or inside <svg>'s script and style", () => {
+  invalid(page(`<p x"><iframe srcdoc="<script>parent.postMessage(1,'*')</script>"><p y">`), "artifact must not contain <iframe> elements");
+  invalid(page(`<p x"><meta http-equiv="refresh" content="0;url=https://evil.example/"><p y">`), "artifact must not contain meta refresh");
+  invalid(page(`<svg><script><embed src="https://evil.example/x"></script></svg>`), "artifact must not contain <embed> elements");
+  invalid(page(`<svg><style><meta http-equiv="refresh" content="0;url=https://evil.example/"></style></svg>`), "artifact must not contain meta refresh");
+  invalid(page('<frame src="data:image/png,x">'), "artifact must not contain <frame> elements");
+  // a script's own text is text, as before
+  expect(validateArtifactHtml(page('<script>const s="<iframe src=x>";</script><svg><circle r="1"/></svg>')).ok).toBe(true);
+});
+
+test("the validator refuses ping and styles that load: @import, url() and image-set() of anything but data:", () => {
+  invalid(page('<a href="https://example.com/" ping="https://evil.example/ping">x</a>'), "artifact must not contain ping attributes");
+  invalid(page("", "<style>@import url(https://evil.example/a.css);</style>"), "artifact styles must not @import");
+  invalid(page("", "<style>body{background:url(https://evil.example/b.png)}</style>"), "artifact styles may load only embedded data: URLs");
+  invalid(page("", "<style>@font-face{font-family:x;src:url('//evil.example/f.woff')}</style>"), "artifact styles may load only embedded data: URLs");
+  invalid(page("", '<style>body{background:image-set("https://evil.example/c.png" 1x)}</style>'), "artifact styles may load only embedded data: URLs");
+  invalid(page("", String.raw`<style>body{background:\75 rl(https://evil.example/d.png)}</style>`), "artifact styles may load only embedded data: URLs");
+  invalid(page('<p style="background:url(https://evil.example/e.png)">x</p>'), "artifact styles may load only embedded data: URLs");
+  expect(validateArtifactHtml(page('<p style="background:url(data:image/gif;base64,AA==)">x</p>', '<style>.a{filter:url(#f);background:url("data:image/png;base64,AA==")}</style>')).ok).toBe(true);
 });

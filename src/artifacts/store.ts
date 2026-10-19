@@ -2,22 +2,22 @@
 // The artifacts on disk (SPEC "Artifacts"), beside the stream's chat/ as a subagent's side log is:
 //   streams/<device>/artifacts/<Name>/v<N>.html   each version, whole, as the master wrote it
 //   streams/<device>/artifacts/<Name>/artifact.json  what it is: its name and its versions
-//                                                (number, bytes, date, the tool that made it and
-//                                                the log index of that tool call)
+//                                                (number, bytes, date, the tool that made it)
 // Every file is written to a temp file, synced, and renamed into place (store.ts replaceFile): the
 // version first, then artifact.json, so a crash between the two leaves a file no version names,
 // which the next version of that number overwrites. Only the lock holder writes, one change at a
 // time. persist commits the folder with the rest of the data dir unless `artifacts.commit` is off.
-// A name is a subagent's (src/mcp.ts SUBAGENT_NAME: a letter, then up to 31 letters, digits, "-"
+// A name is a subagent's (src/wire.ts SUBAGENT_NAME: a letter, then up to 31 letters, digits, "-"
 // or "_"), so it is a folder name on every system and never a path; two names that differ only in
-// case are one name, since a Mac's disk doesn't tell them apart.
+// case are one name, since a Mac's disk doesn't tell them apart. Which call made a version is not
+// kept here: that call's echo says it (src/wire.ts savedTag).
 import { Clock, Effect, Option, Schema, Semaphore } from "effect";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { replaceFile, StoreError } from "../store.ts";
-import { type ArtifactInfo, ArtifactInfo as ArtifactInfoSchema, type ArtifactVersion } from "../wire.ts";
+import { type ArtifactInfo, ArtifactInfo as ArtifactInfoSchema, type ArtifactVersion, SUBAGENT_NAME } from "../wire.ts";
 import { validateArtifactHtml } from "./html.ts";
 
-export const ARTIFACT_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
+export const ARTIFACT_NAME = SUBAGENT_NAME;
 // edits in one edit_artifact call, as fx0's edit_design takes them
 export const MAX_EDITS = 20;
 
@@ -36,18 +36,15 @@ export type Artifacts = {
   readonly info: (name: string) => ArtifactInfo | null;
   // a version's HTML (the latest when `v` is left out); null for an unknown name or version
   readonly read: (name: string, v?: number) => Effect.Effect<Read | null, StoreError>;
-  // a new version, made of `html` whole or of the latest with `edits` applied; `at`, the log index
-  // of the tool call that asked for it (null: not in the log)
-  readonly publish: (name: string, html: string, at: number | null) => Effect.Effect<Outcome, StoreError>;
-  readonly edit: (name: string, edits: readonly Edit[], at: number | null) => Effect.Effect<Outcome, StoreError>;
+  // a new version, made of `html` whole or of the latest with `edits` applied
+  readonly publish: (name: string, html: string) => Effect.Effect<Outcome, StoreError>;
+  readonly edit: (name: string, edits: readonly Edit[]) => Effect.Effect<Outcome, StoreError>;
 };
 
 const decodeInfo = Schema.decodeUnknownOption(Schema.fromJsonString(ArtifactInfoSchema));
 const fail = (error: string): Outcome => ({ error, ok: false });
 const fileOf = (v: number) => `v${v}.html`;
 
-// "12.4 KB": a size as the tools and the log stubs say it
-export const kb = (bytes: number) => `${(bytes / 1024).toFixed(1)} KB`;
 
 // Whether `name` may name an artifact: the reason when it may not, said to the model
 export const badName = (name: string): string | null =>
@@ -109,7 +106,7 @@ export const openArtifacts = (dir: string, o: { readonly report: (message: strin
     // A new version of `name` (made now if it is new), unless the HTML is the latest's already. The
     // version's file, then artifact.json, each replaced whole; memory changes only once both are on
     // disk, so a write that fails leaves the artifact as it was.
-    const save = (name: string, html: string, by: ArtifactVersion["by"], at: number | null, existing: ArtifactInfo | null): Effect.Effect<Outcome, StoreError> =>
+    const save = (name: string, html: string, by: ArtifactVersion["by"], existing: ArtifactInfo | null): Effect.Effect<Outcome, StoreError> =>
       Effect.gen(function* () {
         const checked = validateArtifactHtml(html);
         if (!checked.ok) return fail(checked.error);
@@ -120,7 +117,7 @@ export const openArtifacts = (dir: string, o: { readonly report: (message: strin
         }
         const own = existing?.name ?? name;
         const now = yield* Clock.currentTimeMillis;
-        const version: ArtifactVersion = { bytes: checked.bytes, by, date: new Date(now).toISOString(), i: at, v: (last?.v ?? 0) + 1 };
+        const version: ArtifactVersion = { bytes: checked.bytes, by, date: new Date(now).toISOString(), v: (last?.v ?? 0) + 1 };
         const next: ArtifactInfo = { name: own, versions: [...(existing?.versions ?? []), version] };
         yield* replaceFile(`${root}/${own}`, fileOf(version.v), html);
         yield* replaceFile(`${root}/${own}`, "artifact.json", `${JSON.stringify(next)}\n`);
@@ -130,19 +127,19 @@ export const openArtifacts = (dir: string, o: { readonly report: (message: strin
 
     // publish_artifact: the whole page. One name in any case is one artifact, written as it was
     // first published; another spelling of it is refused, so the model names it the same way.
-    const publish = (name: string, html: string, at: number | null) =>
+    const publish = (name: string, html: string) =>
       one.withPermit(
         Effect.suspend(() => {
           const bad = badName(name);
           if (bad !== null) return Effect.succeed(fail(bad));
           const existing = info(name);
           if (existing && existing.name !== name) return Effect.succeed(fail(`there is an artifact named ${existing.name}: use that name`));
-          return save(name, html, "publish", at, existing);
+          return save(name, html, "publish", existing);
         }),
       );
 
     // edit_artifact: exact replacements in the latest version, saved as one new version
-    const edit = (name: string, edits: readonly Edit[], at: number | null) =>
+    const edit = (name: string, edits: readonly Edit[]) =>
       one.withPermit(
         Effect.gen(function* () {
           const bad = badName(name);
@@ -153,7 +150,7 @@ export const openArtifacts = (dir: string, o: { readonly report: (message: strin
           if (!latest) return fail(`there is no artifact named ${name}: publish_artifact makes one`);
           const edited = applyEdits(latest.html, edits);
           if ("error" in edited) return fail(edited.error);
-          return yield* save(existing.name, edited.html, "edit", at, existing);
+          return yield* save(existing.name, edited.html, "edit", existing);
         }),
       );
 

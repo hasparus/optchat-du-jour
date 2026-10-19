@@ -69,7 +69,7 @@ export type SessionEvent =
   | { readonly type: "subagent-error"; readonly runId: string; readonly name: string; readonly message: string; readonly code: "failed" | "stopped" }
   // An artifact's live draft while a publish or an edit streams (SPEC "Artifacts"), and a version
   // saved (told by the tools, src/artifacts/tools.ts)
-  | { readonly type: "artifact-draft"; readonly runId: string; readonly draft: DraftOut }
+  | { readonly type: "artifact-draft"; readonly draft: DraftOut }
   | { readonly type: "artifact"; readonly name: string; readonly version: ArtifactVersion };
 
 export type Session = {
@@ -123,8 +123,8 @@ export type LiveRun = {
   readonly reply: { readonly at: number; readonly text: string } | null;
   // the thinking streaming in now, before the entry at `at` (SPEC "Reasoning")
   readonly reasoning: { readonly at: number; readonly text: string } | null;
-  // the artifacts' drafts streaming in now (SPEC "Artifacts"); none when left out
-  readonly drafts?: readonly DraftNow[];
+  // the artifacts' drafts streaming in now (SPEC "Artifacts")
+  readonly drafts: readonly DraftNow[];
 };
 
 // "/on macbook ..." picks the device for that turn; the text stays as typed
@@ -389,8 +389,9 @@ export const makeSession = (o: {
       Effect.suspend(() => {
         const drafts = makeDrafts({
           base: (name) => o.artifactBase?.(name) ?? Effect.succeed(null),
+          runId,
           scope,
-          send: (draft) => publish({ draft, runId, type: "artifact-draft" }),
+          send: (draft) => publish({ draft, type: "artifact-draft" }),
         });
         current = { drafts, pieces: makePieces(), reply: null, runId };
         return publish({ runId, type: "run-started" });

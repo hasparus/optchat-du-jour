@@ -3,9 +3,10 @@
 // then patched into one document so what is already drawn stays still as more streams in. The
 // document is the server's /artifact/draft (no script may run in it, by its CSP and by the
 // frame's sandbox); only the version the call saves runs its scripts, in the wrapper's frame.
+import { ARTIFACT_DRAFT_CSP } from "@wire";
 
-// fx0's DRAFT_CSP: the draft document's own policy, kept on every document patched in
-const DRAFT_CSP = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; base-uri 'none'; form-action 'none'";
+// fx0's DRAFT_CSP (src/wire.ts): the draft document's own policy, kept on every document patched in
+const DRAFT_CSP = ARTIFACT_DRAFT_CSP;
 
 // A template parses inertly but drops html/body wrappers. Capture their opening attributes
 // separately, respecting quoted '>' and skipping raw script/style text.

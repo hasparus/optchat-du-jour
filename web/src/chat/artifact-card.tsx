@@ -4,8 +4,9 @@
 // running turn, until the call is in the log. No thumbnail: a preview of a page is the page, run in
 // its own sandboxed frame, which is not cheap enough for every card in a long chat.
 import { Shimmer } from "@/components/ai-elements/shimmer";
-import { type Draft, kb, type Made } from "@/lib/artifacts";
+import type { Draft, Made } from "@/lib/artifacts";
 import { cn } from "@/lib/utils";
+import { kb } from "@wire";
 import { AppWindowIcon, ChevronRightIcon } from "lucide-react";
 
 export type ArtifactCardProps = {

@@ -8,7 +8,7 @@ import { address } from "./kernel.ts";
 import { wireJson } from "./text.ts";
 import { type Built, children, type Coord, type Entry, getNode, label, localTime, type Mem } from "./tree.ts";
 import { flat } from "./view.ts";
-import { artifactTool } from "./wire.ts";
+import { artifactTool, SUBAGENT_NAME } from "./wire.ts";
 
 // zoom's and date's descriptions are docs/optchat.md §6's, word for word; the input schemas carry
 // no descriptions (ref §9). zoom's id may also be a subagent's name (docs/optchat.md §5's
@@ -116,9 +116,8 @@ const decodeCall = Schema.decodeUnknownOption(Call);
 // zoom and date take integers; zoom() and date() check the rest. zoom("Name") and zoom("Name", n)
 // open a subagent's side log, from its entry n on.
 const decodeZoom = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.Number, n: Schema.Number }));
-// A subagent's name (SPEC M7a): a letter, then up to 31 letters, digits, "-" or "_": a folder name
-// on every system, and one that can't end a report's "[Name] " early. Any other string is no name.
-export const SUBAGENT_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
+// A subagent's name (SPEC M7a, src/wire.ts)
+export { SUBAGENT_NAME } from "./wire.ts";
 const decodeAgentZoom = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.String.check(Schema.isPattern(SUBAGENT_NAME)), n: Schema.optional(Schema.Number) }));
 const decodeDate = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.Number }));
 

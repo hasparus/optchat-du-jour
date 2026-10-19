@@ -1,8 +1,10 @@
-// An artifact can't get out (SPEC "Artifacts"): a fake turn publishes HOSTILE, which tries fetch,
-// XMLHttpRequest, a WebSocket out and to the app's /ws, an image from outside, sendBeacon, the
-// cookies, localStorage, the parent's document and storage, the top window's location, a popup,
-// and RTCPeerConnection (in its own window and in a frame it makes). Every one fails, no request
-// leaves for the outside host, and the app's own cookie and storage are as they were. A link in it
+// An artifact can't get out (SPEC "Artifacts"): a fake turn publishes hostile(stun), which tries
+// fetch, XMLHttpRequest, a WebSocket out and to the app's /ws, an image from outside, sendBeacon,
+// the cookies, localStorage, the parent's document and storage, the top window's location, a popup,
+// RTCPeerConnection in its own window, and in a srcdoc frame it makes (by createElement, by
+// insertAdjacentHTML, in a closed shadow root): no such frame ever runs. Every one fails, no request
+// leaves for the outside host, no STUN datagram reaches the UDP listener, and the app's own cookie
+// and storage are as they were. A link in it
 // opens in a new tab, only through the parent and only during the click; a message with a forged
 // token opens nothing, and navigating itself away goes nowhere.
 import type { Request } from "@playwright/test";
@@ -14,7 +16,7 @@ const decodeResults = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Reco
 
 test.use({ artifacts: "hostile" });
 
-test("a published page can reach no network, cookie, storage, parent or socket of the app", async ({ page, context }) => {
+test("a published page can reach no network, cookie, storage, parent or socket of the app", async ({ page, context, stun }) => {
   // Chromium reports a request the CSP stopped too, as one that failed ("csp") before it left: only
   // a request that reached the network (the route below) or failed for any other reason counts as out
   const outside: string[] = [];
@@ -42,7 +44,7 @@ test("a published page can reach no network, cookie, storage, parent or socket o
   const inner = page.frameLocator('[data-testid="artifact-frame"]').frameLocator("iframe");
   await expect(inner.locator("body")).toHaveAttribute("data-done", "yes", { timeout: 15_000 });
   const results = decodeResults((await inner.locator("#out").textContent()) ?? "{}");
-  for (const attempt of ["fetch", "xhr", "websocket", "appSocket", "image", "cookie", "localStorage", "parentDocument", "parentStorage", "topLocation", "windowOpen", "rtc", "rtcInFrame"]) {
+  for (const attempt of ["fetch", "xhr", "websocket", "appSocket", "image", "cookie", "localStorage", "parentDocument", "parentStorage", "topLocation", "windowOpen", "rtc", "srcdocFrame", "srcdocInHTML", "srcdocInShadow", "framesLeft"]) {
     expect([attempt, results[attempt]?.startsWith("blocked:")]).toEqual([attempt, true]);
   }
   // sendBeacon says it queued the beacon whatever the CSP then does with it: the request itself
@@ -72,6 +74,7 @@ test("a published page can reach no network, cookie, storage, parent or socket o
   await page.waitForTimeout(1500);
   expect(more).toBe(0);
   expect(outside).toEqual([]);
+  expect(stun.datagrams()).toBe(0);
   // and the wrapper brought the page back
   await expect(inner.locator("body")).toHaveAttribute("data-done", "yes", { timeout: 10_000 });
 });

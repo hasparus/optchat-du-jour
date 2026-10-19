@@ -3,15 +3,14 @@
 // started it. Message ids are log indexes.
 import type { AGUIEvent, Message } from "@ag-ui/core";
 import { EventType } from "@ag-ui/core";
-import type { DraftOut } from "../src/artifacts/draft.ts";
 import type { LiveRun, SessionEvent } from "../src/session.ts";
 import type { Entry } from "../src/tree.ts";
-import { reasoningId, type SessionState, splitTool, toolCallId, withCut } from "../src/wire.ts";
+import { type ArtifactDraft, reasoningId, type SessionState, splitTool, toolCallId, withCut } from "../src/wire.ts";
 
 export type AgUiEvent = AGUIEvent;
 
-// CUSTOM "artifact-draft": one piece of a call's draft, under the run it streams in
-const artifactDraft = (runId: string, d: DraftOut): AgUiEvent => ({ name: "artifact-draft", type: EventType.CUSTOM, value: { ...d, runId } });
+// CUSTOM "artifact-draft": one piece of a call's draft (src/wire.ts ArtifactDraft)
+const artifactDraft = (d: ArtifactDraft): AgUiEvent => ({ name: "artifact-draft", type: EventType.CUSTOM, value: d });
 
 // The tool call the next echo answers, once `e` is logged: a tool entry opens its call, an echo
 // closes it. One rule for the snapshot (toMessages) and for a connection's live events, so a
@@ -203,8 +202,7 @@ export function openStream(o: {
     if (o.live.reasoning && o.live.reasoning.at >= from) first.push(...thinking(o.live.reasoning.at, 0, o.live.reasoning.text));
     if (o.live.reply && o.live.reply.at >= from) first.push(...reply(o.live.reply.at, 0, o.live.reply.text));
     // an artifact's draft so far, whole (SPEC "Artifacts")
-    for (const d of o.live.drafts ?? [])
-      first.push(artifactDraft(o.live.runId, { closed: d.closed, delta: d.html, id: d.id, name: d.name, offset: 0, replace: true, tool: d.tool }));
+    for (const d of o.live.drafts) first.push(artifactDraft({ closed: d.closed, delta: d.html, id: d.id, name: d.name, offset: 0, replace: true, runId: o.live.runId, tool: d.tool }));
   }
 
   const translate = (e: SessionEvent): AgUiEvent[] => {
@@ -259,10 +257,10 @@ export function openStream(o: {
       // an artifact's live draft, and a version saved (SPEC "Artifacts"); a client from before them
       // drops the frames it can't decode
       case "artifact-draft":
-        return [artifactDraft(e.runId, e.draft)];
+        return [artifactDraft(e.draft)];
       case "artifact":
         return [{ name: "artifact", type: EventType.CUSTOM, value: { name: e.name, version: e.version } }];
-            case "state": {
+      case "state": {
         const ops = delta(state, e.state);
         state = e.state;
         return ops.length > 0 ? [{ delta: ops, type: EventType.STATE_DELTA }] : [];

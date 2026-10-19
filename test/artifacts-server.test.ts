@@ -9,8 +9,7 @@ import { Option, Schema } from "effect";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { ARTIFACT_EMBEDDED_CSP } from "../src/artifacts/html.ts";
-import { kb } from "../src/artifacts/store.ts";
-import { ArtifactList } from "../src/wire.ts";
+import { ArtifactList, kb, savedVersion } from "../src/wire.ts";
 import { freePort } from "./ports.ts";
 
 const ROOT = `${import.meta.dir}/../`;
@@ -107,6 +106,8 @@ const status = async (path: string, headers: Readonly<Record<string, string>> = 
   const res = await fetch(`${base}${path}`, { headers });
   return res.status;
 };
+// what a browser says when it loads a frame (Fetch Metadata)
+const FRAME = { "sec-fetch-dest": "iframe" } as const;
 // every file of a folder, as one text
 const all = (folder: string) => readdirSync(folder).map((f) => readFileSync(`${folder}/${f}`, "utf8")).join("");
 
@@ -141,7 +142,7 @@ test("the master publishes, edits and reads by version over /mcp; the log keeps 
   let chat = await messages();
   expect(chat.map((e) => e.kind)).toEqual(["user", "tool", "echo", "talk"]);
   expect(chat[1]?.text).toBe(`mcp__optchat__publish_artifact {"html":"<${SIZE} of HTML, not kept in the log: read_artifact>","name":"landing"}`);
-  expect(chat[2]?.text).toBe(`Published landing v1 (${SIZE}).`);
+  expect(chat[2]?.text).toBe(`Published landing (${SIZE}) [v1]`);
   // the draft went out as the input streamed, as CUSTOM artifact-draft frames, and the version
   const drafts = frames.filter((f) => f.includes('"name":"artifact-draft"'));
   expect(drafts.length).toBeGreaterThan(0);
@@ -152,7 +153,7 @@ test("the master publishes, edits and reads by version over /mcp; the log keeps 
   await say("show me the first version", "m3");
   chat = await messages();
   const echoes = chat.filter((e) => e.kind === "echo").map((e) => e.text);
-  expect(echoes[1]).toBe(`Edited; saved landing v2 (${kb(Buffer.byteLength(V1) + 5)}).`);
+  expect(echoes[1]).toBe(`Edited landing (${kb(Buffer.byteLength(V1) + 5)}) [v2]`);
   expect(echoes[2]).toMatch(new RegExp(`^landing v1 of 2 \\(${SIZE}, [\\d-]+ [\\d:]+\\):\\n<${SIZE} not kept in the log: read_artifact again>$`));
 
   // a page the validator refuses comes back as a tool error the model can fix
@@ -160,13 +161,14 @@ test("the master publishes, edits and reads by version over /mcp; the log keeps 
   chat = await messages();
   expect(chat.at(-2)).toMatchObject({ error: true, kind: "echo", text: "publish_artifact: artifact must start with <!doctype html>" });
 
-  // the versions, each naming the call that made it
+  // the versions, and each call's echo naming the one it saved (the only record of it)
   const [landing] = await list();
   expect(landing?.name).toBe("landing");
-  expect(landing?.versions.map((v) => [v.v, v.by, v.i === null ? null : chat[v.i]?.text.split(" ")[0]])).toEqual([
-    [1, "publish", "mcp__optchat__publish_artifact"],
-    [2, "edit", "mcp__optchat__edit_artifact"],
+  expect(landing?.versions.map((v) => [v.v, v.by])).toEqual([
+    [1, "publish"],
+    [2, "edit"],
   ]);
+  expect(echoes.slice(0, 2).map(savedVersion)).toEqual([1, 2]);
   // the main log and the tree hold none of the HTML; the artifact's folder holds all of it
   const stream = `${env.OPTCHAT_HOME}/streams/mini`;
   expect(all(`${stream}/chat/main`)).not.toContain("MARKUP-NOT-IN-LOG");
@@ -229,7 +231,7 @@ test("the routes send exactly their headers", async () => {
   expect(wrapper).toContain("&v=2"); // the latest
 
   const token = /token=([0-9a-f-]{36})/.exec(wrapper)?.[1] ?? "";
-  const inner = await fetch(`${base}/artifact/page?name=landing&v=1&token=${token}`);
+  const inner = await fetch(`${base}/artifact/page?name=landing&v=1&token=${token}`, { headers: FRAME });
   expect(inner.status).toBe(200);
   expect(inner.headers.get("content-security-policy")).toBe(`sandbox allow-scripts; ${ARTIFACT_EMBEDDED_CSP}; frame-ancestors 'self'`);
   expect(inner.headers.get("x-content-type-options")).toBe("nosniff");
@@ -240,7 +242,7 @@ test("the routes send exactly their headers", async () => {
   expect(prepared).toContain("RTCPeerConnection");
   expect(prepared.endsWith(V1.slice("<!doctype html>".length))).toBe(true);
 
-  const draft = await fetch(`${base}/artifact/draft`);
+  const draft = await fetch(`${base}/artifact/draft`, { headers: FRAME });
   expect(draft.headers.get("content-security-policy")).toBe(
     "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
   );
@@ -265,12 +267,20 @@ test("an unknown or malformed name or version is a 404, and nothing outside the 
   ]) {
     expect([query, await status(`/api/artifact?${query}`)]).toEqual([query, 404]);
     expect([query, await status(`/artifact/frame?${query}`)]).toEqual([query, 404]);
-    expect([query, await status(`/artifact/page?${query}&token=${token}`)]).toEqual([query, 404]);
+    expect([query, await status(`/artifact/page?${query}&token=${token}`, FRAME)]).toEqual([query, 404]);
   }
   // the page wants a version and a token
-  expect(await status(`/artifact/page?name=landing&token=${token}`)).toBe(404);
-  expect(await status("/artifact/page?name=landing&v=1")).toBe(404);
-  expect(await status("/artifact/page?name=landing&v=1&token=%3C%2Fscript%3E")).toBe(404);
+  expect(await status(`/artifact/page?name=landing&token=${token}`, FRAME)).toBe(404);
+  expect(await status("/artifact/page?name=landing&v=1", FRAME)).toBe(404);
+  expect(await status("/artifact/page?name=landing&v=1&token=%3C%2Fscript%3E", FRAME)).toBe(404);
+  // the page and the draft document answer only a frame's load: opened as a tab (or by a client
+  // that doesn't say), a page would have no wrapper's frame-src to keep its navigations in
+  const tabs: readonly Readonly<Record<string, string>>[] = [{}, { "sec-fetch-dest": "document" }, { "sec-fetch-dest": "empty" }];
+  for (const dest of tabs) {
+    expect(await status(`/artifact/page?name=landing&v=1&token=${token}`, dest)).toBe(404);
+    expect(await status("/artifact/draft", dest)).toBe(404);
+  }
+  expect(await status(`/artifact/page?name=landing&v=1&token=${token}`, FRAME)).toBe(200);
 });
 
 test("every artifact route answers only past the guard", async () => {
@@ -278,8 +288,8 @@ test("every artifact route answers only past the guard", async () => {
   // another site's page, a rebinding name, a login not allowed, a forwarded request
   const outsiders: readonly Readonly<Record<string, string>>[] = [{ origin: "https://evil.example" }, { host: "evil.example" }, { "tailscale-user-login": "intruder@example.com" }, { "x-forwarded-for": "10.0.0.9" }];
   for (const path of paths) {
-    expect(await status(path)).toBe(200);
-    for (const headers of outsiders) expect([path, headers, await status(path, headers)]).toEqual([path, headers, 403]);
+    expect(await status(path, FRAME)).toBe(200);
+    for (const headers of outsiders) expect([path, headers, await status(path, { ...FRAME, ...headers })]).toEqual([path, headers, 403]);
   }
   // the opaque frame's own requests say Origin: null, which is no origin of ours
   expect(await status("/api/artifacts", { origin: "null" })).toBe(403);

@@ -364,176 +364,176 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
 
   return (
     <div className="flex min-h-0 flex-1">
-    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col" ref={root}>
-      <MessageScroller className="min-h-0 flex-1">
-        {/* The sentinel and the "earlier" button sit outside the content: the scroller reads its
-            content's first child to keep the view still when older rows are prepended, and opens
-            at the newest row only when the first rows arrive into an empty content. */}
-        {/* focus and scroll-into-view stop short of the floating dock (WCAG 2.4.11: a focused control
-            is never hidden under it) */}
-        <MessageScrollerViewport aria-label="Chat" className="relative scroll-pb-(--dock-h)" preserveScrollOnPrepend>
-          <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-px" ref={top} />
-          {first > 0 && (
-            <div className="flex justify-center pt-4">
-              <button
-                className="min-h-8 rounded-full px-3 text-xs text-muted-foreground hairline transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60 pointer-coarse:min-h-10"
-                disabled={loading}
-                onClick={() => void loadOlder()}
-                type="button"
-              >
-                {loading ? <Shimmer>loading…</Shimmer> : "earlier messages"}
-              </button>
-            </div>
-          )}
-          {empty && <EmptyChat />}
-          {/* the dock floats over the transcript's end; the content keeps its height clear below
-              the last row (--dock-h, set by useStickToEnd) */}
-          <ReplyActions>
-            <MessageScrollerContent className="mx-auto w-full max-w-184 gap-0 px-4 pt-6 pb-[calc(var(--dock-h,9rem)+1.5rem)] sm:px-6" data-region="chat-content">
-              {placed.above.map((m) => (
-                <StatusRow key={`k${m.key}`} marker={m} />
-              ))}
-              {rows.map((row, k) => (
-                <Fragment key={row.key}>
-                  <MessageScrollerItem data-kind={row.kind} data-log-index={row.id} messageId={row.key} scrollAnchor={row.kind === "user"}>
-                    <ChatRow
-                      plan={plans.get(row.key)}
-                      row={row}
-                      sources={sources.get(row.key)}
-                      streaming={row.key === draftKey}
-                      onThought={session.toggleThought}
-                      thought={row.key === holder ? live : row.kind === "talk" || row.kind === "tool" ? thoughts.get(row.id) : undefined}
-                      toolState={row.kind === "tool" ? toolStateOf(row, busy, row.key === lastTool) : "done"}
-                      made={madeBy(row, artifacts)}
-                      onArtifact={openArtifact}
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col" ref={root}>
+        <MessageScroller className="min-h-0 flex-1">
+          {/* The sentinel and the "earlier" button sit outside the content: the scroller reads its
+              content's first child to keep the view still when older rows are prepended, and opens
+              at the newest row only when the first rows arrive into an empty content. */}
+          {/* focus and scroll-into-view stop short of the floating dock (WCAG 2.4.11: a focused control
+              is never hidden under it) */}
+          <MessageScrollerViewport aria-label="Chat" className="relative scroll-pb-(--dock-h)" preserveScrollOnPrepend>
+            <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-px" ref={top} />
+            {first > 0 && (
+              <div className="flex justify-center pt-4">
+                <button
+                  className="min-h-8 rounded-full px-3 text-xs text-muted-foreground hairline transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60 pointer-coarse:min-h-10"
+                  disabled={loading}
+                  onClick={() => void loadOlder()}
+                  type="button"
+                >
+                  {loading ? <Shimmer>loading…</Shimmer> : "earlier messages"}
+                </button>
+              </div>
+            )}
+            {empty && <EmptyChat />}
+            {/* the dock floats over the transcript's end; the content keeps its height clear below
+                the last row (--dock-h, set by useStickToEnd) */}
+            <ReplyActions>
+              <MessageScrollerContent className="mx-auto w-full max-w-184 gap-0 px-4 pt-6 pb-[calc(var(--dock-h,9rem)+1.5rem)] sm:px-6" data-region="chat-content">
+                {placed.above.map((m) => (
+                  <StatusRow key={`k${m.key}`} marker={m} />
+                ))}
+                {rows.map((row, k) => (
+                  <Fragment key={row.key}>
+                    <MessageScrollerItem data-kind={row.kind} data-log-index={row.id} messageId={row.key} scrollAnchor={row.kind === "user"}>
+                      <ChatRow
+                        plan={plans.get(row.key)}
+                        row={row}
+                        sources={sources.get(row.key)}
+                        streaming={row.key === draftKey}
+                        onThought={session.toggleThought}
+                        thought={row.key === holder ? live : row.kind === "talk" || row.kind === "tool" ? thoughts.get(row.id) : undefined}
+                        toolState={row.kind === "tool" ? toolStateOf(row, busy, row.key === lastTool) : "done"}
+                        made={madeBy(row, artifacts)}
+                        onArtifact={openArtifact}
+                      />
+                    </MessageScrollerItem>
+                    {placed.after.get(k)?.map((m) => (
+                      <StatusRow key={`k${m.key}`} marker={m} />
+                    ))}
+                  </Fragment>
+                ))}
+                {/* an artifact the model is still writing, after the running turn's rows until its
+                    call is in the log (SPEC "Artifacts") */}
+                {drafting.map((d) => (
+                  <div className="py-1" data-testid="artifact-drafting" key={`draft-${d.id}`}>
+                    <ArtifactCard
+                      detail={draftDetail(d)}
+                      live
+                      name={d.name ?? "New artifact"}
+                      onOpen={() => {
+                        if (d.name !== null) openArtifact(d.name, null);
+                      }}
+                      testId="artifact-draft-card"
                     />
-                  </MessageScrollerItem>
-                  {placed.after.get(k)?.map((m) => (
-                    <StatusRow key={`k${m.key}`} marker={m} />
-                  ))}
-                </Fragment>
-              ))}
-              {/* an artifact the model is still writing, after the running turn's rows until its
-                  call is in the log (SPEC "Artifacts") */}
-              {drafting.map((d) => (
-                <div className="py-1" data-testid="artifact-drafting" key={`draft-${d.id}`}>
-                  <ArtifactCard
-                    detail={draftDetail(d)}
-                    live
-                    name={d.name ?? "New artifact"}
-                    onOpen={() => {
-                      if (d.name !== null) openArtifact(d.name, null);
-                    }}
-                    testId="artifact-draft-card"
-                  />
-                </div>
-              ))}
-            </MessageScrollerContent>
-          </ReplyActions>
-        </MessageScrollerViewport>
-        <MessageScrollerButton className="size-9 rounded-full border-0 bg-raised text-foreground shadow-float hover:bg-raised hover:text-foreground data-[direction=end]:bottom-[calc(var(--dock-h,9rem)+0.75rem)]" />
-      </MessageScroller>
+                  </div>
+                ))}
+              </MessageScrollerContent>
+            </ReplyActions>
+          </MessageScrollerViewport>
+          <MessageScrollerButton className="size-9 rounded-full border-0 bg-raised text-foreground shadow-float hover:bg-raised hover:text-foreground data-[direction=end]:bottom-[calc(var(--dock-h,9rem)+0.75rem)]" />
+        </MessageScroller>
 
-      {/* The dock floats over the end of the transcript, which scrolls on under the composer's
-          translucent surface: a fade from clear (24 px above it) to the sheet at 80% by the
-          composer's top and solid at the bottom keeps what passes under it soft and the text on it
-          legible (DESIGN.md, Composer). Only its controls take pointer events. */}
-      <div
-        className="pointer-events-none absolute inset-x-0 bottom-0 z-10 before:absolute before:inset-x-0 before:-top-6 before:bottom-0 before:bg-[linear-gradient(to_bottom,transparent,color-mix(in_oklch,var(--background)_80%,transparent)_3rem,var(--background))]"
-        data-testid="dock"
-        ref={dock}
-      >
-      <div className="pointer-events-auto relative mx-auto w-full max-w-184 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-4 sm:pb-[max(1rem,env(safe-area-inset-bottom))]">
-        {line !== null && (
-          <div className="flex h-7 items-center gap-2 px-3 text-xs" data-testid="status" role="status">
-            {busy ? (
-              // a tap on the running turn's line opens Background work (./background-work.tsx)
-              <button
-                className="relative -mx-1 flex min-w-0 cursor-pointer items-center gap-2 rounded-md px-1 text-left after:absolute after:-inset-y-1.5 after:inset-x-0 hover:text-foreground"
-                onClick={onWork}
-                title="Background work"
-                type="button"
-              >
-                <span aria-hidden="true" className="size-1.5 shrink-0 animate-breathe rounded-full bg-signal" />
-                <Shimmer>{line}</Shimmer>
-              </button>
-            ) : (
-              <span className="text-muted-foreground">{line}</span>
+        {/* The dock floats over the end of the transcript, which scrolls on under the composer's
+            translucent surface: a fade from clear (24 px above it) to the sheet at 80% by the
+            composer's top and solid at the bottom keeps what passes under it soft and the text on it
+            legible (DESIGN.md, Composer). Only its controls take pointer events. */}
+        <div
+          className="pointer-events-none absolute inset-x-0 bottom-0 z-10 before:absolute before:inset-x-0 before:-top-6 before:bottom-0 before:bg-[linear-gradient(to_bottom,transparent,color-mix(in_oklch,var(--background)_80%,transparent)_3rem,var(--background))]"
+          data-testid="dock"
+          ref={dock}
+        >
+          <div className="pointer-events-auto relative mx-auto w-full max-w-184 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-4 sm:pb-[max(1rem,env(safe-area-inset-bottom))]">
+            {line !== null && (
+              <div className="flex h-7 items-center gap-2 px-3 text-xs" data-testid="status" role="status">
+                {busy ? (
+                  // a tap on the running turn's line opens Background work (./background-work.tsx)
+                  <button
+                    className="relative -mx-1 flex min-w-0 cursor-pointer items-center gap-2 rounded-md px-1 text-left after:absolute after:-inset-y-1.5 after:inset-x-0 hover:text-foreground"
+                    onClick={onWork}
+                    title="Background work"
+                    type="button"
+                  >
+                    <span aria-hidden="true" className="size-1.5 shrink-0 animate-breathe rounded-full bg-signal" />
+                    <Shimmer>{line}</Shimmer>
+                  </button>
+                ) : (
+                  <span className="text-muted-foreground">{line}</span>
+                )}
+              </div>
             )}
-          </div>
-        )}
-        {tray && (
-          // the tray on the composer's top edge: the same glass, as wide, its top corners on the
-          // glass radius and the composer's squared under it, so the two read as one shape whose
-          // rings meet in one line (and one focus ring, glass-tray)
-          <div className="glass-surface glass-tray relative overflow-hidden rounded-t-glass [&>*+*]:border-t" data-testid="composer-tray">
-            {state.state?.phase === "needs-model" && <NeedsModel onModel={onModel} session={session} state={state.state} />}
-            {waiting.length > 0 && (
-              <Queue data-testid="queue">
-                <QueueSection>
-                  <QueueSectionTrigger>
-                    <QueueSectionLabel count={waiting.length} label="waiting for the model" />
-                  </QueueSectionTrigger>
-                  <QueueSectionContent>
-                    <QueueList>
-                      {waiting.map((q) => (
-                        <Waiting
-                          asking={q.clientId !== null && state.asking.includes(q.clientId)}
-                          key={q.key}
-                          model={model}
-                          onTakeBack={() => {
-                            session.takeBack(q);
-                          }}
-                          q={q}
-                          state={state.state}
-                        />
-                      ))}
-                    </QueueList>
-                  </QueueSectionContent>
-                </QueueSection>
-              </Queue>
+            {tray && (
+              // the tray on the composer's top edge: the same glass, as wide, its top corners on the
+              // glass radius and the composer's squared under it, so the two read as one shape whose
+              // rings meet in one line (and one focus ring, glass-tray)
+              <div className="glass-surface glass-tray relative overflow-hidden rounded-t-glass [&>*+*]:border-t" data-testid="composer-tray">
+                {state.state?.phase === "needs-model" && <NeedsModel onModel={onModel} session={session} state={state.state} />}
+                {waiting.length > 0 && (
+                  <Queue data-testid="queue">
+                    <QueueSection>
+                      <QueueSectionTrigger>
+                        <QueueSectionLabel count={waiting.length} label="waiting for the model" />
+                      </QueueSectionTrigger>
+                      <QueueSectionContent>
+                        <QueueList>
+                          {waiting.map((q) => (
+                            <Waiting
+                              asking={q.clientId !== null && state.asking.includes(q.clientId)}
+                              key={q.key}
+                              model={model}
+                              onTakeBack={() => {
+                                session.takeBack(q);
+                              }}
+                              q={q}
+                              state={state.state}
+                            />
+                          ))}
+                        </QueueList>
+                      </QueueSectionContent>
+                    </QueueSection>
+                  </Queue>
+                )}
+              </div>
             )}
+            <Composer
+              attached={tray}
+              busy={busy}
+              device={device}
+              devices={devices}
+              link={link}
+              model={model}
+              onDevice={setDevice}
+              onModel={onModel}
+              open={state.status === "open"}
+              picked={picked}
+              restored={state.restored}
+              session={session}
+              state={state.state}
+              uploader={uploader}
+            />
           </div>
-        )}
-        <Composer
-          attached={tray}
-          busy={busy}
-          device={device}
-          devices={devices}
-          link={link}
-          model={model}
-          onDevice={setDevice}
-          onModel={onModel}
-          open={state.status === "open"}
-          picked={picked}
-          restored={state.restored}
-          session={session}
-          state={state.state}
-          uploader={uploader}
-        />
+        </div>
       </div>
-      </div>
-    </div>
-    {/* the pane: a side panel from 1024 px, a sheet from the bottom on a phone (DESIGN.md, Artifacts) */}
-    {wide && paneView !== null && (
-      <aside className="flex w-[min(46rem,50vw)] shrink-0 flex-col border-l bg-background px-2 pb-2" data-testid="artifact-side">
-        {paneView}
-      </aside>
-    )}
-    {!wide && (
-      <SheetDrawer
-        className="h-[calc(100dvh-env(safe-area-inset-top)-1.5rem)] data-[vaul-drawer-direction=bottom]:max-h-none"
-        description="The artifact, its versions, and copy, download or open it"
-        onOpenChange={(open) => {
-          if (!open) setPane(null);
-        }}
-        open={pane !== null}
-        testId="artifact-sheet"
-        title={paneInfo?.name ?? pane?.name ?? "Artifact"}
-      >
-        <div className="flex min-h-0 flex-1 flex-col pb-1">{paneView}</div>
-      </SheetDrawer>
-    )}
+      {/* the pane: a side panel from 1024 px, a sheet from the bottom on a phone (DESIGN.md, Artifacts) */}
+      {wide && paneView !== null && (
+        <aside className="flex w-[min(46rem,50vw)] shrink-0 flex-col border-l bg-background px-2 pb-2" data-testid="artifact-side">
+          {paneView}
+        </aside>
+      )}
+      {!wide && (
+        <SheetDrawer
+          className="h-[calc(100dvh-env(safe-area-inset-top)-1.5rem)] data-[vaul-drawer-direction=bottom]:max-h-none"
+          description="The artifact, its versions, and copy, download or open it"
+          onOpenChange={(open) => {
+            if (!open) setPane(null);
+          }}
+          open={pane !== null}
+          testId="artifact-sheet"
+          title={paneInfo?.name ?? pane?.name ?? "Artifact"}
+        >
+          <div className="flex min-h-0 flex-1 flex-col pb-1">{paneView}</div>
+        </SheetDrawer>
+      )}
     </div>
   );
 }
