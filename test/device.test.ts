@@ -2,12 +2,14 @@
 // the folder boundary, how claude ended, children that outlive their socket, an offline device and
 // a connection lost mid-turn. A fake claude, no model.
 import { afterAll, expect, test } from "bun:test";
-import { Effect, Layer, Option, type Scope } from "effect";
+import { Effect, Layer, Option, Schema, type Scope } from "effect";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { type Trust, type WhoIs, cachedWhois, callerNames, trusted } from "../device/auth.ts";
 import { deviceLayer } from "../device/runner.ts";
 import { deviceHealth, remoteRunner } from "../src/claude/remote.ts";
+import { BunServices } from "@effect/platform-bun";
+import { LocalRunner, Runner, STRIPPED_ENV } from "../src/claude/process.ts";
 import { type FromDevice, type ToDevice, decodeFromDevice, frame } from "../src/claude/wire.ts";
 import { failover } from "../src/engines/chain.ts";
 import { MASTER_TOOLS } from "../src/config.ts";
@@ -141,6 +143,53 @@ test("a message goes to claude on the device and its events come back; /health s
       expect(health).toEqual({ _tag: "online", health: { claudeVersion: "0.0.0 (Claude Code)", device: "macbook", folders: [folder] } });
     }),
   );
+});
+
+// what an echo claude says its environment holds (test/echo-claude.ts "env")
+const heard = (claude: { readonly send: (b: ReturnType<typeof say>) => Effect.Effect<void>; readonly result: Effect.Effect<{ readonly result?: string | undefined }, unknown> }) =>
+  Effect.gen(function* () {
+    yield* claude.send(say("env"));
+    return Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)))((yield* claude.result).result ?? "");
+  });
+const clean = (env: Readonly<Record<string, string>>) => {
+  expect(Object.keys(env).filter((k) => STRIPPED_ENV.has(k))).toEqual([]);
+  expect(env.ODJ_KEPT).toBe("kept");
+  expect(env.CLAUDE_CODE_PROMPT_CACHE_TTL).toBe("1h"); // the spawn's own
+};
+
+// E32: a key or cloud setting in the server's or a device's own environment would make claude bill
+// it instead of the Max login. Every claude starts through spawnProcess, here or on a device.
+test("a claude started here or on a device never inherits a provider key, a cloud account or a model override (E32)", async () => {
+  const folder = tmp();
+  const before = { ...process.env };
+  for (const k of STRIPPED_ENV) process.env[k] = `stray ${k}`;
+  process.env.ODJ_KEPT = "kept"; // anything else is inherited as before
+  process.env.OPTCHAT_CLAUDE = ECHO;
+  try {
+    // on this machine: a turn, priming, a compactor call, a caption, a subagent, a warm process
+    const local = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const runner = yield* Runner;
+          return yield* heard(yield* runner.spawn({ args: ["-p"], cwd: folder, env: { CLAUDE_CODE_PROMPT_CACHE_TTL: "1h" } }));
+        }),
+      ).pipe(Effect.provide(LocalRunner.pipe(Layer.provide(BunServices.layer)))),
+    );
+    clean(local);
+    // on a device: the runner's own environment is stripped the same way
+    const remote = await withDevice([folder], (url) =>
+      Effect.gen(function* () {
+        return yield* heard(yield* remoteRunner("macbook", url).spawn({ args: ["-p"], cwd: folder, env: { CLAUDE_CODE_PROMPT_CACHE_TTL: "1h" } }));
+      }),
+    );
+    clean(remote);
+  } finally {
+    for (const k of [...STRIPPED_ENV, "ODJ_KEPT", "OPTCHAT_CLAUDE"]) {
+      const was = before[k];
+      if (was === undefined) Reflect.deleteProperty(process.env, k);
+      else process.env[k] = was;
+    }
+  }
 });
 
 test("a cwd outside the folders is refused, through .. and through a symlink too", async () => {

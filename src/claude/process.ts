@@ -105,6 +105,48 @@ export const claudeVersion = (binary: string) =>
     Effect.orElseSucceed(() => null),
   );
 
+// What a `claude` must never inherit (E32): with one of these set, Claude Code bills that API key
+// or cloud account instead of the Max login (keys, tokens, Bedrock, Vertex, Foundry and their
+// settings), sends the login's requests to another host (the base URLs), or reads a ref's model as
+// another (the default-model overrides: our refs name the model, and turns, priming and compactor
+// calls must stay byte-identical across devices). A stray export in the shell or launchd plist of
+// the server or a device is enough. CLAUDE_CODE_OAUTH_TOKEN stays: it is the Max login itself,
+// from `claude setup-token`. Every spawn of claude goes through spawnProcess (turns, priming,
+// compactor calls, captions, subagents, the warm processes and the device runner), so this is the
+// one place they are dropped.
+export const STRIPPED_ENV: ReadonlySet<string> = new Set([
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_BEDROCK_BASE_URL",
+  "ANTHROPIC_VERTEX_BASE_URL",
+  "ANTHROPIC_VERTEX_PROJECT_ID",
+  "ANTHROPIC_FOUNDRY_API_KEY",
+  "ANTHROPIC_FOUNDRY_BASE_URL",
+  "ANTHROPIC_FOUNDRY_RESOURCE",
+  "AWS_BEARER_TOKEN_BEDROCK",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+  "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+  "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+  "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
+  "ANTHROPIC_MODEL",
+  "ANTHROPIC_SMALL_FAST_MODEL",
+  "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+]);
+
+// a child's environment: this process's, without STRIPPED_ENV, then the spawn's own on top (the
+// cache settings a turn and its priming set; never one of those)
+export const childEnv = (parent: Readonly<Record<string, string | undefined>>, own: Readonly<Record<string, string>>) => {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(parent)) if (v !== undefined && !STRIPPED_ENV.has(k)) env[k] = v;
+  for (const [k, v] of Object.entries(own)) if (!STRIPPED_ENV.has(k)) env[k] = v;
+  return env;
+};
+
 // how a process ended: its exit code, or the signal that killed it, and the tail of its stderr
 export type Exited = { readonly code: number | null; readonly signal: string | null; readonly stderr: string };
 
@@ -135,8 +177,8 @@ export const spawnProcess = Effect.fnUntraced(function* (binary: string, o: Spaw
     .spawn(
       ChildProcess.make(binary, [...o.args], {
         cwd: o.cwd,
-        env: { ...o.env },
-        extendEnv: true,
+        env: childEnv(process.env, o.env),
+        extendEnv: false, // childEnv has this process's environment already, minus what bills elsewhere (E32)
         forceKillAfter: killGrace,
         killSignal: "SIGTERM",
         stdin: { encoding: "utf8", stream: Stream.fromQueue(stdin).pipe(Stream.encodeText) },
