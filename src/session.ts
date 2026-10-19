@@ -84,13 +84,17 @@ export type Session = {
   readonly primeSoon: Effect.Effect<void>;
   // the run going on, and the reply it is streaming (not logged yet), for a client joining now
   readonly live: () => LiveRun | null;
-  // A subagent's report (SPEC M7a): logged as a user entry, never while a turn runs and never
-  // starting one: at once when the session is idle, else before the next turn renders its view,
-  // or once the loop winds down. Resolves when it is in the log.
+  // A subagent's report (SPEC "Subagents"): logged as a user entry, never while a turn runs. With
+  // `wake` (E39), one that reaches an idle master starts a turn, with the others that come within
+  // the debounce, as the turn's own messages; one that comes while a turn runs goes into the next
+  // turn's view, or wakes the master once the loop winds down with no turn due. Without it (M7a),
+  // it starts no turn: logged at once when the session is idle, else before the next turn renders
+  // its view, or once the loop winds down. A report never wakes the master on messages parked
+  // after an error: then it is logged as M7a logs it. Resolves when it is in the log.
   readonly report: (text: string) => Effect.Effect<void>;
-  // the turn running now: its engine and the view it was sent (what a subagent it spawns starts
-  // from); null between turns
-  readonly turnNow: () => { readonly ref: string; readonly view: string } | null;
+  // the turn running now: its engine, the view it was sent (what a subagent it spawns starts
+  // from) and its device; null between turns
+  readonly turnNow: () => { readonly ref: string; readonly view: string; readonly on: string } | null;
   // the view the most recent turn was sent, whatever runs now; null before any turn
   readonly lastView: () => string | null;
 };
@@ -156,6 +160,8 @@ export const makeSession = (o: {
   readonly events?: PubSub.PubSub<SessionEvent>; // the server's, made first so it can report into it; else the session's own
   readonly reasoning?: Reasoning; // the side file thinking is kept in (src/reasoning.ts); none: only streamed
   readonly subagents?: SubagentList; // shown in the state (SPEC M7a); none: the state has no list
+  // a report that reaches an idle master wakes it after this debounce (E39, WAKE_DEBOUNCE); none: M7a's waiting
+  readonly wake?: Duration.Input | null;
 }): Effect.Effect<Session, never, Scope.Scope> =>
   Effect.gen(function* () {
     const { chat } = o;
@@ -167,8 +173,9 @@ export const makeSession = (o: {
     const inbox: Incoming[] = [];
     // subagents' reports not logged yet, oldest first, each with what its sender waits on (SPEC M7a)
     const reports: { readonly text: string; readonly logged: Deferred.Deferred<true> }[] = [];
-    // the view the most recent turn was sent (`turnNow`, `lastView`)
+    // the view the most recent turn was sent (`turnNow`, `lastView`), and the device it ran on
     let sentView: string | null = null;
+    let lastOn: string | null = null;
     let seq = 0;
     let phase: Phase = "idle", device = o.defaultDevice, engine: string | null = null;
     // the setting every client shares (`configure`): what a mid-run message does
@@ -298,6 +305,21 @@ export const makeSession = (o: {
 
     const scope = yield* Effect.scope;
 
+    // Waking the master (E39). A report that reaches an idle master waits WAKE_DEBOUNCE for others,
+    // then they become one turn's messages: held in the inbox for the most recent turn's engine
+    // and device, steering nothing, never taken back (no client sent them). Only while nothing is
+    // parked after an error, and no loop runs: one that runs logs them before the next turn's view,
+    // or wakes the master as it winds down.
+    const wakes = o.wake === undefined || o.wake === null ? null : yield* Queue.sliding<true>(1);
+    const wakeable = () => wakes !== null && !running && halted === null && parked === null;
+    const wakeWith = Effect.suspend(() => {
+      for (const { logged, text } of reports.splice(0))
+        inbox.push({ clientId: null, described: null, device: lastOn, engine: master.latest() || (o.engines[0]?.ref ?? ""), logged, media: [], seq: ++seq, state: "held", steer: false, text });
+      return start;
+    });
+    // the loop logs reports before a turn's view; with no turn due, only when they won't wake the master
+    const logReportsDue = Effect.suspend(() => (turnsDue() || wakes === null || parked !== null || halted !== null ? logReports : Effect.void));
+
     // A message's attachments' captions, each waited for at most media.captionWait, asked for once:
     // what the log keeps of the message and what an engine is sent of it come from this one answer,
     // so they agree, and a marker is never written without having waited for its caption.
@@ -329,7 +351,10 @@ export const makeSession = (o: {
               Effect.tap((entry) =>
                 Effect.suspend(() => {
                   inbox.splice(inbox.indexOf(m), 1);
-                  return ack(m, entry.i, null).pipe(Effect.andThen(published(runId)(entry)));
+                  return ack(m, entry.i, null).pipe(
+                    Effect.andThen(published(runId)(entry)),
+                    Effect.andThen(m.logged ? Deferred.succeed(m.logged, true) : Effect.void),
+                  );
                 }),
               ),
               Effect.uninterruptible,
@@ -557,7 +582,7 @@ export const makeSession = (o: {
       const retrying = chat.retry.pipe(Effect.delay(o.waitRetry ?? WAIT_RETRY), Effect.forever);
       const summaries = Effect.suspend(() => (unbuilt(chat.mem) ? enter("waiting").pipe(Effect.andThen(Effect.raceFirst(settle(chat.mem), retrying))) : Effect.void));
       // reports that came in are logged first, so the next turn's view has them
-      for (yield* logReports; turnsDue(); yield* logReports) {
+      for (yield* logReportsDue; turnsDue(); yield* logReportsDue) {
         if (unbuilt(chat.mem)) device = nextTurn(inbox, o.defaultDevice).on; // shown while it waits; read again after, with what came in meanwhile
         yield* summaries;
         // This turn's device, engine and messages are read once the summaries are in, and picked at
@@ -567,6 +592,7 @@ export const makeSession = (o: {
         const { batch, engine: ref0, on } = nextTurn(inbox, o.defaultDevice);
         if (batch.length === 0) continue;
         device = on;
+        lastOn = on;
         for (const m of batch) m.state = "picked";
         yield* captioned(batch);
         // a report that came in meanwhile goes before the view too, once summarized like any message
@@ -677,7 +703,8 @@ export const makeSession = (o: {
         // Again only for a turn that is due (`turnsDue`: a held message newer than any parked one),
         // or for a report that came in meanwhile, unless the log just refused. Messages parked after
         // an error are no reason: the loop would find nothing to do, end and start again, for ever.
-        if (turnsDue() || (stop === null && reports.length > 0)) return start;
+        if (turnsDue()) return start;
+        if (stop === null && reports.length > 0) return wakeable() ? wakeWith : start;
         phase = "idle";
         const told = stop === null ? Effect.void : Effect.forEach(inbox, (m) => ack(m, null, stop.why), { discard: true });
         return told.pipe(Effect.andThen(tell), Effect.andThen(primeLater), Effect.andThen(warm));
@@ -782,9 +809,22 @@ export const makeSession = (o: {
       Effect.suspend(() => {
         const logged = Deferred.makeUnsafe<true>();
         reports.push({ logged, text });
-        return start.pipe(Effect.andThen(Deferred.await(logged)), Effect.asVoid);
+        const go = wakes !== null && wakeable() ? Queue.offer(wakes, true) : start;
+        return go.pipe(Effect.andThen(Deferred.await(logged)), Effect.asVoid);
       });
-    const turnNow = () => (engine === null || sentView === null ? null : { ref: engine, view: sentView });
+    // the debounce: quiet for o.wake since the last report, then the reports wake the master, unless
+    // a loop took them meanwhile (a message came) or something got parked
+    if (wakes !== null) {
+      const quiet = o.wake ?? 0;
+      yield* Effect.gen(function* () {
+        yield* Queue.take(wakes);
+        while (Option.isSome(yield* Queue.take(wakes).pipe(Effect.timeoutOption(quiet)))) {
+          // another report within the debounce: wait for quiet from here
+        }
+        yield* Effect.suspend(() => (reports.length === 0 || running ? Effect.void : wakeable() ? wakeWith : start));
+      }).pipe(Effect.forever, Effect.forkIn(scope));
+    }
+    const turnNow = () => (engine === null || sentView === null ? null : { on: device, ref: engine, view: sentView });
     const lastView = () => sentView;
 
     return { cancel, configure, events, input, lastView, live, primeSoon, report, resume, state, takeBack, turnNow };

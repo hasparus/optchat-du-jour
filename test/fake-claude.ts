@@ -6,7 +6,8 @@
 //   caption   --system-prompt is the caption prompt (an attachment's caption, SPEC "Media")
 //   compact   DISABLE_PROMPT_CACHING=1 without --replay-user-messages (the compactor)
 //   prime     DISABLE_PROMPT_CACHING=1 with --replay-user-messages (a priming call, the turn's argv)
-//   subagent  --allowedTools (a subagent's call, SPEC M7a)
+//   subagent  its --mcp-config URL names an agent (`&agent=<Name>`, a subagent's call, SPEC
+//             "Subagents"), or --allowedTools (M7a's subagents had it)
 //   turn      anything else
 //
 // Permissions, as `claude -p` with `--setting-sources ""` has them: under --permission-mode
@@ -40,6 +41,11 @@
 //                                 the permission mode refuses it, a real POST to the URL its
 //                                 --mcp-config names (ws:// read as http://), whose answer is the
 //                                 tool_result
+//   {run: {name, input}}          a tool_use block like `tool`, then, when the permission mode lets it
+//                                 run, the tool really runs, as Claude Code's would: Bash runs
+//                                 input.command with `sh -c` in this process's cwd (its output and
+//                                 exit code are the result, is_error when the code isn't 0), Write
+//                                 writes input.content to input.file_path (relative to the cwd)
 //   {toolResult: "...", is_error?}  the user event carrying that tool's result; is_error: true
 //                                 marks it failed, as Claude Code does (a Bash exit code, a
 //                                 <tool_use_error>); any other JSON value goes out as given, to
@@ -68,7 +74,9 @@
 //
 // It exits when stdin closes, also while it hangs or waits, and on SIGTERM.
 import * as Schema from "effect/Schema";
-import { appendFileSync, existsSync, readFileSync, writeSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, writeSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { CAPTION } from "../src/prompts.ts";
 
@@ -85,6 +93,7 @@ const Action = Schema.Union([
   Schema.Struct({ thought: Schema.String, streamed: Schema.optional(Schema.Boolean) }),
   Schema.Struct({ tool: Schema.Struct({ input: Schema.Json, name: Schema.String }) }),
   Schema.Struct({ mcp: Schema.Struct({ input: Schema.Json, name: Schema.String }) }),
+  Schema.Struct({ run: Schema.Struct({ input: Schema.Json, name: Schema.String }) }),
   Schema.Struct({ toolResult: Schema.String, is_error: Schema.optional(Schema.Json) }),
   Schema.Struct({ waitInput: Schema.Literal(true) }),
   Schema.Struct({ take: Schema.Literal(true) }),
@@ -129,6 +138,12 @@ type LogRecord =
   | { readonly type: "exit"; readonly code: number };
 
 const argv = process.argv.slice(2);
+// `claude --version` (a device's /health, the Devices screen): answered at once and never logged,
+// so it isn't counted as a call of any role
+if (argv.includes("--version")) {
+  writeSync(1, "0.0.0 (Claude Code)\n");
+  process.exit(0);
+}
 const { env } = process;
 const system = argv[argv.indexOf("--system-prompt") + 1] ?? "";
 const role: Role = system === CAPTION
@@ -137,7 +152,7 @@ const role: Role = system === CAPTION
     ? "compact"
     : env.DISABLE_PROMPT_CACHING === "1"
       ? "prime"
-      : argv.includes("--allowedTools")
+      : argv.includes("--allowedTools") || /[?&]agent=/.test(argv[argv.indexOf("--mcp-config") + 1] ?? "")
         ? "subagent"
         : "turn";
 const flag = (name: string) => {
@@ -257,6 +272,25 @@ const callMcp = async (name: string, args: Json): Promise<{ readonly text: strin
   return { error: answer.result?.isError === true || !res.ok, text: res.ok ? text : `HTTP ${res.status}` };
 };
 
+// A tool run for real (`run`), as Claude Code would run it here: Bash through sh in this cwd,
+// Write to a file. Its result, as the tool_result's content and error flag.
+const RunInput = Schema.Struct({ command: Schema.optional(Schema.String), content: Schema.optional(Schema.String), file_path: Schema.optional(Schema.String) });
+type Ran = { readonly content: string; readonly is_error: boolean };
+const runTool = (name: string, input: Json): Ran => {
+  const i = Schema.decodeUnknownSync(RunInput)(input);
+  if (name === "Bash") {
+    const r = spawnSync("sh", ["-c", i.command ?? ""], { encoding: "utf8" });
+    return { content: `${r.stdout}${r.stderr}`.trim() || `(exit ${r.status ?? "?"})`, is_error: r.status !== 0 };
+  }
+  if (name === "Write") {
+    const path = resolve(i.file_path ?? "");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, i.content ?? "");
+    return { content: `File created successfully at: ${path}`, is_error: false };
+  }
+  return { content: `the fake can't run ${name}`, is_error: true };
+};
+
 // the last tool call was refused for want of a permission: the refusal is its result
 let refused = false;
 
@@ -296,6 +330,13 @@ async function play(reply: Reply): Promise<boolean> {
         const answer = await callMcp(a.mcp.name, input);
         emit({ message: { content: [{ content: answer.text, is_error: answer.error, tool_use_id: "toolu_1", type: "tool_result" }], role: "user" }, type: "user" });
       }
+    } else if ("run" in a) {
+      start();
+      const { input, name } = a.run;
+      emit({ event: { content_block: { id: "toolu_1", input: {}, name, type: "tool_use" }, index: 0, type: "content_block_start" }, type: "stream_event" });
+      emit({ message: { content: [{ id: "toolu_1", input, name, type: "tool_use" }], model, role: "assistant" }, type: "assistant" });
+      const result = permitted(name) ? runTool(name, input) : { content: `Claude requested permissions to use ${name}, but you haven't granted it yet.`, is_error: true };
+      emit({ message: { content: [{ ...result, tool_use_id: "toolu_1", type: "tool_result" }], role: "user" }, type: "user" });
     } else if ("toolResult" in a) {
       if (refused) {
         refused = false; // its refusal answered the call already

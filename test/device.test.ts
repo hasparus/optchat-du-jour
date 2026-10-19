@@ -3,11 +3,12 @@
 // a connection lost mid-turn. A fake claude, no model.
 import { afterAll, expect, test } from "bun:test";
 import { Effect, Layer, Option, type Scope } from "effect";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { type Trust, type WhoIs, cachedWhois, callerNames, trusted } from "../device/auth.ts";
 import { deviceLayer } from "../device/runner.ts";
-import { deviceHealth, remoteRunner } from "../src/claude/remote.ts";
+import { deviceHealth, remoteRunner, remoteWorktrees } from "../src/claude/remote.ts";
 import { type FromDevice, type ToDevice, decodeFromDevice, frame } from "../src/claude/wire.ts";
 import { failover } from "../src/engines/chain.ts";
 import { MASTER_TOOLS } from "../src/config.ts";
@@ -40,14 +41,14 @@ const whoisOf =
 const withDevice = async <A, E>(
   folders: readonly string[],
   body: (url: string) => Effect.Effect<A, E, Scope.Scope>,
-  o: { readonly trust?: Trust; readonly port?: number } = {},
+  o: { readonly trust?: Trust; readonly port?: number; readonly worktrees?: string } = {},
 ) =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
         const port = o.port ?? freePort();
         const trust = o.trust ?? loopback;
-        yield* Layer.build(deviceLayer({ claude: ECHO, folders, host: "127.0.0.1", killGrace: "300 millis", name: "macbook", port, trust }));
+        yield* Layer.build(deviceLayer({ claude: ECHO, folders, host: "127.0.0.1", killGrace: "300 millis", name: "macbook", port, trust, worktrees: o.worktrees ?? `${tmp()}/worktrees` }));
         return yield* body(`http://127.0.0.1:${port}`);
       }),
     ),
@@ -435,5 +436,52 @@ test("an unreachable device stays offline for a moment, so a turn after its prim
         expect((yield* claude.result).result).toStartWith("echo: back");
       }),
     { port },
+  );
+});
+
+// ---------------------------------------------------------------------------------------------
+// isolated subagents' worktrees on a device (E37), in temporary directories only
+
+const git = (dir: string, ...args: string[]) => spawnSync("git", ["-c", "user.name=T", "-c", "user.email=t@example.com", ...args], { cwd: dir, encoding: "utf8" });
+// why an effect failed
+const why = (e: Effect.Effect<unknown, { readonly message: string }>) => e.pipe(Effect.flip, Effect.map((x) => x.message));
+
+test("POST /worktree makes a subagent's worktree in a folder's repository and finishes it; anything else is refused", async () => {
+  const folder = tmp();
+  const worktrees = `${tmp()}/worktrees`;
+  const repo = `${folder}/repo`;
+  mkdirSync(repo);
+  git(repo, "init", "-q", "-b", "main");
+  writeFileSync(`${repo}/a.md`, "a\n");
+  git(repo, "add", "-A");
+  git(repo, "commit", "-q", "-m", "a");
+  const plain = `${folder}/plain`;
+  mkdirSync(plain);
+  await withDevice(
+    [folder],
+    (url) =>
+      Effect.gen(function* () {
+        const trees = remoteWorktrees("macbook", url);
+        const made = yield* trees.add(repo, "scout");
+        expect(made).toMatchObject({ branch: "optchat/scout", path: `${worktrees}/scout`, repo });
+        expect(existsSync(`${worktrees}/scout/a.md`)).toBe(true);
+        // its work, committed in the worktree, goes back by a fast-forward
+        writeFileSync(`${worktrees}/scout/b.md`, "b\n");
+        git(`${worktrees}/scout`, "add", "-A");
+        git(`${worktrees}/scout`, "commit", "-q", "-m", "b");
+        const merged = yield* trees.finish(made, "scout");
+        expect(merged).toMatchObject({ files: 1, into: "main", outcome: "fast-forward" });
+        expect(existsSync(`${repo}/b.md`)).toBe(true);
+        expect(existsSync(`${worktrees}/scout`)).toBe(false);
+        // refused: a folder that isn't a repository, one outside the folders, a name that isn't one,
+        // a worktree this device didn't make for that name
+        expect(yield* why(trees.add(plain, "scout"))).toContain("is not in a git repository");
+        expect(yield* why(trees.add("/etc", "scout"))).toContain("outside this device's folders");
+        expect(yield* why(trees.add(repo, "../evil"))).toContain("is not a subagent's name");
+        const again = yield* trees.add(repo, "other");
+        expect(yield* why(trees.finish({ ...again, path: `${folder}/elsewhere` }, "other"))).toContain("not the worktree this device made for other");
+        expect(yield* why(trees.finish(again, "scout"))).toContain("not the worktree this device made for scout");
+      }),
+    { worktrees },
   );
 });

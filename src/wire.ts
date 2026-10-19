@@ -90,6 +90,30 @@ export const engineLabel = (ref: string, runs?: string | null) => {
 // short. Every field past `elapsed` is optional, so a server that sends less still decodes.
 export const SubagentState = Schema.Literals(["running", "done", "stopped", "failed"]);
 export type SubagentState = typeof SubagentState.Type;
+// An isolated subagent's git worktree (E37): the repository's top folder it was made from, the
+// worktree's own path, its branch (`optchat/<Name>`) and the commit it started from. Paths are the
+// device's own.
+export const Isolation = Schema.Struct({ repo: Schema.String, path: Schema.String, branch: Schema.String, base: Schema.String });
+export type Isolation = typeof Isolation.Type;
+// How an isolated run's branch went back into its folder when it ended (E37): fast-forwarded,
+// merged with a merge commit, nothing to merge, a conflict (branch and worktree kept, `conflicts`
+// naming the files), or not merged for another reason (`detail`: a detached HEAD, local changes in
+// the way, git failing; branch and worktree kept). `into`: the folder's branch; `files`,
+// `insertions`, `deletions`: what the branch changed since it started (its diffstat).
+export const MergeOutcome = Schema.Literals(["fast-forward", "merged", "nothing", "conflict", "not-merged"]);
+export type MergeOutcome = typeof MergeOutcome.Type;
+export const Merge = Schema.Struct({
+  outcome: MergeOutcome,
+  into: Schema.NullOr(Schema.String),
+  detail: Schema.String,
+  files: Schema.Number,
+  insertions: Schema.Number,
+  deletions: Schema.Number,
+  conflicts: Schema.optional(Schema.Array(Schema.String)),
+});
+export type Merge = typeof Merge.Type;
+// a merge outcome that left the branch and its worktree in place
+export const branchKept = (m: Merge) => m.outcome === "conflict" || m.outcome === "not-merged";
 export const SubagentInfo = Schema.Struct({
   name: Schema.String,
   task: Schema.String,
@@ -103,6 +127,14 @@ export const SubagentInfo = Schema.Struct({
   entries: Schema.optional(Schema.Number),
   lastLine: Schema.optional(Schema.String),
   why: Schema.optional(Schema.String),
+  // M7b, all optional too: the folder it works in (the device's own path), whether it works in a
+  // worktree of its own (`isolated`) and that worktree while it has one, its last run's merge back,
+  // and the subagent that spawned it (none: OptChat)
+  folder: Schema.optional(Schema.String),
+  isolated: Schema.optional(Schema.Boolean),
+  worktree: Schema.optional(Isolation),
+  merge: Schema.optional(Merge),
+  parent: Schema.optional(Schema.String),
 });
 export type SubagentInfo = typeof SubagentInfo.Type;
 

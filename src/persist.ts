@@ -12,7 +12,7 @@ class GitFailed extends Data.TaggedError("GitFailed")<{ readonly message: string
 // there instead of in the data dir. These are dropped from every git we run.
 const REPO_VARS = new Set(["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR", "GIT_PREFIX"]);
 
-const gitEnv = () => {
+export const gitEnv = () => {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !REPO_VARS.has(k)) env[k] = v;
   env.GIT_TERMINAL_PROMPT = "0"; // a push without credentials fails instead of asking

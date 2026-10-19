@@ -52,6 +52,13 @@ export const TOOL_ROUNDS = 40;
 // each, in UTF-16 code units cut at a code-point boundary as CAP's are; what is left out is counted
 export const REASONING_PIECE = 30_000;
 export const REASONING_TURN = 120_000;
+// Subagents (SPEC "Subagents", E36-E40): how many run at once unless `subagents.max` says; how long
+// an idle master waits after a report for others before the reports wake it in one turn (E39); and
+// where each device keeps the git worktrees of isolated subagents unless `subagents.worktrees` says
+// (`~` is that device's home): outside every repository, so a repo's own tools never see them (E37)
+export const SUBAGENTS_MAX = 4;
+export const WAKE_DEBOUNCE = "2 seconds";
+export const WORKTREES = "~/.optchat-worktrees";
 
 // optchat.config.ts (SPEC "Constants and configuration"): engines, compactor chains per level,
 // cache TTLs, devices, who may connect.
@@ -273,6 +280,13 @@ export const Settings = Schema.Struct({
   // (chat/reasoning/, never the log, the tree or a request; off: it is only streamed live), and
   // `commit` lets persist commit that file with the rest of the data dir. Both default to true.
   reasoning: Schema.optional(Schema.Struct({ keep: Schema.optional(Schema.Boolean), commit: Schema.optional(Schema.Boolean) })),
+  // Subagents (SPEC "Subagents"): `max` running at once, every level of nesting counted (SUBAGENTS_MAX);
+  // `wake`: a report that reaches an idle master starts a turn (E39; off: it waits for the next
+  // one, as in M7a); `worktrees`: where every device keeps isolated subagents' git worktrees
+  // (WORKTREES, `~` that device's home). All optional.
+  subagents: Schema.optional(
+    Schema.Struct({ max: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))), wake: Schema.optional(Schema.Boolean), worktrees: Schema.optional(Schema.String) }),
+  ),
   // Sign in with ChatGPT endpoints (src/openai/endpoints.ts): each key left out, or the whole field, decodes to its default
   openai: Endpoints.pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
 }).check(Schema.makeFilter((s) => {
@@ -353,6 +367,13 @@ export const mediaSettings = (settings: Settings) => {
   };
 };
 export type MediaSettings = ReturnType<typeof mediaSettings>;
+
+// the subagent settings with their defaults filled in (SPEC "Subagents")
+export const subagentSettings = (settings: Settings) => ({
+  max: settings.subagents?.max ?? SUBAGENTS_MAX,
+  wake: settings.subagents?.wake ?? true,
+  worktrees: settings.subagents?.worktrees ?? WORKTREES,
+});
 
 // the reasoning settings with their defaults filled in (SPEC "Reasoning")
 export const reasoningSettings = (settings: Settings) => ({ commit: settings.reasoning?.commit ?? true, keep: settings.reasoning?.keep ?? true });

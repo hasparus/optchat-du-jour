@@ -102,21 +102,16 @@ export const providerOf = (ref: ProviderRef, o: EngineNeeds, effort?: string): E
   }
 };
 
-// What a subagent's claude-code may use without asking (SPEC M7a): Read, Glob and Grep need no
-// permission anyway; zoom and date are MCP tools, which do. Its permission mode is "default", so
-// with -p and no settings what needs a permission (Edit, Write, WebFetch, WebSearch, spawn, tell,
-// and Bash, but for a command Claude Code classes as read-only) is refused when called, while
-// `--tools` stays the master's list, the same bytes in the request.
-export const SUBAGENT_ALLOWED: readonly string[] = ["Read", "Glob", "Grep", "mcp__optchat__zoom", "mcp__optchat__date"];
-
 // How a turn engine's claude runs: in its own permission mode (none: the master's, from the
 // config), with tools let through without asking, kept warm (and so primed) when the session says
 // so, or never (`pooled: false`: no warm process is started for it or handed to it, E18)
 export type TurnPolicy = { readonly permissionMode?: string; readonly allowedTools?: readonly string[]; readonly pooled: boolean };
 export const MASTER_POLICY: TurnPolicy = { pooled: true };
-// a subagent's (SPEC M7a), on its needs' placements and tools (the subagents' /mcp key and box,
-// which refuse spawn and tell): read-only, never warm, never primed
-export const SUBAGENT_POLICY: TurnPolicy = { allowedTools: SUBAGENT_ALLOWED, permissionMode: "default", pooled: false };
+// A subagent's (SPEC "Subagents", E36): the master's own permission mode and tools, so on
+// claude-code it runs Bash, Edit, Write, WebFetch and WebSearch as a turn does, and its argv is a
+// turn's but for its cwd and its /mcp key; on our tool loop its box is the master's list. Never
+// warm, never primed: a subagent's call is not the next turn.
+export const SUBAGENT_POLICY: TurnPolicy = { pooled: false };
 
 export const turnEngine = (ref: Ref, o: TurnNeeds, policy: TurnPolicy = MASTER_POLICY): Effect.Effect<TurnEngine> => {
   const { permissionMode, tools } = o.settings.master;

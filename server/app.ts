@@ -11,7 +11,7 @@ import { openChat } from "../src/chat.ts";
 import { Runner } from "../src/claude/process.ts";
 import { WarmLocalRunner } from "../src/claude/warm.ts";
 import type { Summarize } from "../src/compactor.ts";
-import { entryLabel, mediaSettings, reasoningSettings, type Settings } from "../src/config.ts";
+import { entryLabel, mediaSettings, reasoningSettings, type Settings, subagentSettings, WAKE_DEBOUNCE } from "../src/config.ts";
 import type { DownList } from "../src/engines/chain.ts";
 import { makeGate } from "../src/engines/inflight.ts";
 import { SUBAGENT_POLICY, turnEngine } from "../src/engines/registry.ts";
@@ -57,7 +57,6 @@ export const routes = (o: ServerOptions) =>
       const choicesPath = `${o.home}/session.json`; // the clients' choices: follow-ups
       const stream = `${o.home}/streams/${o.device}`;
       const secret = crypto.randomUUID();
-      const subagentSecret = crypto.randomUUID(); // a subagent's claude reaches /mcp with this one (SPEC M7a)
       const local = yield* Runner;
 
       // every client is told what goes wrong, and so is the server's own log (no client may be connected)
@@ -83,7 +82,7 @@ export const routes = (o: ServerOptions) =>
       );
       const needs = { apiKeys, budget, log: usage, plan, report, settings };
       const instructions = systemPrompt(o.home); // one text for every engine, device, turn and compaction (docs/optchat.md §5)
-      const { defsFor, runnerFor, subagentRunnerFor, toolsFor: toolsWith, unreachable } = yield* makePlacements({ device: o.device, local, port: o.port, report, secret, settings, subagentSecret });
+      const { agentRunnerFor, defsFor, folderFor, runnerFor, toolsFor: toolsWith, unreachable, worktrees } = yield* makePlacements({ device: o.device, local, port: o.port, report, secret, settings });
       // The session shows the compactor's engines that are down, for clients that connect later.
       // Compactions send a turn's system prompt and tools (docs/optchat.md §4): the default device's
       // on a provider, this machine's claude-code turn's on claude-code, which runs here.
@@ -108,23 +107,30 @@ export const routes = (o: ServerOptions) =>
         ...media.unreferenced(chat.mem.root.flatMap((e) => (e.kind === "user" ? [e.text] : []))).map((path) => `/assets/${path}`),
         ...reasoningLeftOut(thinking.commit),
       ]);
-      // The subagents (SPEC M7a): they run on this machine through the engines a turn has, with
-      // their own /mcp key and tool box, and need the session (for reports and the turn's view),
-      // which needs their list: it is handed to them once it exists.
+      // The subagents (SPEC "Subagents"): they run where a master turn on their device runs, through
+      // the engines a turn has, at the master's permissions (E36), each with its own /mcp key and
+      // tool box, and need the session (for reports and the turn's view), which needs their list: it
+      // is handed to them once it exists.
       const commit = Effect.suspend(() => persist(o.home, `chore(chat): ${chat.mem.root.length} messages`));
       const host = yield* Deferred.make<SubagentHost>();
+      const agentSettings = subagentSettings(settings);
       const subagents: Subagents = yield* makeSubagents({
         chain: settings.master.chain,
         commit,
         device: o.device,
+        devices: settings.devices,
         dir: stream,
         effort: settings.master.effort,
         // read when a run starts, long after `subagents` is set
-        engine: (ref) => turnEngine(ref, { ...needs, instructions, runnerFor: subagentRunnerFor, toolsFor: (device) => toolsWith(device, chat.mem, subagents.tools("subagent")) }, SUBAGENT_POLICY),
+        engine: (ref, at) =>
+          turnEngine(ref, { ...needs, instructions, runnerFor: () => agentRunnerFor(at), toolsFor: (device) => toolsWith(device, chat.mem, subagents.tools({ agent: at.name })) }, SUBAGENT_POLICY),
+        folderFor,
         host,
         logUsage: usage,
+        max: agentSettings.max,
         mem: chat.mem,
         publish: (e) => PubSub.publish(events, e).pipe(Effect.asVoid),
+        worktrees: (device) => worktrees.get(device),
       });
       const toolsFor = (device: string) => toolsWith(device, chat.mem, subagents.tools("master"));
       const engines = yield* Effect.forEach(settings.master.chain, (ref) =>
@@ -145,9 +151,10 @@ export const routes = (o: ServerOptions) =>
         saveChoices: saveChoices(choicesPath, report),
         logUsage: usage,
         subagents,
+        wake: agentSettings.wake ? WAKE_DEBOUNCE : null,
       });
       yield* Deferred.succeed(host, { lastView: session.lastView, report: session.report, turnNow: session.turnNow });
-      yield* subagents.restore; // runs a restart cut short are stopped, and reported
+      yield* subagents.restore; // runs a restart cut short go on (E40); reports not delivered yet are sent
       for (const p of chat.problems) yield* report(p);
       if (unreachable.length > 0) {
         const notice = `server.publicUrl is not set: turns on ${unreachable.join(", ")} are refused, since claude there could not reach zoom and date`;
@@ -164,7 +171,7 @@ export const routes = (o: ServerOptions) =>
       );
 
       yield* wsRoute(router, { assets: { find: media.find, report }, entries: chat.mem.root, session, subagents, thread: o.device, window: o.window ?? 200 });
-      yield* mcpRoutes(router, { agents: subagents.tools, attached: media.zoomContent, mem: chat.mem, secret, subagentSecret });
+      yield* mcpRoutes(router, { agents: subagents.tools, attached: media.zoomContent, callerOf: subagents.callerOf, mem: chat.mem, secret });
       yield* assetRoutes(router, { media, settings: mediaConfig });
       yield* apiRoutes(router, { device: o.device, mem: chat.mem, reasoning, report, session, settings, subagents, usagePath });
       yield* webRoute(router, o.web);

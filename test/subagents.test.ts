@@ -1,19 +1,25 @@
-// Subagents (SPEC M7a) with scripted engines: spawn from a turn, the cap, the models (the turn's
-// by default, the master's pick, the user's), tell, stop, the report in the chat as "[Name] …",
-// the side log on disk and committed, zoom("Name"), the usage records, a restart that cut a run
-// short, and the chat's own log and tree, which see nothing of a subagent's work but its report.
+// Subagents (SPEC "Subagents") with scripted engines: spawn from a turn, the cap (subagents.max),
+// the models (the turn's by default, the master's pick, the user's), tell, stop and Stop all, the
+// report in the chat as "[Name] …", the side log on disk and committed, zoom("Name"), the usage
+// records, a restart that cut a run short (it goes on), nested subagents (their reports go to the
+// one that spawned them), where each works (a folder, or an isolated one's git worktree, made and
+// merged back in temporary repositories only), and the chat's own log and tree, which see nothing
+// of a subagent's work but its report.
 import { afterAll, expect, test } from "bun:test";
-import { Deferred, Effect, PubSub, Schema, type Scope } from "effect";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { Deferred, type Duration, Effect, PubSub, Result, Schema, type Scope } from "effect";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
-import { entryLabel, parseSettings, type Ref } from "../src/config.ts";
+import { entryLabel, parseSettings, type Ref, SUBAGENTS_MAX } from "../src/config.ts";
 import { UsageLimit } from "../src/engines/errors.ts";
 import { makeMaster } from "../src/master.ts";
+import type { AgentTools, Caller } from "../src/mcp.ts";
 import { makeSession, noMedia, type SessionEvent } from "../src/session.ts";
-import { makeSubagents, SIDE_PAGE, type SubagentHost, SUBAGENTS_AT_ONCE } from "../src/subagents.ts";
+import { type AgentPlace, makeSubagents, SIDE_PAGE, type SubagentHost } from "../src/subagents.ts";
 import type { TurnEngine, TurnEvents, TurnInput } from "../src/turn/engine.ts";
 import type { UsageRecord } from "../src/usage.ts";
+import { localWorktrees } from "../src/worktree.ts";
 
 const dirs: string[] = [];
 afterAll(() => {
@@ -39,8 +45,9 @@ const SETTINGS = parseSettings({
 });
 const CHAIN = SETTINGS.master.chain;
 
-// What a subagent's engine does in one call: `calls` counts its calls, `input` is the call's input
-type Child = (input: TurnInput, out: TurnEvents, call: number) => Effect.Effect<void, UsageLimit>;
+// What a subagent's engine does in one call: `call` counts its calls, `input` is the call's input,
+// `at` where it runs (its device, its folder or worktree, its /mcp key)
+type Child = (input: TurnInput, out: TurnEvents, call: number, at: AgentPlace) => Effect.Effect<void, UsageLimit>;
 // a call that reads, then answers `reply`
 const answers =
   (reply: string): Child =>
@@ -74,13 +81,18 @@ const usageOf = (): UsageRecord => ({
 
 // A session over a fresh chat (or `dir`'s), with the subagents beside it as the server wires them.
 // The master's engine runs `master(tools)` in its turn: what the model would call there.
+type Args = Record<string, string | boolean>;
 const rig = (o: {
   readonly scope: Scope.Scope;
   readonly dir?: string;
-  readonly master?: (call: (tool: "spawn" | "tell", args: Record<string, string>) => Effect.Effect<{ readonly text: string; readonly error: boolean }>) => Effect.Effect<void>;
+  readonly master?: (call: (tool: "spawn" | "tell", args: Args) => Effect.Effect<{ readonly text: string; readonly error: boolean }>, turn: number) => Effect.Effect<void>;
   readonly child?: Record<string, Child>;
   // what each commit does besides being counted (a slow git, say)
   readonly commit?: Effect.Effect<void>;
+  readonly max?: number; // subagents.max (SUBAGENTS_MAX)
+  readonly wake?: Duration.Input; // reports wake an idle master after this (E39); none: M7a's waiting
+  readonly folders?: readonly string[]; // the device mini's folders
+  readonly worktrees?: string; // where isolated ones' worktrees go: a temporary directory
 }) =>
   Effect.gen(function* () {
     const dir = o.dir ?? mkdtempSync(`${tmpdir()}/oc-sub-`);
@@ -97,38 +109,47 @@ const rig = (o: {
     const usage: UsageRecord[] = [];
     const counts = { commits: 0 };
     const commit = (o.commit ?? Effect.void).pipe(Effect.andThen(Effect.sync(() => ((counts.commits += 1), null))));
-    // every call of a subagent's engine: on which ref, at which effort, with what input
-    const calls: { readonly ref: string; readonly effort: string | undefined; readonly name: string; readonly input: TurnInput }[] = [];
+    // every call of a subagent's engine: on which ref, at which effort, with what input, where
+    const calls: { readonly ref: string; readonly effort: string | undefined; readonly name: string; readonly input: TurnInput; readonly at: AgentPlace }[] = [];
+    // every master turn's input
+    const turns: TurnInput[] = [];
     const host = yield* Deferred.make<SubagentHost>();
-    const engineOf = (ref: Ref): TurnEngine => ({
+    const engineOf = (ref: Ref, at: AgentPlace): TurnEngine => ({
       ref: ref.ref,
       run: (input, out) =>
         Effect.suspend(() => {
           const name = /subagent "([^"]+)"/.exec(input.texts[0] ?? "")?.[1] ?? "?";
-          calls.push({ effort: ref.effort, input, name, ref: ref.ref });
+          calls.push({ at, effort: ref.effort, input, name, ref: ref.ref });
           const mine = calls.filter((c) => c.name === name).length;
-          return (o.child?.[name] ?? answers(`${name} found it`))(input, out, mine);
+          return (o.child?.[name] ?? answers(`${name} found it`))(input, out, mine, at);
         }),
       vision: false,
       warm: () => Effect.void,
     });
+    const folders = o.folders ?? ["/tmp"];
+    const trees = localWorktrees(o.worktrees ?? `${dir}-worktrees`);
     const subagents = yield* makeSubagents({
       chain: CHAIN,
       commit,
       device: "mini",
+      devices: { mac: { folders: ["~/repos"] }, mini: { folders } },
       dir,
       effort: "high",
-      engine: (ref) => Effect.succeed(engineOf(ref)),
+      engine: (ref, at) => Effect.succeed(engineOf(ref, at)),
+      folderFor: (device, path) => (device === "mini" && !folders.some((f) => path === f || path.startsWith(`${f}/`)) ? Result.fail(`${path} is outside mini's folders`) : Result.succeed(path)),
       host,
       logUsage: (r) => Effect.sync(() => usage.push(r)),
+      max: o.max ?? SUBAGENTS_MAX,
       mem: chat.mem,
       publish: (e) => PubSub.publish(events, e).pipe(Effect.asVoid),
+      worktrees: (device) => (device === "mini" ? trees : undefined),
     });
     const masterEngine = (ref: string): TurnEngine => ({
       ref,
-      run: (_input, out) =>
+      run: (input, out) =>
         Effect.gen(function* () {
-          if (o.master) yield* o.master((tool, args) => subagents.tools("master").call(tool, args));
+          turns.push(input);
+          if (o.master) yield* o.master((tool, args) => subagents.tools("master").call(tool, args), turns.length);
           yield* out.log("talk", "the master answers");
         }),
       vision: false,
@@ -151,13 +172,15 @@ const rig = (o: {
       media: noMedia,
       subagents,
       waitRetry: "1 hour",
+      wake: o.wake ?? null,
     });
     yield* Deferred.succeed(host, { lastView: session.lastView, report: session.report, turnNow: session.turnNow });
     yield* subagents.restore;
     const log = () => chat.mem.root.map((m) => `${m.kind}: ${m.text}`);
     const idle = () => session.state().phase === "idle";
     const stateOf = (name: string) => session.state().subagents?.find((s) => s.name === name);
-    return { calls, chat, counts, dir, idle, log, said, session, stateOf, subagents, usage };
+    const tools = (caller: Caller) => subagents.tools(caller);
+    return { calls, chat, counts, dir, idle, log, said, session, stateOf, subagents, tools, turns, usage };
   });
 
 const scoped = async <A, E>(f: (scope: Scope.Scope) => Effect.Effect<A, E, Scope.Scope>) =>
@@ -168,7 +191,7 @@ const scoped = async <A, E>(f: (scope: Scope.Scope) => Effect.Effect<A, E, Scope
     }).pipe(Effect.scoped),
   );
 
-test("spawn starts a read-only run that outlives the turn; its report reaches the chat as [Name] …, and nothing else of it does", async () => {
+test("spawn starts a run in the turn's folder that outlives the turn; its report reaches the chat as [Name] …, and nothing else of it does", async () => {
   await scoped((scope) =>
     Effect.gen(function* () {
       const answers: string[] = [];
@@ -209,6 +232,13 @@ test("spawn starts a read-only run that outlives the turn; its report reaches th
       expect(first?.input.texts[0]).toContain('You are the subagent "scout"');
       expect(first?.input.texts[0]).toContain("Task: Find the notes about the trip.");
       expect(first?.input.device).toBe("mini");
+      // where it works: the device's first folder, directly, with a /mcp key of its own
+      expect(first?.at).toMatchObject({ cwd: "/tmp", device: "mini", name: "scout" });
+      expect(first?.input.texts[0]).toContain("You work directly in /tmp on mini");
+      expect(r.subagents.callerOf(first?.at.key ?? "")).toEqual({ agent: "scout" });
+      expect(r.subagents.callerOf("not a key")).toBeNull();
+      expect(r.stateOf("scout")).toMatchObject({ device: "mini", folder: "/tmp" });
+      expect(r.stateOf("scout")?.isolated).toBeUndefined();
       // its usage, as a subagent's: its name, ref and effort
       expect(r.usage.map((u) => [u.role, u.subagent, u.ref, u.effort])).toEqual([["subagent", "scout", "claude-code:opus", "high"]]);
       // AG-UI's subagent events went out: started, then finished with the report
@@ -219,7 +249,7 @@ test("spawn starts a read-only run that outlives the turn; its report reaches th
   );
 });
 
-test("at most two run at once: a third spawn is refused, naming them; a name is taken once, in any case", async () => {
+test("at most subagents.max run at once: one more spawn is refused, naming them; a name is taken once, in any case", async () => {
   await scoped((scope) =>
     Effect.gen(function* () {
       const hold = yield* Deferred.make<true>();
@@ -231,17 +261,36 @@ test("at most two run at once: a third spawn is refused, naming them; a name is 
           Effect.gen(function* () {
             for (const name of ["a", "b", "c", "A"]) answers.push(yield* call("spawn", { name, task: `task ${name}` }));
           }),
+        max: 2,
         scope,
       });
       yield* r.session.input("three at once", { clientId: "c1" });
       yield* until("the turn", () => answers.length === 4);
-      expect(SUBAGENTS_AT_ONCE).toBe(2);
       expect(answers.map((a) => a.error)).toEqual([false, false, true, true]);
       expect(answers[2]?.text).toContain("2 subagents run already (a, b), at most 2 at once");
       expect(answers[3]?.text).toContain("there is a subagent called a already (running)");
       expect(existsSync(`${r.dir}/agents/c`)).toBe(false);
       yield* Deferred.succeed(hold, true);
       yield* until("both reports", () => r.log().filter((l) => l.startsWith("user: [")).length === 2);
+      // the default is SUBAGENTS_MAX, 4: four start, the fifth is refused
+      const more: { text: string; error: boolean }[] = [];
+      const wait = yield* Deferred.make<true>();
+      const held: Child = () => Effect.asVoid(Deferred.await(wait));
+      const four = yield* rig({
+        child: { p: held, q: held, r: held, s: held },
+        master: (call) =>
+          Effect.gen(function* () {
+            for (const name of ["p", "q", "r", "s", "t"]) more.push(yield* call("spawn", { name, task: `task ${name}` }));
+          }),
+        scope,
+      });
+      yield* four.session.input("five at once", { clientId: "c1" });
+      yield* until("the turn", () => more.length === 5);
+      expect(SUBAGENTS_MAX).toBe(4);
+      expect(more.map((a) => a.error)).toEqual([false, false, false, false, true]);
+      expect(more[4]?.text).toContain("4 subagents run already (p, q, r, s), at most 4 at once");
+      yield* Deferred.succeed(wait, true);
+      yield* until("four reports", () => four.log().filter((l) => l.startsWith("user: [")).length === 4);
     }),
   );
 });
@@ -384,41 +433,77 @@ test("the user stops a running subagent: it is reported stopped; one that hits a
   );
 });
 
-test("a restart finds a run it cut short: stopped, reported once, never resumed", async () => {
+test("a restart finds a run it cut short: it goes on from its side log, and its report is delivered once", async () => {
   const dir = mkdtempSync(`${tmpdir()}/oc-sub-`);
   dirs.push(dir);
   // the first server: a run going on when it shuts down (its scope closes)
   await scoped((scope) =>
     Effect.gen(function* () {
-      const r = yield* rig({ child: { slow: () => Effect.never }, dir, master: (call) => Effect.asVoid(call("spawn", { name: "slow", task: "wait" })), scope });
+      const r = yield* rig({
+        child: { slow: (_input, out) => out.log("tool", 'Bash {"command":"make"}').pipe(Effect.orDie, Effect.andThen(Effect.never)) },
+        dir,
+        master: (call) => Effect.asVoid(call("spawn", { name: "slow", task: "build it" })),
+        scope,
+      });
       yield* r.session.input("go", { clientId: "c1" });
-      yield* until("running", () => r.stateOf("slow")?.state === "running" && r.idle());
+      yield* until("running", () => r.stateOf("slow")?.entries === 2 && r.idle());
     }),
   );
   const meta = () => decodeMeta(readFileSync(`${dir}/agents/slow/agent.json`, "utf8"));
   expect(meta().state).toBe("running");
-  // the next one: stopped and reported, and nothing runs it
+  // the next one: it goes on, told why, from its side log, and reports once it ends
   await scoped((scope) =>
     Effect.gen(function* () {
-      const r = yield* rig({ dir, scope });
-      yield* until("the report", () => r.log().some((l) => l.startsWith("user: [slow] stopped")));
-      expect(r.log().at(-1)).toContain("the server restarted while it ran; nothing resumes it");
-      expect(r.calls).toEqual([]);
-      expect(meta()).toMatchObject({ pending: null, state: "stopped" });
-      expect(r.stateOf("slow")?.state).toBe("stopped");
+      const r = yield* rig({ child: { slow: (_input, out) => out.log("talk", "built after the restart").pipe(Effect.orDie) }, dir, scope });
+      yield* until("the report", () => r.log().includes("user: [slow] built after the restart"));
+      expect(r.calls).toHaveLength(1);
+      const opening = r.calls[0]?.input.texts[0] ?? "";
+      expect(opening).toContain("You worked on this before");
+      expect(opening).toContain('1|tool: Bash {"command":"make"}');
+      expect(opening).toContain("The server restarted while you worked");
+      yield* until("delivered", () => meta().pending === null);
+      expect(meta()).toMatchObject({ entries: 4, state: "done" });
+      const runs = r.said.flatMap((e) => (e.type === "subagent-started" ? [e.runId] : []));
+      expect(runs).toEqual(["slow+2"]);
     }),
   );
-  // and the one after that says nothing more
+  // and the one after that says nothing more, and runs nothing
   await scoped((scope) =>
     Effect.gen(function* () {
       const r = yield* rig({ dir, scope });
       yield* Effect.sleep("50 millis");
       expect(r.log().filter((l) => l.startsWith("user: [slow]"))).toHaveLength(1);
+      expect(r.calls).toEqual([]);
     }),
   );
 });
 
-test("zoom(\"Name\") reads a side log a page at a time; a subagent's own spawn and tell are refused", async () => {
+test("a restart past subagents.max goes on with as many as fit; the others are stopped and reported", async () => {
+  const dir = mkdtempSync(`${tmpdir()}/oc-sub-`);
+  dirs.push(dir);
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const r = yield* rig({
+        child: { a: () => Effect.never, b: () => Effect.never },
+        dir,
+        master: (call) => Effect.asVoid(call("spawn", { name: "a", task: "t" }).pipe(Effect.andThen(Effect.sleep("20 millis")), Effect.andThen(call("spawn", { name: "b", task: "t" })))),
+        scope,
+      });
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("both running", () => r.stateOf("b")?.state === "running" && r.idle());
+    }),
+  );
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const r = yield* rig({ child: { a: () => Effect.never }, dir, max: 1, scope });
+      yield* until("b's report", () => r.log().some((l) => l.startsWith("user: [b] stopped")));
+      expect(r.log().find((l) => l.startsWith("user: [b]"))).toContain("the server restarted while it ran, and it could not go on: 1 subagents run already (a), at most 1 at once");
+      expect(r.stateOf("a")?.state).toBe("running"); // the older one goes on
+    }),
+  );
+});
+
+test("zoom(\"Name\") reads a side log a page at a time", async () => {
   await scoped((scope) =>
     Effect.gen(function* () {
       const big = "x".repeat(SIDE_PAGE / 2);
@@ -446,15 +531,14 @@ test("zoom(\"Name\") reads a side log a page at a time; a subagent's own spawn a
       expect(rest).toContain("5|talk: read it all");
       expect(rest).not.toContain("[more");
       expect(zoom("ghost", 0)).toBe("No subagent ghost. Subagents: reader.");
-      const theirs = r.subagents.tools("subagent");
-      expect(yield* theirs.call("spawn", { name: "nested", task: "t" })).toEqual({ error: true, text: "spawn: a subagent can't start or tell subagents" });
-      expect(yield* theirs.call("tell", { name: "reader", text: "t" })).toEqual({ error: true, text: "tell: a subagent can't start or tell subagents" });
-      expect(theirs.zoom("reader", 5)).toContain("5|talk: read it all");
+      expect(r.tools({ agent: "reader" }).zoom("reader", 5)).toContain("5|talk: read it all");
+      // a subagent that has ended can't spawn
+      expect(yield* r.tools({ agent: "reader" }).call("spawn", { name: "late", task: "t" })).toEqual({ error: true, text: "spawn: only a running subagent can start one" });
     }),
   );
 });
 
-test("a report waits for the running turn and never starts one", async () => {
+test("with wake off (M7a), a report waits for the running turn and never starts one", async () => {
   await scoped((scope) =>
     Effect.gen(function* () {
       const release = yield* Deferred.make<true>();
@@ -613,6 +697,309 @@ test("two runs that report the same words are two reports, each delivered once",
       yield* until("none pending", () => decodeMeta(readFileSync(path, "utf8")).pending === null);
       yield* Effect.sleep("50 millis");
       expect(r.log().filter((l) => l.startsWith("user: [echo]"))).toEqual(["user: [echo] nothing new", "user: [echo] nothing new"]);
+    }),
+  );
+});
+
+test("a subagent spawns one of its own: the cap counts it, its report goes to the one that spawned it, which reports to the chat", async () => {
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const answers: { text: string; error: boolean }[] = [];
+      let tools: ((caller: Caller) => AgentTools) | null = null;
+      const r = yield* rig({
+        child: {
+          // its first call spawns worker and ends; worker's report starts it again
+          boss: (input, out, call) =>
+            Effect.gen(function* () {
+              if (call === 1) {
+                const theirs = tools?.({ agent: "boss" });
+                if (theirs === undefined) return yield* Effect.die(new Error("no tools"));
+                const worker = yield* theirs.call("spawn", { name: "worker", task: "count the files" });
+                answers.push(worker, yield* theirs.call("spawn", { name: "extra", task: "t" }));
+                yield* out.log("talk", "worker is on it");
+                return;
+              }
+              yield* out.log("talk", `worker said: ${input.texts[0]?.includes("[worker] 12 files") ? "12 files" : "?"}`);
+            }).pipe(Effect.orDie),
+          worker: (_input, out) => out.log("talk", "12 files").pipe(Effect.orDie),
+        },
+        master: (call) => Effect.asVoid(call("spawn", { name: "boss", task: "delegate the count" })),
+        max: 2,
+        scope,
+      });
+      tools = r.tools;
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("boss's second report", () => r.log().includes("user: [boss] worker said: 12 files"));
+      expect(answers[0]).toMatchObject({ error: false });
+      expect(answers[0]?.text).toContain('its report will reach you as a message starting "[worker] "');
+      // two running (boss and worker): the cap of 2 counts every level
+      expect(answers[1]?.text).toContain("2 subagents run already (boss, worker), at most 2 at once");
+      // worker's report is in boss's side log, not the chat; the chat has boss's two reports
+      expect(r.log().filter((l) => l.startsWith("user: ["))).toEqual(["user: [boss] worker is on it", "user: [boss] worker said: 12 files"]);
+      const side = r.subagents.log("boss")?.entries.map((e) => `${e.kind}: ${e.text}`);
+      expect(side).toContain("user: [worker] 12 files");
+      expect(r.stateOf("worker")).toMatchObject({ parent: "boss", state: "done" });
+      // worker started from boss's opening: started by the subagent "boss"
+      expect(r.calls.find((c) => c.name === "worker")?.input.texts[0]).toContain('started by the subagent "boss"');
+      expect(decodeMeta(readFileSync(`${r.dir}/agents/worker/agent.json`, "utf8")).pending).toBeNull();
+      // a subagent tells another; not itself
+      expect(yield* r.tools({ agent: "boss" }).call("tell", { name: "boss", text: "hi" })).toEqual({ error: true, text: "tell: that is you" });
+    }),
+  );
+});
+
+test("Stop all stops every running subagent; each reports it was stopped", async () => {
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const r = yield* rig({
+        child: { a: () => Effect.never, b: () => Effect.never },
+        master: (call) => Effect.asVoid(call("spawn", { name: "a", task: "t" }).pipe(Effect.andThen(call("spawn", { name: "b", task: "t" })))),
+        scope,
+      });
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("both running", () => r.calls.length === 2);
+      expect([...(yield* r.subagents.stopAll)].toSorted()).toEqual(["a", "b"]);
+      yield* until("both reports", () => r.log().filter((l) => l.includes("stopped after")).length === 2);
+      expect(r.stateOf("a")).toMatchObject({ state: "stopped", why: "stopped by the user" });
+      expect(r.stateOf("b")).toMatchObject({ state: "stopped", why: "stopped by the user" });
+      expect(yield* r.subagents.stopAll).toEqual([]);
+    }),
+  );
+});
+
+test("a report wakes the idle master: its next turn starts with the report", async () => {
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const go = yield* Deferred.make<true>();
+      const r = yield* rig({
+        child: { scout: (_input, out) => Deferred.await(go).pipe(Effect.andThen(out.log("talk", "the notes say Oct 3")), Effect.orDie) },
+        master: (call, turn) => (turn === 1 ? Effect.asVoid(call("spawn", { name: "scout", task: "find the date" })) : Effect.void),
+        scope,
+        wake: "50 millis",
+      });
+      yield* r.session.input("find the date, with a subagent", { clientId: "c1" });
+      yield* until("idle", () => r.turns.length === 1 && r.idle());
+      yield* Deferred.succeed(go, true);
+      yield* until("woken", () => r.turns.length === 2 && r.idle());
+      expect(r.turns[1]?.texts).toEqual(["[scout] the notes say Oct 3"]);
+      expect(r.log()).toEqual(["user: find the date, with a subagent", "talk: the master answers", "user: [scout] the notes say Oct 3", "talk: the master answers"]);
+    }),
+  );
+});
+
+test("where it works: the folder asked for, or relative to the caller's, on the device asked for; others in the same folder are named in its opening", async () => {
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const answers: { text: string; error: boolean }[] = [];
+      const hold = yield* Deferred.make<true>();
+      const held: Child = (_input, out) => Deferred.await(hold).pipe(Effect.andThen(out.log("talk", "done")), Effect.orDie);
+      const r = yield* rig({
+        child: { first: held, second: held, sub: held, far: held },
+        folders: ["/tmp", "/srv"],
+        master: (call) =>
+          Effect.gen(function* () {
+            answers.push(
+              yield* call("spawn", { name: "first", task: "fix the parser" }),
+              yield* call("spawn", { name: "second", task: "fix the lexer" }),
+              yield* call("spawn", { folder: "/etc", name: "outside", task: "t" }),
+              yield* call("spawn", { folder: "sub", name: "sub", task: "t" }),
+              yield* call("spawn", { device: "nowhere", name: "lost", task: "t" }),
+            );
+          }),
+        scope,
+      });
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("three calls", () => r.calls.length === 3);
+      expect(answers.map((a) => a.error)).toEqual([false, false, true, false, true]);
+      expect(answers[1]?.text).toContain("directly in /tmp on mini");
+      expect(answers[2]?.text).toContain("/etc is outside mini's folders");
+      expect(answers[4]?.text).toContain("nowhere is not a device (mac, mini)");
+      // the second is told the first works in /tmp too; and the one in /tmp/sub, both of them
+      const opening = (name: string) => r.calls.find((c) => c.name === name)?.input.texts[0] ?? "";
+      expect(opening("second")).toContain("first (fix the parser)");
+      expect(opening("second")).toContain("there now too");
+      expect(opening("sub")).toContain("You work directly in /tmp/sub on mini");
+      expect(opening("sub")).toContain("first (fix the parser), second (fix the lexer) work there now too");
+      expect(r.calls.find((c) => c.name === "sub")?.at.cwd).toBe("/tmp/sub");
+      // a subagent's own spawn defaults to its folder and device; another device's first folder there
+      answers.push(yield* r.tools({ agent: "first" }).call("spawn", { device: "mac", name: "far", task: "t" }));
+      yield* until("far's call", () => r.calls.some((c) => c.name === "far"));
+      expect(r.calls.find((c) => c.name === "far")?.at).toMatchObject({ cwd: "~/repos", device: "mac" });
+      expect(r.calls.find((c) => c.name === "far")?.input.device).toBe("mac");
+      yield* Deferred.succeed(hold, true);
+      yield* until("all done", () => ["first", "second", "sub", "far"].every((n) => r.stateOf(n)?.state === "done"));
+    }),
+  );
+});
+
+// ---- isolated subagents: git worktrees, in temporary directories only ----
+
+const git = (dir: string, ...args: string[]) => {
+  const r = spawnSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgSign=false", ...args], { cwd: dir, encoding: "utf8" });
+  if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+  return r.stdout.trim();
+};
+// a fresh repository with one commit, in a temporary folder that is mini's only folder; its worktrees beside it
+const repo = () => {
+  const top = realpathSync(mkdtempSync(`${tmpdir()}/oc-wt-`));
+  dirs.push(top);
+  const folder = `${top}/repo`;
+  mkdirSync(folder);
+  git(folder, "init", "-q", "-b", "main");
+  writeFileSync(`${folder}/notes.md`, "one\ntwo\nthree\n");
+  git(folder, "add", "-A");
+  git(folder, "commit", "-q", "-m", "start");
+  return { folder, top, worktrees: `${top}/worktrees` };
+};
+// what a test saw of a worktree from inside the subagent's call
+type Seen = { readonly exists: boolean; readonly branch: string };
+type Watch = { seen: Seen | null };
+// a child that edits a file in its worktree and commits it, after `before`
+const editing =
+  (file: string, text: string, o: { readonly commit?: boolean; readonly before?: Effect.Effect<void> } = {}): Child =>
+  (_input, out, _call, at) =>
+    Effect.gen(function* () {
+      yield* o.before ?? Effect.void;
+      writeFileSync(`${at.cwd}/${file}`, text);
+      if (o.commit !== false) {
+        git(at.cwd, "add", "-A");
+        git(at.cwd, "commit", "-q", "-m", `edit ${file}`);
+      }
+      yield* out.log("talk", `edited ${file}`);
+    }).pipe(Effect.orDie);
+
+test("isolate: a worktree on optchat/<Name>; a clean end fast-forwards the folder's branch, then the worktree and branch go", async () => {
+  const { folder, top, worktrees } = repo();
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      // what its worktree looked like while it ran
+      const during: Watch = { seen: null };
+      const answers: { text: string; error: boolean }[] = [];
+      const r = yield* rig({
+        child: {
+          iso: (input, out, call, at) =>
+            Effect.suspend(() => {
+              during.seen = { branch: git(at.cwd, "branch", "--show-current"), exists: existsSync(`${worktrees}/iso`) };
+              return editing("added.md", "from the worktree\n")(input, out, call, at);
+            }),
+        },
+        folders: [top],
+        master: (call) => Effect.asVoid(call("spawn", { folder, isolate: true, name: "iso", task: "add a file" }).pipe(Effect.tap((a) => Effect.sync(() => answers.push(a))))),
+        scope,
+        worktrees,
+      });
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("the report", () => r.log().some((l) => l.startsWith("user: [iso] ")));
+      expect(answers[0]?.text).toContain(`in its own worktree ${worktrees}/iso on mini, branch optchat/iso from ${folder}`);
+      expect(during.seen).toEqual({ branch: "optchat/iso", exists: true });
+      const call = r.calls[0];
+      expect(call?.at.cwd).toBe(`${worktrees}/iso`);
+      expect(call?.input.texts[0]).toContain(`You work in a git worktree of your own, ${worktrees}/iso on mini, on branch optchat/iso, made from ${folder}`);
+      // merged into main by a fast-forward; the worktree and the branch are gone
+      expect(readFileSync(`${folder}/added.md`, "utf8")).toBe("from the worktree\n");
+      expect(git(folder, "log", "--format=%s", "-1")).toBe("edit added.md");
+      expect(existsSync(`${worktrees}/iso`)).toBe(false);
+      expect(git(folder, "branch", "--list", "optchat/iso")).toBe("");
+      const report = r.log().find((l) => l.startsWith("user: [iso] ")) ?? "";
+      expect(report).toContain("edited added.md\n[main fast-forwarded to optchat/iso; its worktree and branch are removed; 1 files changed, +1 -0]");
+      expect(r.stateOf("iso")).toMatchObject({ isolated: true, merge: { deletions: 0, files: 1, insertions: 1, into: "main", outcome: "fast-forward" } });
+      expect(r.stateOf("iso")?.worktree).toBeUndefined();
+    }),
+  );
+});
+
+test("isolate: the folder moved on meanwhile; a clean merge makes a merge commit, and what it left uncommitted is committed first", async () => {
+  const { folder, top, worktrees } = repo();
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const r = yield* rig({
+        child: {
+          // the master (or the user) commits another file in the folder while it works; it leaves its own edit uncommitted
+          iso: editing("theirs.md", "mine\n", {
+            before: Effect.sync(() => {
+              writeFileSync(`${folder}/master.md`, "the master's\n");
+              git(folder, "add", "-A");
+              git(folder, "commit", "-q", "-m", "the master's commit");
+            }),
+            commit: false,
+          }),
+        },
+        folders: [top],
+        master: (call) => Effect.asVoid(call("spawn", { folder, isolate: true, name: "iso", task: "add a file" })),
+        scope,
+        worktrees,
+      });
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("the report", () => r.log().some((l) => l.startsWith("user: [iso] ")));
+      // a merge commit, its two parents the master's commit and the subagent's
+      expect(git(folder, "log", "--format=%s", "-1")).toBe("Merge optchat/iso (subagent iso)");
+      expect(git(folder, "log", "--format=%s", "HEAD^1", "-1")).toBe("the master's commit");
+      expect(git(folder, "log", "--format=%s", "HEAD^2", "-1")).toBe("iso: work left uncommitted when it ended");
+      expect(readFileSync(`${folder}/theirs.md`, "utf8")).toBe("mine\n");
+      expect(r.stateOf("iso")?.merge).toMatchObject({ files: 1, into: "main", outcome: "merged" });
+      expect(r.log().find((l) => l.startsWith("user: [iso] "))).toContain("its uncommitted changes (1 paths) were committed on optchat/iso first");
+      expect(existsSync(`${worktrees}/iso`)).toBe(false);
+    }),
+  );
+});
+
+test("isolate: a conflict keeps the branch and the worktree and says so; a tell goes on there", async () => {
+  const { folder, top, worktrees } = repo();
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const r = yield* rig({
+        child: {
+          iso: (input, out, call, at) =>
+            call === 1
+              ? editing("notes.md", "one\nTWO from the subagent\nthree\n", {
+                  before: Effect.sync(() => {
+                    writeFileSync(`${folder}/notes.md`, "one\ntwo from the master\nthree\n");
+                    git(folder, "commit", "-q", "-am", "the master's edit");
+                  }),
+                })(input, out, call, at)
+              : out.log("talk", `still in ${at.cwd}`).pipe(Effect.orDie),
+        },
+        folders: [top],
+        master: (call) => Effect.asVoid(call("spawn", { folder, isolate: true, name: "iso", task: "edit the notes" })),
+        scope,
+        worktrees,
+      });
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("the report", () => r.log().some((l) => l.startsWith("user: [iso] ")));
+      const report = r.log().find((l) => l.startsWith("user: [iso] ")) ?? "";
+      expect(report).toContain(`optchat/iso conflicts with main in notes.md; optchat/iso is kept with its worktree at ${worktrees}/iso`);
+      // the folder is as the master left it, with no merge half done
+      expect(readFileSync(`${folder}/notes.md`, "utf8")).toBe("one\ntwo from the master\nthree\n");
+      expect(git(folder, "status", "--porcelain")).toBe("");
+      expect(existsSync(`${worktrees}/iso`)).toBe(true);
+      expect(git(folder, "branch", "--list", "optchat/iso")).toContain("optchat/iso");
+      expect(r.stateOf("iso")).toMatchObject({ merge: { conflicts: ["notes.md"], into: "main", outcome: "conflict" }, worktree: { branch: "optchat/iso", path: `${worktrees}/iso` } });
+      // told again, it goes on in the same worktree
+      expect(yield* r.subagents.tell("iso", "merge main into your branch")).toBeNull();
+      yield* until("its second report", () => r.log().some((l) => l.startsWith("user: [iso] still in")));
+      expect(r.log().find((l) => l.startsWith("user: [iso] still in"))).toContain(`still in ${worktrees}/iso`);
+    }),
+  );
+});
+
+test("isolate needs a git repository: a folder that isn't one is a tool error, and nothing starts", async () => {
+  const top = realpathSync(mkdtempSync(`${tmpdir()}/oc-wt-`));
+  dirs.push(top);
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const answers: { text: string; error: boolean }[] = [];
+      const r = yield* rig({
+        folders: [top],
+        master: (call) => Effect.asVoid(call("spawn", { folder: top, isolate: true, name: "iso", task: "t" }).pipe(Effect.tap((a) => Effect.sync(() => answers.push(a))))),
+        scope,
+        worktrees: `${top}/worktrees`,
+      });
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("the answer", () => answers.length === 1);
+      expect(answers[0]).toEqual({ error: true, text: `spawn: ${top} is not in a git repository, so it can't be isolated: spawn without isolate to work there directly` });
+      expect(r.calls).toEqual([]);
+      expect(existsSync(`${r.dir}/agents/iso`)).toBe(false);
+      expect(r.stateOf("iso")).toBeUndefined();
     }),
   );
 });

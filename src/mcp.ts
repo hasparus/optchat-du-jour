@@ -29,9 +29,16 @@ export const TOOLS = [
   },
   {
     description:
-      'Start a subagent called name on task, in the background, and return at once. It reads files and memory and changes nothing. Its report reaches the chat as a message starting "[name] ". model: an engine:model@effort ref of your chain; this turn\'s when left out.',
+      'Start a subagent called name on task, in the background, and return at once. It has your tools and works directly in folder (your own folder when left out) on device (yours when left out); isolate: true gives it a git worktree of its own instead, on branch optchat/name, merged back into the folder\'s branch when it ends. Its report reaches you as a message starting "[name] ". model: an engine:model@effort ref of your chain; yours when left out.',
     inputSchema: {
-      properties: { model: { type: "string" }, name: { type: "string" }, task: { type: "string" } },
+      properties: {
+        device: { type: "string" },
+        folder: { type: "string" },
+        isolate: { type: "boolean" },
+        model: { type: "string" },
+        name: { type: "string" },
+        task: { type: "string" },
+      },
       required: ["name", "task"],
       type: "object",
     },
@@ -44,13 +51,18 @@ export const TOOLS = [
   },
 ] as const;
 
-// What the tools that reach subagents (SPEC M7a) need: zoom("Name", from) reads a side log from
-// memory, at once; spawn and tell go to the supervisor (src/subagents.ts). `error`: the answer is
-// a refusal (an unknown model, the cap, a name taken), which the model reads as a tool error.
+// What the tools that reach subagents (SPEC "Subagents") need: zoom("Name", from) reads a side log
+// from memory, at once; spawn and tell go to the supervisor (src/subagents.ts). `error`: the answer
+// is a refusal (an unknown model, the cap, a name taken, a folder that can't be isolated), which the
+// model reads as a tool error.
 export type AgentTools = {
   readonly zoom: (name: string, from: number) => string;
   readonly call: (tool: "spawn" | "tell", args: Readonly<Record<string, Schema.Json>>) => Effect.Effect<{ readonly text: string; readonly error: boolean }>;
 };
+// who calls the tools that reach subagents: the master (a turn), or the subagent so named (E38),
+// known by the /mcp key its claude was given or by the tool box its call was given
+export type Caller = "master" | { readonly agent: string };
+
 // a server without subagents (tests, the CLI's local commands): a name opens nothing, spawn and tell refuse
 export const noAgents: AgentTools = {
   call: (tool) => Effect.succeed({ error: true, text: `${tool}: there are no subagents here.` }),
