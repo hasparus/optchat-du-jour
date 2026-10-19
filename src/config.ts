@@ -31,6 +31,11 @@ export const WAIT_RETRY = "10 seconds";
 // input's doing, so asking again mostly fails alike (UniiChat clips at the first); one more try,
 // WAIT_RETRY later, lets a flaky safeguard pass, and holds a waiting turn back by that much at most.
 export const REFUSALS = 2;
+// The /ws heartbeat (UniiChat's values): the server sends a connection the state when nothing else
+// went out for HEARTBEAT, and a client that hears nothing for SILENT takes the socket for dead and
+// opens another. A half-open TCP connection or a laptop on a new Wi-Fi otherwise looks open for
+// minutes. SILENT lives with the client (web/src/lib/connection.ts), which can't import this file.
+export const HEARTBEAT = "5 seconds";
 // the most characters of one tool result that get logged
 export const CAP = 30_000;
 // lines per content block of the view, or of a compactor's context (docs/optchat.md §3.3 "How the

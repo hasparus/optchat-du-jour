@@ -1,6 +1,8 @@
 // The /ws link (SPEC "Protocol", E15). It connects at once, reconnects for ever, and hands every
 // decoded AG-UI event to its listeners (the session store). The server opens each connection with a
-// snapshot of the log, so a reconnect needs no replay. TanStack AI's webSocket() adapter opens its
+// snapshot of the log, so a reconnect needs no replay. The server says something at least every
+// 5 s (its heartbeat, a STATE_DELTA); a socket silent for SILENT_MS is dead, whatever it says, and
+// is opened afresh (after UniiChat's link, docs/uniichat.md). TanStack AI's webSocket() adapter opens its
 // socket only when this client sends, and gives up when it closes, so a phone that only watches
 // would never see a turn the laptop started (SPEC M2 open question).
 import { Option } from "effect";
@@ -50,14 +52,20 @@ export type SocketLike = {
 export type LinkOptions = {
   readonly socket?: (url: string) => SocketLike; // tests replace the WebSocket
   readonly retryMs?: number; // the first reconnect delay; it doubles up to 10 s
+  readonly silentMs?: number; // SILENT_MS
 };
 
 const MAX_RETRY_MS = 10_000;
 export const STALE_MS = 30_000; // hidden this long, an open socket is no longer trusted
+// Heard nothing for this long, a socket is dead: two of the server's 5 s heartbeats (HEARTBEAT,
+// src/config.ts) missed. A half-open connection (a laptop on a new Wi-Fi, a NAT that forgot it)
+// never gets a close event, and would otherwise sit "open" until the page is hidden and shown.
+export const SILENT_MS = 10_000;
 
 export function openLink(url: string, options: LinkOptions = {}): Link {
   const open = options.socket ?? ((target: string): SocketLike => new WebSocket(target));
   const firstRetry = options.retryMs ?? 1000;
+  const silentMs = options.silentMs ?? SILENT_MS;
   const listeners = new Set<(event: Inbound) => void>();
   const statusListeners = new Set<(status: LinkStatus) => void>();
   const outbox: string[] = []; // messages sent while disconnected: delivered on the next open
@@ -65,6 +73,7 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
   let status: LinkStatus = "connecting";
   let retry = firstRetry;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let silence: ReturnType<typeof setTimeout> | undefined; // armed while a socket is ours; any frame resets it
   let closed = false;
 
   const setStatus = (next: LinkStatus) => {
@@ -77,19 +86,39 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
     else outbox.push(frame);
   };
 
+  // A socket that has said nothing for silentMs is let go: one that was open is opened afresh at
+  // once (the server is likely there, the path to it was lost), one still connecting goes the way
+  // of a refused connection, the backoff. Its close event, if one ever comes, is then not ours.
+  const hush = (ws: SocketLike) => {
+    clearTimeout(silence);
+    silence = setTimeout(() => {
+      if (ws !== socket || closed) return;
+      const wasOpen = status === "open";
+      socket = null;
+      ws.close();
+      setStatus("closed");
+      if (wasOpen) retry = firstRetry;
+      timer = setTimeout(connect, wasOpen ? 0 : retry);
+      if (!wasOpen) retry = Math.min(retry * 2, MAX_RETRY_MS);
+    }, silentMs);
+  };
+
   const connect = () => {
     if (closed) return;
     setStatus("connecting");
     const ws = open(url);
     socket = ws;
+    hush(ws);
     ws.addEventListener("open", () => {
       if (ws !== socket) return;
       retry = firstRetry;
+      hush(ws);
       setStatus("open");
       for (const frame of outbox.splice(0)) ws.send(frame);
     });
     ws.addEventListener("message", (message) => {
       if (ws !== socket) return;
+      hush(ws); // anything the server says, a heartbeat or a frame this client can't read, says it is there
       const event = parseFrame(message.data);
       if (Option.isNone(event)) {
         // not an event this client knows: say so, and keep the link (the next snapshot resyncs)
@@ -101,6 +130,7 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
     });
     ws.addEventListener("close", () => {
       if (ws !== socket) return;
+      clearTimeout(silence);
       socket = null;
       setStatus("closed");
       if (closed) return;
@@ -120,6 +150,7 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
     close: () => {
       closed = true;
       clearTimeout(timer);
+      clearTimeout(silence);
       socket?.close();
     },
     listen: (listener) => {
@@ -152,6 +183,7 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
       } else if (status === "open" && awayMs >= STALE_MS) {
         const stale = socket;
         socket = null; // its close event, if one ever comes, is then not this link's
+        clearTimeout(silence);
         stale?.close();
       } else {
         return;

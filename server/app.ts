@@ -3,7 +3,7 @@
 // WebSocket or POST, ./routes/mcp.ts), /api/* (read-only JSON, ./routes/api.ts) and / (the built
 // web UI, ./routes/web.ts). This file builds the parts and hands them to the routes.
 import { BunHttpServer, BunServices } from "@effect/platform-bun";
-import { Context, Deferred, Effect, Layer, PubSub } from "effect";
+import { Context, Deferred, type Duration, Effect, Layer, PubSub } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServerRequest } from "effect/http";
 import { makeBudget } from "../src/apikey/budget.ts";
 import { ApiKeys, apiKeysLayer } from "../src/apikey/clients.ts";
@@ -46,6 +46,7 @@ export type ServerOptions = {
   readonly web?: string; // the built web UI
   readonly summarize?: Summarize; // tests replace the compactor
   readonly window?: number; // log entries in a client's first snapshot
+  readonly heartbeat?: Duration.Input; // HEARTBEAT; tests make it short
   readonly secrets?: Layer.Layer<Secrets>; // the plan's tokens and the API keys; SecretsLive unless a test says
 };
 
@@ -164,7 +165,7 @@ export const routes = (o: ServerOptions) =>
         Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => (guard(request) ? handle : Effect.succeed(forbidden))),
       );
 
-      yield* wsRoute(router, { assets: { find: media.find, report }, entries: chat.mem.root, session, subagents, thread: o.device, window: o.window ?? 200 });
+      yield* wsRoute(router, { assets: { find: media.find, report }, entries: chat.mem.root, heartbeat: o.heartbeat, session, subagents, thread: o.device, window: o.window ?? 200 });
       yield* mcpRoutes(router, { agents: subagents.tools, attached: media.zoomContent, mem: chat.mem, secret, subagentSecret });
       yield* assetRoutes(router, { media, settings: mediaConfig });
       yield* apiRoutes(router, { device: o.device, mem: chat.mem, reasoning, report, session, settings, subagents, usagePath });
