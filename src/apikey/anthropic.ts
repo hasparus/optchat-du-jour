@@ -10,11 +10,11 @@
 // default (docs/optchat.md §3.3; E6's 1-hour entries are the Claude subscription's). Thinking blocks come back in the
 // next request exactly as they arrived, signature and all, as tool use with thinking requires.
 import { Cause, Duration, Effect, Option, Schema, Stream } from "effect";
-import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { IDLE_ANTHROPIC } from "../config.ts";
-import { addSpent, type EngineError, isEngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
+import { addSpent, type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
 import { admitRequest } from "../engines/request-admission.ts";
-import { askAgain, type Attempt, attempt, Busy, busyStatus, idleCut, showing, waitOf } from "../engines/retry.ts";
+import { askAgain, bytes, errorBody, httpFailure, post, type Wire } from "../engines/retry.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
 import { isPicture } from "../media/part.ts";
 import type { ToolDef } from "../tools/files.ts";
@@ -209,10 +209,13 @@ const LIMITS = new Set(["rate_limit_error", "overloaded_error", "authentication_
 const PASSING = new Set(["overloaded_error", "api_error", "rate_limit_error", "timeout_error"]);
 // an answer that is no hiccup however the status reads: the key's credit is gone
 const spentKey = (type: string | undefined, message: string | undefined) => type === "billing_error" || /credit balance/i.test(message ?? "");
+// `status` null: an `error` event in the stream, which may pass (E33) when its type says so; an
+// HTTP error's chance to pass is the status's and its headers' (src/engines/retry.ts httpFailure)
 export const classifyAnthropic = (status: number | null, type: string | undefined, message: string | undefined, spent?: Spent): EngineError => {
   const text = `api-key: anthropic ${[status, type, message].filter((x) => x !== null && x !== undefined && x !== "").join(" ")}`;
-  const limited = status === 429 || status === 529 || status === 401 || status === 403 || (type !== undefined && LIMITS.has(type)) || /credit balance/i.test(message ?? "");
-  return limited ? new UsageLimit({ message: text, spent }) : new ModelError({ message: text, spent });
+  const limited = status === 429 || status === 529 || status === 401 || status === 403 || (type !== undefined && LIMITS.has(type)) || spentKey(type, message);
+  const transient = status === null && type !== undefined && PASSING.has(type) ? true : undefined;
+  return limited ? new UsageLimit({ message: text, spent, transient }) : new ModelError({ message: text, spent, transient });
 };
 
 type Block =
@@ -239,7 +242,7 @@ const blockOf = (b: typeof ContentBlock.Type): Block => {
   }
 };
 
-type Hooks<E extends Tagged> = Pick<MessagesAsk<E>, "onItem" | "onReasoning" | "onText" | "onThinking"> & { readonly at?: Attempt };
+type Hooks<E extends Tagged> = Pick<MessagesAsk<E>, "onItem" | "onReasoning" | "onText" | "onThinking">;
 
 const onEvent =
   <E extends Tagged>(o: Hooks<E>) =>
@@ -295,7 +298,6 @@ const onEvent =
           return r;
         case "error": {
           const { error } = yield* errorEvent(data);
-          if (o.at && error.type !== undefined && PASSING.has(error.type)) o.at.busy = true;
           return yield* classifyAnthropic(null, error.type, error.message, spentOf(r));
         }
         default:
@@ -340,27 +342,26 @@ const spentOf = (r: Read): Spent | undefined => {
     ? { model: r.model, usage: usageOf(r.start, r.end).usage } : undefined;
 };
 
-// `at`: the attempt this reading is, told when the stream broke on the API's side (E33)
-export const readMessages = <E extends Tagged = never>(stream: Stream.Stream<Uint8Array, EngineError>, ask: MessagesAsk<E>, at: Attempt = attempt()): Effect.Effect<MessagesReply, EngineError | E> =>
+export const readMessages = <E extends Tagged = never>(stream: Stream.Stream<Uint8Array, EngineError>, ask: MessagesAsk<E>): Effect.Effect<MessagesReply, EngineError | E> =>
   Effect.suspend(() => {
     const init: Read = { blocks: [], done: false, end: null, model: ask.model, start: null, stop: null };
     return Effect.gen(function* () {
-      const r = yield* sseFold<Read, E>("api-key: anthropic", stream, init, onEvent<E>({ ...ask, at }), (state) => state.done, ask.onStart).pipe(Effect.catchCause((original) => {
+      const r = yield* sseFold<Read, E>("api-key: anthropic", stream, init, onEvent<E>(ask), (state) => state.done, ask.onStart).pipe(Effect.catchCause((original) => {
         const spent = spentOf(init);
         const cause = Cause.map(original, (e: EngineError | E): EngineError | E => {
           if (!spent) return e;
-          if (e instanceof ModelError && e.spent === undefined) return new ModelError({ message: e.message, spent });
-          if (e instanceof Refusal && e.spent === undefined) return new Refusal({ message: e.message, spent });
-          if (e instanceof UsageLimit && e.spent === undefined) return new UsageLimit({ message: e.message, spent });
+          // the same failure, with what the stream told it cost; whether it may pass stays (E33)
+          const fields = (f: ModelError | Refusal | UsageLimit) => ({ message: f.message, retryAfter: f.retryAfter, spent, transient: f.transient });
+          if (e instanceof ModelError && e.spent === undefined) return new ModelError(fields(e));
+          if (e instanceof Refusal && e.spent === undefined) return new Refusal(fields(e));
+          if (e instanceof UsageLimit && e.spent === undefined) return new UsageLimit(fields(e));
           return e;
         });
         return Effect.failCause(cause);
       }));
       if (r.stop === "refusal") return yield* new Refusal({ message: "api-key: anthropic refused this request (stop_reason: refusal)", spent: spentOf(r) });
-      if (!r.done) {
-        at.busy = true; // cut off on the way
-        return yield* new ModelError({ message: "api-key: anthropic: the stream ended without message_stop", spent: spentOf(r) });
-      }
+      // cut off on the way: it may pass (E33)
+      if (!r.done) return yield* new ModelError({ message: "api-key: anthropic: the stream ended without message_stop", spent: spentOf(r), transient: true });
       return { items: r.blocks.flatMap(itemOf), model: r.model, stop: r.stop, ...usageOf(r.start, r.end) } satisfies MessagesReply;
     }).pipe(Effect.onExit((exit) => {
       const spent = spentOf(init);
@@ -369,17 +370,13 @@ export const readMessages = <E extends Tagged = never>(stream: Stream.Stream<Uin
     }));
   });
 
-// a connection that broke: worth asking again (E33)
-const broken = (err: { readonly message: string }) => new Busy({ error: new ModelError({ message: `api-key: anthropic: ${err.message}` }), wait: null });
-
 // The client: `key` is the API key now, UsageLimit when there is none (the chain moves on). A
 // request that fails on the API's side before anything of it went out is sent again (E33,
-// src/engines/retry.ts); a stream with no bytes for `idle` (IDLE_ANTHROPIC) is dead.
+// src/engines/retry.ts); a response with no bytes for `idle` (IDLE_ANTHROPIC) is dead.
 export const makeMessages = (o: { readonly base: string; readonly key: Effect.Effect<string, UsageLimit>; readonly idle?: Duration.Input }) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
-    const idle = o.idle ?? IDLE_ANTHROPIC;
-    const quiet = () => new ModelError({ message: `api-key: anthropic: no word from the API in ${Duration.format(Duration.fromInputUnsafe(idle))}` });
+    const wire: Wire = { idle: o.idle ?? IDLE_ANTHROPIC, label: "api-key: anthropic" };
     const messages: Messages = (ask) =>
       Effect.gen(function* () {
         const key = yield* o.key;
@@ -388,36 +385,28 @@ export const makeMessages = (o: { readonly base: string; readonly key: Effect.Ef
           HttpClientRequest.accept("text/event-stream"),
           HttpClientRequest.bodyText(requestBody(ask), "application/json"),
         );
-        // one attempt: what it shows goes out through `seen`'s hooks, which mark it shown
-        const once = Effect.gen(function* () {
-          const at = attempt();
-          const seen: typeof ask = { ...ask, onItem: showing(at, ask.onItem), onReasoning: showing(at, ask.onReasoning), onText: showing(at, ask.onText), onThinking: showing(at, ask.onThinking) };
-          yield* admitRequest();
-          const res = yield* http.execute(req).pipe(
-            Effect.timeoutOrElse({ duration: idle, orElse: () => Effect.fail(new Busy({ error: quiet(), wait: null })) }),
-            Effect.catchIf(HttpClientError.isHttpClientError, (err) => Effect.fail(broken(err))),
-          );
-          if (res.status !== 200) {
-            const raw = yield* res.text.pipe(Effect.catchIf(HttpClientError.isHttpClientError, (err) => Effect.fail(broken(err))));
-            const body = Option.getOrUndefined(decodeErrorBody(raw))?.error;
-            const error = body ? classifyAnthropic(res.status, body.type, body.message) : classifyAnthropic(res.status, undefined, raw.slice(0, 300));
-            return yield* busyStatus(res.status, res.headers) && !spentKey(body?.type, body?.message ?? raw) ? new Busy({ error, wait: waitOf(res.headers, Date.now()) }) : error;
-          }
-          const bytes = idleCut(res.stream, idle, quiet).pipe(
-            Stream.mapError((err) => {
-              at.busy = true; // the connection broke, or went quiet
-              return err instanceof ModelError ? err : new ModelError({ message: `api-key: anthropic: ${err.message}` });
+        return yield* askAgain({
+          // what failed tries cost is this reply's too; their cache writes aren't split by TTL
+          merge: (reply: MessagesReply, before) => ({ ...reply, usage: addSpent(before, { model: reply.model, usage: reply.usage }).usage, writes: undefined }),
+          once: (shown) =>
+            Effect.gen(function* () {
+              yield* admitRequest();
+              const res = yield* post(http, req, wire);
+              if (res.status !== 200) {
+                const raw = yield* errorBody(res, wire);
+                const body = Option.getOrUndefined(decodeErrorBody(raw))?.error;
+                const error = body ? classifyAnthropic(res.status, body.type, body.message) : classifyAnthropic(res.status, undefined, raw.slice(0, 300));
+                return yield* httpFailure(res, error, spentKey(body?.type, body?.message ?? raw));
+              }
+              return yield* readMessages(bytes(res, wire), {
+                ...ask,
+                onItem: shown(ask.onItem),
+                onReasoning: shown(ask.onReasoning),
+                onText: shown(ask.onText),
+                onThinking: shown(ask.onThinking),
+              });
             }),
-          );
-          return yield* readMessages(bytes, seen, at).pipe(
-            Effect.catchIf(
-              (e): e is EngineError => isEngineError(e) && at.busy && !at.shown,
-              (error) => Effect.fail(new Busy({ error, wait: null })),
-            ),
-          );
         });
-        // what failed attempts cost is this reply's too; their cache writes aren't split by TTL
-        return yield* askAgain(once, (reply, before) => ({ ...reply, usage: addSpent(before, { model: reply.model, usage: reply.usage }).usage, writes: undefined }));
       });
     return messages;
   });

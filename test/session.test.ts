@@ -8,7 +8,7 @@ import { Deferred, type Duration, Effect, Fiber, PubSub } from "effect";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
-import { CompactError, type Job } from "../src/compactor.ts";
+import { CompactError, type Job, NoLine } from "../src/compactor.ts";
 import { openStream } from "../server/agui.ts";
 import { UsageLimit } from "../src/engines/errors.ts";
 import { type Choices, loadChoices, startingChoices } from "../src/choices.ts";
@@ -44,7 +44,7 @@ const rig = (
     readonly commit?: Effect.Effect<void>;
     readonly followUp?: FollowUp;
     readonly summarize?: Effect.Effect<void, CompactError>;
-    readonly answer?: (job: Job) => Effect.Effect<string, CompactError>; // the compactor's whole answer, instead of `summarize`'s
+    readonly answer?: (job: Job) => Effect.Effect<string, CompactError | NoLine>; // the compactor's whole answer, instead of `summarize`'s
     readonly waitRetry?: Duration.Input;
   } = {},
 ) =>
@@ -1208,8 +1208,8 @@ test("a turn waiting for a summary whose call keeps failing goes on once a retry
 // would leave its node unbuilt for ever, and every later turn waits for it (the start rule). After
 // REFUSALS such answers the node is its source, clipped, and says so on its tree line.
 test("a compactor that always refuses, or always answers an empty line, doesn't block the chat: the node becomes its source, clipped (E31)", async () => {
-  const answers: readonly (readonly [string, Effect.Effect<string, CompactError>])[] = [
-    ["refuses", Effect.fail(new CompactError({ message: "the model would not answer this message", refused: true }))],
+  const answers: readonly (readonly [string, Effect.Effect<string, NoLine>])[] = [
+    ["refuses", Effect.fail(new NoLine({ message: "the model would not answer this message" }))],
     ["answers nothing", Effect.succeed("")],
   ];
   for (const [what, answer] of answers) {

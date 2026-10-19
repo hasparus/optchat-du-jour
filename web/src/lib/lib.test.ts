@@ -178,6 +178,64 @@ describe("link", () => {
     link.close();
   });
 
+  test("heartbeat: a first frame slower than the window, on a slow link, is waited for on the next socket, not lost in a reconnect loop", async () => {
+    let opened = 0, delivered = 0;
+    const slow = () => {
+      opened++;
+      const opens: (() => void)[] = [];
+      const messages: ((e: { readonly data: string }) => void)[] = [];
+      let gone = false;
+      const ws: SocketLike = {
+        addEventListener: (type: "open" | "close" | "message", l: never) => {
+          if (type === "open") opens.push(l);
+          if (type === "message") messages.push(l);
+        },
+        close: () => {
+          gone = true;
+        },
+        send: () => {
+          // nobody listens
+        },
+      };
+      setTimeout(() => {
+        if (!gone) for (const l of opens) l();
+      }, 1);
+      // the opening snapshot takes 90 ms to arrive, one and a half windows; then a beat every 20 ms
+      const say = (data: string) => {
+        for (const l of messages) l({ data });
+      };
+      setTimeout(() => {
+        if (gone) return;
+        delivered++;
+        say(JSON.stringify({ messages: [], type: EventType.MESSAGES_SNAPSHOT }));
+        const beats = setInterval(() => {
+          if (gone) clearInterval(beats);
+          else say(JSON.stringify({ delta: [], type: EventType.STATE_DELTA }));
+        }, 20);
+      }, 90);
+      return ws;
+    };
+    const link = openLink("ws://x/ws", { retryMs: 50, silentMs: 60, socket: slow });
+    await tick(800);
+    // the first socket is let go at 60 ms having said nothing: the backoff, then a socket with a
+    // window twice as long, which gets the snapshot and stays
+    expect(opened).toBe(2);
+    expect(delivered).toBe(1);
+    expect(link.status()).toBe("open");
+    link.close();
+  });
+
+  test("heartbeat: back from the background, a kept socket's overdue silence timer starts again rather than dropping it", async () => {
+    const server = fakeServer(() => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT }]);
+    const link = openLink("ws://x/ws", { retryMs: 60_000, silentMs: 80, socket: server.socket });
+    await tick(50);
+    link.wake(STALE_MS - 1); // away a little while: the socket is kept
+    await tick(60); // 110 ms since the last frame, 60 since the wake
+    expect(server.sockets).toHaveLength(1);
+    expect(link.status()).toBe("open");
+    link.close();
+  });
+
   test("heartbeat: the server's beat is the state now, as a STATE_DELTA, which any client decodes; it moves only what drifted", () => {
     const told = { ...IDLE, elapsed: 1000, phase: "running" as const };
     const stream = openStream({ entries: [], live: null, state: told, thread: "mini", window: 10 });

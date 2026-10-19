@@ -151,8 +151,15 @@ const heard = (claude: { readonly send: (b: ReturnType<typeof say>) => Effect.Ef
     yield* claude.send(say("env"));
     return Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)))((yield* claude.result).result ?? "");
   });
+// what bills elsewhere, named here as well as in STRIPPED_ENV, so dropping one from the list fails
+const BILLING = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "AWS_BEARER_TOKEN_BEDROCK"];
 const clean = (env: Readonly<Record<string, string>>) => {
+  expect(BILLING.filter((k) => k in env)).toEqual([]);
   expect(Object.keys(env).filter((k) => STRIPPED_ENV.has(k))).toEqual([]);
+  // the rest comes through: the Max login above all, and what any process needs
+  expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("the max login");
+  expect(env.PATH).toBe(process.env.PATH);
+  expect(env.HOME).toBe(process.env.HOME);
   expect(env.ODJ_KEPT).toBe("kept");
   expect(env.CLAUDE_CODE_PROMPT_CACHE_TTL).toBe("1h"); // the spawn's own
 };
@@ -162,8 +169,10 @@ const clean = (env: Readonly<Record<string, string>>) => {
 test("a claude started here or on a device never inherits a provider key, a cloud account or a model override (E32)", async () => {
   const folder = tmp();
   const before = { ...process.env };
+  expect(BILLING.filter((k) => !STRIPPED_ENV.has(k))).toEqual([]);
   for (const k of STRIPPED_ENV) process.env[k] = `stray ${k}`;
   process.env.ODJ_KEPT = "kept"; // anything else is inherited as before
+  process.env.CLAUDE_CODE_OAUTH_TOKEN = "the max login";
   process.env.OPTCHAT_CLAUDE = ECHO;
   try {
     // on this machine: a turn, priming, a compactor call, a caption, a subagent, a warm process
@@ -184,7 +193,7 @@ test("a claude started here or on a device never inherits a provider key, a clou
     );
     clean(remote);
   } finally {
-    for (const k of [...STRIPPED_ENV, "ODJ_KEPT", "OPTCHAT_CLAUDE"]) {
+    for (const k of [...STRIPPED_ENV, "ODJ_KEPT", "OPTCHAT_CLAUDE", "CLAUDE_CODE_OAUTH_TOKEN"]) {
       const was = before[k];
       if (was === undefined) Reflect.deleteProperty(process.env, k);
       else process.env[k] = was;

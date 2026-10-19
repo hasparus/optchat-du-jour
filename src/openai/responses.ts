@@ -15,11 +15,11 @@
 // model that refuses the breakpoint field (the reference measured that on the Codex route) gets
 // the request again without it, and is sent none from then on, said once.
 import { Cause, Context, Data, Duration, Effect, Layer, Option, Schema, Stream } from "effect";
-import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { IDLE_OPENAI } from "../config.ts";
-import { addSpent, type EngineError, isEngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
+import { addSpent, type EngineError, isEngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit, withSpent } from "../engines/errors.ts";
 import { admitRequest } from "../engines/request-admission.ts";
-import { askAgain, type Attempt, attempt, Busy, busyStatus, idleCut, showing, waitOf } from "../engines/retry.ts";
+import { askAgain, bytes, type Carry, errorBody, httpFailure, post as send, type Shown, type Wire } from "../engines/retry.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
 import { isPicture, type Part } from "../media/part.ts";
 import { wireJson } from "../text.ts";
@@ -193,10 +193,13 @@ const PASSING = /^(server_error|rate_limit_exceeded|internal_error|timeout)$/;
 const CAPPED = /usage_limit|insufficient_quota|not_eligible|quota/;
 
 // `label` names the engine in the message: openai-plan, or api-key for a key's calls
+// `status` null: a failure told in the stream, which may pass (E33) when its code says so; an
+// HTTP error's chance to pass is the status's and its headers' (src/engines/retry.ts httpFailure)
 export const classify = (status: number | null, code: string | null | undefined, message: string | undefined, label = "openai-plan", spent?: Spent): EngineError => {
   const text = `${label}: ${[status, code, message].filter((x) => x !== null && x !== undefined && x !== "").join(" ")}`;
-  if (status === 429 || (code !== null && code !== undefined && LIMIT.test(code))) return new UsageLimit({ message: text, spent });
-  return new ModelError({ message: text, spent });
+  const transient = status === null && PASSING.test(code ?? "") ? true : undefined;
+  if (status === 429 || (code !== null && code !== undefined && LIMIT.test(code))) return new UsageLimit({ message: text, spent, transient });
+  return new ModelError({ message: text, spent, transient });
 };
 
 export const usageOf = (u: typeof ApiUsage.Type | null | undefined): Usage => {
@@ -224,7 +227,7 @@ type Read = {
   readonly spent: Spent | undefined;
 };
 
-type Hooks<E extends Tagged> = Pick<Ask<E>, "onSettledUsage" | "onOut" | "onReasoning" | "onStart" | "onText" | "onThinking"> & { readonly at?: Attempt };
+type Hooks<E extends Tagged> = Pick<Ask<E>, "onSettledUsage" | "onOut" | "onReasoning" | "onStart" | "onText" | "onThinking">;
 
 const onEvent =
   <E extends Tagged>(o: { readonly model: string; readonly label: string; readonly reported: (spent: Spent | undefined) => void } & Hooks<E>) =>
@@ -279,7 +282,6 @@ const onEvent =
         case "response.failed": {
           const { response } = yield* failed(data);
           o.reported(spentOf(response, o.model));
-          if (o.at && PASSING.test(response.error?.code ?? "")) o.at.busy = true;
           return yield* classify(null, response.error?.code, response.error?.message ?? "response.failed", o.label, spentOf(response, o.model));
         }
         case "response.incomplete": {
@@ -290,7 +292,6 @@ const onEvent =
         }
         case "error": {
           const e = yield* errorEvent(data);
-          if (o.at && PASSING.test(e.code ?? e.error?.code ?? "")) o.at.busy = true;
           return yield* classify(null, e.code ?? e.error?.code, e.message ?? e.error?.message, o.label);
         }
         default:
@@ -311,10 +312,8 @@ export const readStream = <E extends Tagged = never>(stream: Stream.Stream<Uint8
     return Effect.gen(function* () {
       const r = yield* sseFold(label, stream, init, onEvent({ ...o, label, model, reported }), (state) => state.done !== null, o.onStart);
       if (r.refusal) return yield* new Refusal({ message: `${label} refused: ${r.refusal.slice(0, 300)}`, spent: r.spent });
-      if (r.done === null) {
-        if (o.at) o.at.busy = true; // cut off on the way
-        return yield* new ModelError({ message: `${label}: the stream ended without response.completed` });
-      }
+      // cut off on the way: it may pass (E33)
+      if (r.done === null) return yield* new ModelError({ message: `${label}: the stream ended without response.completed`, transient: true });
       return r.done;
     }).pipe(Effect.onExit(() => known && o.onSettledUsage ? o.onSettledUsage(known) : Effect.void));
   });
@@ -333,9 +332,7 @@ export type Bearer = {
 export const makeResponses = (o: { readonly api: string; readonly label: string; readonly bearer: Bearer; readonly report?: (message: string) => Effect.Effect<void>; readonly idle?: Duration.Input }) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
-    const idle = o.idle ?? IDLE_OPENAI;
-    const quiet = () => new ModelError({ message: `${o.label}: no word from the API in ${Duration.format(Duration.fromInputUnsafe(idle))}` });
-    const broken = (err: { readonly message: string }) => new Busy({ error: new ModelError({ message: `${o.label}: ${err.message}` }), wait: null });
+    const wire: Wire = { idle: o.idle ?? IDLE_OPENAI, label: o.label };
     // the models that refused `prompt_cache_breakpoint`: their requests go without it from then on
     const unmarked = new Set<string>();
     const post = <E extends Tagged>(ask: Ask<E>, token: string, marked: boolean) => {
@@ -344,23 +341,18 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
         HttpClientRequest.accept("text/event-stream"),
         HttpClientRequest.bodyText(body(ask, marked), "application/json"),
       );
-      return admitRequest().pipe(
-        Effect.andThen(http.execute(request)),
-        Effect.timeoutOrElse({ duration: idle, orElse: () => Effect.fail(new Busy({ error: quiet(), wait: null })) }),
-        Effect.catchIf(HttpClientError.isHttpClientError, (err) => Effect.fail(broken(err))),
-      );
+      return admitRequest().pipe(Effect.andThen(send(http, request, wire)));
     };
-    // A model that refuses the breakpoints (a 400 naming the field) gets the same request again
-    // without them, and none from then on, which the user hears once, rather than failing every
-    // call; our marks are then off for it.
-    const once = <E extends Tagged>(ask: Ask<E>, token: string) =>
+    // One try. A model that refuses the breakpoints (a 400 naming the field) gets the same request
+    // again without them, and none from then on, which the user hears once, rather than failing
+    // every call; our marks are then off for it.
+    const once = <E extends Tagged>(ask: Ask<E>, token: string, shown: Shown) =>
       Effect.gen(function* () {
-        const at = attempt();
         const marked = !unmarked.has(ask.model);
         let res = yield* post(ask, token, marked);
         let raw: string | null = null;
         if (marked && res.status === 400) {
-          raw = yield* res.text;
+          raw = yield* errorBody(res, wire);
           const refused = Option.getOrUndefined(decodeErrorBody(raw))?.error;
           if (refused?.param === "prompt_cache_breakpoint" || (refused?.message ?? "").includes("prompt_cache_breakpoint")) {
             const first = !unmarked.has(ask.model); // a call sent alongside may have been refused already
@@ -370,49 +362,40 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
             raw = null;
           }
         }
-        if (res.status === 401) return yield* new Unauthorized({ message: (raw ?? (yield* res.text)).slice(0, 300) });
+        if (res.status === 401) return yield* new Unauthorized({ message: (raw ?? (yield* errorBody(res, wire))).slice(0, 300) });
         if (res.status !== 200) {
-          const text = raw ?? (yield* res.text);
+          const text = raw ?? (yield* errorBody(res, wire));
           const body = Option.getOrUndefined(decodeErrorBody(text))?.error;
           const error = body ? classify(res.status, body.code, body.message, o.label) : classify(res.status, null, text.slice(0, 300), o.label);
-          return yield* busyStatus(res.status, res.headers) && !CAPPED.test(body?.code ?? "") ? new Busy({ error, wait: waitOf(res.headers, Date.now()) }) : error;
+          return yield* httpFailure(res, error, CAPPED.test(body?.code ?? ""));
         }
-        const stream = idleCut(res.stream, idle, quiet).pipe(
-          Stream.mapError((err) => {
-            at.busy = true; // the connection broke, or went quiet
-            return err instanceof ModelError ? err : new ModelError({ message: `${o.label}: ${err.message}` });
-          }),
-        );
-        return yield* readStream(stream, ask.model, {
-          at,
+        return yield* readStream(bytes(res, wire), ask.model, {
           label: o.label,
-          onOut: showing(at, ask.onOut),
-          onReasoning: showing(at, ask.onReasoning),
+          onOut: shown(ask.onOut),
+          onReasoning: shown(ask.onReasoning),
           onSettledUsage: ask.onSettledUsage,
           onStart: ask.onStart,
-          onText: showing(at, ask.onText),
-          onThinking: showing(at, ask.onThinking),
-        }).pipe(
-          Effect.catchIf(
-            (e): e is EngineError => isEngineError(e) && at.busy && !at.shown,
-            (error) => Effect.fail(new Busy({ error, wait: null })),
-          ),
-        );
-      }).pipe(Effect.catchIf(HttpClientError.isHttpClientError, (err) => Effect.fail(broken(err))));
+          onText: shown(ask.onText),
+          onThinking: shown(ask.onThinking),
+        });
+      });
 
-    // what failed attempts cost is the reply's too
-    const again = <E extends Tagged>(ask: Ask<E>, token: string) => askAgain(once(ask, token), (reply, before) => ({ ...reply, usage: addSpent(before, { model: reply.model, usage: reply.usage }).usage }));
-    // a 401 renews the token once, then counts as signed out
+    // A 401 renews the token once, then counts as signed out. What failed tries cost before the
+    // 401 is carried to the tries after the renewal (`carry`), and to whatever failure ends the call.
     const respond: Respond = (ask) =>
       Effect.gen(function* () {
+        const carry: Carry = { before: undefined };
+        const again = (token: string) =>
+          askAgain({ carry, merge: (reply: Reply, before) => ({ ...reply, usage: addSpent(before, { model: reply.model, usage: reply.usage }).usage }), once: (shown) => once(ask, token, shown) });
         const token = yield* o.bearer.current;
-        return yield* again(ask, token).pipe(
+        return yield* again(token).pipe(
           Effect.catchIf(isUnauthorized, () =>
             o.bearer.renew(token).pipe(
-              Effect.flatMap((fresh) => again(ask, fresh)),
+              Effect.flatMap(again),
               Effect.catchIf(isUnauthorized, (u) => Effect.fail(new UsageLimit({ message: `${o.label}: still unauthorized after a refresh: ${u.message}` }))),
             ),
           ),
+          Effect.catchIf(isEngineError, (e) => Effect.fail(withSpent(e, carry.before))),
         );
       });
     return respond;

@@ -3,7 +3,7 @@
 // compaction must not move onto the Claude plan unseen).
 import { Effect, PubSub } from "effect";
 import { chainFor } from "../config.ts";
-import { CompactError, type Summarize } from "../compactor.ts";
+import { CompactError, NoLine, type Summarize } from "../compactor.ts";
 import { type Down, type DownList, failover, watchChain } from "../engines/chain.ts";
 import { directEngineFailure } from "../engines/request-admission.ts";
 import { type Compact, type CompactorNeeds, compactorEngine } from "../engines/registry.ts";
@@ -39,7 +39,7 @@ export const makeSummarize = (o: CompactorNeeds) =>
             : [];
         }),
         watch,
-      ).pipe(Effect.mapError((e) => new CompactError({ message: e.message, refused: e._tag === "Refusal" })));
+      ).pipe(Effect.mapError((e) => (e._tag === "Refusal" ? new NoLine({ message: e.message }) : new CompactError({ message: e.message }))));
     // the engines down right now, with why: for the UI, so compaction never runs elsewhere unseen
     const down: DownList = { changes, now: watch.down };
     return { down, summarize };

@@ -5,7 +5,7 @@
 // unbuilt messages in order, whose first AHEAD are the ones that may start, and the ready merges
 // level by level. A failed call is tried again at the next message, once it has rested (E31); a
 // node the model refused, or gave no line for, REFUSALS times is built from its source, clipped.
-import { Cause, Clock, Console, Data, Duration, Effect, Exit, PubSub, Semaphore } from "effect";
+import { Cause, Clock, Console, Data, Duration, Effect, Exit, Option, PubSub, Semaphore } from "effect";
 import { AHEAD, JOBS, REFUSALS } from "./config.ts";
 import type { Node } from "./records.ts";
 import { newNode, type StoreError } from "./store.ts";
@@ -18,11 +18,13 @@ export type Job = { readonly l: number; readonly i: number; readonly ctx: readon
   | { readonly a: string; readonly b: string }
 );
 
-// `refused`: the model answered and gave no usable line (a refusal, or an empty line). That is its
-// input's doing, so asking again mostly fails alike: REFUSALS of them clip the node (E31). Any
-// other failure (a limit, the network, a crash) says nothing about the input and is only retried.
-export class CompactError extends Data.TaggedError("CompactError")<{ readonly message: string; readonly refused?: boolean }> {}
-export type Summarize = (job: Job) => Effect.Effect<string, CompactError>;
+export class CompactError extends Data.TaggedError("CompactError")<{ readonly message: string }> {}
+// The model answered and gave no line: it refused, or its reply ended as it meant to with nothing
+// in it. That is its input's doing, so asking again mostly fails alike: REFUSALS of them clip the
+// node (E31). A CompactError (a limit, the network, a reply cut short, a crash) says nothing about
+// the input and is only tried again.
+export class NoLine extends Data.TaggedError("NoLine")<{ readonly message: string }> {}
+export type Summarize = (job: Job) => Effect.Effect<string, CompactError | NoLine>;
 export type Commit = (n: Node) => Effect.Effect<void, StoreError>;
 
 // a failure in one line: the typed error's message, else the defect's
@@ -54,7 +56,7 @@ export const buildFree = (mem: Mem, commit: Commit) =>
 // docs/optchat.md §4 "The size": the reply, trimmed, is the summary; nothing left after trimming is a failed call
 const summaryOf = (reply: string) => {
   const text = reply.trim();
-  return text ? Effect.succeed(text) : Effect.fail(new CompactError({ message: "the compactor replied with nothing", refused: true }));
+  return text ? Effect.succeed(text) : Effect.fail(new NoLine({ message: "the compactor replied with nothing" }));
 };
 
 // A queue that only grows at its end and is read from its head; what was read stays in the array
@@ -121,15 +123,33 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
     // nodes whose failure was reported already.
     const leaves = new Line<number>();
     const merges: (Line<Coord> | undefined)[] = [];
-    // `queued` and `running` keep each node's level, for `activity`; `failedAt`, when each failed
-    // node failed; `refused`, how many of its calls the model answered with no line (E31)
-    const queued = new Map<string, number>(), running = new Map<string, number>(), failed = new Map<string, Coord>(), told = new Set<string>();
-    const failedAt = new Map<string, number>(), refused = new Map<string, number>();
+    // `queued` and `running` keep each node's level, for `activity`; `failed`, each failed node and
+    // when it failed; `refused`, how many of its calls the model answered with no line (E31)
+    const queued = new Map<string, number>(), running = new Map<string, number>(), told = new Set<string>();
+    const failed = new Map<string, { readonly c: Coord; readonly at: number }>(), refused = new Map<string, number>();
     // node c failed: it waits for the next message, rested
     const park = (name: string, c: Coord) => {
-      failed.set(name, c);
-      failedAt.set(name, clock.currentTimeMillisUnsafe());
+      failed.set(name, { at: clock.currentTimeMillisUnsafe(), c });
     };
+    // While anything has failed, and failed calls rest (`rest`), one fiber tries them again as each
+    // has rested, so a node that failed near the end of a turn isn't left until the next message,
+    // and the idle view can be primed (E17, E31). The cadence is `rest`, never a hot loop; with no
+    // rest (as docs/optchat.md §4 has it) a failed call waits for the next message.
+    let waking = false;
+    const wake: Effect.Effect<void> = Effect.suspend(() => {
+      if (rest <= 0 || waking) return Effect.void;
+      waking = true;
+      const loop = Effect.gen(function* () {
+        for (;;) {
+          let due = Number.POSITIVE_INFINITY;
+          for (const { at } of failed.values()) due = Math.min(due, at + rest);
+          if (due === Number.POSITIVE_INFINITY) return;
+          yield* Effect.sleep(Duration.millis(Math.max(0, due - clock.currentTimeMillisUnsafe())));
+          yield* guarded(again(false));
+        }
+      }).pipe(Effect.ensuring(Effect.sync(() => void (waking = false))));
+      return Effect.forkIn(loop, scope).pipe(Effect.asVoid);
+    });
     const changes = yield* PubSub.sliding<true>(1);
     // one change of the queues at a time
     const one = yield* Semaphore.make(1);
@@ -148,7 +168,7 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
             Effect.tapCause(() =>
               Effect.sync(() => {
                 park(name, c); // a defect too: it is tried again all the same
-              }),
+              }).pipe(Effect.andThen(wake)),
             ),
             Effect.andThen(Effect.suspend(() => done(c))),
           );
@@ -201,10 +221,10 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
             Effect.flatMap(summaryOf),
             Effect.flatMap((text) => commit(newNode(c.l, c.i, text))),
           );
-      const fail = (cause: Cause.Cause<CompactError | StoreError>) =>
+      const fail = (cause: Cause.Cause<CompactError | NoLine | StoreError>) =>
         Effect.gen(function* () {
-          const error = Cause.squash(cause);
-          const none = !clip && error instanceof CompactError && error.refused === true ? (refused.get(name) ?? 0) + 1 : 0;
+          const noLine = Option.exists(Cause.findErrorOption(cause), (e) => e._tag === "NoLine");
+          const none = !clip && noLine ? (refused.get(name) ?? 0) + 1 : 0;
           if (none > 0) refused.set(name, none);
           // the last refusal: queued again at once, for a job that clips it (`clip`), said once
           if (none >= refusals) {
@@ -213,6 +233,7 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
             return;
           }
           park(name, c);
+          yield* wake;
           if (told.has(name)) return;
           told.add(name);
           // a report that fails has nowhere to go: the node waits for the next message all the same
@@ -254,12 +275,9 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
     const again = (all: boolean) =>
       Effect.suspend(() => {
         const now = clock.currentTimeMillisUnsafe();
-        const waiting = [...failed].filter(([name]) => all || now - (failedAt.get(name) ?? 0) >= rest);
-        for (const [name] of waiting) {
-          failed.delete(name);
-          failedAt.delete(name);
-        }
-        return Effect.forEach(waiting, ([, c]) => consider(c), { discard: true });
+        const waiting = [...failed].filter(([, f]) => all || now - f.at >= rest);
+        for (const [name] of waiting) failed.delete(name);
+        return Effect.forEach(waiting, ([, f]) => consider(f.c), { discard: true });
       });
 
     // A change of the queues that comes after other work (a job, a logged message) is no part of
@@ -296,7 +314,7 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
       };
       for (const level of running.values()) count(level, "running");
       for (const level of queued.values()) count(level, "queued");
-      for (const c of failed.values()) count(c.l, "failed");
+      for (const { c } of failed.values()) count(c.l, "failed");
       return [...at].toSorted(([a], [b]) => a - b).map(([level, row]) => ({ level, ...row }));
     };
     const logged = (i: number) => guarded(Effect.andThen(again(false), arrived(i)));

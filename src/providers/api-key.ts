@@ -9,7 +9,7 @@ import type { ApiKeys } from "../apikey/clients.ts";
 import { type Budget, dollarsOf } from "../apikey/budget.ts";
 import type { ApiKeyRef, Settings } from "../config.ts";
 import { MAX_TOKENS } from "../apikey/anthropic.ts";
-import { isEngineError, ModelError, priced, priceUsage, UsageLimit } from "../engines/errors.ts";
+import { isEngineError, ModelError, priced, priceUsage, stoppedShort, UsageLimit } from "../engines/errors.ts";
 import type { Provider } from "./provider.ts";
 import { responsesProvider } from "./responses.ts";
 
@@ -61,7 +61,7 @@ export const apiKeyProvider = (o: ApiKeyOptions): Provider => {
           toolChoice: c.final ? "none" : "auto",
           tools: c.tools,
         });
-        const cut = reply.stop === "max_tokens" ? `the reply reached its ${apiKey.maxTokens ?? MAX_TOKENS}-token limit` : undefined;
+        const cut = reply.stop === "max_tokens" ? `the reply reached its ${apiKey.maxTokens ?? MAX_TOKENS}-token limit` : stoppedShort(reply.stop);
         const dollars = yield* priceUsage({ model: reply.model, usage: reply.usage }, (u) => dollarsOf(price, u, reply.writes));
         return { cut, dollars, items: reply.items, model: reply.model, usage: reply.usage };
       }).pipe(Effect.catchCause((cause) => Effect.failCause(Cause.map(cause, (e) => (isEngineError(e) ? priced(e, (u) => dollarsOf(price, u)) : e))))),

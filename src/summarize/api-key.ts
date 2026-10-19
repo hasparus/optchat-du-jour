@@ -43,7 +43,7 @@ export const apiKeyCompactor = (o: {
           const reply = yield* provider.call({ final: true, history, instructions, onStart: started, onText: () => Effect.void, tools });
           history.push(...reply.items); // thinking blocks included, so the retry continues the same conversation
           const text = reply.items.flatMap((i) => (i.type === "text" ? [i.text] : [])).join("");
-          return { dollars: reply.dollars, model: reply.model, text, usage: reply.usage };
+          return { cut: reply.cut, dollars: reply.dollars, model: reply.model, text, usage: reply.usage };
         });
       return sizeRetries({ ask, auth: provider.auth, device: o.device, effort: o.effort, engine: provider.engine, failoverFrom, job, log: o.log });
     });

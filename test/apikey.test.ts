@@ -301,3 +301,20 @@ test("a call on the last request is answered in the log as not run; a refused re
   expect(declined._tag).toBe("Refusal");
   expect(compactor.records.map((r) => [r.role, r.dollars])).toEqual([["compact", (100 * 4 + 500 * 0.2 + 3000 * 8 + 50 * 20) / 1_000_000]]);
 });
+
+// E31: thinking that spends the whole token budget, or a merge's context that fills the window,
+// ends with no text: a limit, never counted toward clipping the node
+test("a compactor reply cut short with no text is a model error, not a refusal", async () => {
+  for (const stop of ["max_tokens", "model_context_window_exceeded"]) {
+    const compactor = rig(5, `${dir}/cut-${stop}.jsonl`);
+    fake.state.script = [{ stop, thinking: "so much to weigh" }];
+    const error = await Effect.runPromise(Effect.flip(compactor.compact(job)));
+    expect([stop, error._tag]).toEqual([stop, "ModelError"]);
+    expect(error.message).toContain("stopped short with no line");
+  }
+  // one that ended as it meant to, with nothing to say, is a refusal
+  const compactor = rig(5, `${dir}/empty.jsonl`);
+  fake.state.script = [{ stop: "end_turn", text: "" }];
+  const empty = await Effect.runPromise(Effect.flip(compactor.compact(job)));
+  expect(empty._tag).toBe("Refusal");
+});

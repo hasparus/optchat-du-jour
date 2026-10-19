@@ -73,3 +73,52 @@ test("a quiet /ws connection gets the state as a STATE_DELTA every heartbeat, wh
     expect(Option.isSome(parseInbound(beat))).toBe(true);
   }
 });
+
+// A beat is a take that timed out. Events that come just as a beat is due must still all arrive,
+// once each and in order: each take-back of a message the server doesn't hold is answered to every
+// client with one `taken-back`, so 120 of them sent around the beat's edge must make 120 answers.
+test("events that come around a heartbeat's edge all arrive, once each, in order", async () => {
+  const port = freePort();
+  const settings = parseSettings({
+    openai: DEFAULT_ENDPOINTS,
+    allowedLogins: [],
+    cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
+    compactor: { byLevel: [{ chain: ["claude-code:sonnet"], from: 0 }], effort: "medium" },
+    defaultDevice: "mini",
+    devices: { mini: { folders: [home], url: "http://127.0.0.1:9" } },
+    master: { chain: ["claude-code:opus"], effort: "high", permissionMode: "bypassPermissions" },
+    server: { host: "127.0.0.1", port },
+  });
+  const server = serverLayer({ device: "mini", heartbeat: "15 millis", home: `${home}/edge`, host: "127.0.0.1", port, settings, summarize: () => Effect.succeed("a line") });
+  const Answer = Schema.fromJsonString(Schema.Struct({ type: Schema.String, name: Schema.optional(Schema.String), value: Schema.optional(Schema.Unknown) }));
+  const Taken = Schema.Struct({ clientId: Schema.String });
+  const answered = await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* Layer.build(server);
+        return yield* Effect.promise(async () => {
+          const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+          const ids: string[] = [];
+          let beats = 0;
+          ws.addEventListener("message", (m) => {
+            const e = Schema.decodeUnknownSync(Answer)(String(m.data));
+            if (e.name === "taken-back") ids.push(Schema.decodeUnknownSync(Taken)(e.value).clientId);
+            if (e.type === "STATE_DELTA") beats++;
+          });
+          await new Promise((resolve) => {
+            ws.addEventListener("open", resolve, { once: true });
+          });
+          for (let k = 0; k < 120; k++) {
+            ws.send(JSON.stringify({ clientId: `c${k}`, type: "take-back" }));
+            await Bun.sleep(k % 7 === 0 ? 16 : k % 3); // now and then right as a beat is due
+          }
+          await Bun.sleep(200);
+          ws.close();
+          return { beats, ids };
+        });
+      }),
+    ),
+  );
+  expect(answered.ids).toEqual(Array.from({ length: 120 }, (_, k) => `c${k}`));
+  expect(answered.beats).toBeGreaterThan(0); // the beats did come in between
+});

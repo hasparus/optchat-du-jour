@@ -116,6 +116,25 @@ test("Anthropic: a stream quiet for `idle` is cut and sent again, and what the c
   expect(server.bodies).toHaveLength(1);
 });
 
+test("Anthropic: what a try that may pass cost still counts when the try after it fails with what won't: a 400, a refusal, a spent key, a long retry-after", async () => {
+  // 100,000 input tokens told, then silence: cut, and sent again
+  const big = sse({ message: { model: "fake-opus", usage: { ...USAGE, input_tokens: 100_000 } }, type: "message_start" });
+  const enders: readonly (readonly [string, Step])[] = [
+    ["a 400", apiError(400, "invalid_request_error", "bad")],
+    ["a refusal", { after: "end", chunks: [start, sse({ delta: { stop_reason: "refusal" }, type: "message_delta", usage: { output_tokens: 1 } }), sse({ type: "message_stop" })] }],
+    ["a spent key", apiError(400, "invalid_request_error", "Your credit balance is too low to access the Anthropic API.")],
+    ["a retry-after of an hour", apiError(429, "rate_limit_error", "later", { "retry-after": "3600" })],
+  ];
+  for (const [what, end] of enders) {
+    fresh({ after: "hang", chunks: [big] }, end);
+    const out = await run(messages(ask()));
+    expect(server.bodies).toHaveLength(2);
+    const spent = out._tag === "Failure" && out.failure._tag !== "DeviceOffline" ? out.failure.spent : undefined;
+    // the first try's 100,000, plus the second's own when it told any (the refusal's 10)
+    expect([what, spent?.usage.input]).toEqual([what, what === "a refusal" ? 100_010 : 100_000]);
+  }
+});
+
 // the Responses API (openai-plan; api-key on OpenAI)
 const usage = { input_tokens: 5, input_tokens_details: { cached_tokens: 0 }, output_tokens: 1 };
 const done = (t: string): Step => ({
@@ -165,4 +184,22 @@ test("Responses: a stream quiet for `idle` is cut and sent again; one whose reas
   expect(cut._tag === "Failure" && cut.failure.message).toBe("openai-plan: no word from the API in 150ms");
   expect(shown).toEqual(["half"]);
   expect(server.bodies).toHaveLength(1);
+});
+
+test("openai-plan: a failed try's cost is carried across a token renewed after a 401, to the failure that ends the call", async () => {
+  let renewed = 0;
+  const plan = Effect.runSync(
+    makeResponses({ api: server.base, bearer: { current: Effect.succeed("old"), renew: () => Effect.sync(() => ((renewed += 1), "new")) }, idle: "150 millis", label: "openai-plan" }).pipe(Effect.provide(FetchHttpClient.layer)),
+  );
+  const failedStream: Step = { after: "end", chunks: [sse({ type: "response.created" }), sse({ response: { error: { code: "server_error", message: "oops" }, usage }, type: "response.failed" })] };
+  fresh(failedStream, { body: JSON.stringify({ error: { code: "invalid_token", message: "expired" } }), status: 401 }, openAiError(400, "invalid_request_error"));
+  const out = await run(plan(askOpenAi));
+  expect(renewed).toBe(1);
+  expect(server.bodies).toHaveLength(3);
+  expect(out._tag === "Failure" && out.failure.message).toContain("400");
+  expect(out._tag === "Failure" && out.failure._tag !== "DeviceOffline" && out.failure.spent?.usage.input).toBe(5); // the failed stream's
+  // and to the reply, when the renewed token gets through
+  fresh(failedStream, { body: JSON.stringify({ error: { code: "invalid_token", message: "expired" } }), status: 401 }, done("ok"));
+  const through = await run(plan(askOpenAi));
+  expect(through._tag === "Success" && through.success.usage.input).toBe(10);
 });

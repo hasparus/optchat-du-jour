@@ -61,6 +61,11 @@ export const STALE_MS = 30_000; // hidden this long, an open socket is no longer
 // src/config.ts) missed. A half-open connection (a laptop on a new Wi-Fi, a NAT that forgot it)
 // never gets a close event, and would otherwise sit "open" until the page is hidden and shown.
 export const SILENT_MS = 10_000;
+// A frame takes as long as it takes to arrive, and the heartbeat can't cut into one: the opening
+// MESSAGES_SNAPSHOT can be megabytes, which on a slow link takes longer than SILENT_MS. So each
+// socket in a row let go before it said anything doubles the window for the next, up to this many
+// times SILENT_MS; the first frame a socket delivers brings it back to SILENT_MS.
+const MAX_SILENT_GROWTH = 16;
 
 export function openLink(url: string, options: LinkOptions = {}): Link {
   const open = options.socket ?? ((target: string): SocketLike => new WebSocket(target));
@@ -74,6 +79,8 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
   let retry = firstRetry;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let silence: ReturnType<typeof setTimeout> | undefined; // armed while a socket is ours; any frame resets it
+  let mute = 0; // sockets in a row let go before they said anything
+  let rearm: (() => void) | null = null; // the current socket's silence timer, started again (by wake)
   let closed = false;
 
   const setStatus = (next: LinkStatus) => {
@@ -86,21 +93,31 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
     else outbox.push(frame);
   };
 
-  // A socket that has said nothing for silentMs is let go: one that was open is opened afresh at
-  // once (the server is likely there, the path to it was lost), one still connecting goes the way
-  // of a refused connection, the backoff. Its close event, if one ever comes, is then not ours.
-  const hush = (ws: SocketLike) => {
+  // A socket that has said nothing for the window is let go. One that had delivered a frame is
+  // opened afresh at once: the server was there, the path to it was lost. One that never said
+  // anything (still connecting, or still receiving its first frame on a slow link) goes the way of
+  // a refused connection, the backoff, and the next socket gets twice the window: a link that is
+  // only slow gets its snapshot in the end, instead of starting the same download every 10 s. Its
+  // close event, if one ever comes, is then not ours.
+  const hush = (ws: SocketLike, heard: () => boolean) => {
     clearTimeout(silence);
-    silence = setTimeout(() => {
-      if (ws !== socket || closed) return;
-      const wasOpen = status === "open";
-      socket = null;
-      ws.close();
-      setStatus("closed");
-      if (wasOpen) retry = firstRetry;
-      timer = setTimeout(connect, wasOpen ? 0 : retry);
-      if (!wasOpen) retry = Math.min(retry * 2, MAX_RETRY_MS);
-    }, silentMs);
+    silence = setTimeout(
+      () => {
+        if (ws !== socket || closed) return;
+        socket = null;
+        ws.close();
+        setStatus("closed");
+        if (heard()) {
+          retry = firstRetry;
+          timer = setTimeout(connect, 0);
+          return;
+        }
+        mute = Math.min(mute + 1, Math.log2(MAX_SILENT_GROWTH));
+        timer = setTimeout(connect, retry);
+        retry = Math.min(retry * 2, MAX_RETRY_MS);
+      },
+      silentMs * 2 ** mute,
+    );
   };
 
   const connect = () => {
@@ -108,17 +125,26 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
     setStatus("connecting");
     const ws = open(url);
     socket = ws;
-    hush(ws);
+    let heard = false; // whether this socket has delivered a frame: only then has it worked
+    const arm = () => {
+      hush(ws, () => heard);
+    };
+    arm();
+    rearm = arm;
     ws.addEventListener("open", () => {
       if (ws !== socket) return;
-      retry = firstRetry;
-      hush(ws);
+      arm();
       setStatus("open");
       for (const frame of outbox.splice(0)) ws.send(frame);
     });
     ws.addEventListener("message", (message) => {
       if (ws !== socket) return;
-      hush(ws); // anything the server says, a heartbeat or a frame this client can't read, says it is there
+      if (!heard) {
+        heard = true;
+        retry = firstRetry; // a socket that delivers has worked: the next drop reconnects at once
+        mute = 0;
+      }
+      arm(); // anything the server says, a heartbeat or a frame this client can't read, says it is there
       const event = parseFrame(message.data);
       if (Option.isNone(event)) {
         // not an event this client knows: say so, and keep the link (the next snapshot resyncs)
@@ -186,6 +212,9 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
         clearTimeout(silence);
         stale?.close();
       } else {
+        // kept: iOS held our timers while the page was away, so the silence timer is overdue and
+        // could fire before the frames that came meanwhile are handed over; it starts again now
+        rearm?.();
         return;
       }
       retry = firstRetry;

@@ -4,7 +4,7 @@
 // what it heard, its pid and its cwd. It exits when stdin closes, except after the message
 // "stubborn": then it ignores SIGTERM and stdin, so only SIGKILL ends it. "exit 3" makes it write
 // "bye" to stderr and exit with code 3; "die" makes it SIGKILL itself; "env" answers with the
-// provider and cache settings in its environment, as JSON (E32). `--version` prints
+// provider and cache settings in its environment, PATH and HOME, as JSON (E32). `--version` prints
 // FAKE_CLAUDE_VERSION.
 import { Option, Schema } from "effect";
 
@@ -46,7 +46,7 @@ for await (const line of console) {
       process.stderr.write("ignoring SIGTERM\n");
     });
   }
-  const settings = Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(ANTHROPIC_|CLAUDE_CODE_|AWS_BEARER_|DISABLE_PROMPT_CACHING$|ODJ_)/.test(k)).toSorted(([a], [b]) => (a < b ? -1 : 1)));
+  const settings = Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(ANTHROPIC_|CLAUDE_CODE_|AWS_BEARER_|DISABLE_PROMPT_CACHING$|ODJ_|PATH$|HOME$)/.test(k)).toSorted(([a], [b]) => (a < b ? -1 : 1)));
   const text = heard === "env" ? JSON.stringify(settings) : `echo: ${heard} pid=${process.pid} cwd=${process.cwd()}`;
   emit({ mcp_servers: [{ name: "optchat", status: "connected" }], model: "echo", subtype: "init", type: "system" });
   emit({ event: { message: { model: "echo", usage }, type: "message_start" }, type: "stream_event" });

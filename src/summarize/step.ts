@@ -5,7 +5,7 @@
 import { Clock, Effect } from "effect";
 import type { Job } from "../compactor.ts";
 import { NODE, TRIES } from "../config.ts";
-import { type EngineError, Refusal } from "../engines/errors.ts";
+import { type EngineError, ModelError, Refusal } from "../engines/errors.ts";
 import { bytes, children, cut, label, span } from "../tree.ts";
 import { type Tokens, type UsageRecord, isCold } from "../usage.ts";
 import { type Blocks, flat, viewBlocks } from "../view.ts";
@@ -59,7 +59,8 @@ export type Try = {
   readonly attempt: number;
   readonly retry: { readonly line: string; readonly text: string } | null;
 };
-export type Answer = { readonly text: string; readonly usage: Tokens; readonly model: string | null; readonly dollars?: number };
+// `cut`: why the reply stopped short of its end, when it did (its output limit, say)
+export type Answer = { readonly text: string; readonly usage: Tokens; readonly model: string | null; readonly dollars?: number; readonly cut?: string | undefined };
 
 // The size retries (docs/optchat.md §4 "The size"), for any engine: ask, log what the try cost, and retry in the same
 // conversation until the line fits or TRIES are spent; the shortest try wins. Every try that
@@ -105,9 +106,12 @@ export const sizeRetries = (o: {
       );
       yield* record(answer.usage, answer.model, answer.dollars);
       const line = answer.text.trim();
-      // an empty answer ends the call: a line tried before it still stands, the shortest of them;
-      // with none, the model gave no line, which counts as a refusal (E31)
-      if (!line) return tries.length > 0 ? shortest(tries) : yield* new Refusal({ message: "the compactor answered with an empty line" });
+      // An empty answer ends the call: a line tried before it still stands, the shortest of them.
+      // With none, a reply that ended as it meant to gave no line, which counts as a refusal
+      // (E31); one cut short (its token limit, the context window) is a limit, which never does.
+      if (!line && tries.length > 0) return shortest(tries);
+      if (!line && answer.cut !== undefined) return yield* new ModelError({ message: `the compactor's reply stopped short with no line: ${answer.cut}` });
+      if (!line) return yield* new Refusal({ message: "the compactor answered with an empty line" });
       tries.push(line);
       if (enough(tries)) return shortest(tries);
       retry = { line, text: retryText(line) };
