@@ -1,10 +1,10 @@
 // GET /ws (SPEC "Protocol", E15): one WebSocket per client, AG-UI events out; RunAgentInput frames,
 // aborts, take-backs, settings and resumes in. Every client watches the same server-owned session.
-import { type Duration, Effect, Option, Predicate, PubSub, Schema } from "effect";
+import { Clock, Duration, Effect, Option, Predicate, PubSub, Schema, Stream } from "effect";
 import { EventType } from "@ag-ui/core";
 import { type HttpRouter, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
-import type { Session } from "../../src/session.ts";
+import type { Session, SessionEvent } from "../../src/session.ts";
 import type { Subagents } from "../../src/subagents.ts";
 import type { Entry } from "../../src/tree.ts";
 import { HEARTBEAT } from "../../src/config.ts";
@@ -103,17 +103,27 @@ export const wsRoute = (
     Effect.gen(function* () {
       const socket = yield* request.upgrade;
       const write = yield* socket.writer;
-      const send = (events: readonly AgUiEvent[]) => Effect.forEach(events, (e) => write.write(JSON.stringify(e)), { discard: true });
+      const clock = yield* Clock.Clock;
+      let said = clock.currentTimeMillisUnsafe(); // when this connection was last sent anything
+      const send = (events: readonly AgUiEvent[]) =>
+        Effect.forEach(events, (e) => write.write(JSON.stringify(e)), { discard: true }).pipe(Effect.tap(() => Effect.sync(() => void (said = clock.currentTimeMillisUnsafe()))));
       const live = yield* PubSub.subscribe(o.session.events); // before the snapshot, so nothing falls between
       const { beat, first, translate } = openStream({ entries: o.entries, live: o.session.live(), state: o.session.state(), thread: o.thread, window: o.window });
       yield* send(first);
       yield* o.session.primeSoon;
-      // the session's events as they come; a heartbeat when none came for HEARTBEAT, so a client
-      // knows a silent socket is dead (web/src/lib/connection.ts)
-      yield* PubSub.take(live).pipe(
-        Effect.timeoutOption(o.heartbeat ?? HEARTBEAT),
-        Effect.flatMap(Option.match({ onNone: () => send(beat(o.session.state())), onSome: (e) => send(translate(e)) })),
-        Effect.forever,
+      // The session's events as they come, and a heartbeat once nothing went out for HEARTBEAT,
+      // so a client knows a silent socket is dead (web/src/lib/connection.ts). A clock looks five
+      // times per HEARTBEAT; the events are merged with it, one at a time, and never interrupted.
+      const every = Duration.toMillis(Duration.fromInputUnsafe(o.heartbeat ?? HEARTBEAT));
+      const events: Stream.Stream<Option.Option<SessionEvent>> = Stream.fromSubscription(live).pipe(Stream.map(Option.some));
+      yield* events.pipe(
+        Stream.merge(Stream.tick(Duration.millis(every / 5)).pipe(Stream.map((): Option.Option<SessionEvent> => Option.none()))),
+        Stream.runForEach(
+          Option.match({
+            onNone: () => (clock.currentTimeMillisUnsafe() - said >= every ? send(beat(o.session.state())) : Effect.void),
+            onSome: (e) => send(translate(e)),
+          }),
+        ),
         Effect.forkScoped,
       );
       const fresh = unseen(o.entries);
