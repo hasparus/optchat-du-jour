@@ -14,10 +14,12 @@
 // docs/optchat.md §3.3 marks Anthropic's; the request end is cached implicitly (`prompt_cache_options` left at its default). A
 // model that refuses the breakpoint field (the reference measured that on the Codex route) gets
 // the request again without it, and is sent none from then on, said once.
-import { Cause, Context, Data, Effect, Layer, Option, Schema, Stream } from "effect";
+import { Cause, Context, Data, Duration, Effect, Layer, Option, Schema, Stream } from "effect";
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
-import { type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
+import { IDLE_OPENAI } from "../config.ts";
+import { addSpent, type EngineError, isEngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
 import { admitRequest } from "../engines/request-admission.ts";
+import { askAgain, type Attempt, attempt, Busy, busyStatus, idleCut, showing, waitOf } from "../engines/retry.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
 import { isPicture, type Part } from "../media/part.ts";
 import { wireJson } from "../text.ts";
@@ -185,6 +187,10 @@ const decodeErrorBody = Schema.decodeUnknownOption(Schema.fromJsonString(ErrorBo
 
 // a spent or rate-limited plan, or a plan this user may not share: the chain moves on (E4)
 const LIMIT = /usage_limit|rate_limit|insufficient_quota|not_eligible|quota/;
+// what a failed stream may say that asking again can cure (E33): the server's own failure, a rate
+// limit; and what is no hiccup whatever the status says: the plan's cap, a key out of quota
+const PASSING = /^(server_error|rate_limit_exceeded|internal_error|timeout)$/;
+const CAPPED = /usage_limit|insufficient_quota|not_eligible|quota/;
 
 // `label` names the engine in the message: openai-plan, or api-key for a key's calls
 export const classify = (status: number | null, code: string | null | undefined, message: string | undefined, label = "openai-plan", spent?: Spent): EngineError => {
@@ -218,7 +224,7 @@ type Read = {
   readonly spent: Spent | undefined;
 };
 
-type Hooks<E extends Tagged> = Pick<Ask<E>, "onSettledUsage" | "onOut" | "onReasoning" | "onStart" | "onText" | "onThinking">;
+type Hooks<E extends Tagged> = Pick<Ask<E>, "onSettledUsage" | "onOut" | "onReasoning" | "onStart" | "onText" | "onThinking"> & { readonly at?: Attempt };
 
 const onEvent =
   <E extends Tagged>(o: { readonly model: string; readonly label: string; readonly reported: (spent: Spent | undefined) => void } & Hooks<E>) =>
@@ -273,6 +279,7 @@ const onEvent =
         case "response.failed": {
           const { response } = yield* failed(data);
           o.reported(spentOf(response, o.model));
+          if (o.at && PASSING.test(response.error?.code ?? "")) o.at.busy = true;
           return yield* classify(null, response.error?.code, response.error?.message ?? "response.failed", o.label, spentOf(response, o.model));
         }
         case "response.incomplete": {
@@ -283,6 +290,7 @@ const onEvent =
         }
         case "error": {
           const e = yield* errorEvent(data);
+          if (o.at && PASSING.test(e.code ?? e.error?.code ?? "")) o.at.busy = true;
           return yield* classify(null, e.code ?? e.error?.code, e.message ?? e.error?.message, o.label);
         }
         default:
@@ -303,7 +311,10 @@ export const readStream = <E extends Tagged = never>(stream: Stream.Stream<Uint8
     return Effect.gen(function* () {
       const r = yield* sseFold(label, stream, init, onEvent({ ...o, label, model, reported }), (state) => state.done !== null, o.onStart);
       if (r.refusal) return yield* new Refusal({ message: `${label} refused: ${r.refusal.slice(0, 300)}`, spent: r.spent });
-      if (r.done === null) return yield* new ModelError({ message: `${label}: the stream ended without response.completed` });
+      if (r.done === null) {
+        if (o.at) o.at.busy = true; // cut off on the way
+        return yield* new ModelError({ message: `${label}: the stream ended without response.completed` });
+      }
       return r.done;
     }).pipe(Effect.onExit(() => known && o.onSettledUsage ? o.onSettledUsage(known) : Effect.void));
   });
@@ -317,9 +328,14 @@ export type Bearer = {
 
 // The Responses API at `api` (…/v1) with `bearer`: the plan's tokens or an API key (SPEC "Engines").
 // `report` hears, once per model, that a model refused the breakpoints and is sent none.
-export const makeResponses = (o: { readonly api: string; readonly label: string; readonly bearer: Bearer; readonly report?: (message: string) => Effect.Effect<void> }) =>
+// A request that fails on the API's side before anything of it went out is sent again (E33,
+// src/engines/retry.ts); a stream with no bytes for `idle` (IDLE_OPENAI) is dead.
+export const makeResponses = (o: { readonly api: string; readonly label: string; readonly bearer: Bearer; readonly report?: (message: string) => Effect.Effect<void>; readonly idle?: Duration.Input }) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
+    const idle = o.idle ?? IDLE_OPENAI;
+    const quiet = () => new ModelError({ message: `${o.label}: no word from the API in ${Duration.format(Duration.fromInputUnsafe(idle))}` });
+    const broken = (err: { readonly message: string }) => new Busy({ error: new ModelError({ message: `${o.label}: ${err.message}` }), wait: null });
     // the models that refused `prompt_cache_breakpoint`: their requests go without it from then on
     const unmarked = new Set<string>();
     const post = <E extends Tagged>(ask: Ask<E>, token: string, marked: boolean) => {
@@ -328,13 +344,18 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
         HttpClientRequest.accept("text/event-stream"),
         HttpClientRequest.bodyText(body(ask, marked), "application/json"),
       );
-      return admitRequest().pipe(Effect.andThen(http.execute(request)));
+      return admitRequest().pipe(
+        Effect.andThen(http.execute(request)),
+        Effect.timeoutOrElse({ duration: idle, orElse: () => Effect.fail(new Busy({ error: quiet(), wait: null })) }),
+        Effect.catchIf(HttpClientError.isHttpClientError, (err) => Effect.fail(broken(err))),
+      );
     };
     // A model that refuses the breakpoints (a 400 naming the field) gets the same request again
     // without them, and none from then on, which the user hears once, rather than failing every
     // call; our marks are then off for it.
     const once = <E extends Tagged>(ask: Ask<E>, token: string) =>
       Effect.gen(function* () {
+        const at = attempt();
         const marked = !unmarked.has(ask.model);
         let res = yield* post(ask, token, marked);
         let raw: string | null = null;
@@ -352,23 +373,43 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
         if (res.status === 401) return yield* new Unauthorized({ message: (raw ?? (yield* res.text)).slice(0, 300) });
         if (res.status !== 200) {
           const text = raw ?? (yield* res.text);
-          const parsed = decodeErrorBody(text);
-          return yield* parsed._tag === "Some"
-            ? classify(res.status, parsed.value.error.code, parsed.value.error.message, o.label)
-            : classify(res.status, null, text.slice(0, 300), o.label);
+          const body = Option.getOrUndefined(decodeErrorBody(text))?.error;
+          const error = body ? classify(res.status, body.code, body.message, o.label) : classify(res.status, null, text.slice(0, 300), o.label);
+          return yield* busyStatus(res.status, res.headers) && !CAPPED.test(body?.code ?? "") ? new Busy({ error, wait: waitOf(res.headers, Date.now()) }) : error;
         }
-        const stream = res.stream.pipe(Stream.mapError((err) => new ModelError({ message: `${o.label}: ${err.message}` })));
-        return yield* readStream(stream, ask.model, { label: o.label, onSettledUsage: ask.onSettledUsage, onOut: ask.onOut, onReasoning: ask.onReasoning, onStart: ask.onStart, onText: ask.onText, onThinking: ask.onThinking });
-      }).pipe(Effect.catchIf(HttpClientError.isHttpClientError, (err) => Effect.fail(new ModelError({ message: `${o.label}: ${err.message}` }))));
+        const stream = idleCut(res.stream, idle, quiet).pipe(
+          Stream.mapError((err) => {
+            at.busy = true; // the connection broke, or went quiet
+            return err instanceof ModelError ? err : new ModelError({ message: `${o.label}: ${err.message}` });
+          }),
+        );
+        return yield* readStream(stream, ask.model, {
+          at,
+          label: o.label,
+          onOut: showing(at, ask.onOut),
+          onReasoning: showing(at, ask.onReasoning),
+          onSettledUsage: ask.onSettledUsage,
+          onStart: ask.onStart,
+          onText: showing(at, ask.onText),
+          onThinking: showing(at, ask.onThinking),
+        }).pipe(
+          Effect.catchIf(
+            (e): e is EngineError => isEngineError(e) && at.busy && !at.shown,
+            (error) => Effect.fail(new Busy({ error, wait: null })),
+          ),
+        );
+      }).pipe(Effect.catchIf(HttpClientError.isHttpClientError, (err) => Effect.fail(broken(err))));
 
+    // what failed attempts cost is the reply's too
+    const again = <E extends Tagged>(ask: Ask<E>, token: string) => askAgain(once(ask, token), (reply, before) => ({ ...reply, usage: addSpent(before, { model: reply.model, usage: reply.usage }).usage }));
     // a 401 renews the token once, then counts as signed out
     const respond: Respond = (ask) =>
       Effect.gen(function* () {
         const token = yield* o.bearer.current;
-        return yield* once(ask, token).pipe(
+        return yield* again(ask, token).pipe(
           Effect.catchIf(isUnauthorized, () =>
             o.bearer.renew(token).pipe(
-              Effect.flatMap((fresh) => once(ask, fresh)),
+              Effect.flatMap((fresh) => again(ask, fresh)),
               Effect.catchIf(isUnauthorized, (u) => Effect.fail(new UsageLimit({ message: `${o.label}: still unauthorized after a refresh: ${u.message}` }))),
             ),
           ),

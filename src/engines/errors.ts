@@ -39,6 +39,33 @@ export const priceUsage = (spent: Spent, dollars: (usage: Tokens) => number): Ef
   catch: () => new ModelError({ message: "API-key usage cannot be priced safely", spent }),
 });
 
+// Two spends as one: what an attempt that failed cost, added to the next one's (a request asked
+// again, src/engines/retry.ts). Dollars add up only when both are priced.
+export const addSpent = (a: Spent, b: Spent): Spent => {
+  const usage = {
+    cacheRead: a.usage.cacheRead + b.usage.cacheRead,
+    cacheWrite: a.usage.cacheWrite + b.usage.cacheWrite,
+    input: a.usage.input + b.usage.input,
+    output: a.usage.output + b.usage.output,
+  };
+  const model = b.model ?? a.model;
+  return a.dollars !== undefined && b.dollars !== undefined ? { dollars: a.dollars + b.dollars, model, usage } : { model, usage };
+};
+
+// the same failure, with `before` (what earlier attempts of the same request cost) added to its spend
+export const withSpent = (e: EngineError, before: Spent | undefined): EngineError => {
+  if (before === undefined || e._tag === "DeviceOffline") return e;
+  const fields = { message: e.message, spent: e.spent === undefined ? before : addSpent(before, e.spent) };
+  switch (e._tag) {
+    case "UsageLimit":
+      return new UsageLimit(fields);
+    case "Refusal":
+      return new Refusal(fields);
+    case "ModelError":
+      return new ModelError(fields);
+  }
+};
+
 // the same failure with its spend priced: an API key's call that failed still costs dollars
 export const priced = (e: EngineError, dollars: (usage: Tokens) => number): EngineError => {
   if (e._tag === "DeviceOffline" || e.spent === undefined) return e;

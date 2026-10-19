@@ -36,6 +36,18 @@ export const REFUSALS = 2;
 // opens another. A half-open TCP connection or a laptop on a new Wi-Fi otherwise looks open for
 // minutes. SILENT lives with the client (web/src/lib/connection.ts), which can't import this file.
 export const HEARTBEAT = "5 seconds";
+// Our own HTTP engines (api-key, openai-plan; E33): one request that fails on the vendor's side (a
+// 408, 409, 429, 5xx or 529, a dropped connection, a stream gone quiet) is sent again up to this
+// many tries in all, after a doubling pause from HTTP_RETRY_BASE with jitter, or the server's
+// `retry-after`, before the failure reaches the failover chain. A `retry-after` longer than
+// HTTP_RETRY_LONGEST is a limit, not a hiccup: the chain moves on at once.
+export const HTTP_TRIES = 4;
+export const HTTP_RETRY_BASE = "1 second";
+export const HTTP_RETRY_LONGEST = "60 seconds";
+// A stream with no bytes for this long is dead (UniiChat's values): Anthropic pings while the
+// model thinks, the Responses API can stay quiet through a long reasoning
+export const IDLE_ANTHROPIC = "5 minutes";
+export const IDLE_OPENAI = "20 minutes";
 // the most characters of one tool result that get logged
 export const CAP = 30_000;
 // lines per content block of the view, or of a compactor's context (docs/optchat.md §3.3 "How the

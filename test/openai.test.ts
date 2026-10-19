@@ -280,11 +280,12 @@ test("429 subscription_sharing_usage_limit_exceeded moves the node to the next e
   await Effect.runPromise(summarize(leaf("hi")));
   expect(reports[3]).toMatch(/^openai-plan:gpt-6-luna unavailable: /);
 
-  // a model error is the answer, not a reason to move on; an incomplete response still logs its usage
+  // a model error is the answer, not a reason to move on (a 500 is one too, once its retries are
+  // spent: E33, test/retry.test.ts); an incomplete response still logs its usage
   records.length = 0;
-  fake.state.script = [{ code: "server_error", status: 500 }];
+  fake.state.script = [{ code: "invalid_request_error", status: 400 }];
   const error = await Effect.runPromise(Effect.flip(summarize(leaf("hi"))));
-  expect(error.message).toContain("500");
+  expect(error.message).toContain("400");
   fake.state.script = [{ incomplete: "max_output_tokens" }];
   const cut = await Effect.runPromise(Effect.flip(summarize(leaf("hi"))));
   expect(cut.message).toContain("incomplete response (max_output_tokens)");
