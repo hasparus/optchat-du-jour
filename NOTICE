@@ -1,0 +1,17 @@
+optchat-du-jour
+
+This product ports ideas, not code, from UniiChat
+(https://github.com/VictorTaelin/uniichat), Copyright 2026 Higher Order
+Company, licensed under the Apache License, Version 2.0. The ideas were
+reimplemented in this codebase's own style; no source or text was copied.
+What was taken, and from which commit, is tracked in docs/uniichat.md:
+
+- A summary the model refuses, or leaves empty, becomes its source,
+  clipped (Memory.ts, Memory.build): SPEC E31.
+- Provider keys kept out of the processes the agent runs (Config.ts):
+  SPEC E32.
+- A WebSocket heartbeat, and a client that drops a silent socket
+  (Server.ts, View.ts): SPEC "Protocol".
+- A failed model request asked again on `retry-after` and
+  `x-should-retry`, and a stream with no bytes for a while cut, with
+  UniiChat's idle times (Agent.ts, Anthropic.ts, OpenAI.ts): SPEC E33.
