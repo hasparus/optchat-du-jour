@@ -1,5 +1,5 @@
 // /mcp (E8): zoom and date as an MCP server, over a WebSocket (a GET that upgrades, one JSON-RPC
-// message per text frame each way) or one POST per message, with spawn and tell (SPEC M7a).
+// message per text frame each way) or one POST per message, with spawn and tell (SPEC "Subagents").
 // tailscale serve hides the peer, so the URL carries a secret, made at startup and sent only inside
 // --mcp-config: the master's, or one subagent's own (E38), which says who calls spawn and tell.
 import { Effect } from "effect";

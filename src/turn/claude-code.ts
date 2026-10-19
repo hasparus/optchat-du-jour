@@ -50,8 +50,9 @@ export type ClaudeCodeTurnOptions = {
   // before any, E18): the session has only its spawns started ahead, so only it starts them again
   // when a device moves to another MCP transport. Asked each time, since each turn can change it.
   readonly warms: () => boolean;
-  // Tools let through without asking (`--allowedTools`; a subagent's, SPEC M7a, whose permission
-  // mode is "default"); `--tools` stays as given, so the tool list the model is sent is the same bytes
+  // Tools let through without asking (`--allowedTools`; M7a's subagents had it, with permission
+  // mode "default"; none do since M7b, E36); `--tools` stays as given, so the tool list the model
+  // is sent is the same bytes
   readonly allowedTools?: readonly string[] | undefined;
   // false: never kept warm or handed a warm process (a subagent's, E18); true unless said
   readonly pooled?: boolean;

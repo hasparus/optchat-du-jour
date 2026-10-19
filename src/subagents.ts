@@ -31,8 +31,9 @@
 // there, its task, and on a later call what its side log holds so far (its newest entries, within
 // SIDE_CONTEXT) and the messages it was sent since. Messages sent while a call runs are offered to
 // it; what it never took starts the next call.
-import { Cause, Clock, Deferred, Effect, Exit, Fiber, Option, PubSub, Queue, Result, Schema, type Scope } from "effect";
+import { Cause, Clock, Deferred, type Duration, Effect, Exit, Fiber, Option, PubSub, Queue, Result, Schema, type Scope } from "effect";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { isLostConnection } from "./claude/remote.ts";
 import { posix } from "node:path";
 import { type Effort, entryLabel, isEffort, type Ref, runEffort } from "./config.ts";
 import type { EngineError } from "./engines/errors.ts";
@@ -62,6 +63,11 @@ export const SUBAGENTS_SHOWN = 8;
 const LAST_LINE = 160;
 // the characters of another subagent's task its opening shows, when they share a folder
 const TASK_SHOWN = 80;
+// A call cut short by a dropped device runner link (the runner killed its claude) goes on from its
+// side log after LINK_WAIT, at most LINK_TRIES times in a run, as after a restart (E40); then it
+// fails and reports. The process itself doesn't survive the drop (deferred, SPEC M7b).
+export const LINK_TRIES = 3;
+export const LINK_WAIT = "5 seconds";
 const NAME = SUBAGENT_NAME; // src/mcp.ts: a letter, then up to 31 letters, digits, - or _
 
 // what the session gives the supervisor, once it exists (it needs the supervisor's list first)
@@ -242,6 +248,9 @@ const holds = (log: readonly Entry[], text: string, since: number) => {
 
 // what a restart tells a subagent it cut short, as it goes on (E40)
 const RESTARTED = "[from OptChat] The server restarted while you worked, and stopped your last call. Your log so far is above: carry on with your task from there, checking what your last steps left.";
+// and what a dropped link does
+const RECONNECTED = (device: string) =>
+  `[from OptChat] The connection to ${device} dropped while you worked, and stopped your last call. Your log so far is above: carry on with your task from there, checking what your last steps left.`;
 
 export const makeSubagents = (o: {
   readonly dir: string; // the stream: streams/<device>
@@ -262,6 +271,7 @@ export const makeSubagents = (o: {
   readonly commit: Effect.Effect<string | null>;
   readonly logUsage: (record: UsageRecord) => Effect.Effect<void>;
   readonly publish: (e: SessionEvent) => Effect.Effect<void>;
+  readonly linkWait?: Duration.Input; // LINK_WAIT; tests make it short
 }): Effect.Effect<Subagents, never, Scope.Scope> =>
   Effect.gen(function* () {
     const root = `${o.dir}/agents`;
@@ -635,6 +645,7 @@ export const makeSubagents = (o: {
 
     const run = (a: Agent, runId: string): Effect.Effect<void, EngineError | StoreError> =>
       Effect.gen(function* () {
+        let drops = 0; // calls a dropped link cut short in this run
         for (let fresh = a.count <= 1; ; fresh = false) {
           if (a.engineRef === null) return yield* new StoreError({ message: `${a.ref} is not a model of the master's chain any more (${chainText()})` });
           if (a.isolate) yield* worktreeFor(a);
@@ -671,10 +682,19 @@ export const makeSubagents = (o: {
             },
           };
           const mid = { next: Queue.take(q).pipe(Effect.map(asMid)), ready: Queue.clear(q).pipe(Effect.map((ts) => ts.map(asMid))) };
-          yield* engine.run({ device: a.device, earlier: [], media: [], mid, texts: [opening], view }, out, null);
+          const ran = yield* Effect.result(engine.run({ device: a.device, earlier: [], media: [], mid, texts: [opening], view }, out, null));
           // what it was offered and never took is held for one more call
           a.offerTo = null;
           for (const t of a.tells) t.state = "held";
+          if (Result.isFailure(ran)) {
+            const e = ran.failure;
+            if (e._tag !== "ModelError" || !isLostConnection(e.message) || drops >= LINK_TRIES) return yield* Effect.fail(e);
+            drops += 1;
+            yield* info(`[${a.name}] ${e.message}; it goes on from its log in a moment`);
+            a.tells.unshift({ seq: ++seq, state: "held", text: RECONNECTED(a.device) });
+            yield* Effect.sleep(o.linkWait ?? LINK_WAIT);
+            continue;
+          }
           if (a.tells.length > 0) {
             yield* changed;
             continue;
@@ -937,6 +957,7 @@ export const makeSubagents = (o: {
           const resumed = yield* Effect.result(begin(a, null));
           if (Result.isSuccess(resumed)) continue;
           a.tells = [];
+          a.state = "stopped";
         }
         const last = entriesOf(a).at(-1);
         a.why = `the server restarted while it ran, and it could not go on: ${why ?? "its state could not be saved"}`;

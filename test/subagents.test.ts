@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
 import { entryLabel, parseSettings, type Ref, SUBAGENTS_MAX } from "../src/config.ts";
-import { UsageLimit } from "../src/engines/errors.ts";
+import { ModelError, UsageLimit } from "../src/engines/errors.ts";
 import { makeMaster } from "../src/master.ts";
 import type { AgentTools, Caller } from "../src/mcp.ts";
 import { makeSession, noMedia, type SessionEvent } from "../src/session.ts";
@@ -47,7 +47,7 @@ const CHAIN = SETTINGS.master.chain;
 
 // What a subagent's engine does in one call: `call` counts its calls, `input` is the call's input,
 // `at` where it runs (its device, its folder or worktree, its /mcp key)
-type Child = (input: TurnInput, out: TurnEvents, call: number, at: AgentPlace) => Effect.Effect<void, UsageLimit>;
+type Child = (input: TurnInput, out: TurnEvents, call: number, at: AgentPlace) => Effect.Effect<void, UsageLimit | ModelError>;
 // a call that reads, then answers `reply`
 const answers =
   (reply: string): Child =>
@@ -141,6 +141,7 @@ const rig = (o: {
       logUsage: (r) => Effect.sync(() => usage.push(r)),
       max: o.max ?? SUBAGENTS_MAX,
       mem: chat.mem,
+      linkWait: "10 millis",
       publish: (e) => PubSub.publish(events, e).pipe(Effect.asVoid),
       worktrees: (device) => (device === "mini" ? trees : undefined),
     });
@@ -1000,6 +1001,31 @@ test("isolate needs a git repository: a folder that isn't one is a tool error, a
       expect(r.calls).toEqual([]);
       expect(existsSync(`${r.dir}/agents/iso`)).toBe(false);
       expect(r.stateOf("iso")).toBeUndefined();
+    }),
+  );
+});
+
+test("a call cut short by a dropped device link goes on from its side log; a link that keeps dropping fails it", async () => {
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const lost = new ModelError({ message: "lost the connection to mac: socket closed" });
+      const r = yield* rig({
+        child: {
+          flaky: (_input, out, call) => (call === 1 ? out.log("tool", 'Bash {"command":"make"}').pipe(Effect.orDie, Effect.andThen(Effect.fail(lost))) : out.log("talk", "built").pipe(Effect.orDie)),
+          gone: () => Effect.fail(lost),
+        },
+        master: (call) => Effect.asVoid(call("spawn", { device: "mac", name: "flaky", task: "build" }).pipe(Effect.andThen(call("spawn", { device: "mac", name: "gone", task: "build" })))),
+        scope,
+      });
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("flaky's report", () => r.log().includes("user: [flaky] built"));
+      const second = r.calls.filter((c) => c.name === "flaky")[1]?.input.texts[0] ?? "";
+      expect(second).toContain("The connection to mac dropped while you worked");
+      expect(second).toContain('1|tool: Bash {"command":"make"}');
+      // the other: its first call and LINK_TRIES more, then it fails and says why
+      yield* until("gone's report", () => r.log().some((l) => l.startsWith("user: [gone] failed")));
+      expect(r.calls.filter((c) => c.name === "gone")).toHaveLength(4);
+      expect(r.stateOf("gone")?.why).toBe("error: lost the connection to mac: socket closed");
     }),
   );
 });

@@ -87,7 +87,7 @@ const notes = [{ tool: { input: { pattern: "trip", path: home }, name: "Grep" } 
 const scout = [{ take: true }, { tool: { input: { file_path: `${home}/notes/oct.md` }, name: "Read" } }, { toolResult: "trip: Oct 3 to Oct 9" }, { sleep: 500 }, { text: SCOUT_REPORT }];
 // E2E_ISOLATED: a demo repository outside the data dir (which is a git repository itself), and
 // where its worktrees go, both temporary
-const demo = Bun.env.E2E_ISOLATED ? `${mkdtempSync(`${tmpdir()}/oc-e2e-repo-`)}` : null;
+const demo = Bun.env.E2E_ISOLATED ? mkdtempSync(`${tmpdir()}/oc-e2e-repo-`) : null;
 const git = (dir: string, ...args: string[]) => spawnSync("git", ["-c", "user.name=Demo", "-c", "user.email=demo@example.com", ...args], { cwd: dir });
 if (demo !== null) {
   mkdirSync(`${demo}/repo`);

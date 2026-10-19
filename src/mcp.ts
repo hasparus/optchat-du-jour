@@ -227,7 +227,7 @@ export function handleMcp(mem: Mem, body: string, attached: Attached, agents: Ag
   }
 }
 
-// handleMcp, with spawn and tell (SPEC M7a), which go to the supervisor and so take an effect;
+// handleMcp, with spawn and tell (SPEC "Subagents"), which go to the supervisor and so take an effect;
 // every other message is answered as handleMcp answers it.
 export const answerMcp = (mem: Mem, body: string, attached: Attached, agents: AgentTools = noAgents): Effect.Effect<Reply> => {
   const found = decodeRequest(body);

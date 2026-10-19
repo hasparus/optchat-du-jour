@@ -1,7 +1,8 @@
 // A turn's tools on an engine with its own loop (SPEC "Engines", tools on non-Claude engines; M5):
 // the read-only file tools of the turn's device, zoom and date answered from memory on the server,
-// and spawn and tell (SPEC M7a), as /mcp answers them for claude (E8). Write tools are not offered
-// in M5. A subagent's box offers the same list (the cached prefix), and its spawn and tell refuse.
+// and spawn and tell (SPEC "Subagents"), as /mcp answers them for claude (E8). Write tools are not
+// offered in M5. A subagent's box offers the same list (the cached prefix), its spawn and tell its
+// own (E38).
 import { Effect, Option, Schema } from "effect";
 import { type AgentTools, memoryTool, noAgents, TOOLS } from "../mcp.ts";
 import type { Mem } from "../tree.ts";

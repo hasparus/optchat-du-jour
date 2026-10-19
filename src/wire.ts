@@ -79,9 +79,10 @@ export const engineLabel = (ref: string, runs?: string | null) => {
   return `${name} (${where}${effort === null ? "" : `, ${effort}`})`;
 };
 
-// A subagent (SPEC M7a): a background run the master started with spawn(name, task, model?),
-// on the server's own device, read-only. `state`: running, done (it gave its final reply),
-// stopped (by the user, or by a server restart) or failed (`why` says). `ref` is the engine it
+// A subagent (SPEC "Subagents"): a background run the master (or another subagent) started with
+// spawn(name, task, model?, isolate?, device?, folder?), with the master's tools, on `device`.
+// `state`: running, done (it gave its final reply), stopped (by the user, or by a restart it
+// could not go on after) or failed (`why` says). `ref` is the engine it
 // runs on, as the master's chain spells it (canonicalRef), `label` that ref for people, `effort`
 // the effort it runs at (null: its model takes none); a model the user picks on its card is the
 // ref from its next call. `started` is an ISO date; `elapsed`, how long it has run (ms) as of
