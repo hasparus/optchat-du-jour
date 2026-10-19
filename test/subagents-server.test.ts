@@ -187,7 +187,7 @@ test("the master spawns a read-only subagent over /mcp; its report reaches the c
   const scout = startOf("scout");
   expect(scout).toBeDefined();
   expect(flag(scout?.argv ?? [], "--permission-mode")).toBe("default");
-  expect(flag(scout?.argv ?? [], "--allowedTools")).toBe("Read,Glob,Grep,mcp__optchat__zoom,mcp__optchat__date");
+  expect(flag(scout?.argv ?? [], "--allowedTools")).toBe("Read,Glob,Grep,mcp__optchat__zoom,mcp__optchat__date,mcp__optchat__read_artifact");
   expect(flag(scout?.argv ?? [], "--tools")).toBe(flag(master?.argv ?? [], "--tools"));
   expect(flag(scout?.argv ?? [], "--system-prompt")).toBe(flag(master?.argv ?? [], "--system-prompt"));
   expect(flag(scout?.argv ?? [], "--effort")).toBe("high");

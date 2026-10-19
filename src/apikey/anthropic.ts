@@ -14,6 +14,7 @@ import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
 import { admitRequest } from "../engines/request-admission.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
+import type { ToolInputHooks } from "../engines/tool-input.ts";
 import { isPicture } from "../media/part.ts";
 import type { ToolDef } from "../tools/files.ts";
 import type { Item } from "../providers/provider.ts";
@@ -40,6 +41,7 @@ export type MessagesAsk<E extends Tagged = never> = {
   readonly onText?: (delta: string) => Effect.Effect<void>;
   readonly onThinking?: (tokens: number) => Effect.Effect<void>; // the size of the thought so far
   readonly onReasoning?: (delta: string, fresh: boolean) => Effect.Effect<void>; // its text; the signature never goes out
+  readonly onToolInput?: ToolInputHooks | undefined; // a tool_use block's input JSON as it streams
   readonly onItem?: (item: Item) => Effect.Effect<void, E>; // each block as it completes, in order
   readonly onSettledUsage?: (spent: Spent, writes?: Writes) => Effect.Effect<void>;
   readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
@@ -232,7 +234,7 @@ const blockOf = (b: typeof ContentBlock.Type): Block => {
   }
 };
 
-type Hooks<E extends Tagged> = Pick<MessagesAsk<E>, "onItem" | "onReasoning" | "onText" | "onThinking">;
+type Hooks<E extends Tagged> = Pick<MessagesAsk<E>, "onItem" | "onReasoning" | "onText" | "onThinking" | "onToolInput">;
 
 const onEvent =
   <E extends Tagged>(o: Hooks<E>) =>
@@ -259,7 +261,10 @@ const onEvent =
             b.text += delta.text;
             if (o.onText) yield* o.onText(delta.text);
           }
-          if (b?.type === "tool_use" && delta.partial_json !== undefined) b.json += delta.partial_json;
+          if (b?.type === "tool_use" && delta.partial_json !== undefined) {
+            b.json += delta.partial_json;
+            if (o.onToolInput) yield* o.onToolInput.delta({ id: b.id, name: b.name }, delta.partial_json);
+          }
           if (b?.type === "thinking") {
             const fresh = b.thinking === "";
             b.thinking += delta.thinking ?? "";
@@ -273,6 +278,7 @@ const onEvent =
         case "content_block_stop": {
           const { index } = yield* blockStop(data);
           const b = r.blocks[index];
+          if (b?.type === "tool_use" && o.onToolInput) yield* o.onToolInput.end(b.id);
           if (b && o.onItem) for (const item of itemOf(b)) yield* o.onItem(item);
           return r;
         }

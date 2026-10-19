@@ -273,6 +273,9 @@ export const Settings = Schema.Struct({
   // (chat/reasoning/, never the log, the tree or a request; off: it is only streamed live), and
   // `commit` lets persist commit that file with the rest of the data dir. Both default to true.
   reasoning: Schema.optional(Schema.Struct({ keep: Schema.optional(Schema.Boolean), commit: Schema.optional(Schema.Boolean) })),
+  // The artifacts the master publishes (SPEC "Artifacts"): `commit` lets persist commit their
+  // folder (streams/<device>/artifacts/) with the rest of the data dir. Defaults to true.
+  artifacts: Schema.optional(Schema.Struct({ commit: Schema.optional(Schema.Boolean) })),
   // Sign in with ChatGPT endpoints (src/openai/endpoints.ts): each key left out, or the whole field, decodes to its default
   openai: Endpoints.pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
 }).check(Schema.makeFilter((s) => {
@@ -355,4 +358,6 @@ export const mediaSettings = (settings: Settings) => {
 export type MediaSettings = ReturnType<typeof mediaSettings>;
 
 // the reasoning settings with their defaults filled in (SPEC "Reasoning")
+// the artifact settings with their defaults filled in (SPEC "Artifacts")
+export const artifactSettings = (settings: Settings) => ({ commit: settings.artifacts?.commit ?? true });
 export const reasoningSettings = (settings: Settings) => ({ commit: settings.reasoning?.commit ?? true, keep: settings.reasoning?.keep ?? true });

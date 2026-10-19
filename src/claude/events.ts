@@ -26,17 +26,27 @@ const ThinkingDelta = Schema.Struct({
   estimated_tokens: Schema.optional(Schema.NullOr(Schema.Number)),
 });
 
+// a piece of a tool call's input JSON as the model writes it (an artifact's live draft, SPEC "Artifacts")
+const InputJsonDelta = Schema.Struct({ type: Schema.Literal("input_json_delta"), partial_json: Schema.String });
+
 const MessageStart = Schema.Struct({
   type: Schema.Literal("message_start"),
   message: Schema.Struct({ model: Schema.optional(Schema.String), usage: Schema.optional(Usage) }),
 });
-const BlockDelta = Schema.Struct({ type: Schema.Literal("content_block_delta"), delta: Schema.Union([TextDelta, ThinkingDelta]) });
-// a block begins: a tool call shows here before it is complete (the compactor stops at one)
-const BlockStart = Schema.Struct({ type: Schema.Literal("content_block_start"), content_block: Schema.Struct({ type: Schema.String }) });
+// `index`: the block's place in its message, which ties a tool call's input deltas to its start
+const BlockDelta = Schema.Struct({ type: Schema.Literal("content_block_delta"), index: Schema.optional(Schema.Number), delta: Schema.Union([TextDelta, ThinkingDelta, InputJsonDelta]) });
+// a block begins: a tool call shows here before it is complete (the compactor stops at one), with
+// its id and name
+const BlockStart = Schema.Struct({
+  type: Schema.Literal("content_block_start"),
+  index: Schema.optional(Schema.Number),
+  content_block: Schema.Struct({ type: Schema.String, id: Schema.optional(Schema.String), name: Schema.optional(Schema.String) }),
+});
+const BlockStop = Schema.Struct({ type: Schema.Literal("content_block_stop"), index: Schema.optional(Schema.Number) });
 
 export const StreamEvent = Schema.Struct({
   type: Schema.Literal("stream_event"),
-  event: Schema.Union([MessageStart, BlockDelta, BlockStart]),
+  event: Schema.Union([MessageStart, BlockDelta, BlockStart, BlockStop]),
 });
 
 const TextBlock = Schema.Struct({ type: Schema.Literal("text"), text: Schema.String });

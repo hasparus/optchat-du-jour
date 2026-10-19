@@ -188,6 +188,35 @@ export const span = ({ l, i }: { readonly l: number; readonly i: number }) => {
 };
 
 // ---------------------------------------------------------------------------------------------
+// Artifacts (SPEC "Artifacts"): one self-contained HTML page the master publishes, by name, with a
+// version per publish or edit. The tools' names, as the master calls them on every engine (on
+// claude-code as mcp__optchat__<name>).
+export const ARTIFACT_TOOLS = ["publish_artifact", "edit_artifact", "read_artifact"] as const;
+export type ArtifactTool = (typeof ARTIFACT_TOOLS)[number];
+// a tool entry's or a tool call's name as the artifact tool it is, or null: mcp__optchat__x is x
+export const artifactTool = (name: string): ArtifactTool | null => {
+  const bare = name.startsWith("mcp__optchat__") ? name.slice("mcp__optchat__".length) : name;
+  return ARTIFACT_TOOLS.find((t) => t === bare) ?? null;
+};
+// One version: its number (1 up), size in bytes, ISO date, which tool made it, and `i`, the log
+// index of the tool entry that made it (null when the call was not in the log yet, see
+// src/artifacts/store.ts)
+export const ArtifactVersion = Schema.Struct({
+  v: Schema.Number,
+  bytes: Schema.Number,
+  date: Schema.String,
+  by: Schema.Literals(["publish", "edit"]),
+  i: Schema.NullOr(Schema.Number),
+});
+export type ArtifactVersion = typeof ArtifactVersion.Type;
+// an artifact: its name as first published, and its versions, oldest first (artifact.json)
+export const ArtifactInfo = Schema.Struct({ name: Schema.String, versions: Schema.Array(ArtifactVersion) });
+export type ArtifactInfo = typeof ArtifactInfo.Type;
+// /api/artifacts: every artifact, the most recently changed first
+export const ArtifactList = Schema.Struct({ artifacts: Schema.Array(ArtifactInfo) });
+export type ArtifactList = typeof ArtifactList.Type;
+
+// ---------------------------------------------------------------------------------------------
 // /api/*
 
 // /api/messages: log entries (records.ts Msg, with the size the server adds), oldest first

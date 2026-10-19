@@ -33,13 +33,24 @@ import { type Marker as StatusMarker, type Queued, queued, type Session, type Se
 import { canonicalRef, type Device, engineLabel, type SessionState, shortSha } from "@wire";
 import { cn } from "@/lib/utils";
 import { AlertCircleIcon, FilmIcon, InfoIcon, TriangleAlertIcon, Undo2Icon } from "lucide-react";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { SheetDrawer } from "@/components/sheet-drawer";
+import { madeBy } from "@/lib/artifacts";
+import { ArtifactCard, draftDetail } from "./artifact-card";
+import { useArtifactList, useWide } from "./use-artifacts";
 import type { Uploader } from "@/lib/attach";
 import { loadModel, saveModel } from "@/lib/draft";
 import { Composer } from "./composer";
 import { shortLabel } from "./pickers";
 import { ChatRow, ReplyActions } from "./row";
 import { useStickToEnd } from "./use-stick-to-end";
+
+// The preview pane is only fetched when an artifact is first opened (its draft preview and export
+// with it), so the chat's first paint doesn't wait for it
+const ArtifactPane = lazy(async () => {
+  const module = await import("./artifact-pane");
+  return { default: module.ArtifactPane };
+});
 
 // an engine of the master's chain by the label its picker shows (with its effort, src/wire.ts
 // engineLabel), else as its ref reads
@@ -214,6 +225,17 @@ export type ChatProps = {
 
 export function Chat({ link, session, state, devices, target, onTargetShown, onWork, uploader }: ChatProps) {
   const [loading, setLoading] = useState(false);
+  // the artifacts (SPEC "Artifacts"): their list, read again when a version is saved; the one the
+  // pane shows (v null: its latest), beside the chat on a wide screen, in a sheet on a phone
+  const artifacts = useArtifactList(state.saved, state.status === "open");
+  const [pane, setPane] = useState<{ readonly name: string; readonly v: number | null } | null>(null);
+  const wide = useWide();
+  const openArtifact = useCallback((name: string, v: number | null) => {
+    setPane({ name, v });
+  }, []);
+  const paneInfo = pane === null ? null : (artifacts.find((a) => a.name.toLowerCase() === pane.name.toLowerCase()) ?? null);
+  const paneDraft = pane === null ? null : ([...state.drafts.values()].findLast((d) => d.name?.toLowerCase() === pane.name.toLowerCase()) ?? null);
+  const drafting = [...state.drafts.values()].filter((d) => !d.closed);
   const [device, setDevice] = useState<string | null>(null);
   // the model picker: this page's own, kept in localStorage. Before the first state it is sent as
   // kept (a message sent then, or offline, still names it); once the state shows the chain, it is
@@ -317,8 +339,32 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
   const sources = useMemo(() => turnSources(rows), [rows]);
   const picked = device ?? state.state?.device ?? devices.find((d) => d.local)?.name ?? null;
 
+  const paneView =
+    pane === null ? null : (
+      <Suspense fallback={<p className="p-6 text-ui text-muted-foreground">Loading…</p>}>
+        <ArtifactPane
+          draft={paneDraft}
+          heading={wide}
+          info={paneInfo}
+          name={pane.name}
+          onClose={
+            wide
+              ? () => {
+                  setPane(null);
+                }
+              : undefined
+          }
+          onVersion={(v) => {
+            setPane({ name: pane.name, v });
+          }}
+          v={pane.v}
+        />
+      </Suspense>
+    );
+
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col" ref={root}>
+    <div className="flex min-h-0 flex-1">
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col" ref={root}>
       <MessageScroller className="min-h-0 flex-1">
         {/* The sentinel and the "earlier" button sit outside the content: the scroller reads its
             content's first child to keep the view still when older rows are prepended, and opens
@@ -358,12 +404,29 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
                       onThought={session.toggleThought}
                       thought={row.key === holder ? live : row.kind === "talk" || row.kind === "tool" ? thoughts.get(row.id) : undefined}
                       toolState={row.kind === "tool" ? toolStateOf(row, busy, row.key === lastTool) : "done"}
+                      made={madeBy(row, artifacts)}
+                      onArtifact={openArtifact}
                     />
                   </MessageScrollerItem>
                   {placed.after.get(k)?.map((m) => (
                     <StatusRow key={`k${m.key}`} marker={m} />
                   ))}
                 </Fragment>
+              ))}
+              {/* an artifact the model is still writing, after the running turn's rows until its
+                  call is in the log (SPEC "Artifacts") */}
+              {drafting.map((d) => (
+                <div className="py-1" data-testid="artifact-drafting" key={`draft-${d.id}`}>
+                  <ArtifactCard
+                    detail={draftDetail(d)}
+                    live
+                    name={d.name ?? "New artifact"}
+                    onOpen={() => {
+                      if (d.name !== null) openArtifact(d.name, null);
+                    }}
+                    testId="artifact-draft-card"
+                  />
+                </div>
               ))}
             </MessageScrollerContent>
           </ReplyActions>
@@ -450,6 +513,27 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
         />
       </div>
       </div>
+    </div>
+    {/* the pane: a side panel from 1024 px, a sheet from the bottom on a phone (DESIGN.md, Artifacts) */}
+    {wide && paneView !== null && (
+      <aside className="flex w-[min(46rem,50vw)] shrink-0 flex-col border-l bg-background px-2 pb-2" data-testid="artifact-side">
+        {paneView}
+      </aside>
+    )}
+    {!wide && (
+      <SheetDrawer
+        className="h-[calc(100dvh-env(safe-area-inset-top)-1.5rem)] data-[vaul-drawer-direction=bottom]:max-h-none"
+        description="The artifact, its versions, and copy, download or open it"
+        onOpenChange={(open) => {
+          if (!open) setPane(null);
+        }}
+        open={pane !== null}
+        testId="artifact-sheet"
+        title={paneInfo?.name ?? pane?.name ?? "Artifact"}
+      >
+        <div className="flex min-h-0 flex-1 flex-col pb-1">{paneView}</div>
+      </SheetDrawer>
+    )}
     </div>
   );
 }

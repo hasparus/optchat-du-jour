@@ -107,7 +107,9 @@ export const providerOf = (ref: ProviderRef, o: EngineNeeds, effort?: string): E
 // with -p and no settings what needs a permission (Edit, Write, WebFetch, WebSearch, spawn, tell,
 // and Bash, but for a command Claude Code classes as read-only) is refused when called, while
 // `--tools` stays the master's list, the same bytes in the request.
-export const SUBAGENT_ALLOWED: readonly string[] = ["Read", "Glob", "Grep", "mcp__optchat__zoom", "mcp__optchat__date"];
+// read_artifact too (SPEC "Artifacts"); publish_artifact and edit_artifact need a permission, and
+// the subagents' /mcp key refuses them besides.
+export const SUBAGENT_ALLOWED: readonly string[] = ["Read", "Glob", "Grep", "mcp__optchat__zoom", "mcp__optchat__date", "mcp__optchat__read_artifact"];
 
 // How a turn engine's claude runs: in its own permission mode (none: the master's, from the
 // config), with tools let through without asking, kept warm (and so primed) when the session says

@@ -20,6 +20,9 @@
 //   E2E_SUBAGENTS=1  every Claude turn spawns two subagents (SPEC M7a): "notes", which reads and
 //             reports NOTES_REPORT, then "scout", which waits for a message from its card, reads
 //             and reports SCOUT_REPORT (e2e/replies.ts)
+//   E2E_ARTIFACTS=ui  a Claude turn publishes LANDING, its input streamed slowly, unless its
+//             message says "long weekend": that one edits it (LANDING_EDIT). =hostile: every turn
+//             publishes HOSTILE (SPEC "Artifacts")
 import { BunRuntime } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -32,7 +35,26 @@ import { login } from "../../src/openai/auth.ts";
 import { memorySecrets } from "../../src/secrets.ts";
 import { fakeOpenAi } from "../../test/fake-openai.ts";
 import { freePort } from "../../test/ports.ts";
-import { FETCHED, NOTES_REPORT, NOTES_TASK, PLAN_DONE, PLAN_START, SCOUT_REPORT, SCOUT_TASK, SEARCH_RESULT, SOL_REPLY, SPAWNED, THOUGHT, TOOL_ERROR } from "./replies.ts";
+import {
+  ARTIFACT,
+  EDITED,
+  FETCHED,
+  HOSTILE,
+  LANDING,
+  LANDING_EDIT,
+  NOTES_REPORT,
+  NOTES_TASK,
+  PLAN_DONE,
+  PLAN_START,
+  PUBLISHED,
+  SCOUT_REPORT,
+  SCOUT_TASK,
+  SEARCH_RESULT,
+  SOL_REPLY,
+  SPAWNED,
+  THOUGHT,
+  TOOL_ERROR,
+} from "./replies.ts";
 
 const root = new URL("../..", import.meta.url).pathname;
 const home = Bun.env.E2E_HOME ?? mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
@@ -80,7 +102,13 @@ const spawns = [
 const notes = [{ tool: { input: { pattern: "trip", path: home }, name: "Grep" } }, { toolResult: "notes/oct.md:4: trip dates" }, { text: NOTES_REPORT }];
 const scout = [{ take: true }, { tool: { input: { file_path: `${home}/notes/oct.md` }, name: "Read" } }, { toolResult: "trip: Oct 3 to Oct 9" }, { sleep: 500 }, { text: SCOUT_REPORT }];
 const turn = Bun.env.E2E_SPENT ? spent : Bun.env.E2E_PATTERNS ? patterns : Bun.env.E2E_THINKING ? thinks : Bun.env.E2E_SUBAGENTS ? spawns : reply;
-writeFileSync(`${home}/script.json`, JSON.stringify({ subagent: { notes: [notes], scout: [scout] }, turn: [[turn]] }));
+// the artifacts. turns: a publish streamed in 64-character pieces 300 ms apart (about 5 s), an edit
+const publishes = [{ mcp: { input: { name: ARTIFACT, html: LANDING }, name: "publish_artifact" }, pace: 300 }, { text: PUBLISHED }];
+const edits = [{ mcp: { input: LANDING_EDIT, name: "edit_artifact" } }, { text: EDITED }];
+const hostile = [{ mcp: { input: { name: "hostile", html: HOSTILE }, name: "publish_artifact" } }, { text: PUBLISHED }];
+// by a word of the message: a warm process starts ahead of its turn, so not by the order they start
+const turns = Bun.env.E2E_ARTIFACTS === "ui" ? { "*": [publishes], "long weekend": [edits] } : Bun.env.E2E_ARTIFACTS === "hostile" ? [[hostile]] : [[turn]];
+writeFileSync(`${home}/script.json`, JSON.stringify({ subagent: { notes: [notes], scout: [scout] }, turn: turns }));
 writeFileSync(`${home}/fake.jsonl`, "");
 Object.assign(process.env, {
   FAKE_CLAUDE_LOG: `${home}/fake.jsonl`,

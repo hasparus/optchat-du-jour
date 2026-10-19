@@ -5,6 +5,8 @@
 // device stops it until a client resumes it on an engine (E4). Every client sees the same events.
 // Priming runs only while idle, and a turn never waits for it (E17, SPEC "Turn and priming").
 import { Cause, Clock, Deferred, type Duration, Effect, Exit, Fiber, FiberSet, Option, PubSub, Queue, type Scope } from "effect";
+import { type DraftNow, type DraftOut, makeDrafts } from "./artifacts/draft.ts";
+import { loggedText } from "./artifacts/tools.ts";
 import type { Choices } from "./choices.ts";
 import { PRIME_IDLE, WAIT_RETRY } from "./config.ts";
 import type { Chat, LogExtra } from "./chat.ts";
@@ -20,7 +22,7 @@ import { makePieces, noReasoning, type Pieces, type Reasoning } from "./reasonin
 import { BLIND, type Mid, type TurnEngine, type TurnEvents } from "./turn/engine.ts";
 import type { UsageRecord } from "./usage.ts";
 import { allBuilt, render, settle, unbuilt, viewSize } from "./view.ts";
-import { type Asset, canonicalRef, engineLabel, type FollowUp, MAX_ATTACHMENTS, markerOf, NOT_DESCRIBED, type Phase, type SessionState, type SubagentInfo, withMarkers } from "./wire.ts";
+import { type ArtifactVersion, type Asset, canonicalRef, engineLabel, type FollowUp, MAX_ATTACHMENTS, markerOf, NOT_DESCRIBED, type Phase, type SessionState, type SubagentInfo, withMarkers } from "./wire.ts";
 
 // the state every client is shown (STATE_SNAPSHOT, STATE_DELTA, /api/state): src/wire.ts
 export type { FollowUp, Phase, SessionState } from "./wire.ts";
@@ -64,7 +66,11 @@ export type SessionEvent =
   // is "<name>+<n>", its n-th run
   | { readonly type: "subagent-started"; readonly runId: string; readonly name: string; readonly task: string }
   | { readonly type: "subagent-finished"; readonly runId: string; readonly name: string; readonly report: string }
-  | { readonly type: "subagent-error"; readonly runId: string; readonly name: string; readonly message: string; readonly code: "failed" | "stopped" };
+  | { readonly type: "subagent-error"; readonly runId: string; readonly name: string; readonly message: string; readonly code: "failed" | "stopped" }
+  // An artifact's live draft while a publish or an edit streams (SPEC "Artifacts"), and a version
+  // saved (told by the tools, src/artifacts/tools.ts)
+  | { readonly type: "artifact-draft"; readonly runId: string; readonly draft: DraftOut }
+  | { readonly type: "artifact"; readonly name: string; readonly version: ArtifactVersion };
 
 export type Session = {
   // a message from a client: it starts a turn, or joins the running one (InputOptions say how)
@@ -117,6 +123,8 @@ export type LiveRun = {
   readonly reply: { readonly at: number; readonly text: string } | null;
   // the thinking streaming in now, before the entry at `at` (SPEC "Reasoning")
   readonly reasoning: { readonly at: number; readonly text: string } | null;
+  // the artifacts' drafts streaming in now (SPEC "Artifacts"); none when left out
+  readonly drafts?: readonly DraftNow[];
 };
 
 // "/on macbook ..." picks the device for that turn; the text stays as typed
@@ -156,6 +164,8 @@ export const makeSession = (o: {
   readonly events?: PubSub.PubSub<SessionEvent>; // the server's, made first so it can report into it; else the session's own
   readonly reasoning?: Reasoning; // the side file thinking is kept in (src/reasoning.ts); none: only streamed
   readonly subagents?: SubagentList; // shown in the state (SPEC M7a); none: the state has no list
+  // an artifact's latest HTML, for an edit's live draft (SPEC "Artifacts"); none: edits show none
+  readonly artifactBase?: (name: string) => Effect.Effect<string | null>;
 }): Effect.Effect<Session, never, Scope.Scope> =>
   Effect.gen(function* () {
     const { chat } = o;
@@ -257,8 +267,10 @@ export const makeSession = (o: {
 
     // the run whose RUN_STARTED went out, the text it is streaming at log index `at`, and its
     // thinking (src/reasoning.ts makePieces: a run's own, so its budget starts with it)
-    let current: { runId: string; reply: { at: number; text: string } | null; pieces: Pieces } | null = null;
-    const live = (): LiveRun | null => current && { reasoning: current.pieces.live(), reply: current.reply && { ...current.reply }, runId: current.runId };
+    // and the artifacts' drafts it is streaming (src/artifacts/draft.ts)
+    let current: { runId: string; reply: { at: number; text: string } | null; pieces: Pieces; drafts: ReturnType<typeof makeDrafts> } | null = null;
+    const live = (): LiveRun | null =>
+      current && { drafts: current.drafts.now(), reasoning: current.pieces.live(), reply: current.reply && { ...current.reply }, runId: current.runId };
     const sideFile = o.reasoning ?? noReasoning;
 
     const ack = (m: Incoming, at: number | null, error: string | null) =>
@@ -375,7 +387,12 @@ export const makeSession = (o: {
     // the one start of a run: `current` and RUN_STARTED together, so no end goes out without its start
     const beginRun = (runId: string) =>
       Effect.suspend(() => {
-        current = { pieces: makePieces(), reply: null, runId };
+        const drafts = makeDrafts({
+          base: (name) => o.artifactBase?.(name) ?? Effect.succeed(null),
+          scope,
+          send: (draft) => publish({ draft, runId, type: "artifact-draft" }),
+        });
+        current = { drafts, pieces: makePieces(), reply: null, runId };
         return publish({ runId, type: "run-started" });
       }).pipe(Effect.uninterruptible);
 
@@ -387,8 +404,9 @@ export const makeSession = (o: {
     const endRun = (error: string | null) =>
       Effect.suspend(() => {
         if (!current) return Effect.void;
-        const { runId } = current;
+        const { drafts, runId } = current;
         return dropThought(runId).pipe(
+          Effect.andThen(drafts.stop),
           Effect.andThen(
             Effect.suspend(() => {
               current = null;
@@ -581,9 +599,10 @@ export const makeSession = (o: {
         steerIn(accepting); // came in while the captions or the log were awaited
         const out: TurnEvents = {
           info,
-          // a reply or tool call is logged with the thinking before it kept beside it, in one step
+          // a reply or tool call is logged with the thinking before it kept beside it, in one step;
+          // an artifact's HTML never goes in (E31): its call and a read's answer are logged as stubs
           log: (kind, text, flags) =>
-            log(kind, text, on, kind === "echo" && flags?.error === true).pipe(
+            log(kind, loggedText(kind, text, flags?.tool), on, kind === "echo" && flags?.error === true).pipe(
               Effect.tap(published(runId)),
               Effect.flatMap((entry) => keepThought(entry, runId)),
               Effect.uninterruptible,
@@ -606,6 +625,11 @@ export const makeSession = (o: {
               );
             }),
           usage: (record) => o.logUsage(record).pipe(Effect.andThen(publish({ record, type: "usage" }))),
+          // an artifact call's input as it streams: its live draft (SPEC "Artifacts")
+          toolInput: {
+            delta: (call, piece) => Effect.suspend(() => current?.drafts.delta(call, piece) ?? Effect.void),
+            end: (id) => Effect.suspend(() => current?.drafts.end(id) ?? Effect.void),
+          },
         };
         yield* beginRun(runId);
         yield* tell;
