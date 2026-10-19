@@ -5,8 +5,8 @@
 import { Clock, Effect } from "effect";
 import type { Job } from "../compactor.ts";
 import { NODE, TRIES } from "../config.ts";
-import { type EngineError, ModelError } from "../engines/errors.ts";
-import { bytes, children, label, span } from "../tree.ts";
+import { type EngineError, Refusal } from "../engines/errors.ts";
+import { bytes, children, cut, label, span } from "../tree.ts";
 import { type Tokens, type UsageRecord, isCold } from "../usage.ts";
 import { type Blocks, flat, viewBlocks } from "../view.ts";
 
@@ -35,15 +35,6 @@ export function task(job: Job): string {
     `${label(b)}|${flat(job.b)}`,
     "</input>",
   ].join("\n");
-}
-
-// the first `limit` bytes of a line, never ending inside a UTF-8 character (docs/optchat.md §4 "The size")
-export function cut(line: string, limit = NODE): string {
-  const raw = Buffer.from(line, "utf8");
-  if (raw.length <= limit) return line;
-  let end = limit;
-  while (end > 0 && ((raw[end] ?? 0) & 0b1100_0000) === 0b1000_0000) end--; // a continuation byte: back up to its start
-  return raw.subarray(0, end).toString("utf8");
 }
 
 // the retry, in the same conversation, verbatim from docs/optchat.md §4 "The size"
@@ -114,8 +105,9 @@ export const sizeRetries = (o: {
       );
       yield* record(answer.usage, answer.model, answer.dollars);
       const line = answer.text.trim();
-      // an empty answer ends the call: a line tried before it still stands, the shortest of them
-      if (!line) return tries.length > 0 ? shortest(tries) : yield* new ModelError({ message: "the compactor answered with an empty line" });
+      // an empty answer ends the call: a line tried before it still stands, the shortest of them;
+      // with none, the model gave no line, which counts as a refusal (E31)
+      if (!line) return tries.length > 0 ? shortest(tries) : yield* new Refusal({ message: "the compactor answered with an empty line" });
       tries.push(line);
       if (enough(tries)) return shortest(tries);
       retry = { line, text: retryText(line) };

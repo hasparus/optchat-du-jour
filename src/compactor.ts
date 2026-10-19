@@ -3,12 +3,13 @@
 // are unbuilt, a merge once both its halves are built. Nodes ready to build wait in queues, kept as
 // messages arrive and nodes are built, never found by scanning the tree (§7 mistake 13): the
 // unbuilt messages in order, whose first AHEAD are the ones that may start, and the ready merges
-// level by level. A failed call is tried again at the next message.
-import { Cause, Console, Data, Effect, Exit, PubSub, Semaphore } from "effect";
-import { AHEAD, JOBS } from "./config.ts";
+// level by level. A failed call is tried again at the next message, once it has rested (E31); a
+// node the model refused, or gave no line for, REFUSALS times is built from its source, clipped.
+import { Cause, Clock, Console, Data, Duration, Effect, Exit, PubSub, Semaphore } from "effect";
+import { AHEAD, JOBS, REFUSALS } from "./config.ts";
 import type { Node } from "./records.ts";
 import { newNode, type StoreError } from "./store.ts";
-import { built, children, type Coord, end, entry, type Entry, freeText, label, type Mem, node, nodes, ready } from "./tree.ts";
+import { built, children, clippedText, type Coord, end, entry, type Entry, freeText, label, type Mem, node, nodes, ready } from "./tree.ts";
 import { compactionContext } from "./view.ts";
 
 // one compactor call: its compaction view's lines (id+n|text) and the message or the two halves
@@ -17,7 +18,10 @@ export type Job = { readonly l: number; readonly i: number; readonly ctx: readon
   | { readonly a: string; readonly b: string }
 );
 
-export class CompactError extends Data.TaggedError("CompactError")<{ readonly message: string }> {}
+// `refused`: the model answered and gave no usable line (a refusal, or an empty line). That is its
+// input's doing, so asking again mostly fails alike: REFUSALS of them clip the node (E31). Any
+// other failure (a limit, the network, a crash) says nothing about the input and is only retried.
+export class CompactError extends Data.TaggedError("CompactError")<{ readonly message: string; readonly refused?: boolean }> {}
 export type Summarize = (job: Job) => Effect.Effect<string, CompactError>;
 export type Commit = (n: Node) => Effect.Effect<void, StoreError>;
 
@@ -50,7 +54,7 @@ export const buildFree = (mem: Mem, commit: Commit) =>
 // docs/optchat.md §4 "The size": the reply, trimmed, is the summary; nothing left after trimming is a failed call
 const summaryOf = (reply: string) => {
   const text = reply.trim();
-  return text ? Effect.succeed(text) : Effect.fail(new CompactError({ message: "the compactor replied with nothing" }));
+  return text ? Effect.succeed(text) : Effect.fail(new CompactError({ message: "the compactor replied with nothing", refused: true }));
 };
 
 // A queue that only grows at its end and is read from its head; what was read stays in the array
@@ -80,10 +84,12 @@ export type Activity = { readonly level: number; readonly running: number; reado
 export type Pump = {
   // what the pump has to start at all: at startup, one scan of the tree into the queues
   readonly kick: Effect.Effect<void, StoreError>;
-  // message i was logged: its node joins the queue, failed calls are tried again, and the pump
-  // starts what it may; a failure is reported, not returned (the message is logged either way)
+  // message i was logged: its node joins the queue, failed calls that have rested are tried again,
+  // and the pump starts what it may; a failure is reported, not returned (the message is logged
+  // either way)
   readonly logged: (i: number) => Effect.Effect<void>;
-  // a message is coming (one the session holds for its turn): failed calls are tried again now
+  // a message is coming (one the session holds for its turn), or a turn waiting for summaries asks
+  // again (WAIT_RETRY): every failed call is tried again now, rested or not
   readonly retry: Effect.Effect<void>;
   // the work per level, the busy levels only, lowest first
   readonly activity: () => readonly Activity[];
@@ -96,20 +102,34 @@ export type PumpOptions = {
   readonly jobs?: number | undefined;
   readonly ahead?: number | undefined; // AHEAD
   readonly report?: ((message: string) => Effect.Effect<void>) | undefined;
+  // How long a failed call rests before a logged entry may try it again (E31): a turn logs its
+  // replies, tool calls and results back to back, and each would otherwise ask a vendor that is
+  // down again at once. None by default, as docs/optchat.md §4 has it; the server rests WAIT_RETRY.
+  readonly rest?: Duration.Input | undefined;
+  readonly refusals?: number | undefined; // REFUSALS
 };
 
 export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { readonly mem: Mem; readonly commit: Commit }) =>
   Effect.gen(function* () {
-    const limit = o.jobs ?? JOBS, ahead = o.ahead ?? AHEAD;
+    const limit = o.jobs ?? JOBS, ahead = o.ahead ?? AHEAD, refusals = o.refusals ?? REFUSALS;
+    const rest = Duration.toMillis(Duration.fromInputUnsafe(o.rest ?? 0));
     const report = o.report ?? ((line: string) => Console.error(line));
     const scope = yield* Effect.scope;
+    const clock = yield* Clock.Clock;
     // The queues: the unbuilt messages, in order, and the ready merges of each level. A node is in
     // at most one of: a queue, `running`, `failed` (waiting for the next message). `told`: the
     // nodes whose failure was reported already.
     const leaves = new Line<number>();
     const merges: (Line<Coord> | undefined)[] = [];
-    // `queued` and `running` keep each node's level, for `activity`
+    // `queued` and `running` keep each node's level, for `activity`; `failedAt`, when each failed
+    // node failed; `refused`, how many of its calls the model answered with no line (E31)
     const queued = new Map<string, number>(), running = new Map<string, number>(), failed = new Map<string, Coord>(), told = new Set<string>();
+    const failedAt = new Map<string, number>(), refused = new Map<string, number>();
+    // node c failed: it waits for the next message, rested
+    const park = (name: string, c: Coord) => {
+      failed.set(name, c);
+      failedAt.set(name, clock.currentTimeMillisUnsafe());
+    };
     const changes = yield* PubSub.sliding<true>(1);
     // one change of the queues at a time
     const one = yield* Semaphore.make(1);
@@ -125,7 +145,11 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
         const text = freeText(mem, c);
         if (text !== null)
           return commit(newNode(c.l, c.i, text)).pipe(
-            Effect.tapCause(() => Effect.sync(() => void failed.set(name, c))), // a defect too: it is tried again all the same
+            Effect.tapCause(() =>
+              Effect.sync(() => {
+                park(name, c); // a defect too: it is tried again all the same
+              }),
+            ),
             Effect.andThen(Effect.suspend(() => done(c))),
           );
         queued.set(name, c.l);
@@ -165,17 +189,30 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
     // One job for node c. Making the call, summarizing, committing: whatever goes wrong there (a
     // typed error, a throw, a defect, the call coming back interrupted) is one failure of c,
     // reported the first time c fails; c then waits for the next message. Built or not, c leaves
-    // `running`, and the pump starts what it may.
+    // `running`, and the pump starts what it may. A node the model gave no line for REFUSALS times
+    // is not asked again: its job commits its source, clipped, marked as such (E31).
     const job = (c: Coord, call: Exit.Exit<Job>) => {
       const name = label(c);
-      const attempt = call.pipe(
-        Effect.flatMap((j) => Effect.suspend(() => summarize(j))),
-        Effect.flatMap(summaryOf),
-        Effect.flatMap((text) => commit(newNode(c.l, c.i, text))),
-      );
+      const clip = (refused.get(name) ?? 0) >= refusals;
+      const attempt = clip
+        ? Effect.suspend(() => commit(newNode(c.l, c.i, clippedText(mem, c), true)))
+        : call.pipe(
+            Effect.flatMap((j) => Effect.suspend(() => summarize(j))),
+            Effect.flatMap(summaryOf),
+            Effect.flatMap((text) => commit(newNode(c.l, c.i, text))),
+          );
       const fail = (cause: Cause.Cause<CompactError | StoreError>) =>
         Effect.gen(function* () {
-          failed.set(name, c);
+          const error = Cause.squash(cause);
+          const none = !clip && error instanceof CompactError && error.refused === true ? (refused.get(name) ?? 0) + 1 : 0;
+          if (none > 0) refused.set(name, none);
+          // the last refusal: queued again at once, for a job that clips it (`clip`), said once
+          if (none >= refusals) {
+            yield* Effect.exit(report(`${name}: ${reason(cause)}; the model gave no line ${none} times, so the node is its source, clipped`));
+            yield* Effect.exit(consider(c)); // not free (it would be built), so nothing to commit here
+            return;
+          }
+          park(name, c);
           if (told.has(name)) return;
           told.add(name);
           // a report that fails has nowhere to go: the node waits for the next message all the same
@@ -190,7 +227,7 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
           Effect.flatMap((exit) =>
             restore(
               Exit.isSuccess(exit)
-                ? guarded(Effect.suspend(() => (running.delete(name), done(c))))
+                ? guarded(Effect.suspend(() => (running.delete(name), refused.delete(name), done(c))))
                 : Effect.andThen(one.withPermit(Effect.suspend(() => (running.delete(name), fail(exit.cause)))), nudge),
             ),
           ),
@@ -213,12 +250,17 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
       }
     });
 
-    // the failed nodes, ready again
-    const again = Effect.suspend(() => {
-      const waiting = [...failed.values()];
-      failed.clear();
-      return Effect.forEach(waiting, consider, { discard: true });
-    });
+    // the failed nodes, ready again: every one (`all`), or those that have rested
+    const again = (all: boolean) =>
+      Effect.suspend(() => {
+        const now = clock.currentTimeMillisUnsafe();
+        const waiting = [...failed].filter(([name]) => all || now - (failedAt.get(name) ?? 0) >= rest);
+        for (const [name] of waiting) {
+          failed.delete(name);
+          failedAt.delete(name);
+        }
+        return Effect.forEach(waiting, ([, c]) => consider(c), { discard: true });
+      });
 
     // A change of the queues that comes after other work (a job, a logged message) is no part of
     // that work: its failure is reported (once until one gets through again), and what failed
@@ -257,7 +299,7 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
       for (const c of failed.values()) count(c.l, "failed");
       return [...at].toSorted(([a], [b]) => a - b).map(([level, row]) => ({ level, ...row }));
     };
-    const logged = (i: number) => guarded(Effect.andThen(again, arrived(i)));
-    const retry = guarded(again);
+    const logged = (i: number) => guarded(Effect.andThen(again(false), arrived(i)));
+    const retry = guarded(again(true));
     return { activity, changes, kick, logged, retry } satisfies Pump;
   });

@@ -17,6 +17,7 @@ export const makeSummarize = (o: CompactorNeeds) =>
 
     const changes = yield* PubSub.unbounded<readonly Down[]>();
     const watch = watchChain(o.report, "compacting", Effect.suspend(() => PubSub.publish(changes, watch.down())).pipe(Effect.asVoid));
+    // a refusal (or an empty line, step.ts) is the model's answer to this input: E31 counts them
     const summarize: Summarize = (job) =>
       failover(
         chainFor(o.settings, job.l).flatMap(({ ref }) => {
@@ -38,7 +39,7 @@ export const makeSummarize = (o: CompactorNeeds) =>
             : [];
         }),
         watch,
-      ).pipe(Effect.mapError((e) => new CompactError({ message: e.message })));
+      ).pipe(Effect.mapError((e) => new CompactError({ message: e.message, refused: e._tag === "Refusal" })));
     // the engines down right now, with why: for the UI, so compaction never runs elsewhere unseen
     const down: DownList = { changes, now: watch.down };
     return { down, summarize };

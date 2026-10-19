@@ -11,7 +11,7 @@ import { openChat } from "../src/chat.ts";
 import { Runner } from "../src/claude/process.ts";
 import { WarmLocalRunner } from "../src/claude/warm.ts";
 import type { Summarize } from "../src/compactor.ts";
-import { entryLabel, mediaSettings, reasoningSettings, type Settings } from "../src/config.ts";
+import { entryLabel, mediaSettings, reasoningSettings, type Settings, WAIT_RETRY } from "../src/config.ts";
 import type { DownList } from "../src/engines/chain.ts";
 import { makeGate } from "../src/engines/inflight.ts";
 import { SUBAGENT_POLICY, turnEngine } from "../src/engines/registry.ts";
@@ -90,7 +90,8 @@ export const routes = (o: ServerOptions) =>
       const compactor: { readonly down?: DownList; readonly summarize: Summarize } = o.summarize
         ? { summarize: o.summarize }
         : yield* makeSummarize({ ...needs, device: o.device, gate: makeGate(), instructions, placement: runnerFor(o.device), tools: defsFor(settings.defaultDevice) });
-      const chat = yield* openChat(stream, { report, summarize: compactor.summarize });
+      // a failed call rests WAIT_RETRY before a logged entry tries it again (E31); the waiting turn's own retry doesn't wait
+      const chat = yield* openChat(stream, { report, rest: WAIT_RETRY, summarize: compactor.summarize });
       // a turn's thinking, kept beside the log in the stream's chat/reasoning/ (SPEC "Reasoning")
       const thinking = reasoningSettings(settings);
       const reasoning = yield* openReasoning(stream, { keep: thinking.keep, report });

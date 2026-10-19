@@ -24,5 +24,8 @@ export const Msg = Schema.Struct({
 });
 export type Msg = typeof Msg.Type;
 
-export const Node = Schema.Struct({ i: Index, l: Index, size: Schema.optional(Schema.Number), text: Schema.String });
+// `clipped`: the node is its source cut to fit, not a summary, because the model refused it or
+// gave no line (E31); written only when true, so every other line is the reference's, and a later
+// pass can find and rebuild these.
+export const Node = Schema.Struct({ clipped: Schema.optional(Schema.Boolean), i: Index, l: Index, size: Schema.optional(Schema.Number), text: Schema.String });
 export type Node = typeof Node.Type;

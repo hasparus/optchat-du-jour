@@ -26,6 +26,11 @@ export const TRIES = 5;
 // while a turn waits for summaries, a failed call is also tried again this often (E24): no message
 // comes to try it again then, and a fixed pause never delays the turn by more than itself
 export const WAIT_RETRY = "10 seconds";
+// A node whose call the model refused, or answered with an empty line, this many times is built
+// from its source clipped to NODE bytes, marked so it can be rebuilt (E31). A refusal is the
+// input's doing, so asking again mostly fails alike (UniiChat clips at the first); one more try,
+// WAIT_RETRY later, lets a flaky safeguard pass, and holds a waiting turn back by that much at most.
+export const REFUSALS = 2;
 // the most characters of one tool result that get logged
 export const CAP = 30_000;
 // lines per content block of the view, or of a compactor's context (docs/optchat.md §3.3 "How the

@@ -19,14 +19,15 @@ const io = <A>(what: string, f: () => A) =>
   });
 
 // Records carry their keys in the order the reference writes them, so both write the same
-// bytes: {i, kind, text, size, date} and {l, i, text, size}.
+// bytes: {i, kind, text, size, date} and {l, i, text, size}. A clipped node (E31) adds
+// `clipped: true` after them, and only then.
 export function newMsg(i: number, kind: Kind, text: string, at: Date = new Date()): Entry {
   const size = bytes(msgText({ text, kind }));
   return { i, kind, text, size, date: at.toISOString() };
 }
-export function newNode(l: number, i: number, text: string) {
+export function newNode(l: number, i: number, text: string, clipped = false): Node {
   const size = bytes(text);
-  return { l, i, text, size };
+  return clipped ? { l, i, text, size, clipped } : { l, i, text, size };
 }
 
 // open a file, hand its descriptor to `body`, and close it whatever happens
@@ -83,7 +84,7 @@ export function appendMessage(dir: string, msg: Entry) {
 }
 
 export function appendNode(dir: string, record: Node, now = new Date()) {
-  const line = `${JSON.stringify(newNode(record.l, record.i, record.text))}\n`;
+  const line = `${JSON.stringify(newNode(record.l, record.i, record.text, record.clipped === true))}\n`;
   return io(`cannot save node ${label(record)}`, () => {
     appendLine(`${dir}/chat/tree`, `${dayOf(now)}.jsonl`, line);
   });
