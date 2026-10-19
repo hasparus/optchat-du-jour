@@ -1,9 +1,13 @@
 // From fx0 lib/design-artifact.ts (Apache-2.0, © Vercel, modified).
 // Changed from fx0's: the tags are read by HTMLRewriter, not fx0's tokenizer; CSS and ping are
-// checked; frames are refused at run time (FRAME_GUARD). An artifact (SPEC "Artifacts") is one
+// checked; frames are refused at run time (frame-guard.ts); the bootstrap is functions
+// (bootstrap.ts), not a template string. An artifact (SPEC "Artifacts") is one
 // self-contained HTML file: what it may hold (`validateArtifactHtml`), the CSP it runs
 // under, and the bootstrap put in front of its own markup when it is shown (`prepareArtifactHtml`):
 // WebRTC gone, a heartbeat for the wrapper, and links opened through the parent.
+
+import { heartbeat, noWebRtc } from "./bootstrap.ts";
+import { frameGuard, noScripts } from "./frame-guard.ts";
 
 // at most this many UTF-8 bytes in one version
 export const MAX_ARTIFACT_BYTES = 512 * 1024;
@@ -28,39 +32,22 @@ export const ARTIFACT_EMBEDDED_CSP = [
   "form-action 'none'",
 ].join("; ");
 
-// No frame of the artifact's own, ever (ours, not fx0's). The bootstrap takes WebRTC's constructors
-// from the page's window, but a frame it makes (a srcdoc frame: frame-src can't stop it, nothing is
-// fetched) would have a window of its own with them, and STUN reaches any host; Chromium ignores
-// CSP's `webrtc 'block'`. So every iframe, frame, fencedframe, object, embed or portal is taken out
-// of the document by a MutationObserver before its document commits (the observer runs at the
-// microtask checkpoint; a frame's navigation commits later, and its window is cross-origin until
-// then), and the same is done in every shadow root. Every native it needs is taken before the
-// page's own script can replace it, and createElement refuses those tags outright.
-const FRAME_GUARD = `const g=globalThis,apply=Reflect.apply,own=Object.getOwnPropertyDescriptor;
-const FRAMES=new Set(["IFRAME","FRAME","FENCEDFRAME","OBJECT","EMBED","PORTAL"]);
-const MO=g.MutationObserver,observe=MO.prototype.observe,removeChild=Node.prototype.removeChild;
-const parentOf=own(Node.prototype,"parentNode").get,nameOf=own(Node.prototype,"nodeName").get,typeOf=own(Node.prototype,"nodeType").get;
-const walker=Document.prototype.createTreeWalker,nextNode=TreeWalker.prototype.nextNode,attach=Element.prototype.attachShadow;
-const createElement=Document.prototype.createElement,createElementNS=Document.prototype.createElementNS;
-const framing=n=>FRAMES.has(String(apply(nameOf,n,[])).toUpperCase());
-const drop=n=>{const p=apply(parentOf,n,[]);if(p)apply(removeChild,p,[n])};
-const sweep=n=>{if(apply(typeOf,n,[])!==1&&apply(typeOf,n,[])!==11)return;if(framing(n))return drop(n);const found=[],w=apply(walker,document,[n,1]);for(let e=apply(nextNode,w,[]);e;e=apply(nextNode,w,[]))if(framing(e))found.push(e);for(const e of found)drop(e)};
-const mo=new MO(records=>{for(const r of records)for(const n of r.addedNodes)sweep(n)});
-const watch=root=>apply(observe,mo,[root,{childList:true,subtree:true}]);
-watch(document);
-Element.prototype.attachShadow=function(init){const root=apply(attach,this,[init]);watch(root);return root};
-for(const [owner,name] of [[Element.prototype,"setHTMLUnsafe"],[ShadowRoot.prototype,"setHTMLUnsafe"],[Document,"parseHTMLUnsafe"]])if(name in owner)Object.defineProperty(owner,name,{configurable:false,value:function(){throw new DOMException("no declarative shadow roots in an artifact","NotSupportedError")},writable:false});
-const refuse=()=>{throw new DOMException("no frames in an artifact","NotSupportedError")};
-Document.prototype.createElement=function(name,o){if(FRAMES.has(String(name).toUpperCase()))refuse();return apply(createElement,this,[name,o])};
-Document.prototype.createElementNS=function(ns,name,o){if(FRAMES.has(String(name).split(":").pop().toUpperCase()))refuse();return apply(createElementNS,this,[ns,name,o])};`;
+// A function of bootstrap.ts or frame-guard.ts as a statement of the page's script: its source
+// (Function.prototype.toString: what Bun transpiled), called with these arguments as JSON, each
+// `<` escaped so that no argument can end the script element
+export const inline = <A extends readonly string[]>(run: (...args: A) => void, ...args: A) =>
+  `(${run.toString()})(${args.map((a) => JSON.stringify(a).replaceAll("<", String.raw`\u003c`)).join(",")});`;
 
-function artifactBootstrap(readyToken?: string): string {
-  // The sandbox grants no popups, so a clicked https link asks the trusted wrapper to open it
-  // (server/routes/artifacts.ts) instead of navigating the preview away.
-  const heartbeat = readyToken
-    ? `const token=${JSON.stringify(readyToken)};const send=type=>parent.postMessage({type,token},"*");send("heartbeat");setInterval(()=>send("heartbeat"),500);addEventListener("load",()=>{send("ready");requestAnimationFrame(()=>requestAnimationFrame(()=>send("painted")))},{once:true});addEventListener("click",event=>{const link=event.target instanceof Element&&event.target.closest("a[href]");const url=link?link.getAttribute("href")||"":"";if(/^https:/i.test(url)){event.preventDefault();parent.postMessage({type:"open",token,url},"*")}},true);`
-    : "";
-  return `<script>(()=>{for(const name of ["RTCPeerConnection","webkitRTCPeerConnection","RTCIceGatherer"]){try{Object.defineProperty(globalThis,name,{value:undefined,writable:false,configurable:false})}catch{}}${FRAME_GUARD}${heartbeat}})()</script>`;
+// WebRTC gone, then no frames of the page's own (frame-guard.ts): both before any script of the
+// page can run, and if the guard can't be set up, none of them runs (noScripts). A source with
+// `</` or `<!--` in it could end or bend the script element; none has.
+const GUARD = `${inline(noWebRtc)}try{${inline(frameGuard)}}catch{${inline(noScripts)}}`;
+if (GUARD.includes("</") || GUARD.includes("<!--")) throw new Error("the artifact bootstrap's source would end its script element");
+
+// The script put in front of the artifact's own markup: the guard, then fx0's heartbeat for the
+// wrapper, links opened through it
+export function artifactBootstrap(readyToken?: string): string {
+  return `<script>${GUARD}${readyToken === undefined ? "" : inline(heartbeat, readyToken)}</script>`;
 }
 
 function escapeAttribute(value: string): string {
@@ -215,6 +202,8 @@ function validateTag(tag: HtmlTag): string | null {
     const compactValue = compactUrlScheme(rawValue);
     if (compactValue.startsWith("javascript:") || compactValue.startsWith("vbscript:")) return "artifact must not use scripted URLs";
     if (name === "action" || name === "formaction" || name === "ping") return `artifact must not contain ${name} attributes`;
+    // a declarative shadow root is attached by the parser, where the frame guard's observer can't see
+    if (name === "shadowrootmode" || name === "shadowroot") return "artifact must not contain declarative shadow roots";
     if (name === "style") {
       const problem = cssProblem(decodeAttribute(rawValue));
       if (problem) return problem;

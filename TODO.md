@@ -35,6 +35,7 @@ Everything is built and tested against fakes. Each check below needs a real logi
 - [ ] The pane's sheet on the phone: full height on vaul, a drag down closes it, the frame scrolls inside it without dragging the sheet, and the keyboard never opens over it.
 - [ ] A long page's live draft on the phone: patching up to 512 KB every 150 ms stays smooth.
 - [ ] The frame guard on WebKit (Safari, the iOS app's WKWebView): a `srcdoc` frame a page makes is removed before it runs, as on Chromium (the e2e probe with a UDP listener runs on Chromium only), so its WebRTC never sends STUN. Known residual until then.
+- [ ] Resource hints an artifact's script adds (`<link rel=dns-prefetch>`, `preconnect`): no CSP governs them, so a host name the page writes into one may be looked up or connected to. Every artifact route says `X-DNS-Prefetch-Control: off`, and the e2e probe sees no TCP connection or request, but its Chromium acts on no hint even on a plain page (checked against a net log), so nothing is measured. Measure on a Chrome that does (headed, or with the predictor on) and, if they leave, drop `link` elements the page adds at insertion, as the frame guard does frames. Known residual until then.
 - [ ] `Sec-Fetch-Dest: iframe` on the artifact page and draft loads in WKWebView (Safari sends Fetch Metadata from 16.4; an older one would get 404s and show no artifact).
 
 ## ChatGPT plan

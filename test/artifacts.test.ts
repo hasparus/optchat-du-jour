@@ -4,12 +4,15 @@
 // writes and their commit, read_artifact by version, a subagent refused publish and edit, the
 // live draft's decoders, and the log's stubs: neither the main log nor the tree ever holds the HTML.
 import { afterAll, expect, test } from "bun:test";
-import { Effect, PubSub, Schema, type Scope } from "effect";
+import { Effect, Predicate, PubSub, Schema, type Scope } from "effect";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createContext, runInContext, Script } from "node:vm";
 import { editsIn, fieldExtractor, makeDrafts, nameIn, type DraftOut } from "../src/artifacts/draft.ts";
-import { ARTIFACT_EMBEDDED_CSP, MAX_ARTIFACT_BYTES, prepareArtifactHtml, validateArtifactHtml } from "../src/artifacts/html.ts";
+import { heartbeat, noWebRtc } from "../src/artifacts/bootstrap.ts";
+import { frameGuard, noScripts } from "../src/artifacts/frame-guard.ts";
+import { ARTIFACT_EMBEDDED_CSP, artifactBootstrap, inline, MAX_ARTIFACT_BYTES, prepareArtifactHtml, validateArtifactHtml } from "../src/artifacts/html.ts";
 import { applyEdits, ARTIFACT_NAME, ARTIFACTS_UNCOMMITTED, artifactsLeftOut, badName, openArtifacts } from "../src/artifacts/store.ts";
 import { readStyle, STYLES } from "../src/artifacts/styles.ts";
 import { ARTIFACT_TOOL_DEFS, loggedText, makeArtifactTools, stubEcho, stubToolEntry } from "../src/artifacts/tools.ts";
@@ -51,7 +54,7 @@ test("validation accepts inline CSS, JavaScript, Canvas, data assets, fragments 
   expect(validateArtifactHtml(interactive)).toEqual({ bytes: Buffer.byteLength(interactive), ok: true });
   const cited = page('<p>Source: <a href="https://vercel.com/blog">Vercel blog</a></p>');
   expect(validateArtifactHtml(cited).ok).toBe(true);
-  expect(prepareArtifactHtml(cited, ARTIFACT_EMBEDDED_CSP, "ready-token")).toMatch(/type:"open",token,url/);
+  expect(prepareArtifactHtml(cited, ARTIFACT_EMBEDDED_CSP, "ready-token")).toMatch(/parent\.postMessage\(\{ token, type: "open", url \}, "\*"\)/);
   const prepared = prepareArtifactHtml(interactive);
   expect(prepared).toMatch(/^<!doctype html><script>/i);
   expect(prepared.indexOf("RTCPeerConnection")).toBeLessThan(prepared.indexOf("const canvas"));
@@ -461,6 +464,8 @@ test("the validator reads tags as a browser does: no tag hides behind a quote in
   invalid(page(`<svg><script><embed src="https://evil.example/x"></script></svg>`), "artifact must not contain <embed> elements");
   invalid(page(`<svg><style><meta http-equiv="refresh" content="0;url=https://evil.example/"></style></svg>`), "artifact must not contain meta refresh");
   invalid(page('<frame src="data:image/png,x">'), "artifact must not contain <frame> elements");
+  // the parser attaches a declarative shadow root, where the frame guard's observer can't see
+  invalid(page('<div><template shadowrootmode="closed"><p>x</p></template></div>'), "artifact must not contain declarative shadow roots");
   // a script's own text is text, as before
   expect(validateArtifactHtml(page('<script>const s="<iframe src=x>";</script><svg><circle r="1"/></svg>')).ok).toBe(true);
 });
@@ -474,4 +479,153 @@ test("the validator refuses ping and styles that load: @import, url() and image-
   invalid(page("", String.raw`<style>body{background:\75 rl(https://evil.example/d.png)}</style>`), "artifact styles may load only embedded data: URLs");
   invalid(page('<p style="background:url(https://evil.example/e.png)">x</p>'), "artifact styles may load only embedded data: URLs");
   expect(validateArtifactHtml(page('<p style="background:url(data:image/gif;base64,AA==)">x</p>', '<style>.a{filter:url(#f);background:url("data:image/png;base64,AA==")}</style>')).ok).toBe(true);
+});
+
+// ---- the bootstrap's functions, inlined ----
+
+// A page with just what the guard takes from it, in a realm of its own (node:vm), so the guard runs
+// from its source alone, as in a browser: a value of its module it reached for would be a
+// ReferenceError here. `trace` is a string: the page's tampering below can't reach a string's `+`.
+const FAKE_PAGE = `
+var trace = "", notify = null, XHTML = "http://www.w3.org/1999/xhtml";
+class DOMException extends Error { constructor(message, name) { super(message); this.name = name; } }
+class Node {}
+Object.defineProperty(Node.prototype, "parentNode", { get() { return this.parent ?? null; } });
+Object.defineProperty(Node.prototype, "nodeType", { get() { return this.type; } });
+Node.prototype.removeChild = function (child) { trace += "remove " + child.name + ";"; child.parent = null; return child; };
+class Element extends Node {}
+Object.defineProperty(Element.prototype, "localName", { get() { return this.name; } });
+Object.defineProperty(Element.prototype, "namespaceURI", { get() { return this.ns; } });
+Element.prototype.attachShadow = function () { const root = new Node(); root.type = 11; root.name = "#shadow"; root.children = []; return root; };
+Element.prototype.setHTMLUnsafe = function () { trace += "setHTMLUnsafe;"; };
+class ShadowRoot {}
+ShadowRoot.prototype.setHTMLUnsafe = function () { trace += "setHTMLUnsafe;"; };
+class MutationRecord {}
+Object.defineProperty(MutationRecord.prototype, "addedNodes", { get() { return this.added; } });
+class NodeList {}
+Object.defineProperty(NodeList.prototype, "length", { get() { return this.items.length; } });
+NodeList.prototype.item = function (k) { return this.items[k]; };
+class TreeWalker {}
+TreeWalker.prototype.nextNode = function () { return this.queue.shift() ?? null; };
+class Document extends Node {}
+const descendants = (node) => (node.children ?? []).flatMap((c) => [c].concat(descendants(c)));
+Document.prototype.createTreeWalker = function (root) { const w = new TreeWalker(); w.queue = descendants(root); return w; };
+Document.prototype.createElement = function (name) { trace += "create " + name + ";"; return element(name); };
+Element.prototype.setAttribute = function (name, value) { trace += "set " + name + "=" + value + ";"; };
+Document.prototype.createElementNS = function (ns, name) { trace += "createNS " + name + ";"; return null; };
+for (const name of ["open", "write", "writeln"]) Document.prototype[name] = function () { trace += name + ";"; };
+Document.parseHTMLUnsafe = function () { trace += "parseHTMLUnsafe;"; };
+class MutationObserver { constructor(callback) { notify = callback; } }
+// as a browser's: the options are read from the object given, and these two together are a TypeError
+MutationObserver.prototype.observe = function (root, options) {
+  if (options.characterDataOldValue && options.characterData === false) throw new TypeError("characterData is false");
+  trace += "observe " + root.name + " " + options.childList + " " + options.subtree + ";";
+};
+const document = new Document();
+document.type = 9;
+document.name = "#document";
+document.head = { append: (node) => { trace += "append " + node.name + ";"; } };
+var RTCPeerConnection = function () {};
+const element = (name, children = [], ns = XHTML) => { const e = new Element(); e.type = 1; e.name = name; e.ns = ns; e.children = children; for (const c of children) c.parent = e; return e; };
+const added = (...nodes) => { const r = new MutationRecord(); r.added = new NodeList(); r.added.items = nodes; return r; };
+const refused = (f) => { try { f(); return "ran"; } catch (e) { return e.name; } };
+`;
+
+// what the page then does: puts frames in (one SVG <object>, which is no frame), tampers with every
+// prototype and global the guard might use later, and tries the ways it refuses
+const HOSTILE = `
+const frame = element("iframe");
+const host = element("div", [element("p", [frame]), element("object", [], "http://www.w3.org/2000/svg")]);
+host.parent = document;
+const lone = element("embed");
+lone.parent = document;
+const shadowHost = element("div");
+const records = [added(host), added(lone)];
+Object.defineProperty(Array.prototype, "0", { configurable: true, set() {} });
+Array.prototype[Symbol.iterator] = function* () {};
+Set.prototype.has = () => false;
+String.prototype.toLowerCase = () => "div";
+String.prototype.slice = () => "div";
+Reflect.apply = () => undefined;
+Object.defineProperty(Object.prototype, "characterDataOldValue", { configurable: true, get() { return true; } });
+Object.defineProperty(Object.prototype, "characterData", { configurable: true, get() { return false; } });
+notify(records);
+const shadow = shadowHost.attachShadow({ mode: "closed" });
+JSON.stringify({
+  rtc: typeof RTCPeerConnection,
+  createElement: refused(() => document.createElement("IFRAME")),
+  createElementObject: refused(() => document.createElement({ toString: () => "object" })),
+  createElementNS: refused(() => document.createElementNS(XHTML, "x:iframe")),
+  write: refused(() => document.write("<p>")),
+  open: refused(() => document.open()),
+  setHTMLUnsafe: refused(() => element("div").setHTMLUnsafe("<p>")),
+  parseHTMLUnsafe: refused(() => Document.parseHTMLUnsafe("<p>")),
+  div: refused(() => document.createElement("div")),
+  shadow: shadow.name,
+  trace,
+})
+`;
+
+const onFakePage = (guard: string) => {
+  const realm = createContext({});
+  runInContext(FAKE_PAGE, realm);
+  runInContext(guard, realm);
+  const said: unknown = runInContext(HOSTILE, realm);
+  return Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)))(said);
+};
+
+const guardHolds = (guard: string) => {
+  const result = onFakePage(guard);
+  expect(result).toMatchObject({
+    createElement: "NotSupportedError",
+    createElementNS: "NotSupportedError",
+    createElementObject: "NotSupportedError",
+    div: "ran",
+    open: "NotSupportedError",
+    parseHTMLUnsafe: "NotSupportedError",
+    rtc: "undefined",
+    setHTMLUnsafe: "NotSupportedError",
+    shadow: "#shadow",
+    write: "NotSupportedError",
+  });
+  // the document and the closed shadow root watched; the iframe deep in the div and the lone embed
+  // dropped, the SVG <object> kept; none of the refused calls reached the page's own natives
+  expect(result.trace?.split(";").filter(Boolean)).toEqual(["observe #document true true", "remove iframe", "remove embed", "observe #shadow true true", "create div"]);
+};
+
+test("the bootstrap is its functions' own source, and the guard holds from it alone, whatever the page does to its prototypes", () => {
+  const script = artifactBootstrap("ready</script><!--");
+  expect(script).toStartWith("<script>");
+  expect(script.indexOf("</script>")).toBe(script.length - "</script>".length);
+  expect(script).not.toContain("<!--");
+  for (const run of [noWebRtc, frameGuard, noScripts, heartbeat]) expect(script).toContain(run.toString());
+  // WebRTC goes first, then the guard, then the heartbeat; it compiles as it is
+  expect(script.indexOf("RTCPeerConnection")).toBeLessThan(script.indexOf("MutationObserver"));
+  expect(script.indexOf("MutationObserver")).toBeLessThan(script.indexOf("heartbeat"));
+  expect(() => new Script(script.slice("<script>".length, -"</script>".length))).not.toThrow();
+  guardHolds(`${inline(noWebRtc)}try{${inline(frameGuard)}}catch{${inline(noScripts)}}`);
+});
+
+test("a page the guard can't be set up in runs no script of its own", () => {
+  const realm = createContext({});
+  // a browser whose MutationRecord has no addedNodes getter
+  const getter = 'Object.defineProperty(MutationRecord.prototype, "addedNodes", { get() { return this.added; } });';
+  expect(FAKE_PAGE).toContain(getter);
+  runInContext(FAKE_PAGE.replace(getter, ""), realm);
+  runInContext(artifactBootstrap().slice("<script>".length, -"</script>".length), realm);
+  expect(runInContext("trace", realm)).toBe("create meta;set http-equiv=Content-Security-Policy;set content=script-src 'none';append meta;");
+});
+
+test("minified, the guard still takes the page's natives by their names and holds", async () => {
+  const outdir = tmp();
+  const built = await Bun.build({ entrypoints: [`${import.meta.dir}/../src/artifacts/frame-guard.ts`, `${import.meta.dir}/../src/artifacts/bootstrap.ts`], minify: true, outdir, target: "browser" });
+  expect(built.success).toBe(true);
+  const Guard = Schema.Struct({ frameGuard: Schema.declare((u): u is () => void => Predicate.isFunction(u)) });
+  const Rtc = Schema.Struct({ noWebRtc: Schema.declare((u): u is () => void => Predicate.isFunction(u)) });
+  const minified = {
+    ...Schema.decodeUnknownSync(Guard)(await import(`${outdir}/frame-guard.js`)),
+    ...Schema.decodeUnknownSync(Rtc)(await import(`${outdir}/bootstrap.js`)),
+  };
+  expect(minified.frameGuard.toString()).not.toBe(frameGuard.toString());
+  guardHolds(inline(minified.noWebRtc) + inline(minified.frameGuard));
 });

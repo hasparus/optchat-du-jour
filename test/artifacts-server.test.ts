@@ -38,13 +38,16 @@ beforeAll(async () => {
     // the subagent tries to publish, edit and read over its own key: its claude asks for
     // permission (refused), so its key's refusal is tried with a direct call below
     subagent: { reader: [{ mcp: { input: { name: "landing" }, name: "read_artifact" } }, { text: "read it" }] },
-    turn: [
-      [{ mcp: { input: { html: V1, name: "landing" }, name: "publish_artifact" } }, { text: "published" }],
-      [{ mcp: { input: { edits: [{ new: "<h1>Hi there</h1>", old: "<h1>Hello</h1>" }], name: "landing" }, name: "edit_artifact" } }, { text: "edited" }],
-      [{ mcp: { input: { name: "landing", version: 1 }, name: "read_artifact" } }, { text: "read" }],
-      [{ mcp: { input: { html: "<p>not a page</p>", name: "landing" }, name: "publish_artifact" } }, { text: "rejected" }],
-      [{ mcp: { input: { name: "reader", task: "Read the landing page." }, name: "spawn" } }, { text: "spawned" }],
-    ],
+    // keyed by a word of the message each test sends, not by the order claude processes start in:
+    // a warm process starts ahead of its turn (E18), so that order is not the order of the turns
+    turn: {
+      "landing page": [{ mcp: { input: { html: V1, name: "landing" }, name: "publish_artifact" } }, { text: "published" }],
+      "hi there": [{ mcp: { input: { edits: [{ new: "<h1>Hi there</h1>", old: "<h1>Hello</h1>" }], name: "landing" }, name: "edit_artifact" } }, { text: "edited" }],
+      "first version": [{ mcp: { input: { name: "landing", version: 1 }, name: "read_artifact" } }, { text: "read" }],
+      "break it": [{ mcp: { input: { html: "<p>not a page</p>", name: "landing" }, name: "publish_artifact" } }, { text: "rejected" }],
+      "spawn a reader": [{ mcp: { input: { name: "reader", task: "Read the landing page." }, name: "spawn" } }, { text: "spawned" }],
+      "*": [{ text: "ok" }],
+    },
   };
   writeFileSync(env.FAKE_CLAUDE_SCRIPT, JSON.stringify(script));
   const settings = {
@@ -236,6 +239,7 @@ test("the routes send exactly their headers", async () => {
   expect(inner.headers.get("content-security-policy")).toBe(`sandbox allow-scripts; ${ARTIFACT_EMBEDDED_CSP}; frame-ancestors 'self'`);
   expect(inner.headers.get("x-content-type-options")).toBe("nosniff");
   expect(inner.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+  expect(inner.headers.get("x-dns-prefetch-control")).toBe("off");
   const prepared = await inner.text();
   expect(prepared).toStartWith('<!doctype html><meta http-equiv="Content-Security-Policy"');
   expect(prepared).toContain(token);

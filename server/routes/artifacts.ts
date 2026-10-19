@@ -47,7 +47,9 @@ export const RAW_CSP = "default-src 'none'; sandbox";
 export const DRAFT_CSP = `${ARTIFACT_DRAFT_CSP}; frame-ancestors 'self'`;
 export const PERMISSIONS =
   "accelerometer=(), camera=(), clipboard-read=(), clipboard-write=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), usb=()";
-const SHARED = { "cache-control": "private, no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff" };
+// x-dns-prefetch-control: a page's script can still put in a dns-prefetch hint, which no CSP
+// governs; Chromium resolves none for a document that says off (SPEC "Artifacts", the residuals)
+const SHARED = { "cache-control": "private, no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff", "x-dns-prefetch-control": "off" };
 
 // fx0's EMPTY_DRAFT_DOCUMENT: what a draft is patched into (a meta tag can't say frame-ancestors)
 export const EMPTY_DRAFT_DOCUMENT = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${ARTIFACT_DRAFT_CSP}"><meta name="color-scheme" content="light dark"></head><body></body></html>`;

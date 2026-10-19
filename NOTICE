@@ -7,7 +7,9 @@ third_party/fx0/LICENSE. The files taken from it, each modified, name their fx0 
 first lines ("Apache-2.0, © Vercel, modified"):
 
   src/artifacts/html.ts            lib/design-artifact.ts (its tags now read by Bun's HTMLRewriter,
-                                   not fx0's tokenizer; CSS, ping and run-time frames added)
+                                   not fx0's tokenizer; CSS, ping and declarative shadow roots added)
+  src/artifacts/bootstrap.ts       lib/design-artifact.ts (the bootstrap's WebRTC removal and
+                                   heartbeat, as typed functions)
   src/artifacts/draft.ts           lib/gateway-session.ts (htmlFieldExtractor), lib/design-draft.ts
   src/artifacts/tools.ts           lib/tools.ts
   src/artifacts/store.ts           lib/agent.ts (editDesign, as applyEdits)

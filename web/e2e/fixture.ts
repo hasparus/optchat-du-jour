@@ -6,6 +6,7 @@ import { type Locator, type Page, expect, test as base } from "@playwright/test"
 import { Schema } from "effect";
 import { type ChildProcess, spawn } from "node:child_process";
 import { createSocket } from "node:dgram";
+import { createServer } from "node:net";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -91,7 +92,7 @@ type Options = {
   readonly artifacts: "" | "ui" | "hostile";
 };
 
-async function startServer({ artifacts, patterns, seeded, spent, subagents, thinking, toolError }: Options, stunPort: number): Promise<Server & { readonly stop: () => Promise<void> }> {
+async function startServer({ artifacts, patterns, seeded, spent, subagents, thinking, toolError }: Options, listeners: Pick<Listeners, "tcp" | "udp">): Promise<Server & { readonly stop: () => Promise<void> }> {
   const home = mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
   let port = 0; // the server picks it on the first start; a restart asks for the one the page knows
   let total = seeded;
@@ -105,7 +106,8 @@ async function startServer({ artifacts, patterns, seeded, spent, subagents, thin
     if (thinking) env.E2E_THINKING = "1";
     if (subagents) env.E2E_SUBAGENTS = "1";
     if (artifacts !== "") env.E2E_ARTIFACTS = artifacts;
-    env.E2E_STUN_PORT = String(stunPort);
+    env.E2E_STUN_PORT = String(listeners.udp);
+    env.E2E_TCP_PORT = String(listeners.tcp);
     const child = spawn("bun", ["e2e/server.ts"], { cwd: web, env, stdio: ["ignore", "pipe", "pipe"] });
     let said = "";
     for (const stream of [child.stdout, child.stderr]) {
@@ -160,23 +162,34 @@ async function startServer({ artifacts, patterns, seeded, spent, subagents, thin
   };
 }
 
-// A UDP listener on 127.0.0.1, for the STUN requests a hostile artifact's WebRTC would send
-// (E2E_ARTIFACTS=hostile aims at it): `datagrams` counts what arrived
-export type Stun = { readonly port: number; readonly datagrams: () => number };
+// What a hostile artifact (E2E_ARTIFACTS=hostile) would reach if it got out, on 127.0.0.1: a UDP
+// listener for its WebRTC's STUN requests, and a TCP one for its preconnect hints. `datagrams` and
+// `connections` count what arrived.
+export type Listeners = { readonly udp: number; readonly tcp: number; readonly datagrams: () => number; readonly connections: () => number };
 
-export const test = base.extend<Options & { server: Server; stun: Stun }>({
+export const test = base.extend<Options & { server: Server; listeners: Listeners }>({
   // oxlint-disable-next-line no-empty-pattern -- Playwright reads a fixture's dependencies from this pattern, and this one has none
-  stun: async ({}, provide) => {
+  listeners: async ({}, provide) => {
     const socket = createSocket("udp4");
-    let count = 0;
+    let datagrams = 0;
     socket.on("message", () => {
-      count++;
+      datagrams++;
     });
     await new Promise<void>((resolve) => {
       socket.bind(0, "127.0.0.1", resolve);
     });
-    await provide({ datagrams: () => count, port: socket.address().port });
+    let connections = 0;
+    const tcp = createServer((connection) => {
+      connections++;
+      connection.destroy();
+    });
+    await new Promise<void>((resolve) => {
+      tcp.listen(0, "127.0.0.1", resolve);
+    });
+    const { port: tcpPort } = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Number }))(tcp.address());
+    await provide({ connections: () => connections, datagrams: () => datagrams, tcp: tcpPort, udp: socket.address().port });
     socket.close();
+    tcp.close();
   },
   seeded: [0, { option: true }], // user messages in the log before the server starts
   spent: [false, { option: true }], // every Claude turn ends on a usage limit
@@ -185,8 +198,8 @@ export const test = base.extend<Options & { server: Server; stun: Stun }>({
   thinking: [false, { option: true }], // every Claude turn thinks before its tool call (E2E_THINKING)
   subagents: [false, { option: true }], // every Claude turn spawns two subagents (E2E_SUBAGENTS)
   artifacts: ["", { option: true }], // the turns publish and edit artifacts (E2E_ARTIFACTS)
-  server: async ({ artifacts, seeded, spent, toolError, patterns, thinking, subagents, stun }, provide) => {
-    const server = await startServer({ artifacts, patterns, seeded, spent, subagents, thinking, toolError }, stun.port);
+  server: async ({ artifacts, seeded, spent, toolError, patterns, thinking, subagents, listeners }, provide) => {
+    const server = await startServer({ artifacts, patterns, seeded, spent, subagents, thinking, toolError }, listeners);
     await provide(server);
     await server.stop();
   },

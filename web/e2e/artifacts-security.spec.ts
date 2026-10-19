@@ -1,12 +1,14 @@
-// An artifact can't get out (SPEC "Artifacts"): a fake turn publishes hostile(stun), which tries
+// An artifact can't get out (SPEC "Artifacts"): a fake turn publishes hostile(udp, tcp), which tries
 // fetch, XMLHttpRequest, a WebSocket out and to the app's /ws, an image from outside, sendBeacon,
 // the cookies, localStorage, the parent's document and storage, the top window's location, a popup,
 // RTCPeerConnection in its own window, and in a srcdoc frame it makes (by createElement, by
-// insertAdjacentHTML, in a closed shadow root): no such frame ever runs. Every one fails, no request
-// leaves for the outside host, no STUN datagram reaches the UDP listener, and the app's own cookie
-// and storage are as they were. A link in it
-// opens in a new tab, only through the parent and only during the click; a message with a forged
-// token opens nothing, and navigating itself away goes nowhere.
+// insertAdjacentHTML, in a closed shadow root, by document.write, after document.open, by the
+// pristine document.write of a frame made in the same task, in an SVG foreignObject), WebRTC from a
+// frame's window in the task that made it, a worker and a shared worker, and resource hints: no
+// such frame ever runs. Every one fails, no request leaves for the outside host, no STUN datagram
+// reaches the UDP listener and no connection the TCP one, and the app's own cookie and storage are
+// as they were. A link in it opens in a new tab, only through the parent and only during the click;
+// a message with a forged token opens nothing, and navigating itself away goes nowhere.
 import type { Request } from "@playwright/test";
 import { Schema } from "effect";
 import { answered, expect, OUTSIDE, open, send, test } from "./fixture.ts";
@@ -16,7 +18,7 @@ const decodeResults = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Reco
 
 test.use({ artifacts: "hostile" });
 
-test("a published page can reach no network, cookie, storage, parent or socket of the app", async ({ page, context, stun }) => {
+test("a published page can reach no network, cookie, storage, parent or socket of the app", async ({ page, context, listeners }) => {
   // Chromium reports a request the CSP stopped too, as one that failed ("csp") before it left: only
   // a request that reached the network (the route below) or failed for any other reason counts as out
   const outside: string[] = [];
@@ -43,8 +45,12 @@ test("a published page can reach no network, cookie, storage, parent or socket o
 
   const inner = page.frameLocator('[data-testid="artifact-frame"]').frameLocator("iframe");
   await expect(inner.locator("body")).toHaveAttribute("data-done", "yes", { timeout: 15_000 });
+  // every probe has settled (the last, 2.5 s in): a frame that ran would have sent STUN by now.
+  // Counted first, so that a page whose guard failed says how much got out.
+  expect(listeners.datagrams()).toBe(0);
+  expect(listeners.connections()).toBe(0);
   const results = decodeResults((await inner.locator("#out").textContent()) ?? "{}");
-  for (const attempt of ["fetch", "xhr", "websocket", "appSocket", "image", "cookie", "localStorage", "parentDocument", "parentStorage", "topLocation", "windowOpen", "rtc", "srcdocFrame", "srcdocInHTML", "srcdocInShadow", "framesLeft"]) {
+  for (const attempt of ["fetch", "xhr", "websocket", "appSocket", "image", "cookie", "localStorage", "parentDocument", "parentStorage", "topLocation", "windowOpen", "rtc", "srcdocFrame", "srcdocInHTML", "srcdocInShadow", "documentWrite", "documentOpen", "sameTask", "sameTaskWrite", "svgObject", "worker", "sharedWorker", "framesLeft"]) {
     expect([attempt, results[attempt]?.startsWith("blocked:")]).toEqual([attempt, true]);
   }
   // sendBeacon says it queued the beacon whatever the CSP then does with it: the request itself
@@ -74,7 +80,8 @@ test("a published page can reach no network, cookie, storage, parent or socket o
   await page.waitForTimeout(1500);
   expect(more).toBe(0);
   expect(outside).toEqual([]);
-  expect(stun.datagrams()).toBe(0);
+  expect(listeners.datagrams()).toBe(0);
+  expect(listeners.connections()).toBe(0);
   // and the wrapper brought the page back
   await expect(inner.locator("body")).toHaveAttribute("data-done", "yes", { timeout: 10_000 });
 });
