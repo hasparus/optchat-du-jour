@@ -5,8 +5,8 @@
 // device stops it until a client resumes it on an engine (E4). Every client sees the same events.
 // Priming runs only while idle, and a turn never waits for it (E17, SPEC "Turn and priming").
 import { Cause, Clock, Deferred, type Duration, Effect, Exit, Fiber, FiberSet, Option, PubSub, Queue, type Scope } from "effect";
-import { makeDrafts } from "./artifacts/draft.ts";
 import { loggedText } from "./artifacts/tools.ts";
+import { logText, makeCaptions } from "./captions.ts";
 import type { Choices } from "./choices.ts";
 import { ACTS, PRIME_IDLE, WAIT_RETRY } from "./config.ts";
 import type { Chat, LogExtra } from "./chat.ts";
@@ -17,14 +17,15 @@ import type { Entry } from "./tree.ts";
 import { giveBack as returned, handOver, held, type Incoming, nextTurn, offered, steerIn as joining, takeBack as takenFrom, type Where } from "./inbox.ts";
 import { makeMaster, type Master } from "./master.ts";
 import { makeSeen, type Receipt, receiptOf } from "./once.ts";
-import type { LiveInput, LiveRun, SessionEvent } from "./session-events.ts";
+import { makeLiveRun } from "./live-run.ts";
+import type { LiveRun, SessionEvent } from "./session-events.ts";
 import { type Look, pictureBudget } from "./media/budget.ts";
 import type { Part } from "./media/part.ts";
-import { makePieces, noReasoning, type Pieces, type Reasoning } from "./reasoning.ts";
+import type { Reasoning } from "./reasoning.ts";
 import { BLIND, type Mid, type TurnEngine, type TurnEvents } from "./turn/engine.ts";
 import type { UsageRecord } from "./usage.ts";
 import { allBuilt, render, settle, unbuilt, viewSize } from "./view.ts";
-import { type Asset, canonicalRef, engineLabel, type FollowUp, liveTool, MAX_ATTACHMENTS, markerOf, NOT_DESCRIBED, type Phase, type SessionState, shortSha, type SubagentInfo, withMarkers } from "./wire.ts";
+import { type Asset, canonicalRef, engineLabel, type FollowUp, MAX_ATTACHMENTS, NOT_DESCRIBED, type Phase, type SessionState, shortSha, type SubagentInfo } from "./wire.ts";
 
 // the state every client is shown (STATE_SNAPSHOT, STATE_DELTA, /api/state): src/wire.ts
 export type { FollowUp, Phase, SessionState } from "./wire.ts";
@@ -207,8 +208,19 @@ export const makeSession = (o: {
     // phone whose clock is off still counts right.
     const clock = yield* Clock.Clock;
     let since: number | null = null, sincePhase: Phase | null = null;
-    // the running turn's retry pause (E43): until `until` (this clock), before try `next` of `tries`
-    let retryPause: { readonly until: number; readonly next: number; readonly tries: number } | null = null;
+
+    const scope = yield* Effect.scope;
+    // the run going on, and what it streams that the log doesn't hold yet (src/live-run.ts)
+    const run = makeLiveRun({
+      artifactBase: o.artifactBase,
+      engine: () => engine ?? "",
+      length: () => chat.mem.root.length,
+      now: () => clock.currentTimeMillisUnsafe(),
+      publish,
+      reasoning: o.reasoning,
+      scope,
+    });
+
     const state = (): SessionState => {
       const told: SessionState = {
         budget: chat.mem.marks.high,
@@ -234,7 +246,7 @@ export const makeSession = (o: {
       const withAgents = o.subagents ? { ...told, subagents: o.subagents.list() } : told;
       const withWake = fused() ? { ...withAgents, wakePaused: woken } : withAgents;
       const now = clock.currentTimeMillisUnsafe();
-      const withRetry = { ...withWake, retryPause: retryPause && { ms: Math.max(0, retryPause.until - now), next: retryPause.next, tries: retryPause.tries } };
+      const withRetry = { ...withWake, retryPause: run.pauseNow(now) };
       return since === null ? withRetry : { ...withRetry, elapsed: Math.max(0, now - since) };
     };
     const stamp = Effect.sync(() => {
@@ -264,21 +276,6 @@ export const makeSession = (o: {
       yield* PubSub.take(agents).pipe(Effect.andThen(Effect.sleep("100 millis")), Effect.andThen(tell), Effect.forever, Effect.forkScoped);
     }
 
-    // the run whose RUN_STARTED went out, the text it is streaming at log index `at`, and its
-    // thinking (src/reasoning.ts makePieces: a run's own, so its budget starts with it)
-    // and the artifacts' drafts it is streaming (src/artifacts/draft.ts)
-    // and the file tool call whose input is streaming (E45)
-    let current: { runId: string; reply: { at: number; text: string } | null; pieces: Pieces; drafts: ReturnType<typeof makeDrafts>; tool: LiveInput | null } | null = null;
-    const live = (): LiveRun | null =>
-      current && {
-        drafts: current.drafts.now(),
-        reasoning: current.pieces.live(),
-        reply: current.reply && { ...current.reply },
-        runId: current.runId,
-        tool: current.tool && { ...current.tool },
-      };
-    const sideFile = o.reasoning ?? noReasoning;
-
     const ack = (m: Incoming, at: number | null, error: string | null) =>
       m.clientId === null ? Effect.void : publish({ at, clientId: m.clientId, error, type: "ack" });
 
@@ -288,9 +285,7 @@ export const makeSession = (o: {
       chat.log(kind, text, extra).pipe(
         Effect.tap(() =>
           Effect.sync(() => {
-            if (!current) return;
-            current.reply = null; // the streamed text is logged now, or was left behind
-            if (kind === "tool") current.tool = null; // a call's input that streamed is the entry now (E45)
+            run.logged(kind);
           }),
         ),
         Effect.uninterruptible,
@@ -314,8 +309,6 @@ export const makeSession = (o: {
         );
       }
     });
-
-    const scope = yield* Effect.scope;
 
     // Waking the master (E39). A report that reaches an idle master waits WAKE_DEBOUNCE for others,
     // then they become one turn's messages: held in the inbox for the most recent turn's engine
@@ -343,29 +336,8 @@ export const makeSession = (o: {
     // the loop logs reports before a turn's view; with no turn due, only those that won't wake the master
     const logReportsDue = Effect.suspend(() => (turnsDue() || !mayWake() || !wanted() ? logReports : Effect.void));
 
-    // A message's attachments' captions, each waited for at most media.captionWait, asked for once:
-    // what the log keeps of the message and what an engine is sent of it come from this one answer,
-    // so they agree, and a marker is never written without having waited for its caption. Asked
-    // first while the session's scope closes (the server stops, and logs what it holds), they are
-    // what the media service already has (the call starts at upload, so usually all of them), and
-    // NOT_DESCRIBED for the rest: a caption call started then would be paid for and cut off.
-    const captionsOf = (m: Incoming): Effect.Effect<readonly string[]> =>
-      Effect.suspend(() => {
-        if (m.described) return Deferred.await(m.described);
-        const done = Deferred.makeUnsafe<readonly string[]>();
-        m.described = done;
-        if (scope.state._tag === "Closed") return Deferred.succeed(done, m.media.map((a) => o.media.known(a) ?? NOT_DESCRIBED)).pipe(Effect.andThen(Deferred.await(done)));
-        // Uninterruptible, so `done` is settled whoever stops: a fiber interrupted before it starts
-        // (the scope closing, as the server stops) would never run, and every await of it hang. A
-        // caption waits at most media.captionWait.
-        return Effect.forEach(m.media, (a) => o.media.caption(a), { concurrency: "unbounded" }).pipe(
-          Effect.flatMap((said) => Deferred.succeed(done, said)),
-          Effect.forkIn(scope, { uninterruptible: true }),
-          Effect.andThen(Deferred.await(done)),
-        );
-      });
-    // these messages' captions, asked for together: a turn waits once for the lot
-    const captioned = (ms: readonly Incoming[]) => Effect.forEach(ms, captionsOf, { concurrency: "unbounded", discard: true });
+    // a message's captions, asked for once, and these messages' together (src/captions.ts)
+    const { captioned, captionsOf } = makeCaptions({ media: o.media, scope });
 
     // A message becomes a user entry, on device `on` or else the one it was sent for, once its
     // captions are in (the one place a marker is written). It leaves the inbox only once it is in
@@ -394,86 +366,6 @@ export const makeSession = (o: {
       );
     // these messages, in order, logged unanswered (docs/optchat.md §6: nothing is lost)
     const logEach = (ms: readonly Incoming[]) => captioned(ms).pipe(Effect.andThen(Effect.forEach(ms, (m) => logMessage(m, null, null), { discard: true })));
-
-    // live reply text: buffered for clients that join mid-reply, each delta with its place in it
-    const stream = (delta: string, runId: string) =>
-      Effect.suspend(() => {
-        const at = chat.mem.root.length;
-        if (current && current.reply?.at !== at) current.reply = { at, text: "" };
-        const offset = current?.reply?.text.length ?? 0;
-        if (current?.reply) current.reply.text += delta;
-        return publish({ at, delta, offset, runId, type: "text" });
-      });
-
-    // A file tool's input as it streams (E45): buffered for clients that join mid-call, each delta
-    // with its place in it; the call's tool entry is expected next in the log. Should an entry be
-    // logged meanwhile (the reply before the call), the input so far goes out again under the new index.
-    const liveInput = (call: { readonly id: string; readonly name: string }, delta: string) =>
-      Effect.suspend(() => {
-        if (!current) return Effect.void;
-        const at = chat.mem.root.length;
-        const was = current.tool?.call === call.id ? current.tool : { args: "", at, call: call.id, name: call.name };
-        const moved = was.at !== at;
-        current.tool = { ...was, args: was.args + delta, at };
-        const out = moved ? { delta: current.tool.args, offset: 0 } : { delta, offset: was.args.length };
-        return publish({ ...out, at, call: call.id, name: call.name, runId: current.runId, type: "tool-input" });
-      });
-
-    // Thinking as it streams (SPEC "Reasoning"): the run's pieces (src/reasoning.ts) say what of it
-    // goes out, under the caps; once the reply or tool call it came before is logged, its piece is
-    // kept in the side file under that index, then clients are told. A write that fails is the side
-    // file's to report; the turn goes on. A piece the run logged nothing after is dropped.
-    const think = (delta: string, fresh: boolean, runId: string) =>
-      Effect.suspend(() => {
-        const out = current?.pieces.add({ at: chat.mem.root.length, delta, engine: engine ?? "", fresh, now: clock.currentTimeMillisUnsafe() });
-        return out ? publish({ at: out.at, delta: out.taken, offset: out.offset, runId, type: "reasoning" }) : Effect.void;
-      });
-    const keepThought = (entry: Entry, runId: string) =>
-      Effect.suspend(() => {
-        const taken = entry.kind === "talk" || entry.kind === "tool" ? current?.pieces.take(entry.i, clock.currentTimeMillisUnsafe()) : null;
-        if (!taken) return Effect.void;
-        const { at, record } = taken;
-        return sideFile.keep(record).pipe(Effect.andThen(publish({ at, cut: record.cut ?? 0, i: record.i, ms: record.ms, runId, type: "reasoning-kept" })));
-      });
-    const dropThought = (runId: string) =>
-      Effect.suspend(() => {
-        const at = current?.pieces.drop() ?? null;
-        return at === null ? Effect.void : publish({ at, runId, type: "reasoning-dropped" });
-      });
-
-    // the one start of a run: `current` and RUN_STARTED together, so no end goes out without its start
-    const beginRun = (runId: string) =>
-      Effect.suspend(() => {
-        const drafts = makeDrafts({
-          base: (name) => o.artifactBase?.(name) ?? Effect.succeed(null),
-          runId,
-          scope,
-          send: (draft) => publish({ draft, type: "artifact-draft" }),
-        });
-        current = { drafts, pieces: makePieces(), reply: null, runId, tool: null };
-        return publish({ runId, type: "run-started" });
-      }).pipe(Effect.uninterruptible);
-
-    // The one end of a run: published before the session logs anything outside it (what a failed
-    // or cancelled turn leaves unanswered), so a reply left open (a cancel, a crash) is closed
-    // before its log index goes to another entry. The run's own last entries come before it, also
-    // on a cancel: our tool loop answers a call cut short with `not run: cancelled` as that call
-    // unwinds (src/turn/loop.ts), under the run's id, before the loop gets here.
-    const endRun = (error: string | null) =>
-      Effect.suspend(() => {
-        if (!current) return Effect.void;
-        const { drafts, runId } = current;
-        return dropThought(runId).pipe(
-          Effect.andThen(drafts.stop),
-          Effect.andThen(
-            Effect.suspend(() => {
-              current = null;
-              retryPause = null;
-              return publish({ error, logged: chat.mem.root.length, runId, type: "run-finished" });
-            }),
-          ),
-        );
-      });
 
     // Priming happens only while idle, in fibers of `primes`. A turn that starts stops them
     // instead of waiting (E17): its own request writes the same prefix to the cache. Priming and
@@ -554,16 +446,15 @@ export const makeSession = (o: {
     const stall = (ref: string, why: string, runId: string, since: number, on: string) =>
       Effect.gen(function* () {
         engine = null;
-        if (current?.reply) yield* publish({ runId, type: "reply-dropped" });
-        if (current) current.reply = null;
-        yield* dropThought(runId);
+        yield* run.dropReply(runId);
+        yield* run.dropThought(runId);
         yield* giveBack(on);
         const done = chat.mem.root.length - since;
         // waiting for a resume before the run's end goes out: a client that resumes on seeing it is heard
         const resume = Deferred.makeUnsafe<string>();
         stalled = { ref, resume, why };
         yield* enter("needs-model");
-        yield* endRun(why);
+        yield* run.end(why);
         const failed = yield* o.commit;
         if (failed) yield* info(`git: ${failed}`);
         const next = yield* Deferred.await(resume);
@@ -575,7 +466,7 @@ export const makeSession = (o: {
           accepting = { engine: next, on };
           steerIn(accepting);
         });
-        yield* beginRun(resumed);
+        yield* run.begin(resumed);
         const goesOn = next === ref ? "tried again" : `${master.label(next)} carries on`;
         yield* info(`${master.label(ref)} stopped (${why}); ${goesOn}${done > 0 ? ` from the ${done} logged entries` : ""}`);
         return { next, runId: resumed };
@@ -664,12 +555,12 @@ export const makeSession = (o: {
           log: (kind, text, flags) =>
             log(kind, loggedText(kind, text, flags?.tool), extraOf({ failed: kind === "echo" && flags?.error === true, on })).pipe(
               Effect.tap(published(runId)),
-              Effect.flatMap((entry) => keepThought(entry, runId)),
+              Effect.flatMap((entry) => run.keepThought(entry, runId)),
               Effect.uninterruptible,
             ),
-          text: (delta) => stream(delta, runId),
+          text: (delta) => run.stream(delta, runId),
           thinking: (tokens) => publish({ runId, tokens, type: "thinking" }),
-          reasoning: (delta, fresh) => think(delta, fresh, runId),
+          reasoning: (delta, fresh) => run.think(delta, fresh, runId),
           // the call passed this one to the model: logged now; a second report finds it gone (taken once)
           took: (mid) =>
             Effect.suspend(() => {
@@ -685,20 +576,10 @@ export const makeSession = (o: {
               );
             }),
           usage: (record) => o.logUsage(record).pipe(Effect.andThen(publish({ record, type: "usage" }))),
-          // an artifact call's input as it streams: its live draft (SPEC "Artifacts"); a file
-          // tool's: clients draw it as it comes (E45)
-          toolInput: {
-            delta: (call, piece) => (liveTool(call.name) ? liveInput(call, piece) : Effect.suspend(() => current?.drafts.delta(call, piece) ?? Effect.void)),
-            end: (id) => Effect.suspend(() => current?.drafts.end(id) ?? Effect.void),
-          },
-          // our HTTP engines' retry pause: the state says so while it lasts (E43)
-          retryPause: (pause) =>
-            Effect.suspend(() => {
-              retryPause = pause && { next: pause.next, tries: pause.tries, until: clock.currentTimeMillisUnsafe() + pause.ms };
-              return tell;
-            }),
+          toolInput: run.toolInput,
+          retryPause: (pause) => Effect.andThen(run.pause(pause), tell),
         };
-        yield* beginRun(runId);
+        yield* run.begin(runId);
         yield* tell;
         const base = { device: on, view };
         // The turn runs on its messages' engine only: the master never fails over by itself (E4),
@@ -728,10 +609,10 @@ export const makeSession = (o: {
             // after a result what the call left gets a fresh call with a new view; after a failure
             // it is logged, unanswered
             const left = yield* giveBack(on);
-            if (result._tag === "Success") return yield* endRun(null).pipe(Effect.as(false));
+            if (result._tag === "Success") return yield* run.end(null).pipe(Effect.as(false));
             const { failure } = result;
             yield* info(failureText(failure));
-            yield* endRun(failure.message);
+            yield* run.end(failure.message);
             // The log refuses what the call left: it stays in the inbox, and the loop stops as on
             // any refusal (`stopped`), saying why unless the turn's own failure just said it.
             return yield* logEach(left).pipe(
@@ -756,7 +637,7 @@ export const makeSession = (o: {
     // the next message, and their senders are told.
     const afterLoop = Effect.gen(function* () {
       engine = null;
-      yield* endRun("the turn stopped"); // a run the loop left without an end
+      yield* run.end("the turn stopped"); // a run the loop left without an end
       const failed = yield* o.commit;
       if (failed) yield* info(`git: ${failed}`);
       yield* Effect.suspend(() => {
@@ -788,8 +669,8 @@ export const makeSession = (o: {
         const why = cancelled ? "cancelled" : Option.match(refused, { onNone: () => `the turn stopped: ${thrown(cause)}`, onSome: (e) => e.message });
         stalled = null; // no longer waiting for a resume
         yield* giveBack(device);
-        const inRun = current !== null;
-        yield* endRun(why); // the run's end says it
+        const inRun = run.inRun();
+        yield* run.end(why); // the run's end says it
         if (!cancelled) {
           halted = { upTo: seq, why };
           yield* info(`error: ${why}`);
@@ -918,7 +799,7 @@ export const makeSession = (o: {
     const turnNow = () => (engine === null || sentView === null ? null : { on: device, ref: engine, view: sentView });
     const lastView = () => sentView;
 
-    return { configure, events, hush, input, lastView, live, newestLoop, primeSoon, report, resume, state, stop, takeBack, turnNow };
+    return { configure, events, hush, input, lastView, live: run.live, newestLoop, primeSoon, report, resume, state, stop, takeBack, turnNow };
   });
 
 // What a log line carries after the reference's keys (src/chat.ts): where its turn ran, on an echo
@@ -931,14 +812,6 @@ const extraOf = (o: { readonly on: string | null; readonly failed?: boolean; rea
   if (o.client) extra.client = o.client;
   return extra;
 };
-
-// A message's text as the log keeps it: what was typed, then a marker line per attachment with
-// its caption (SPEC "Media")
-const logText = (m: Incoming, said: readonly string[]) =>
-  withMarkers(
-    m.text,
-    m.media.map((a, k) => markerOf(a, said[k] ?? NOT_DESCRIBED)),
-  );
 
 // an attachment the store doesn't hold, as the user is told of it: "image 9d0c38e7aafe"
 const nameOf = (a: Named) => `${a.kind} ${shortSha(a.sha)}`;

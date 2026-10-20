@@ -58,6 +58,9 @@
 //                                 test a malformed one; left out of the block when unset
 //   {waitInput: true}             wait until a message arrives that no reply or take used yet
 //   {take: true}                  wait for such a message and take it now: its replay event
+//   {gate: "path"}                wait until a file is at that path: the test lets the reply go on
+//                                 by writing it, once it has seen what it waits for (a gate once
+//                                 opened stays open)
 //   {result: {text?, is_error?, stop_reason?, subtype?, usage?}}
 //   {emit: {...}}                 one raw stdout line
 //   {sleep: ms}  {hang: true}  {exit: code, stderr?: "..."}
@@ -103,6 +106,7 @@ const Action = Schema.Union([
   Schema.Struct({ toolResult: Schema.String, is_error: Schema.optional(Schema.Json) }),
   Schema.Struct({ waitInput: Schema.Literal(true) }),
   Schema.Struct({ take: Schema.Literal(true) }),
+  Schema.Struct({ gate: Schema.String }),
   Schema.Struct({
     result: Schema.Struct({
       is_error: Schema.optional(Schema.Boolean),
@@ -364,6 +368,8 @@ async function play(reply: Reply): Promise<boolean> {
     } else if ("take" in a) {
       await unused();
       replay(inbox[used++] ?? null);
+    } else if ("gate" in a) {
+      while (!existsSync(a.gate)) await Bun.sleep(50);
     } else if ("result" in a) {
       start();
       const r = a.result;

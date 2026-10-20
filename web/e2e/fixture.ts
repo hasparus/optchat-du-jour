@@ -7,13 +7,15 @@ import { Schema } from "effect";
 import { type ChildProcess, spawn } from "node:child_process";
 import { createSocket } from "node:dgram";
 import { createServer } from "node:net";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gateAt } from "./replies.ts";
 
 export { ARTIFACT, EDITED, EDITED_HEADING, LANDING, LANDING_HEADING, MEMORY_SUMMARY, OUTSIDE, PUBLISHED } from "./replies.ts";
 export { EDIT_INPUT, WRITE_INPUT } from "./replies.ts";
-export { FETCHED, FIXER_REPORT, FIXER_TASK, NOTES_REPORT, NOTES_TASK, PLAN_DONE, PLAN_START, REPLY, SCOUT_REPORT, SCOUT_TASK, SEARCH_LINKS, SOL_REPLY, SPAWNED, SPAWNED_ISOLATED, THOUGHT, TOOL_ERROR, WOKEN } from "./replies.ts";
+export { FETCHED, FIXER_REPORT, FIXER_TASK, HELD, HELD_GATE, NOTES_REPORT, NOTES_TASK, PLAN_DONE, PLAN_START, REPLY, SCOUT_REPORT, SCOUT_TASK, SEARCH_LINKS, SOL_REPLY, SPAWNED, SPAWNED_ISOLATED, THOUGHT, TOOL_ERROR, WOKEN } from "./replies.ts";
 
 type LogEntry = MessagesPage["entries"][number];
 const decodePage = Schema.decodeUnknownSync(MessagesPage);
@@ -29,6 +31,8 @@ export type Server = {
   readonly log: () => Promise<LogEntry[]>;
   // stop the server, log `more` user messages behind its back, start it again on the same port
   readonly restart: (more: number) => Promise<void>;
+  // open a gate a reply of the fake claude waits at (e2e/replies.ts HELD_GATE); it stays open
+  readonly release: (gate: string) => void;
 };
 
 const web = fileURLToPath(new URL("..", import.meta.url));
@@ -157,6 +161,11 @@ async function startServer({ artifacts, edits, isolated, memory, patterns, seede
     log: async () => {
       const res = await fetch(`${url}/api/messages?limit=100000`);
       return [...decodePage(await res.json()).entries];
+    },
+    release: (gate) => {
+      const at = gateAt(home, gate);
+      mkdirSync(dirname(at), { recursive: true });
+      writeFileSync(at, "");
     },
     restart: async (more) => {
       await stop(child);

@@ -3,7 +3,7 @@
 import { Schema } from "effect";
 import sharp from "sharp";
 import { CHANGE_SERVER, shellScript } from "../../mobile/src/bridge.ts";
-import { answered, attach, clearOfDock, expect, expectShowsLog, open, REPLY, send, test, TOOL_ERROR } from "./fixture";
+import { answered, attach, clearOfDock, expect, expectShowsLog, HELD, HELD_GATE, open, REPLY, send, test, TOOL_ERROR } from "./fixture";
 
 test("a message gets a reply that streams in, after its tool call", async ({ page, server }) => {
   await open(page);
@@ -71,11 +71,15 @@ test("a turn started on one page streams into another", async ({ browser, server
 test("a page that opens mid-reply ends with the whole reply as logged", async ({ browser, server }) => {
   const sender = await browser.newPage({ baseURL: server.url, viewport: { height: 740, width: 360 } });
   await open(sender);
-  await send(sender, "join in the middle");
-  await expect(sender.getByText("Streamed reply")).toBeVisible();
+  // the reply holds after its first words until the late page has joined (HELD), not for a while
+  // (so the waits for it can be long on a loaded machine: it can't end meanwhile)
+  await send(sender, HELD);
+  await expect(sender.getByText("Streamed reply")).toBeVisible({ timeout: 15_000 });
   const late = await browser.newPage({ baseURL: server.url, viewport: { height: 740, width: 360 } });
   await open(late);
-  await expect(late.getByTestId("status")).toContainText("running");
+  await expect(late.getByTestId("status")).toContainText("running", { timeout: 15_000 });
+  await expect(late.getByText("Streamed reply")).toBeVisible({ timeout: 15_000 }); // what streamed before it opened
+  server.release(HELD_GATE);
   await expect(sender.getByTestId("status")).toBeHidden({ timeout: 15_000 });
   await expect(late.getByText(REPLY)).toBeVisible();
   await expectShowsLog(late, server);

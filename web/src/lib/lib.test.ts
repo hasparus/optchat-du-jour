@@ -527,6 +527,13 @@ describe("session", () => {
     // the server logged it while the page was away: its receipt says where, and settles it
     server.play(received("a", "logged", 7));
     expect(waiting(session)).toEqual(["held there", `from an older page (${UNSENT})`]);
+    // another reload: the one from an older page is kept as it was, marked and not sent
+    const again = fakeServer(() => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT }]);
+    const reloaded = makeSession(openLink("ws://x/ws", { retryMs: 1, socket: again.socket }));
+    await tick();
+    expect(messageIds(again)).toEqual(["b"]);
+    expect(waiting(reloaded)).toEqual(["held there", `from an older page (${UNSENT})`]);
+    reloaded.dispose();
   });
 
   test("a take-back asked for and not answered is still asked for after a reconnect: the link sends it again, and its answer is awaited", async () => {
@@ -562,6 +569,8 @@ describe("session", () => {
     const why = "nothing to send: image ffffffffffff is not on the server";
     server.play({ name: "received", type: EventType.CUSTOM, value: { error: why, id, messageId: null, outcome: "refused" } });
     expect(waiting(session)).toEqual([` (not sent: ${why})`]);
+    // kept once, as why: the row's text is made from it, not stored beside it
+    expect(session.get().pending.map((p) => p.failed)).toEqual([{ kind: "refused", why }]);
     expect(session.get().markers).toEqual([]); // said on its row, not as a stray marker
     server.drop();
     await tick(20);
@@ -572,6 +581,7 @@ describe("session", () => {
     await tick();
     expect(messageIds(again)).toEqual([]);
     expect(waiting(reloaded)).toEqual([` (not sent: ${why})`]);
+    expect(reloaded.get().pending.map((p) => p.failed)).toEqual([{ kind: "refused", why }]);
     reloaded.dispose();
     const [q] = queued(session.get());
     if (!q) throw new Error("nothing queued");
@@ -655,7 +665,7 @@ describe("session", () => {
     expect(waiting(session)).toEqual(["same", "same", "logged while away"]);
     server.play(received(third, "logged", 1));
     expect(waiting(session)).toEqual(["same", "same"]);
-    expect(session.get().pending.every((p) => p.error === null)).toBe(true); // nothing for the user to send again
+    expect(session.get().pending.every((p) => p.failed === undefined)).toBe(true); // nothing for the user to send again
   });
 
   test("a message another client took back while this page was away is dropped once the server says so", async () => {

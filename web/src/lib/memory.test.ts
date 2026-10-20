@@ -264,14 +264,15 @@ test("a fill a re-read took over from fails without cancelling the re-read's ret
 test("dispose() leaves nothing behind: no timer pending, and a read in flight schedules nothing", async () => {
   const realSet = globalThis.setTimeout, realClear = globalThis.clearTimeout;
   const pending = new Set<unknown>();
-  // the store's timers, counted while it lives
+  // the store's timers, counted while it lives: those set from memory.ts only, since a link an
+  // earlier test file left open may set its own meanwhile (its watchdog, connection.ts)
   const counted = Object.assign(
     (f: () => void, ms?: number) => {
       const id: unknown = realSet(() => {
         pending.delete(id);
         f();
       }, ms);
-      pending.add(id);
+      if (new Error("where").stack?.includes("/lib/memory.ts") === true) pending.add(id);
       return id;
     },
     { __promisify__: realSet.__promisify__ },

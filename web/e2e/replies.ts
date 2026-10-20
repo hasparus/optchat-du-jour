@@ -3,6 +3,14 @@ export const REPLY = "Streamed reply from the fake claude.";
 // E2E_THINKING: what every Claude turn thinks before its tool call (SPEC "Reasoning")
 export const THOUGHT = "They want to see what is here. A listing first, then a short answer.";
 export const SOL_REPLY = "Answered by the fake ChatGPT plan.";
+// A Claude turn whose message says HELD (in the plain mode) streams the first words of REPLY, then
+// holds the rest until the test opens the gate HELD_GATE (Server.release): a page that opens
+// meanwhile opens mid-reply, however slow the machine is.
+export const HELD = "join in the middle";
+export const HELD_GATE = "held";
+// where gate `name` of the server with data dir `home` is: the fake claude waits until the file is
+// there (test/fake-claude.ts `gate`), and the test writes it to open the gate (Server.release)
+export const gateAt = (home: string, name: string) => `${home}/gates/${name}`;
 // the tool's output when E2E_TOOL_ERROR fails it: nothing in the text says it failed, only the flag
 export const TOOL_ERROR = "ls: cannot open directory '.': Permission denied";
 
