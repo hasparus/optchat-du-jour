@@ -1,14 +1,14 @@
 // Isolated subagents' worktrees (SPEC "Subagents", E37): what a finish does, as a pure plan over its
 // facts (a table), and in temporary git repositories only: the folder's own merge in progress is
 // never touched, a folder that moved to another branch gets nothing, gitignored files keep the
-// worktree, a repository outside the folders is refused at the add, and a dropped worktree goes
-// with its branch.
+// worktree, a repository outside the folders is refused at the add, a dropped worktree goes with
+// its branch, and none of the three is ever interrupted halfway.
 import { afterAll, expect, test } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { addWorktree, discardWorktree, disposable, type Facts, finishWorktree, plan } from "../src/worktree.ts";
+import { addWorktree, discardWorktree, disposable, type Facts, finishWorktree, localWorktrees, plan } from "../src/worktree.ts";
 
 const dirs: string[] = [];
 afterAll(() => {
@@ -167,4 +167,32 @@ test("a repository whose top folder is outside the folders can't be isolated; a 
   // so the name can be used again
   const again = await run(addWorktree(root, folder, "Dropped", [top]));
   expect(again.branch).toBe("optchat/Dropped");
+});
+
+test("add, finish and discard are never interrupted halfway: an interrupt as each starts waits for git to finish", async () => {
+  const { folder, root, top } = repo();
+  const trees = localWorktrees(root, [top]);
+  // forked and interrupted at once: started, so the interrupt lands inside the step, not before it
+  const interrupted = <A, E>(e: Effect.Effect<A, E>) =>
+    run(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(e, { startImmediately: true });
+        yield* Fiber.interrupt(fiber);
+      }),
+    );
+  await interrupted(trees.add(folder, "Steady"));
+  const path = `${root}/Steady`;
+  expect(existsSync(`${path}/.git`)).toBe(true);
+  const w = await run(addWorktree(root, folder, "Merger", [top]));
+  writeFileSync(`${w.path}/c.txt`, "c\n");
+  git(w.path, "add", "-A");
+  git(w.path, "commit", "-qm", "c");
+  const tip = git(folder, "rev-parse", w.branch).out;
+  await interrupted(trees.finish(w, "Merger"));
+  // the folder's HEAD reached the branch, and the worktree went
+  expect(git(folder, "rev-parse", "HEAD").out).toBe(tip);
+  expect(existsSync(w.path)).toBe(false);
+  await interrupted(trees.discard({ ...w, branch: "optchat/Steady", path }));
+  expect(existsSync(path)).toBe(false);
+  expect(git(folder, "branch", "--list", "optchat/Steady").out).toBe("");
 });

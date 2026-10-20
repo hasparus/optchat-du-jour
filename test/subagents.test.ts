@@ -10,13 +10,14 @@ import { Deferred, type Duration, Effect, PubSub, Result, Schema, type Scope } f
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { stopEverything } from "../server/routes/ws.ts";
 import { openChat } from "../src/chat.ts";
 import { entryLabel, parseSettings, type Ref, SUBAGENTS_MAX } from "../src/config.ts";
 import { ModelError, UsageLimit } from "../src/engines/errors.ts";
 import { makeMaster } from "../src/master.ts";
 import type { AgentTools, Caller } from "../src/mcp.ts";
-import { makeSession, noMedia, type SessionEvent } from "../src/session.ts";
-import { type AgentPlace, makeSubagents, RESUMES_MAX, SIDE_PAGE, type SubagentHost } from "../src/subagents.ts";
+import { makeSession, noMedia, type Session, type SessionEvent } from "../src/session.ts";
+import { type AgentPlace, makeSubagents, RESUMES_MAX, SIDE_PAGE, type SubagentHost, type Subagents } from "../src/subagents.ts";
 import type { TurnEngine, TurnEvents, TurnInput } from "../src/turn/engine.ts";
 import type { UsageRecord } from "../src/usage.ts";
 import { localWorktrees } from "../src/worktree.ts";
@@ -1035,8 +1036,8 @@ test("a call cut short by a dropped device link goes on from its side log; a lin
 // ---- review of #42: a user's stop is a decision; bounds on unattended work ----
 
 // Stop all as server/routes/ws.ts does it: hush the reports, cancel the turn, stop every subagent
-const stopAllAsWs = (r: { readonly session: { readonly hush: Effect.Effect<void>; readonly cancel: Effect.Effect<void> }; readonly subagents: { readonly stopAll: Effect.Effect<unknown> } }) =>
-  r.session.hush.pipe(Effect.andThen(r.session.cancel), Effect.andThen(r.subagents.stopAll));
+// the ws "stop-all" frame, as server/routes/ws.ts handles it
+const stopAllAsWs = (r: { readonly session: Session; readonly subagents: Subagents }) => stopEverything(r.session, r.subagents);
 
 test("Stop all wakes no master turn: the stopped runs' reports are logged, and nothing else wakes it until the user's next message", async () => {
   await scoped((scope) =>
@@ -1058,6 +1059,48 @@ test("Stop all wakes no master turn: the stopped runs' reports are logged, and n
       yield* r.session.input("and c?", { clientId: "c2" });
       yield* until("turn 2", () => r.turns.length === 2 && r.idle());
       expect(yield* r.tools("master").call("spawn", { name: "c", task: "t" })).toMatchObject({ error: true }); // no turn runs
+    }),
+  );
+});
+
+test("Stop all also hushes a report that came just before it and is still waiting to wake the master", async () => {
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const go = yield* Deferred.make<true>();
+      const r = yield* rig({
+        child: { quick: (_input, out) => Deferred.await(go).pipe(Effect.andThen(out.log("talk", "quick is done")), Effect.orDie), slow: () => Effect.never },
+        master: (call, turn) => (turn === 1 ? Effect.asVoid(call("spawn", { name: "quick", task: "t" }).pipe(Effect.andThen(call("spawn", { name: "slow", task: "t" })))) : Effect.void),
+        scope,
+        wake: "200 millis",
+      });
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("both running", () => r.calls.length === 2 && r.idle());
+      yield* Deferred.succeed(go, true);
+      yield* until("quick done", () => r.stateOf("quick")?.state === "done");
+      // within the debounce: quick's report waits to wake the master when the user stops everything
+      yield* stopAllAsWs(r);
+      yield* until("slow stopped", () => r.stateOf("slow")?.state === "stopped");
+      yield* Effect.sleep("500 millis");
+      expect(r.turns).toHaveLength(1);
+    }),
+  );
+});
+
+test("a card's Stop of one subagent wakes no master turn, with waking on", async () => {
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const r = yield* rig({
+        child: { a: () => Effect.never },
+        master: (call, turn) => (turn === 1 ? Effect.asVoid(call("spawn", { name: "a", task: "t" })) : Effect.void),
+        scope,
+        wake: "30 millis",
+      });
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("running", () => r.calls.length === 1 && r.idle());
+      expect(yield* r.subagents.stop("a")).toBeNull();
+      yield* until("its report", () => r.log().some((l) => l.startsWith("user: [a] stopped after")));
+      yield* Effect.sleep("200 millis");
+      expect(r.turns).toHaveLength(1);
     }),
   );
 });
