@@ -68,12 +68,16 @@ export function trimHeld(log: Log): Log {
   return { ...log, items };
 }
 
-/** Reuse only canonical equality at this index, including live provenance: a confirmed item
- * must not later be dropped below a snapshot window as though it were still live-only.
- */
+// Every field of an Item, each compared before a held item is reused: a field added to Item and not
+// here is a type error, so it can't be shared unseen.
+const ITEM_FIELDS = { error: true, i: true, kind: true, live: true, text: true } as const satisfies Record<keyof Item, true>;
+export const sameItem = (a: Item, b: Item) => (Object.keys(ITEM_FIELDS) as (keyof Item)[]).every((k) => a[k] === b[k]);
+
+// Reuse only canonical equality at this index, including live provenance: a confirmed item must
+// not later be dropped below a snapshot window as though it were still live-only.
 const heldItem = (log: Log, fresh: Item): Item => {
   const held = log.items.get(fresh.i);
-  return held !== undefined && held.kind === fresh.kind && held.text === fresh.text && held.error === fresh.error && held.live === fresh.live ? held : fresh;
+  return held !== undefined && sameItem(held, fresh) ? held : fresh;
 };
 
 // A snapshot is the log's last window: it replaces everything from its first index up, and the
