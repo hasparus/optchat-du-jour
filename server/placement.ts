@@ -5,23 +5,19 @@
 // other machine can use. Each device dials /mcp over a WebSocket until its claude is seen not to
 // connect that way (E8).
 import { Effect, Result } from "effect";
-import { realpathSync } from "node:fs";
 import { posix } from "node:path";
 import type { Runner } from "../src/claude/process.ts";
 import { remoteRunner, remoteTool, remoteWorktrees } from "../src/claude/remote.ts";
 import { type Settings, subagentSettings } from "../src/config.ts";
 import { DeviceOffline } from "../src/engines/errors.ts";
 import { type AgentTools, mcpConfig, mcpTransports, noAgents } from "../src/mcp.ts";
-import { expandHome } from "../src/paths.ts";
+import { expandHome, realInside, within } from "../src/paths.ts";
 import { toolBox, toolDefs } from "../src/tools/box.ts";
 import { type FileTools, makeFileTools, toolError } from "../src/tools/files.ts";
 import type { Mem } from "../src/tree.ts";
 import type { Placement } from "../src/turn/claude-code.ts";
 import type { AgentPlace } from "../src/subagents.ts";
 import { localWorktrees, type Worktrees } from "../src/worktree.ts";
-
-// `path` is the folder `f` or inside it
-const inside = (path: string, f: string) => path === f || path.startsWith(`${f.replace(/\/$/, "")}/`);
 
 export const makePlacements = (o: {
   readonly settings: Settings;
@@ -61,16 +57,15 @@ export const makePlacements = (o: {
     // (this machine's, or that device's runner over the tailnet, with its WhoIs and folder checks),
     // in the subagent's own folder, with its own /mcp key. Never warm: its spawn isn't pooled.
     const agentRunnerFor = (at: AgentPlace) => {
-      const label = `&agent=${at.name}`;
-      if (at.device === o.device) return place(at.device, at.cwd, `http://127.0.0.1:${o.port}`, o.local, `${at.key}${label}`);
+      if (at.device === o.device) return place(at.device, at.cwd, `http://127.0.0.1:${o.port}`, o.local, at.key);
       const runner = remotes.get(at.device);
       if (runner === undefined) return Effect.fail(new DeviceOffline({ message: `${at.device} is not a configured device` }));
       if (publicUrl === undefined) return Effect.fail(new DeviceOffline({ message: `${at.device}: server.publicUrl is not set, so claude there could not reach zoom and date` }));
-      return place(at.device, at.cwd, publicUrl, runner, `${at.key}${label}`);
+      return place(at.device, at.cwd, publicUrl, runner, at.key);
     };
     // isolated subagents' worktrees (E37): this machine's in-process, another's through its runner
     const root = subagentSettings(o.settings).worktrees;
-    const worktrees = new Map<string, Worktrees>(Object.entries(devices).map(([name, d]) => [name, name === o.device ? localWorktrees(expandHome(root)) : remoteWorktrees(name, d.url)] as const));
+    const worktrees = new Map<string, Worktrees>(Object.entries(devices).map(([name, d]) => [name, name === o.device ? localWorktrees(expandHome(root), d.folders) : remoteWorktrees(name, d.url)] as const));
     // A folder a spawn asks for on a device (E36): one of its folders or inside one, or inside the
     // worktree root, as a turn's cwd must be. This machine's is resolved first (`~`, `..`,
     // symlinks); another's is checked as written, `~` against `~`, and its runner resolves it when
@@ -81,28 +76,15 @@ export const makePlacements = (o: {
       const allowed = [...d.folders, root];
       const outside = Result.fail(`${path} is outside ${device}'s folders (${d.folders.join(", ")})`);
       if (device === o.device) {
-        const expanded = expandHome(path);
-        if (!posix.isAbsolute(expanded)) return Result.fail(`${path} is not an absolute path`);
-        let real: string;
-        try {
-          real = realpathSync(expanded);
-        } catch {
-          return Result.fail(`${path} does not exist on ${device}`);
-        }
-        for (const f of allowed) {
-          try {
-            if (inside(real, realpathSync(expandHome(f)))) return Result.succeed(real);
-          } catch {
-            // a folder that doesn't exist here holds nothing
-          }
-        }
-        return outside;
+        if (!posix.isAbsolute(expandHome(path))) return Result.fail(`${path} is not an absolute path`);
+        const real = realInside(path, allowed);
+        return real === null ? Result.fail(`${path} is outside ${device}'s folders (${d.folders.join(", ")}), or doesn't exist there`) : Result.succeed(real);
       }
       const written = posix.normalize(path);
       if (!posix.isAbsolute(written) && written !== "~" && !written.startsWith("~/")) return Result.fail(`${path} is not an absolute path`);
       const home = written.startsWith("~");
       const comparable = allowed.map((f) => posix.normalize(f)).filter((f) => f.startsWith("~") === home);
-      return comparable.length === 0 || comparable.some((f) => inside(written, f)) ? Result.succeed(written) : outside;
+      return comparable.length === 0 || comparable.some((f) => within(written, f)) ? Result.succeed(written) : outside;
     };
 
     // the read-only tools: this machine's in-process, another device's over its runner's POST

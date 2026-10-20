@@ -6,8 +6,8 @@
 //   caption   --system-prompt is the caption prompt (an attachment's caption, SPEC "Media")
 //   compact   DISABLE_PROMPT_CACHING=1 without --replay-user-messages (the compactor)
 //   prime     DISABLE_PROMPT_CACHING=1 with --replay-user-messages (a priming call, the turn's argv)
-//   subagent  its --mcp-config URL names an agent (`&agent=<Name>`, a subagent's call, SPEC
-//             "Subagents"), or --allowedTools (M7a's subagents had it)
+//   subagent  OPTCHAT_SUBAGENT is set (a subagent's call names it, SPEC "Subagents"), or
+//             --allowedTools (M7a's subagents had it)
 //   turn      anything else
 //
 // Permissions, as `claude -p` with `--setting-sources ""` has them: under --permission-mode
@@ -152,7 +152,7 @@ const role: Role = system === CAPTION
     ? "compact"
     : env.DISABLE_PROMPT_CACHING === "1"
       ? "prime"
-      : argv.includes("--allowedTools") || /[?&]agent=/.test(argv[argv.indexOf("--mcp-config") + 1] ?? "")
+      : argv.includes("--allowedTools") || (env.OPTCHAT_SUBAGENT ?? "") !== ""
         ? "subagent"
         : "turn";
 const flag = (name: string) => {
@@ -192,7 +192,10 @@ const DEFAULTS = {
 
 const script = env.FAKE_CLAUDE_SCRIPT ? Schema.decodeUnknownSync(Schema.fromJsonString(Script))(readFileSync(env.FAKE_CLAUDE_SCRIPT, "utf8")) : {};
 const callIndex = earlier();
-const shown = { CLAUDE_CODE_PROMPT_CACHE_TTL: env.CLAUDE_CODE_PROMPT_CACHE_TTL ?? null, DISABLE_PROMPT_CACHING: env.DISABLE_PROMPT_CACHING ?? null };
+// the environment it was given that tests look at; a subagent's name only when it has one
+type Shown = { CLAUDE_CODE_PROMPT_CACHE_TTL: string | null; DISABLE_PROMPT_CACHING: string | null; OPTCHAT_SUBAGENT?: string };
+const shown: Shown = { CLAUDE_CODE_PROMPT_CACHE_TTL: env.CLAUDE_CODE_PROMPT_CACHE_TTL ?? null, DISABLE_PROMPT_CACHING: env.DISABLE_PROMPT_CACHING ?? null };
+if (env.OPTCHAT_SUBAGENT !== undefined) shown.OPTCHAT_SUBAGENT = env.OPTCHAT_SUBAGENT;
 record({ argv, call: callIndex, cwd: process.cwd(), env: shown, role, type: "start" });
 
 const servers = Object.entries(Schema.decodeUnknownSync(McpConfig)(flag("--mcp-config") ?? "{}").mcpServers ?? {});

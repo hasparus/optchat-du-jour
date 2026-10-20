@@ -145,7 +145,9 @@ export const wsRoute = (
           case "abort":
             return o.session.cancel;
           case "stop-all":
-            return Effect.andThen(o.session.cancel, o.subagents?.stopAll ?? Effect.void);
+            // reports hushed first: the stopped runs' reports, and any other until the user's next
+            // message, wake no turn; then the turn, then every subagent
+            return o.session.hush.pipe(Effect.andThen(o.session.cancel), Effect.andThen(o.subagents?.stopAll ?? Effect.void));
           case "take-back":
             return o.session.takeBack(m.clientId);
           case "settings":

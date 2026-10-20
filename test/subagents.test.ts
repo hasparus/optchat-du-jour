@@ -16,7 +16,7 @@ import { ModelError, UsageLimit } from "../src/engines/errors.ts";
 import { makeMaster } from "../src/master.ts";
 import type { AgentTools, Caller } from "../src/mcp.ts";
 import { makeSession, noMedia, type SessionEvent } from "../src/session.ts";
-import { type AgentPlace, makeSubagents, SIDE_PAGE, type SubagentHost } from "../src/subagents.ts";
+import { type AgentPlace, makeSubagents, RESUMES_MAX, SIDE_PAGE, type SubagentHost } from "../src/subagents.ts";
 import type { TurnEngine, TurnEvents, TurnInput } from "../src/turn/engine.ts";
 import type { UsageRecord } from "../src/usage.ts";
 import { localWorktrees } from "../src/worktree.ts";
@@ -91,6 +91,7 @@ const rig = (o: {
   readonly commit?: Effect.Effect<void>;
   readonly max?: number; // subagents.max (SUBAGENTS_MAX)
   readonly wake?: Duration.Input; // reports wake an idle master after this (E39); none: M7a's waiting
+  readonly wakeLimit?: number; // woken turns in a row before waking pauses (WAKE_LIMIT; 0: none)
   readonly folders?: readonly string[]; // the device mini's folders
   readonly worktrees?: string; // where isolated ones' worktrees go: a temporary directory
 }) =>
@@ -127,7 +128,7 @@ const rig = (o: {
       warm: () => Effect.void,
     });
     const folders = o.folders ?? ["/tmp"];
-    const trees = localWorktrees(o.worktrees ?? `${dir}-worktrees`);
+    const trees = localWorktrees(o.worktrees ?? `${dir}-worktrees`, folders);
     const subagents = yield* makeSubagents({
       chain: CHAIN,
       commit,
@@ -174,6 +175,7 @@ const rig = (o: {
       subagents,
       waitRetry: "1 hour",
       wake: o.wake ?? null,
+      wakeLimit: o.wakeLimit ?? 0,
     });
     yield* Deferred.succeed(host, { lastView: session.lastView, report: session.report, turnNow: session.turnNow });
     yield* subagents.restore;
@@ -743,8 +745,8 @@ test("a subagent spawns one of its own: the cap counts it, its report goes to th
       // worker started from boss's opening: started by the subagent "boss"
       expect(r.calls.find((c) => c.name === "worker")?.input.texts[0]).toContain('started by the subagent "boss"');
       expect(decodeMeta(readFileSync(`${r.dir}/agents/worker/agent.json`, "utf8")).pending).toBeNull();
-      // a subagent tells another; not itself
-      expect(yield* r.tools({ agent: "boss" }).call("tell", { name: "boss", text: "hi" })).toEqual({ error: true, text: "tell: that is you" });
+      // a key of a subagent that has ended tells no one, as it spawns no one (E38)
+      expect(yield* r.tools({ agent: "boss" }).call("tell", { name: "worker", text: "hi" })).toEqual({ error: true, text: "tell: only a running subagent can tell one" });
     }),
   );
 });
@@ -1026,6 +1028,129 @@ test("a call cut short by a dropped device link goes on from its side log; a lin
       yield* until("gone's report", () => r.log().some((l) => l.startsWith("user: [gone] failed")));
       expect(r.calls.filter((c) => c.name === "gone")).toHaveLength(4);
       expect(r.stateOf("gone")?.why).toBe("error: lost the connection to mac: socket closed");
+    }),
+  );
+});
+
+// ---- review of #42: a user's stop is a decision; bounds on unattended work ----
+
+// Stop all as server/routes/ws.ts does it: hush the reports, cancel the turn, stop every subagent
+const stopAllAsWs = (r: { readonly session: { readonly hush: Effect.Effect<void>; readonly cancel: Effect.Effect<void> }; readonly subagents: { readonly stopAll: Effect.Effect<unknown> } }) =>
+  r.session.hush.pipe(Effect.andThen(r.session.cancel), Effect.andThen(r.subagents.stopAll));
+
+test("Stop all wakes no master turn: the stopped runs' reports are logged, and nothing else wakes it until the user's next message", async () => {
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const later = yield* Deferred.make<true>();
+      const r = yield* rig({
+        child: { a: () => Effect.never, b: () => Effect.never, c: (_input, out) => Deferred.await(later).pipe(Effect.andThen(out.log("talk", "c is done")), Effect.orDie) },
+        master: (call, turn) => (turn === 1 ? Effect.asVoid(call("spawn", { name: "a", task: "t" }).pipe(Effect.andThen(call("spawn", { name: "b", task: "t" })))) : Effect.void),
+        scope,
+        wake: "30 millis",
+      });
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("both running", () => r.calls.length === 2 && r.idle());
+      yield* stopAllAsWs(r);
+      yield* until("both reports", () => r.log().filter((l) => l.includes("stopped by the user")).length === 2);
+      yield* Effect.sleep("200 millis");
+      expect(r.turns).toHaveLength(1);
+      // the user's next message wakes it again: a report after it starts a turn
+      yield* r.session.input("and c?", { clientId: "c2" });
+      yield* until("turn 2", () => r.turns.length === 2 && r.idle());
+      expect(yield* r.tools("master").call("spawn", { name: "c", task: "t" })).toMatchObject({ error: true }); // no turn runs
+    }),
+  );
+});
+
+test("a parent the user stopped is never started again by its child's report, with Stop all or its own Stop", async () => {
+  for (const how of ["all", "parent", "all", "parent", "all"] as const)
+    await scoped((scope) =>
+      Effect.gen(function* () {
+        let tools: ((caller: Caller) => AgentTools) | null = null;
+        const r = yield* rig({
+          child: {
+            boss: (_input, _out, call) =>
+              call === 1
+                ? Effect.gen(function* () {
+                    const theirs = tools?.({ agent: "boss" });
+                    if (theirs === undefined) return yield* Effect.die(new Error("no tools"));
+                    yield* theirs.call("spawn", { name: "worker", task: "count" });
+                    return yield* Effect.never;
+                  })
+                : Effect.never,
+            worker: (_input, out) => (how === "parent" ? Effect.sleep("40 millis").pipe(Effect.andThen(out.log("talk", "12 files")), Effect.orDie) : Effect.never),
+          },
+          master: (call, turn) => (turn === 1 ? Effect.asVoid(call("spawn", { name: "boss", task: "delegate" })) : Effect.void),
+          scope,
+          wake: "30 millis",
+        });
+        tools = r.tools;
+        yield* r.session.input("go", { clientId: "c1" });
+        yield* until("both running", () => r.stateOf("worker")?.state === "running" && r.idle());
+        if (how === "all") yield* stopAllAsWs(r);
+        else expect(yield* r.subagents.stop("boss")).toBeNull();
+        yield* until("worker's report in the chat", () => r.log().some((l) => l.startsWith("user: [worker] ")));
+        yield* Effect.sleep("100 millis");
+        expect(r.stateOf("boss")).toMatchObject({ state: "stopped", why: "stopped by the user" });
+        expect(r.log().find((l) => l.startsWith("user: [worker] "))).toContain("[for boss, which the user stopped]");
+        expect(r.calls.filter((c) => c.name === "boss")).toHaveLength(1);
+      }),
+    );
+});
+
+test("waking pauses after subagents.wakeLimit woken turns in a row; the user's next message resumes it", async () => {
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const r = yield* rig({
+        // every turn, the master (told to keep checking CI until it's green) spawns another checker
+        child: new Proxy<Record<string, Child>>({}, { get: () => (_input: TurnInput, out: TurnEvents) => out.log("talk", "not yet").pipe(Effect.orDie) }),
+        master: (call, turn) => Effect.asVoid(call("spawn", { name: `check${turn}`, task: "is CI green yet?" })),
+        scope,
+        wake: "10 millis",
+        wakeLimit: 3,
+      });
+      yield* r.session.input("keep checking CI with a subagent until it's green", { clientId: "c1" });
+      yield* until("paused", () => r.session.state().wakePaused === 3 && r.idle());
+      yield* Effect.sleep("300 millis");
+      // the user's turn and three woken ones; the fourth checker's report waits in the chat
+      expect(r.turns).toHaveLength(4);
+      expect(r.log().at(-1)).toBe("user: [check4] not yet");
+      expect(r.said.some((e) => e.type === "info" && e.message.includes("waking is paused until your next message"))).toBe(true);
+      yield* r.session.input("still?", { clientId: "c2" });
+      yield* until("woken again", () => r.turns.length >= 6);
+      expect(r.session.state().wakePaused).toBeUndefined();
+    }),
+  );
+});
+
+test("a run cut short goes on after at most RESUMES_MAX restarts in a row with no call completing; then it stops and says why", async () => {
+  const dir = mkdtempSync(`${tmpdir()}/oc-sub-`);
+  dirs.push(dir);
+  let calls = 0;
+  const hang: Child = (_input, out) => Effect.sync(() => (calls += 1)).pipe(Effect.andThen(out.log("tool", 'Bash {"command":"make"}')), Effect.orDie, Effect.andThen(Effect.never));
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const r = yield* rig({ child: { slow: hang }, dir, master: (call) => Effect.asVoid(call("spawn", { name: "slow", task: "build it" })), scope });
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("running", () => calls === 1 && r.idle());
+    }),
+  );
+  for (let restart = 1; restart <= 6; restart++)
+    await scoped((scope) =>
+      Effect.gen(function* () {
+        const r = yield* rig({ child: { slow: hang }, dir, scope });
+        yield* until("resumed or stopped", () => calls === Math.min(restart, RESUMES_MAX) + 1 && (restart <= RESUMES_MAX || r.stateOf("slow")?.state === "stopped"));
+      }),
+    );
+  expect(RESUMES_MAX).toBe(2);
+  expect(calls).toBe(3);
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const r = yield* rig({ dir, scope });
+      expect(r.stateOf("slow")?.why).toBe("the server restarted 3 times while it ran, with no call of it completing since");
+      yield* until("its report, once", () => r.log().some((l) => l.startsWith("user: [slow] stopped")));
+      yield* Effect.sleep("50 millis");
+      expect(r.log().filter((l) => l.startsWith("user: [slow] stopped"))).toHaveLength(1);
     }),
   );
 });

@@ -58,6 +58,10 @@ export const REASONING_TURN = 120_000;
 // (`~` is that device's home): outside every repository, so a repo's own tools never see them (E37)
 export const SUBAGENTS_MAX = 4;
 export const WAKE_DEBOUNCE = "2 seconds";
+// woken master turns in a row with no user message between them before reports stop waking it
+// (E39's fuse, unless `subagents.wakeLimit` says; 0: no limit): a master that spawns at every
+// woken turn would otherwise run all night
+export const WAKE_LIMIT = 8;
 export const WORKTREES = "~/.optchat-worktrees";
 
 // optchat.config.ts (SPEC "Constants and configuration"): engines, compactor chains per level,
@@ -282,10 +286,16 @@ export const Settings = Schema.Struct({
   reasoning: Schema.optional(Schema.Struct({ keep: Schema.optional(Schema.Boolean), commit: Schema.optional(Schema.Boolean) })),
   // Subagents (SPEC "Subagents"): `max` running at once, every level of nesting counted (SUBAGENTS_MAX);
   // `wake`: a report that reaches an idle master starts a turn (E39; off: it waits for the next
-  // one, as in M7a); `worktrees`: where every device keeps isolated subagents' git worktrees
-  // (WORKTREES, `~` that device's home). All optional.
+  // one, as in M7a); `wakeLimit`: woken turns in a row before waking pauses (WAKE_LIMIT, 0: none);
+  // `worktrees`: where every device keeps isolated subagents' git worktrees (WORKTREES, `~` that
+  // device's home). All optional.
   subagents: Schema.optional(
-    Schema.Struct({ max: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))), wake: Schema.optional(Schema.Boolean), worktrees: Schema.optional(Schema.String) }),
+    Schema.Struct({
+      max: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+      wake: Schema.optional(Schema.Boolean),
+      wakeLimit: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+      worktrees: Schema.optional(Schema.String),
+    }),
   ),
   // Sign in with ChatGPT endpoints (src/openai/endpoints.ts): each key left out, or the whole field, decodes to its default
   openai: Endpoints.pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
@@ -372,6 +382,7 @@ export type MediaSettings = ReturnType<typeof mediaSettings>;
 export const subagentSettings = (settings: Settings) => ({
   max: settings.subagents?.max ?? SUBAGENTS_MAX,
   wake: settings.subagents?.wake ?? true,
+  wakeLimit: settings.subagents?.wakeLimit ?? WAKE_LIMIT,
   worktrees: settings.subagents?.worktrees ?? WORKTREES,
 });
 

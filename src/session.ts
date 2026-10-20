@@ -91,7 +91,10 @@ export type Session = {
   // it starts no turn: logged at once when the session is idle, else before the next turn renders
   // its view, or once the loop winds down. A report never wakes the master on messages parked
   // after an error: then it is logged as M7a logs it. Resolves when it is in the log.
-  readonly report: (text: string) => Effect.Effect<void>;
+  // `wake: false` (a run the user stopped): never wakes the master, logged as without `wake`.
+  readonly report: (text: string, o?: { readonly wake?: boolean }) => Effect.Effect<void>;
+  // Stop all (server/routes/ws.ts): reports wake the master no more until the next user message
+  readonly hush: Effect.Effect<void>;
   // the turn running now: its engine, the view it was sent (what a subagent it spawns starts
   // from) and its device; null between turns
   readonly turnNow: () => { readonly ref: string; readonly view: string; readonly on: string } | null;
@@ -162,6 +165,8 @@ export const makeSession = (o: {
   readonly subagents?: SubagentList; // shown in the state (SPEC M7a); none: the state has no list
   // a report that reaches an idle master wakes it after this debounce (E39, WAKE_DEBOUNCE); none: M7a's waiting
   readonly wake?: Duration.Input | null;
+  // woken turns in a row, with no user message between them, before reports stop waking it (WAKE_LIMIT; 0: no limit)
+  readonly wakeLimit?: number;
 }): Effect.Effect<Session, never, Scope.Scope> =>
   Effect.gen(function* () {
     const { chat } = o;
@@ -172,7 +177,7 @@ export const makeSession = (o: {
     // every message not logged yet, in the order they came in (src/inbox.ts has its rules)
     const inbox: Incoming[] = [];
     // subagents' reports not logged yet, oldest first, each with what its sender waits on (SPEC M7a)
-    const reports: { readonly text: string; readonly logged: Deferred.Deferred<true> }[] = [];
+    const reports: { readonly text: string; readonly logged: Deferred.Deferred<true>; readonly wake: boolean }[] = [];
     // the view the most recent turn was sent (`turnNow`, `lastView`), and the device it ran on
     let sentView: string | null = null;
     let lastOn: string | null = null;
@@ -202,6 +207,12 @@ export const makeSession = (o: {
     // once that loop has ended, the last message in by then: the ones up to it start no turn until a
     // newer one comes, also when a subagent's report starts the loop to be logged (null: none waits)
     let parked: number | null = null;
+    // reports that may wake the master (E39): woken turns in a row since the user's last message,
+    // their limit (0: none), and whether Stop all hushed them until that message
+    const wakeLimit = o.wakeLimit ?? 0;
+    let woken = 0;
+    let hushed = false;
+    const fused = () => wakeLimit > 0 && woken >= wakeLimit;
     // a turn is due: a held message, and not only ones parked after an error
     const turnsDue = () => held(inbox).length > 0 && (parked === null || inbox.some((m) => m.seq > (parked ?? 0)));
 
@@ -233,7 +244,8 @@ export const makeSession = (o: {
         compactions: chat.activity(),
       };
       const withAgents = o.subagents ? { ...told, subagents: o.subagents.list() } : told;
-      return since === null ? withAgents : { ...withAgents, elapsed: Math.max(0, clock.currentTimeMillisUnsafe() - since) };
+      const withWake = fused() ? { ...withAgents, wakePaused: woken } : withAgents;
+      return since === null ? withWake : { ...withWake, elapsed: Math.max(0, clock.currentTimeMillisUnsafe() - since) };
     };
     const stamp = Effect.sync(() => {
       if (phase === sincePhase) return;
@@ -310,15 +322,26 @@ export const makeSession = (o: {
     // and device, steering nothing, never taken back (no client sent them). Only while nothing is
     // parked after an error, and no loop runs: one that runs logs them before the next turn's view,
     // or wakes the master as it winds down.
+    // A report of a run the user stopped never wakes it, nor does any after Stop all (`hushed`) until
+    // the user's next message, nor any once it was woken `wakeLimit` turns in a row with no user
+    // message between them (the fuse: a master that spawns at every woken turn would run all night).
     const wakes = o.wake === undefined || o.wake === null ? null : yield* Queue.sliding<true>(1);
-    const wakeable = () => wakes !== null && !running && halted === null && parked === null;
-    const wakeWith = Effect.suspend(() => {
-      for (const { logged, text } of reports.splice(0))
+    const mayWake = () => wakes !== null && halted === null && parked === null && !hushed && !fused();
+    const wakeable = () => mayWake() && !running;
+    const wanted = () => reports.some((r) => r.wake);
+    // the reports that wake it become a turn's messages; the others wait in `reports` and are logged
+    // before that turn's view
+    const wakeWith = Effect.gen(function* () {
+      const waking = reports.filter((r) => r.wake);
+      for (const r of waking) reports.splice(reports.indexOf(r), 1);
+      for (const { logged, text } of waking)
         inbox.push({ clientId: null, described: null, device: lastOn, engine: master.latest() || (o.engines[0]?.ref ?? ""), logged, media: [], seq: ++seq, state: "held", steer: false, text });
-      return start;
+      woken += 1;
+      if (fused()) yield* info(`reports woke OptChat ${woken} turns in a row: waking is paused until your next message, and reports wait for it`);
+      yield* start;
     });
-    // the loop logs reports before a turn's view; with no turn due, only when they won't wake the master
-    const logReportsDue = Effect.suspend(() => (turnsDue() || wakes === null || parked !== null || halted !== null ? logReports : Effect.void));
+    // the loop logs reports before a turn's view; with no turn due, only those that won't wake the master
+    const logReportsDue = Effect.suspend(() => (turnsDue() || !mayWake() || !wanted() ? logReports : Effect.void));
 
     // A message's attachments' captions, each waited for at most media.captionWait, asked for once:
     // what the log keeps of the message and what an engine is sent of it come from this one answer,
@@ -704,7 +727,7 @@ export const makeSession = (o: {
         // or for a report that came in meanwhile, unless the log just refused. Messages parked after
         // an error are no reason: the loop would find nothing to do, end and start again, for ever.
         if (turnsDue()) return start;
-        if (stop === null && reports.length > 0) return wakeable() ? wakeWith : start;
+        if (stop === null && reports.length > 0) return wakeable() && wanted() ? wakeWith : start;
         phase = "idle";
         const told = stop === null ? Effect.void : Effect.forEach(inbox, (m) => ack(m, null, stop.why), { discard: true });
         return told.pipe(Effect.andThen(tell), Effect.andThen(primeLater), Effect.andThen(warm));
@@ -765,6 +788,9 @@ export const makeSession = (o: {
         const steer = (how ?? followUp) === "steer";
         inbox.push({ clientId: clientId ?? null, described: null, device: sentFor, engine: named?.ref ?? head, media, seq: ++seq, state: "held", steer, text });
         parked = null; // a newer message: the ones parked after an error go with it
+        // the user is here: reports may wake it again, from a count of none
+        woken = 0;
+        hushed = false;
         yield* chat.retry; // the next message: failed summaries are tried again (docs/optchat.md §4)
         if (accepting) steerIn(accepting);
         yield* start; // nothing to do while the loop is on: it takes held messages as it goes
@@ -805,13 +831,18 @@ export const makeSession = (o: {
 
     // A report waits for the loop: it is logged before the next turn, or by a loop started for it
     // alone, which runs no turn and leaves the phase as it was. It never offers itself to a call.
-    const report = (text: string) =>
+    const report = (text: string, ro: { readonly wake?: boolean } = {}) =>
       Effect.suspend(() => {
         const logged = Deferred.makeUnsafe<true>();
-        reports.push({ logged, text });
-        const go = wakes !== null && wakeable() ? Queue.offer(wakes, true) : start;
+        const wake = ro.wake !== false;
+        reports.push({ logged, text, wake });
+        // one that won't wake it while others wait for the debounce waits with them
+        const go = wakes !== null && wakeable() && wanted() ? Queue.offer(wakes, true) : start;
         return go.pipe(Effect.andThen(Deferred.await(logged)), Effect.asVoid);
       });
+    const hush = Effect.sync(() => {
+      hushed = true;
+    });
     // the debounce: quiet for o.wake since the last report, then the reports wake the master, unless
     // a loop took them meanwhile (a message came) or something got parked
     if (wakes !== null) {
@@ -821,13 +852,13 @@ export const makeSession = (o: {
         while (Option.isSome(yield* Queue.take(wakes).pipe(Effect.timeoutOption(quiet)))) {
           // another report within the debounce: wait for quiet from here
         }
-        yield* Effect.suspend(() => (reports.length === 0 || running ? Effect.void : wakeable() ? wakeWith : start));
+        yield* Effect.suspend(() => (reports.length === 0 || running ? Effect.void : wakeable() && wanted() ? wakeWith : start));
       }).pipe(Effect.forever, Effect.forkIn(scope));
     }
     const turnNow = () => (engine === null || sentView === null ? null : { on: device, ref: engine, view: sentView });
     const lastView = () => sentView;
 
-    return { cancel, configure, events, input, lastView, live, primeSoon, report, resume, state, takeBack, turnNow };
+    return { cancel, configure, events, hush, input, lastView, live, primeSoon, report, resume, state, takeBack, turnNow };
   });
 
 // A message's text as the log keeps it: what was typed, then a marker line per attachment with

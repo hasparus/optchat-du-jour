@@ -126,7 +126,14 @@ afterAll(async () => {
   rmSync(far, { force: true, recursive: true });
 });
 
-const Start = Schema.Struct({ type: Schema.Literal("start"), pid: Schema.Number, role: Schema.String, argv: Schema.Array(Schema.String), cwd: Schema.String });
+const Start = Schema.Struct({
+  type: Schema.Literal("start"),
+  pid: Schema.Number,
+  role: Schema.String,
+  argv: Schema.Array(Schema.String),
+  cwd: Schema.String,
+  env: Schema.Record(Schema.String, Schema.NullOr(Schema.String)),
+});
 const decodeStart = Schema.decodeUnknownOption(Schema.fromJsonString(Start));
 const starts = (role: string) =>
   readFileSync(env.FAKE_CLAUDE_LOG, "utf8")
@@ -252,7 +259,8 @@ test("a subagent has the master's permissions: it writes a file and runs a comma
   expect(flag(scout?.argv ?? [], "--effort")).toBe("high");
   expect(scout?.cwd).toBe(dir);
   expect(mcpUrlOf(scout?.argv ?? [])).not.toBe(mcpUrlOf(master?.argv ?? []));
-  expect(mcpUrlOf(scout?.argv ?? [])).toContain("&agent=scout");
+  expect(mcpUrlOf(scout?.argv ?? [])).not.toContain("agent=");
+  expect(scout?.env.OPTCHAT_SUBAGENT).toBe("scout");
 
   // what it did, for real, in the folder
   expect(readFileSync(`${dir}/scout.md`, "utf8")).toBe("written by scout\n");
@@ -279,7 +287,8 @@ test("a subagent has the master's permissions: it writes a file and runs a comma
   );
   // helper was scout's: its own key, scout's folder, its report to scout and not the chat
   expect(await agent("helper")).toMatchObject({ folder: dir, parent: "scout", state: "done" });
-  expect(mcpUrlOf(startOf("helper")?.argv ?? [])).toContain("&agent=helper");
+  expect(startOf("helper")?.env.OPTCHAT_SUBAGENT).toBe("helper");
+  expect(mcpUrlOf(startOf("helper")?.argv ?? [])).not.toBe(mcpUrlOf(scout?.argv ?? []));
   // a key nobody was given is refused; zoom("scout") on the master's key reads it
   expect(await fetch(`${base}/mcp?key=nobody`, { body: "{}", method: "POST" }).then((r) => r.status)).toBe(403);
   const zoomed = await mcpCall(mcpUrlOf(master?.argv ?? []), "zoom", { id: "scout" });
@@ -367,6 +376,7 @@ test("a subagent spawned on another device runs there, through its device runner
   expect(roamer?.cwd).toBe(far);
   expect(mcpUrlOf(roamer?.argv ?? [])).toStartWith(`${base}/mcp?key=`);
   expect(flag(roamer?.argv ?? [], "--permission-mode")).toBe("bypassPermissions");
+  expect(roamer?.env.OPTCHAT_SUBAGENT).toBe("roamer"); // through the runner's environment allowlist
   const side = await sideLog("roamer");
   expect(side.map((e) => `${e.kind}: ${e.text}`)).toEqual(["user: Look around.", 'tool: Bash {"command":"pwd"}', `echo: ${far}`, "talk: roamed"]);
   expect(await agent("roamer")).toMatchObject({ device: "macbook", folder: far, state: "done" });

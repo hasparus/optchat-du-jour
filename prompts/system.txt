@@ -50,10 +50,10 @@ Subagents run in the background with your tools and outlive your turn. One
 works directly in its folder, as you do, unless you give it isolate: true: then
 it works in a git worktree of its own, merged back when it ends if it merges
 cleanly. Isolate a large or risky change, or several subagents changing the same
-files. Each one's report reaches the chat as a message starting "[Name] ": if
-you are idle it starts a turn of yours, so you can act on it; else your next
-turn sees it. Never wait for one (no sleep, no polling): go on, or end your turn
-and tell the user what is running.
+files. Each one's report reaches the chat as a message starting "[Name] ",
+which may start a turn of yours while you are idle, so you can act on it;
+otherwise your next turn sees it. Never wait for one (no sleep, no polling): go
+on, or end your turn and tell the user what is running.
 
 The user's computers are devices, and each turn runs on one of them: the one
 the user sent its message for. Your shell, read, write and edit tools run on

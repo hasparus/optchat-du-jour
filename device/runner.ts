@@ -35,9 +35,10 @@ export type DeviceOptions = {
 export class SpawnRefused extends Data.TaggedError("SpawnRefused")<{ readonly message: string }> {}
 
 // what the server may set in claude's environment: exactly what a turn and its priming set (E6),
-// so a turn behaves the same on every device. Not a security boundary: the caller also sends the
+// and a subagent's name (OPTCHAT_SUBAGENT, which nothing in claude reads), so a turn behaves the
+// same on every device. Not a security boundary: the caller also sends the
 // argv, and a trusted caller drives a bypassPermissions claude anyway. Who may call is the boundary.
-const ENV: ReadonlySet<string> = new Set(["CLAUDE_CODE_PROMPT_CACHE_TTL", "DISABLE_PROMPT_CACHING"]);
+const ENV: ReadonlySet<string> = new Set(["CLAUDE_CODE_PROMPT_CACHE_TTL", "DISABLE_PROMPT_CACHING", "OPTCHAT_SUBAGENT"]);
 const FIRST_FRAME = "10 seconds";
 
 // `cwd`'s real path when it is one of `folders` or inside one; symlinks and `..` are resolved first
@@ -139,10 +140,13 @@ export const deviceRoutes = (o: DeviceOptions) =>
         }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
       );
 
-      // an isolated subagent's worktree, made or finished (E37), let in on the same terms. The name
-      // must be a subagent's, the folder one of this device's; a finish must name the worktree an add
-      // made for that name (its path and branch follow from the name, its base is a commit id).
-      const worktrees = localWorktrees(root);
+      // an isolated subagent's worktree, made, finished or dropped (E37), let in on the same terms.
+      // The name must be a subagent's, the folder one of this device's (and its repository's top
+      // folder too, which the add checks, so a finish is never refused for it); a finish or a drop
+      // must name the worktree an add made for that name (its path and branch follow from the name,
+      // its base is a commit id). Never interrupted halfway: a dropped link, the server's timeout or
+      // its restart lets git finish here, and the server may ask again (a finish twice is safe).
+      const worktrees = localWorktrees(root, o.folders);
       const decodeWorktree = Schema.decodeUnknownEffect(Schema.fromJsonString(WorktreeRequest));
       const inside = (path: string) => confine(path, folders).pipe(Effect.provideService(FileSystem.FileSystem, fs));
       const worktreeReply = (r: WorktreeRequest) =>
@@ -153,8 +157,12 @@ export const deviceRoutes = (o: DeviceOptions) =>
           if (w.path !== `${root.replace(/\/$/, "")}/${r.name}` || w.branch !== branchOf(r.name) || !/^[0-9a-f]{40,64}$/.test(w.base))
             return yield* new SpawnRefused({ message: `not the worktree this device made for ${r.name}` });
           yield* inside(w.repo);
+          if (r._tag === "Discard") return yield* worktrees.discard(w).pipe(Effect.as({ _tag: "Discarded" } as const));
           return { _tag: "Finished", merge: yield* worktrees.finish(w, r.name) } as const;
-        }).pipe(Effect.catchTags({ SpawnRefused: (e) => Effect.succeed({ _tag: "Failed", message: e.message } as const), WorktreeError: (e) => Effect.succeed({ _tag: "Failed", message: e.message } as const) }));
+        }).pipe(
+          Effect.catchTags({ SpawnRefused: (e) => Effect.succeed({ _tag: "Failed", message: e.message } as const), WorktreeError: (e) => Effect.succeed({ _tag: "Failed", message: e.message } as const) }),
+          Effect.uninterruptible,
+        );
       yield* router.add("POST", "/worktree", (request) =>
         Effect.gen(function* () {
           if (!(yield* allowed(request))) return forbidden;

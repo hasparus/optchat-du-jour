@@ -56,6 +56,8 @@ export type ClaudeCodeTurnOptions = {
   readonly allowedTools?: readonly string[] | undefined;
   // false: never kept warm or handed a warm process (a subagent's, E18); true unless said
   readonly pooled?: boolean;
+  // more environment for its claude (a subagent's name, OPTCHAT_SUBAGENT): never part of a request
+  readonly env?: Readonly<Record<string, string>> | undefined;
 };
 
 // One argv for the turn and its priming call: any difference between the two would cost the
@@ -280,7 +282,7 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
     // The same argv for a device's turns and primings; only the MCP URL may differ between
     // devices, and priming adds DISABLE_PROMPT_CACHING=1. A warm process is handed out only for
     // the very same spawn, so both are built here and nowhere else.
-    const env = { CLAUDE_CODE_PROMPT_CACHE_TTL: o.ttl };
+    const env = { ...o.env, CLAUDE_CODE_PROMPT_CACHE_TTL: o.ttl };
     const turnSpawn = (p: Placement): Spawn => ({ args: masterArgs({ ...o, mcpConfig: p.mcpConfig }), cwd: p.cwd, env, pooled: o.pooled ?? true });
     const primeSpawn = (p: Placement): Spawn => ({ ...turnSpawn(p), env: { ...env, DISABLE_PROMPT_CACHING: "1" } });
 

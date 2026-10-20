@@ -168,6 +168,11 @@ export function Subagents({ session, link }: { readonly session: SessionStore; r
   const { state } = s;
   return (
     <Group count={list.length} icon={<NetworkIcon className="size-3.5" />} title="Subagents">
+      {state.wakePaused !== undefined && (
+        <p className="text-xs text-muted-foreground" data-testid="wake-paused" role="status">
+          Waking paused after {state.wakePaused} turns: reports wait for your next message.
+        </p>
+      )}
       {list.map((info) => (
         <SubagentCard info={info} key={info.name} link={link} now={now} online={s.status === "open"} state={state} stateAt={s.stateAt} />
       ))}

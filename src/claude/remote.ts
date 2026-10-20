@@ -196,6 +196,10 @@ export const remoteWorktrees = (device: string, url: string): Worktrees => {
   return {
     add: (folder, name) =>
       post({ _tag: "Add", folder, name }).pipe(Effect.flatMap((r) => (r._tag === "Added" ? Effect.succeed(r.worktree) : Effect.fail(new WorktreeError({ message: `${device}: an unexpected answer` }))))),
+    discard: (worktree) =>
+      post({ _tag: "Discard", name: worktree.branch.replace(/^optchat\//, ""), worktree }).pipe(
+        Effect.flatMap((r) => (r._tag === "Discarded" ? Effect.void : Effect.fail(new WorktreeError({ message: `${device}: an unexpected answer` })))),
+      ),
     finish: (worktree, name) =>
       post({ _tag: "Finish", name, worktree }).pipe(Effect.flatMap((r) => (r._tag === "Finished" ? Effect.succeed(r.merge) : Effect.fail(new WorktreeError({ message: `${device}: an unexpected answer` }))))),
   };

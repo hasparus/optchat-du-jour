@@ -92,15 +92,24 @@ export const engineLabel = (ref: string, runs?: string | null) => {
 export const SubagentState = Schema.Literals(["running", "done", "stopped", "failed"]);
 export type SubagentState = typeof SubagentState.Type;
 // An isolated subagent's git worktree (E37): the repository's top folder it was made from, the
-// worktree's own path, its branch (`optchat/<Name>`) and the commit it started from. Paths are the
-// device's own.
-export const Isolation = Schema.Struct({ repo: Schema.String, path: Schema.String, branch: Schema.String, base: Schema.String });
+// worktree's own path, its branch (`optchat/<Name>`), the commit it started from, and the branch
+// the folder was on then (`from`; null: none, a detached HEAD), the only one it merges back into.
+// Paths are the device's own.
+export const Isolation = Schema.Struct({
+  repo: Schema.String,
+  path: Schema.String,
+  branch: Schema.String,
+  base: Schema.String,
+  from: Schema.optional(Schema.NullOr(Schema.String)),
+});
 export type Isolation = typeof Isolation.Type;
 // How an isolated run's branch went back into its folder when it ended (E37): fast-forwarded,
 // merged with a merge commit, nothing to merge, a conflict (branch and worktree kept, `conflicts`
-// naming the files), or not merged for another reason (`detail`: a detached HEAD, local changes in
-// the way, git failing; branch and worktree kept). `into`: the folder's branch; `files`,
-// `insertions`, `deletions`: what the branch changed since it started (its diffstat).
+// naming the files), or not merged for another reason (`detail`: the folder now on another
+// branch or none, a merge or rebase in progress there, local changes in the way, git failing;
+// branch and worktree kept). `into`: the folder's branch; `files`, `insertions`, `deletions`: what
+// the branch changed since it started (its diffstat); `ignored`: gitignored files in the worktree,
+// which is then kept even after a merge, so they aren't deleted with it.
 export const MergeOutcome = Schema.Literals(["fast-forward", "merged", "nothing", "conflict", "not-merged"]);
 export type MergeOutcome = typeof MergeOutcome.Type;
 export const Merge = Schema.Struct({
@@ -111,10 +120,11 @@ export const Merge = Schema.Struct({
   insertions: Schema.Number,
   deletions: Schema.Number,
   conflicts: Schema.optional(Schema.Array(Schema.String)),
+  ignored: Schema.optional(Schema.Number),
 });
 export type Merge = typeof Merge.Type;
-// a merge outcome that left the branch and its worktree in place
-export const branchKept = (m: Merge) => m.outcome === "conflict" || m.outcome === "not-merged";
+// a merge that left the worktree in place: its branch not merged, or gitignored files in it
+export const worktreeKept = (m: Merge) => m.outcome === "conflict" || m.outcome === "not-merged" || (m.ignored ?? 0) > 0;
 export const SubagentInfo = Schema.Struct({
   name: Schema.String,
   task: Schema.String,
@@ -181,6 +191,9 @@ export const SessionState = Schema.Struct({
   // how long the current phase has run, in ms, as of when this state was made (measured on the
   // server's own clock, so no two clocks are compared): a client adds the time since it got it
   elapsed: Schema.optional(Schema.Number),
+  // reports no longer wake the master (E39): it was woken this many turns in a row, with no user
+  // message between them; the next message resumes waking. Optional, like the list below.
+  wakePaused: Schema.optional(Schema.Number),
   // the subagents (SPEC M7a): every running one, then the most recent others, newest first.
   // Optional: a server from before them sends none, and a client from before them ignores it
   subagents: Schema.optional(Schema.Array(SubagentInfo)),

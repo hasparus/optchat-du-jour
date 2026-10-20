@@ -60,11 +60,14 @@ export type ToolReply = typeof ToolReply.Type;
 export const WorktreeRequest = Schema.Union([
   Schema.TaggedStruct("Add", { folder: Schema.String, name: Schema.String }),
   Schema.TaggedStruct("Finish", { worktree: Isolation, name: Schema.String }),
+  // a worktree made for a spawn that then failed: removed with its branch
+  Schema.TaggedStruct("Discard", { worktree: Isolation, name: Schema.String }),
 ]);
 export type WorktreeRequest = typeof WorktreeRequest.Type;
 export const WorktreeReply = Schema.Union([
   Schema.TaggedStruct("Added", { worktree: Isolation }),
   Schema.TaggedStruct("Finished", { merge: Merge }),
+  Schema.TaggedStruct("Discarded", {}),
   Schema.TaggedStruct("Failed", { message: Schema.String }),
 ]);
 export type WorktreeReply = typeof WorktreeReply.Type;

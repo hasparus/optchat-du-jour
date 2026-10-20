@@ -14,7 +14,7 @@ import type { Summarize } from "../src/compactor.ts";
 import { entryLabel, mediaSettings, reasoningSettings, type Settings, subagentSettings, WAKE_DEBOUNCE } from "../src/config.ts";
 import type { DownList } from "../src/engines/chain.ts";
 import { makeGate } from "../src/engines/inflight.ts";
-import { SUBAGENT_POLICY, turnEngine } from "../src/engines/registry.ts";
+import { subagentPolicy, turnEngine } from "../src/engines/registry.ts";
 import { forbidden, mount } from "../src/http.ts";
 import { OpenAiPlan, openAiPlanLayer } from "../src/openai/responses.ts";
 import { makeCaptioner } from "../src/media/caption.ts";
@@ -123,7 +123,7 @@ export const routes = (o: ServerOptions) =>
         effort: settings.master.effort,
         // read when a run starts, long after `subagents` is set
         engine: (ref, at) =>
-          turnEngine(ref, { ...needs, instructions, runnerFor: () => agentRunnerFor(at), toolsFor: (device) => toolsWith(device, chat.mem, subagents.tools({ agent: at.name })) }, SUBAGENT_POLICY),
+          turnEngine(ref, { ...needs, instructions, runnerFor: () => agentRunnerFor(at), toolsFor: (device) => toolsWith(device, chat.mem, subagents.tools({ agent: at.name })) }, subagentPolicy(at.name)),
         folderFor,
         host,
         logUsage: usage,
@@ -152,6 +152,7 @@ export const routes = (o: ServerOptions) =>
         logUsage: usage,
         subagents,
         wake: agentSettings.wake ? WAKE_DEBOUNCE : null,
+        wakeLimit: agentSettings.wakeLimit,
       });
       yield* Deferred.succeed(host, { lastView: session.lastView, report: session.report, turnNow: session.turnNow });
       yield* subagents.restore; // runs a restart cut short go on (E40); reports not delivered yet are sent

@@ -346,3 +346,18 @@ test("with nothing running there is no Stop all", async () => {
   await screen.findByTestId("subagent-notes");
   expect(screen.queryByTestId("stop-all")).toBeNull();
 });
+
+test("when reports no longer wake the master, the group says so until the next message", async () => {
+  LOGS.set("notes", []);
+  const server = fakeServer(() => [snapshot([]), { snapshot: { ...IDLE, subagents: [NOTES], wakePaused: 8 }, type: EventType.STATE_SNAPSHOT }]);
+  const link = openLink("ws://x/ws", { socket: server.socket });
+  links.push(link);
+  const session = makeSession(link);
+  render(
+    <TooltipProvider>
+      <Subagents link={link} session={session} />
+    </TooltipProvider>,
+  );
+  const notice = await screen.findByTestId("wake-paused");
+  expect(notice.textContent).toBe("Waking paused after 8 turns: reports wait for your next message.");
+});
