@@ -311,12 +311,12 @@ export type MessagesPage = typeof MessagesPage.Type;
 // /api/reasoning/text?i: `i` the log index of the reply or tool call it came before, how long it
 // took (`ms`), and `cut`, the characters past the caps, only when some were.
 export const ReasoningPiece = Schema.Struct({
-  i: Schema.Number,
+  i: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   text: Schema.String,
   engine: Schema.String,
   date: Schema.String,
   ms: Schema.Number,
-  cut: Schema.optional(Schema.Number),
+  cut: Schema.optional(Schema.Int),
 });
 export type ReasoningPiece = typeof ReasoningPiece.Type;
 // /api/reasoning?from&to: a piece without its text, its length in `chars` instead. A long history
