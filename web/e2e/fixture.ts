@@ -9,7 +9,9 @@ import { createSocket } from "node:dgram";
 import { createServer } from "node:net";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gateAt } from "./replies.ts";
 
 export { ARTIFACT, EDITED, EDITED_HEADING, LANDING, LANDING_HEADING, MEMORY_SUMMARY, OUTSIDE, PUBLISHED } from "./replies.ts";
 export { EDIT_INPUT, WRITE_INPUT } from "./replies.ts";
@@ -161,8 +163,9 @@ async function startServer({ artifacts, edits, isolated, memory, patterns, seede
       return [...decodePage(await res.json()).entries];
     },
     release: (gate) => {
-      mkdirSync(`${home}/gates`, { recursive: true });
-      writeFileSync(`${home}/gates/${gate}`, "");
+      const at = gateAt(home, gate);
+      mkdirSync(dirname(at), { recursive: true });
+      writeFileSync(at, "");
     },
     restart: async (more) => {
       await stop(child);

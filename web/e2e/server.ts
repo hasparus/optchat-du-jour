@@ -55,6 +55,7 @@ import {
   FETCHED,
   FIXER_REPORT,
   FIXER_TASK,
+  gateAt,
   HELD,
   HELD_GATE,
   hostile as hostilePage,
@@ -85,21 +86,19 @@ const home = Bun.env.E2E_HOME ?? mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: s
 
 const delta = (text: string) => ({ emit: { event: { delta: { text, type: "text_delta" }, index: 0, type: "content_block_delta" }, type: "stream_event" } });
 const words = ["Streamed ", "reply ", "from ", "the ", "fake ", "claude."];
-const reply = [
+// a plain turn's parts: its tool call and the call's result, its words, and its ending (the
+// assistant block holding them all, then the result)
+const call = [
   { tool: { input: { command: "ls" }, name: "Bash" } },
   Bun.env.E2E_TOOL_ERROR ? { is_error: true, toolResult: TOOL_ERROR } : { toolResult: "notes.md\nrepo" },
-  ...words.flatMap((w) => [delta(w), { sleep: 600 }]),
+];
+const ending = [
   { emit: { message: { content: [{ text: words.join(""), type: "text" }], role: "assistant" }, type: "assistant" } },
   { result: { text: words.join("") } },
 ];
-// HELD's reply: the tool call and the first words, then the rest once the test opens the gate
-const held = [
-  ...reply.slice(0, 2),
-  ...words.slice(0, 2).map(delta),
-  { gate: `${home}/gates/${HELD_GATE}` },
-  ...words.slice(2).map(delta),
-  ...reply.slice(-2),
-];
+const reply = [...call, ...words.flatMap((w) => [delta(w), { sleep: 600 }]), ...ending];
+// HELD's reply: the call and the first words, then the rest once the test opens the gate
+const held = [...call, ...words.slice(0, 2).map(delta), { gate: gateAt(home, HELD_GATE) }, ...words.slice(2).map(delta), ...ending];
 const todos = { result: "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress." };
 const patterns = [
   { tool: { input: PLAN_START, name: "TodoWrite" } },

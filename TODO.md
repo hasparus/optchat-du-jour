@@ -109,3 +109,7 @@ Then on the phone, which no CI can check:
 
 - [ ] Caption quality and cost: 50 real photos, Haiku against Sonnet (SPEC Media).
 - [ ] Does the double JPEG pass hurt small text in screenshots? Keep PNG for flat images if so (SPEC Media).
+
+## Refactors (no account needed)
+
+- [ ] `src/live-run.ts`: `begin(runId)` returns a per-run handle (`Run`: `stream`, `think`, `keepThought`, `dropUnlogged`, `end`), held by the session instead of its `runId`. That drops the run id threaded back into every call, the nine `current?` checks and `inRun`; only `live`, `logged` and the retry pause stay on the session's object (review of #50).

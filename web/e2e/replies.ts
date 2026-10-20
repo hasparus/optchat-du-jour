@@ -8,6 +8,9 @@ export const SOL_REPLY = "Answered by the fake ChatGPT plan.";
 // meanwhile opens mid-reply, however slow the machine is.
 export const HELD = "join in the middle";
 export const HELD_GATE = "held";
+// where gate `name` of the server with data dir `home` is: the fake claude waits until the file is
+// there (test/fake-claude.ts `gate`), and the test writes it to open the gate (Server.release)
+export const gateAt = (home: string, name: string) => `${home}/gates/${name}`;
 // the tool's output when E2E_TOOL_ERROR fails it: nothing in the text says it failed, only the flag
 export const TOOL_ERROR = "ls: cannot open directory '.': Permission denied";
 
