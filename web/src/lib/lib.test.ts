@@ -236,6 +236,36 @@ describe("link", () => {
     link.close();
   });
 
+  test("heartbeat: back from the background, a socket still connecting keeps its silence timer: a hung handshake is let go on time", async () => {
+    const opened: string[] = [];
+    const link = openLink("ws://x/ws", {
+      retryMs: 60_000,
+      silentMs: 200,
+      socket: (url) => {
+        opened.push(url);
+        const hung: SocketLike = {
+          addEventListener: () => {
+            // never opens, never closes, never says anything
+          },
+          close: () => {
+            // nothing to close
+          },
+          send: () => {
+            // nobody listens
+          },
+        };
+        return hung;
+      },
+    });
+    await tick(100);
+    link.wake(0); // a short absence, mid-handshake
+    expect(link.status()).toBe("connecting");
+    await tick(150); // 250 ms since it started, 150 since the wake: past its window, not past a new one
+    expect(link.status()).toBe("closed");
+    expect(opened).toHaveLength(1);
+    link.close();
+  });
+
   test("heartbeat: the server's beat is the state now, as a STATE_DELTA, which any client decodes; it moves only what drifted", () => {
     const told = { ...IDLE, elapsed: 1000, phase: "running" as const };
     const stream = openStream({ entries: [], live: null, state: told, thread: "mini", window: 10 });
