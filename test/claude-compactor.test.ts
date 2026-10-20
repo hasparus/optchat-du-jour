@@ -8,15 +8,15 @@ import { Runner } from "../src/claude/process.ts";
 import { openChat } from "../src/chat.ts";
 import { CompactError, type Job } from "../src/compactor.ts";
 import { MASTER_TOOLS } from "../src/config.ts";
-import { makeGate, type Gate } from "../src/engines/inflight.ts";
+import { makeGate, type Gate, prefixKeys } from "../src/engines/inflight.ts";
 import { EngineExecutionPolicy, RequestNotAdmitted } from "../src/engines/request-admission.ts";
 import { mcpConfig } from "../src/mcp.ts";
 import { newMsg } from "../src/store.ts";
 import { warmRunner } from "../src/claude/warm.ts";
-import { blocks, claudeCodeCompactor, compactSpawn, markedPrefix } from "../src/summarize/claude-code.ts";
+import { blocks, claudeCodeCompactor, compactSpawn } from "../src/summarize/claude-code.ts";
 import { retryText, task } from "../src/summarize/step.ts";
 import { built, getNode } from "../src/tree.ts";
-import type { Placement } from "../src/turn/claude-code.ts";
+import { claudePrefix, type Placement } from "../src/turn/claude-code.ts";
 import type { UsageRecord } from "../src/usage.ts";
 import { long, run, scripted, textOf, tmp, until, withFakeClaude } from "./fake-claude-rig.ts";
 
@@ -80,7 +80,9 @@ test("a compactor call: a turn's argv but model, effort and permission mode; con
   const mark = { ttl: "5m", type: "ephemeral" } as const;
   expect(sent.map((b) => b.cache_control ?? null)).toEqual(sent.map((_, k) => (k === 64 || k === 66 ? mark : null)));
   expect(textOf(sent[66])).toBe(task(job));
-  expect(markedPrefix(sent)).toEqual(pieces.slice(0, 65).map(textOf));
+  // what another call may be writing: the blocks through the last whole one, its mark the one
+  const head = ["claude-code", "sonnet", "medium", "SYSTEM", MASTER_TOOLS.join(",")];
+  expect(claudePrefix({ effort: "medium", instructions: "SYSTEM", model: "sonnet", tools: MASTER_TOOLS }, sent, "5m")).toEqual({ keys: prefixKeys(head, pieces.slice(0, 65).map(textOf)), marks: [64], ttl: "5m" });
 
   expect(usage).toHaveLength(1);
   expect(usage[0]).toMatchObject({ attempt: 1, engine: "claude-code", failoverFrom: null, level: 0, model: "sonnet", role: "compact" });

@@ -156,6 +156,7 @@ const rig = () => {
   });
   const turn = (s: Settings): TurnNeeds => ({
     ...needs(s),
+    gate: makeGate(),
     instructions: "SYSTEM",
     runnerFor: () => Effect.succeed({ cwd: undefined, mcpConfig: "{}", mcpSeen: () => Effect.succeed(false), runner }),
     toolsFor: () => ({ defs: [], run: () => Effect.succeed(toolOk("")) }),
@@ -286,8 +287,9 @@ test("a caption gets its entry's own effort: claude's --effort, a provider's ask
 test("the in-flight wait keys on the effort: one marked prefix at two efforts never waits, at one it does", async () => {
   const ctx = Array.from({ length: 8 }, (_, k) => `${k}+1|user: line ${k}`); // two whole blocks: the second carries the mark
   const marked: Job = { ctx, i: 8, l: 0, msg: newMsg(8, "user", "squeeze me") };
-  const keys: (string | null)[] = [];
-  const gate: Gate = { through: (key, call) => Effect.sync(() => void keys.push(key)).pipe(Effect.andThen(call(Effect.void))) };
+  // the key of each call's whole marked prefix
+  const keys: (string | undefined)[] = [];
+  const gate: Gate = { through: (prefix, call) => Effect.sync(() => void keys.push(prefix?.keys.at(-1))).pipe(Effect.andThen(call(Effect.void))) };
   const r = rig();
   const keyAt = async (entry: string, effort: Effort) => {
     const s = settings({ byLevel: [entry], compactorEffort: effort });
@@ -298,7 +300,7 @@ test("the in-flight wait keys on the effort: one marked prefix at two efforts ne
   };
   for (const entry of ["claude-code:sonnet", "openai-plan:gpt-6-luna", "api-key:anthropic/claude-haiku-5-5"]) {
     const low = await keyAt(entry, "low"), high = await keyAt(entry, "high"), again = await keyAt(entry, "high");
-    expect([low === null || low === undefined, low === high, again === high]).toEqual([false, false, true]);
+    expect([low === undefined, low === high, again === high]).toEqual([false, false, true]);
   }
 });
 

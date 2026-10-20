@@ -4,7 +4,7 @@
 // `claude`, and every fake a test started must be gone when it ends.
 import { expect, test } from "bun:test";
 import { type AGUIEvent, EventType } from "@ag-ui/core";
-import { type Duration, Effect, Fiber, Option, PubSub, Schema } from "effect";
+import { Deferred, type Duration, Effect, Fiber, Option, PubSub, Schema } from "effect";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { openChat } from "../src/chat.ts";
 import { ClaudeError, Runner, type Spawn } from "../src/claude/process.ts";
@@ -14,14 +14,14 @@ import { type McpSeen, mcpConfig, mcpTransports } from "../src/mcp.ts";
 import { openReasoning } from "../src/reasoning.ts";
 import { makeSession, noMedia, type SessionEvent } from "../src/session.ts";
 import { openStream, toMessages } from "../server/agui.ts";
-import { parseEvent } from "../src/claude/events.ts";
+import { markAt, parseEvent } from "../src/claude/events.ts";
 import { PLACEHOLDER, render } from "../src/view.ts";
 import { newMsg } from "../src/store.ts";
 import { makeGate, type Gate } from "../src/engines/inflight.ts";
 import { claudeCodeCompactor } from "../src/summarize/claude-code.ts";
 import { dayOf, entry, msgText } from "../src/tree.ts";
 import { cap } from "../src/cap.ts";
-import { claudeCodeTurn, masterArgs, type Placement, primeBlocks } from "../src/turn/claude-code.ts";
+import { claudeCodeTurn, claudePrefix, masterArgs, type Placement, primeBlocks } from "../src/turn/claude-code.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
 import type { UsageRecord } from "../src/usage.ts";
 import { alive, run, scripted, textOf, tmp, until, withFakeClaude } from "./fake-claude-rig.ts";
@@ -47,6 +47,7 @@ type RigOptions = {
   readonly warm?: WarmOptions; // the fake behind a pool of warm processes
   readonly warms?: boolean; // the warm processes follow this engine: it heads the master's chain (default)
   readonly reasoning?: boolean; // keep thinking in the chat's side file (SPEC "Reasoning")
+  readonly gate?: Gate; // single flight, which priming waits in (E50)
 };
 
 const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
@@ -64,6 +65,7 @@ const rig = (f: ReturnType<typeof scripted>, o: RigOptions = {}) =>
     const transports = mcpTransports("ws", report);
     const options = {
       effort: "high",
+      gate: o.gate ?? makeGate(),
       logUsage: (r: UsageRecord) => Effect.sync(() => usage.push(r)),
       model: "opus",
       permissionMode: "bypassPermissions",
@@ -568,6 +570,30 @@ test("priming sends the turn's argv and the turn's view blocks with marks, plus 
   const marked = primed.flatMap((b, k) => (b.cache_control ? [k] : []));
   expect(marked).toEqual([view.length - 2, view.length - 1]); // the last block ends in </chat>: partial
   expect(primed.map((b) => ({ ...b, cache_control: undefined }))).toEqual(view.map((b) => ({ ...b, cache_control: undefined })));
+});
+
+test("priming waits while another call writes a prefix of its view, and goes once that call's response starts (E50)", async () => {
+  const f = scripted();
+  const gate = makeGate();
+  await run(
+    f,
+    Effect.gen(function* () {
+      const r = yield* rig(f, { gate, prime: true, seed: 7 }); // a view of two whole blocks and </chat>
+      // a compaction on the turns' model and effort, writing the view's first whole blocks
+      const [a = "", b = ""] = primeBlocks(render(r.chat.mem), "1h").map((block) => block.text);
+      const first = claudePrefix(r.options, markAt([a, b, "a task"], [1], "1h"), "1h");
+      expect(first?.keys).toHaveLength(2);
+      const go = yield* Deferred.make<true>();
+      yield* Effect.forkScoped(gate.through(first, (begun) => Effect.andThen(Deferred.await(go), begun)));
+      yield* Effect.yieldNow;
+      yield* r.session.primeSoon;
+      yield* Effect.sleep("300 millis");
+      expect(f.of("prime")).toHaveLength(0); // waiting: its claude isn't even started
+      yield* Deferred.succeed(go, true);
+      yield* until("the priming", () => r.usage.some((u) => u.role === "prime"));
+      expect(f.of("prime")).toHaveLength(1);
+    }),
+  );
 });
 
 test("an idle view is primed once in the background, and not again while it is fresh", async () => {

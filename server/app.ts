@@ -90,9 +90,11 @@ export const routes = (o: ServerOptions) =>
       // The session shows the compactor's engines that are down, for clients that connect later.
       // Compactions send a turn's system prompt and tools (docs/optchat.md §4): the default device's
       // on a provider, this machine's claude-code turn's on claude-code, which runs here.
+      // single flight on block prefixes (E50): one gate for every compactor call and priming
+      const gate = makeGate();
       const compactor: { readonly down?: DownList; readonly summarize: Summarize } = o.summarize
         ? { summarize: o.summarize }
-        : yield* makeSummarize({ ...needs, device: o.device, gate: makeGate(), instructions, placement: runnerFor(o.device), tools: defsFor(settings.defaultDevice) });
+        : yield* makeSummarize({ ...needs, device: o.device, gate, instructions, placement: runnerFor(o.device), tools: defsFor(settings.defaultDevice) });
       // a failed call rests WAIT_RETRY before a logged entry tries it again (E33); the waiting turn's own retry doesn't wait
       const chat = yield* openChat(stream, { report, rest: WAIT_RETRY, summarize: compactor.summarize });
       // a turn's thinking, kept beside the log in the stream's chat/reasoning/ (SPEC "Reasoning")
@@ -138,7 +140,7 @@ export const routes = (o: ServerOptions) =>
         engine: (ref, at) =>
           turnEngine(
             ref,
-            { ...needs, instructions, runnerFor: () => agentRunnerFor(at), toolsFor: (device) => toolsWith(device, chat.mem, subagents.tools({ agent: at.name }), artifactTools.tools({ agent: at.name })) },
+            { ...needs, gate, instructions, runnerFor: () => agentRunnerFor(at), toolsFor: (device) => toolsWith(device, chat.mem, subagents.tools({ agent: at.name }), artifactTools.tools({ agent: at.name })) },
             subagentPolicy(at.name),
           ),
         folderFor,
@@ -151,7 +153,7 @@ export const routes = (o: ServerOptions) =>
       });
       const toolsFor = (device: string) => toolsWith(device, chat.mem, subagents.tools("master"), artifactTools.tools("master"));
       const engines = yield* Effect.forEach(settings.master.chain, (ref) =>
-        turnEngine(ref, { ...needs, instructions, runnerFor, toolsFor }, masterPolicy(() => master.latest() === ref.ref)),
+        turnEngine(ref, { ...needs, gate, instructions, runnerFor, toolsFor }, masterPolicy(() => master.latest() === ref.ref)),
       );
       const session = yield* makeSession({
         chat,

@@ -43,8 +43,8 @@ export type EngineNeeds = {
 // prompt, and a turn's tools (the default device's for a provider; for claude-code, a turn's on
 // this machine, `placement`): the same bytes before the view. A cache entry is the model's own at
 // its effort, so they read a turn's entry only when they run on the turns' model and effort, which
-// the shipped chains don't (E5, E26). They wait on a call writing the same marked prefix, on the
-// same model and effort (`gate`, docs/optchat.md §3.3).
+// the shipped chains don't (E5, E26). They wait on a call writing a marked prefix of their own, on
+// the same model and effort (`gate`, docs/optchat.md §3.3, E50).
 export type CompactorNeeds = EngineNeeds & {
   readonly device?: string;
   readonly instructions: string;
@@ -54,9 +54,11 @@ export type CompactorNeeds = EngineNeeds & {
 };
 
 // a turn engine's needs: the one system prompt (docs/optchat.md §5), where each device's claude runs (E7),
-// and the read-only tools of an engine with its own loop (M5)
+// the read-only tools of an engine with its own loop (M5), and the compactor's `gate`, which
+// claude-code's priming waits in too (E50)
 export type TurnNeeds = EngineNeeds & {
   readonly instructions: string;
+  readonly gate: Gate;
   readonly runnerFor: (device: string) => Effect.Effect<Placement, DeviceOffline>;
   readonly toolsFor: (device: string) => ToolBox;
 };
@@ -129,6 +131,7 @@ export const turnEngine = (ref: Ref, o: TurnNeeds, policy: TurnPolicy): Effect.E
         model: ref.model,
         permissionMode: policy.permissionMode ?? permissionMode,
         env: policy.env,
+        gate: o.gate,
         pooled: policy.pooled,
         primeTtl: o.settings.cache.primeTtl,
         ref: ref.ref,

@@ -7,7 +7,7 @@ import { Deferred, type Duration, Effect, Fiber, PubSub } from "effect";
 import { readFileSync } from "node:fs";
 import { CompactError, type Job, makeJob, makePump, NoLine } from "../src/compactor.ts";
 import { AHEAD, NODE, REFUSALS } from "../src/config.ts";
-import { makeGate } from "../src/engines/inflight.ts";
+import { makeGate, type Prefix } from "../src/engines/inflight.ts";
 import * as K from "../src/kernel.ts";
 import { newMsg, newNode } from "../src/store.ts";
 import { RULER, retryText, sizeRetries, task } from "../src/summarize/step.ts";
@@ -458,6 +458,9 @@ test("an empty answer with no line before it is a refusal, for the pump to count
   expect([cut._tag, cut.message]).toEqual(["ModelError", "the compactor's reply stopped short with no line: the reply reached its token limit"]);
 });
 
+// a prefix of one block, marked
+const one = (key: string): Prefix => ({ keys: [key], marks: [0], ttl: "1h" });
+
 test("the in-flight gate: one call writes a prefix, the others wait for its response to start; a writer that fails first hands over", async () => {
   await Effect.runPromise(
     Effect.scoped(
@@ -466,7 +469,7 @@ test("the in-flight gate: one call writes a prefix, the others wait for its resp
         const order: string[] = [];
         const go = yield* Deferred.make<true>();
         const call = (name: string, key: string | null, before: Effect.Effect<void> = Effect.void) =>
-          gate.through(key, (started) =>
+          gate.through(key === null ? null : one(key), (started) =>
             Effect.gen(function* () {
               order.push(`${name} sent`);
               yield* before;
@@ -492,9 +495,9 @@ test("the in-flight gate: one call writes a prefix, the others wait for its resp
 
         // a writer that fails before its response starts: the next waiter writes instead
         const seen: string[] = [];
-        const failing = gate.through("f", () => Effect.fail("refused"));
+        const failing = gate.through(one("f"), () => Effect.fail("refused"));
         const first = yield* Effect.forkChild(Effect.flip(failing));
-        const next = yield* Effect.forkChild(gate.through("f", (started) => Effect.andThen(started, Effect.sync(() => void seen.push("next")))));
+        const next = yield* Effect.forkChild(gate.through(one("f"), (started) => Effect.andThen(started, Effect.sync(() => void seen.push("next")))));
         expect(yield* Fiber.join(first)).toBe("refused");
         yield* Fiber.join(next);
         expect(seen).toEqual(["next"]);

@@ -10,9 +10,9 @@ import type { Spawn } from "../claude/process.ts";
 import type { Job } from "../compactor.ts";
 import { CALL_TIMEOUT } from "../config.ts";
 import { type DeviceOffline, type EngineError, fromResult, ModelError, stoppedShort } from "../engines/errors.ts";
-import { type Gate, prefixKey } from "../engines/inflight.ts";
+import type { Gate } from "../engines/inflight.ts";
 import { admitRequest } from "../engines/request-admission.ts";
-import type { Placement } from "../turn/claude-code.ts";
+import { claudePrefix, type Placement } from "../turn/claude-code.ts";
 import { tokensOf, type UsageRecord } from "../usage.ts";
 import { type Try, contextBlocks, sizeRetries, task } from "./step.ts";
 
@@ -28,7 +28,7 @@ export type CompactorOptions = {
   readonly instructions: string;
   readonly tools: readonly string[];
   readonly placement: Effect.Effect<Placement, DeviceOffline>;
-  readonly gate: Gate; // waits on a call writing the same marked prefix (docs/optchat.md §3.3)
+  readonly gate: Gate; // waits on a call writing a marked prefix of its own (docs/optchat.md §3.3, E50)
 };
 
 // The user message of a call (layout A): the context pieces (step.ts), then the task. Two marks
@@ -39,12 +39,6 @@ export function blocks(job: Job, ttl: "1h" | "5m"): TextBlock[] {
   const context = contextBlocks(job);
   return markAt([...context.blocks, task(job)], [context.mark, context.blocks.length], ttl);
 }
-
-// the blocks up to the last mark before the request's end: what another call may be writing
-export const markedPrefix = (sent: readonly TextBlock[]): string[] | null => {
-  const last = sent.slice(0, -1).findLastIndex((b) => b.cache_control !== undefined);
-  return last === -1 ? null : sent.slice(0, last + 1).map((b) => b.text);
-};
 
 // A compactor uses a turn's baseArgs (system prompt and master's tools, plus --mcp-config for
 // zoom/date) but its own model, effort and permission mode. No --replay-user-messages: that
@@ -71,14 +65,12 @@ export const claudeCodeCompactor = (o: CompactorOptions) => {
   const timeout = o.timeout ?? CALL_TIMEOUT;
 
   // the transport: one process per node, each try a message into it, its result the answer. A call
-  // that waits on another writing its marked prefix waits before its process starts.
+  // that waits on another writing a prefix of its own waits before its process starts.
   const call = (job: Job, failoverFrom: string | null) =>
     Effect.gen(function* () {
       const p = yield* o.placement;
       const first = blocks(job, o.ttl);
-      const prefix = markedPrefix(first);
-      const key = prefix && prefixKey(["claude-code", o.model, o.effort ?? "", o.instructions, o.tools.join(","), ...prefix]);
-      return yield* o.gate.through(key, (started) =>
+      return yield* o.gate.through(claudePrefix(o, first, o.ttl), (started) =>
         Effect.gen(function* () {
           const claude = yield* p.runner.spawn(compactSpawn(o, p)).pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(failed(e))));
           // a try's events up to its result: the first stream event means the request was taken;

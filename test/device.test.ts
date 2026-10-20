@@ -14,6 +14,7 @@ import { LocalRunner, Runner, STRIPPED_ENV } from "../src/claude/process.ts";
 import { type FromDevice, type ToDevice, decodeFromDevice, frame } from "../src/claude/wire.ts";
 import { failover } from "../src/engines/chain.ts";
 import { MASTER_TOOLS } from "../src/config.ts";
+import { makeGate } from "../src/engines/inflight.ts";
 import { claudeCodeTurn } from "../src/turn/claude-code.ts";
 import { freePort } from "./ports.ts";
 
@@ -442,6 +443,7 @@ test("a connection lost mid-turn is a ModelError, so the chain doesn't run the t
       Effect.gen(function* () {
         const engine = yield* claudeCodeTurn({
           effort: "high",
+          gate: makeGate(),
           logUsage: () => Effect.void,
           model: "opus",
           permissionMode: "bypassPermissions",

@@ -13,6 +13,7 @@ import { cap } from "../cap.ts";
 import { isPicture, type Part } from "../media/part.ts";
 import { PRIME_TIMEOUT } from "../config.ts";
 import { type DeviceOffline, fromResult, ModelError } from "../engines/errors.ts";
+import { type Gate, type Prefix, prefixOf } from "../engines/inflight.ts";
 import { admitRequest } from "../engines/request-admission.ts";
 import type { McpSeen } from "../mcp.ts";
 import type { StoreError } from "../store.ts";
@@ -42,6 +43,7 @@ export type ClaudeCodeTurnOptions = {
   readonly ttl: Ttl; // the TTL of Claude Code's own marks on a turn (E6)
   readonly primeTtl: Ttl; // the TTL of the marks priming writes
   readonly instructions: string; // the one system prompt (docs/optchat.md §5), sent inline on every device
+  readonly gate: Gate; // priming waits on a call writing a marked prefix of its view (docs/optchat.md §3.3, E50)
   // DeviceOffline when the device can't be reached or can't be used
   readonly runnerFor: (device: string) => Effect.Effect<Placement, DeviceOffline>;
   readonly report: (message: string) => Effect.Effect<void>;
@@ -298,6 +300,21 @@ export const primeBlocks = (view: string, ttl: Ttl): TextInput[] => {
   return markAt(blocks, [mark, blocks.length - 1], ttl);
 };
 
+// What single flight (src/engines/inflight.ts) knows of a claude-code request that sends `sent`
+// after the system prompt and tools: the model and the effort it runs at, those, then its blocks
+// and its marks before its end, which is its own. Priming and a compactor on the same model and
+// effort share whole blocks of the view (a compaction view not merged further is the view), and
+// then these keys.
+export const claudePrefix = (o: { readonly model: string; readonly effort: string | undefined; readonly instructions: string; readonly tools: readonly string[] }, sent: readonly TextInput[], ttl: Ttl): Prefix | null => {
+  const before = sent.slice(0, -1);
+  return prefixOf(
+    ["claude-code", o.model, o.effort ?? "", o.instructions, o.tools.join(",")],
+    before.map((b) => b.text),
+    before.flatMap((b, k) => (b.cache_control === undefined ? [] : [k])),
+    ttl,
+  );
+};
+
 // a priming of this view older than this is redone: the TTL minus a margin (ref §2, E6)
 export const primeMaxAge = (ttl: Ttl) => (ttl === "1h" ? 3_300_000 : 270_000);
 
@@ -387,7 +404,13 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
     let last: { readonly view: string; readonly at: number } | null = null;
     let failing = false;
 
-    const primeOnce = (view: string, device: string) =>
+    // A priming that waits on a call writing a prefix of its view waits before its process starts,
+    // as a compactor's does; it holds its own until message_start, where it is killed.
+    const primeOnce = (view: string, device: string) => {
+      const sent: TextInput[] = [...primeBlocks(view, o.primeTtl), { text: "ok", type: "text" }];
+      return o.gate.through(claudePrefix(o, sent, o.primeTtl), (begun) => primeCall(sent, device, begun));
+    };
+    const primeCall = (sent: readonly TextInput[], device: string, begun: Effect.Effect<void>) =>
       Effect.gen(function* () {
         const placement = yield* o.runnerFor(device);
         const claude = yield* placement.runner
@@ -395,7 +418,7 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
           .pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(new ModelError({ message: e.message })))); // DeviceOffline: priming skips quietly
         const started = yield* Clock.currentTimeMillis;
         yield* admitRequest();
-        yield* claude.send([...primeBlocks(view, o.primeTtl), text("ok")]);
+        yield* claude.send(sent);
         // priming is often the first call after the server starts: a transport that fails shows here first
         const mcp = mcpWatch(device, placement);
         const first = yield* readUntil(
@@ -414,6 +437,7 @@ export const claudeCodeTurn = (o: ClaudeCodeTurnOptions) =>
           const said = e.type === "result" && e.result ? `: ${e.result}` : "";
           return yield* new ModelError({ message: `it answered before the request was accepted${said}` });
         }
+        yield* begun; // its entries are written: a call waiting on them reads them now
         const now = yield* Clock.currentTimeMillis;
         yield* o.logUsage(usageRecord({ device, effort: o.effort, failoverFrom: null, model: start.model ?? claude.model(), now, role: "prime", started, usage: start.usage }));
         return start;

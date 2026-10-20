@@ -41,6 +41,13 @@ Everything is built and tested against fakes. Each check below needs a real logi
 - [ ] Resource hints an artifact's script adds (`<link rel=dns-prefetch>`, `preconnect`): no CSP governs them, so a host name the page writes into one may be looked up or connected to. Every artifact route says `X-DNS-Prefetch-Control: off`, and the e2e probe sees no TCP connection or request, but its Chromium acts on no hint even on a plain page (checked against a net log), so nothing is measured. Measure on a Chrome that does (headed, or with the predictor on) and, if they leave, drop `link` elements the page adds at insertion, as the frame guard does frames. Known residual until then.
 - [ ] `Sec-Fetch-Dest: iframe` on the artifact page and draft loads in WKWebView (Safari sends Fetch Metadata from 16.4; an older one would get 404s and show no artifact).
 
+## Zoom pages and single flight (E48–E50)
+
+- [ ] The tool list changed (zoom's `at`): the first request on each engine after the deploy rewrites the tools-and-system-prompt cache once; check `cold` in `usage.jsonl` settles after that (SPEC E48).
+- [ ] A real master pages a long message: `zoom(id, 1)` of a 200 KB paste, then `zoom(id, 1, at)` from each page's footer; and Claude Code's MCP output limit against `ZOOM_PAGE` (28,000 characters a page) and against an answer before E48 (SPEC E48).
+- [ ] A real compaction of a message past `LEAF`: its line says the message was cut, or keeps the marker's zoom (SPEC E49).
+- [ ] Single flight against a real cache: compactions that started together after a batch, each one's `cacheWrite` in `usage.jsonl` against the blocks it added; and a priming on the turns' model reading a compaction's entry (SPEC E50).
+
 ## ChatGPT plan
 
 - [x] `optchat login openai` end to end: callback, refresh, Keychain (SPEC M3).

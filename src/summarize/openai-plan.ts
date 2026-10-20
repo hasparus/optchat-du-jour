@@ -10,7 +10,7 @@ import { Duration, Effect } from "effect";
 import type { Job } from "../compactor.ts";
 import { CALL_TIMEOUT } from "../config.ts";
 import { type EngineError, ModelError } from "../engines/errors.ts";
-import { type Gate, prefixKey } from "../engines/inflight.ts";
+import { type Gate, prefixOf } from "../engines/inflight.ts";
 import type { OpenAiPlan, Turn } from "../openai/responses.ts";
 import { turnsOf } from "../providers/responses.ts";
 import type { ToolDef } from "../tools/files.ts";
@@ -26,17 +26,19 @@ export type OpenAiPlanCompactorOptions = {
   readonly timeout?: Duration.Input; // CALL_TIMEOUT
   readonly instructions: string; // the one system prompt (docs/optchat.md §5)
   readonly tools: readonly ToolDef[]; // a turn's, on the default device
-  readonly gate: Gate; // waits on a call writing the same marked prefix (docs/optchat.md §3.3)
+  readonly gate: Gate; // waits on a call writing a marked prefix of its own (docs/optchat.md §3.3, E50)
 };
 
 // the context blocks, the last whole one marked (`mark`), then the task
 export const firstInput = (job: Job, context: Blocks = contextBlocks(job)): Turn => ({ mark: context.mark, parts: [...context.blocks, task(job)], role: "user" });
 
-// What a request sends up to its mark: the model and its effort, the system prompt, the tools and
-// the context blocks up to the marked one; null when nothing before the request's end is marked.
-// The mark is the marks helpers' (step.ts contextBlocks, view.ts viewBlocks).
-export const keyOf = (o: { readonly engine: string; readonly model: string; readonly effort: string | undefined; readonly instructions: string; readonly tools: readonly ToolDef[] }, context: Blocks) =>
-  context.mark === undefined ? null : prefixKey([o.engine, o.model, o.effort ?? "", o.instructions, JSON.stringify(o.tools), ...context.blocks.slice(0, context.mark + 1)]);
+// What single flight (src/engines/inflight.ts) knows of a request: the engine, the model and its
+// effort, the system prompt and the tools, then the context blocks up to the marked one; null when
+// nothing before the request's end is marked. The mark is the marks helpers' (step.ts
+// contextBlocks, view.ts viewBlocks). An API key's entry, and the plan's, is taken to live five
+// minutes, the least OpenAI keeps one unread.
+export const prefixFor = (o: { readonly engine: string; readonly model: string; readonly effort: string | undefined; readonly instructions: string; readonly tools: readonly ToolDef[] }, context: Blocks) =>
+  prefixOf([o.engine, o.model, o.effort ?? "", o.instructions, JSON.stringify(o.tools)], context.blocks, context.mark === undefined ? [] : [context.mark], "5m");
 
 export const openAiPlanCompactor = (o: OpenAiPlanCompactorOptions & { readonly plan: OpenAiPlan["Service"] }) => {
   const { instructions, tools } = o;
@@ -46,8 +48,7 @@ export const openAiPlanCompactor = (o: OpenAiPlanCompactorOptions & { readonly p
   const call = (job: Job, failoverFrom: string | null) => {
     const context = contextBlocks(job);
     const input: Turn[] = [firstInput(job, context)];
-    const key = keyOf({ ...o, engine: "openai-plan" }, context);
-    return o.gate.through(key, (started) => {
+    return o.gate.through(prefixFor({ ...o, engine: "openai-plan" }, context), (started) => {
       const ask = (t: Try) =>
         Effect.gen(function* () {
           if (t.retry !== null) input.push({ parts: [t.retry.text], role: "user" });
