@@ -57,6 +57,9 @@ What was taken, and from which commit, is tracked in docs/uniichat.md:
   version it connects with (Server.ts): SPEC E44.
 - Esc to interrupt a turn, and send as stop with nothing typed (Term.ts,
   web/src/main.ts): SPEC "Web UI".
+- A replay of a long chat against a fake prompt cache that keeps
+  Anthropic's rules, with the time faked (cache.test.ts):
+  test/cache-replay.test.ts and its fakes; SPEC "Usage and cost tracking".
 - A long pasted message folded in the chat (web/src/Html.ts): SPEC
   "Web UI".
 - A file edit shown as a diff (Machine.ts): SPEC E45.

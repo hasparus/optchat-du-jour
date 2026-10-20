@@ -20,6 +20,21 @@
 // Sonnet 4.0/4.5 take none; Opus 4.5 stops at high; Opus 4.6 and Sonnet 4.6 skip xhigh.
 import { defineConfig } from "./src/config.ts";
 
+// API-key prices per million tokens (writes at 1.25× input for 5 minutes, 2× for 1 hour; we write
+// 5-minute entries only, the 1-hour rate prices a write the API doesn't split). Used by the
+// commented-out `apiKey` block below, and by the cache replay (test/cache-replay.ts,
+// dev/cache-replay.ts), which prices every Anthropic request with it, the Claude plan's too, as
+// what it would cost on a key. PLACEHOLDERS: Opus 5.5 as Anthropic published it in Sep 2026;
+// Haiku from the claude-api skill's Oct 2026 table, their cache rates the usual 0.1×, 1.25× and
+// 2× of the input rate, not checked against the console. Verify before relying on the budget.
+export const apiKeyPrices = {
+  "anthropic/claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.2, cacheWrite5m: 5, cacheWrite1h: 8 },
+  // Haiku 5.5, $0.10 in / $0.50 out for prompts up to 100K tokens (more beyond), takes every
+  // effort; Haiku 4.5 (snapshot claude-haiku-4-5-20251001), $1 / $5, takes none
+  "anthropic/claude-haiku-5-5": { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite5m: 0.125, cacheWrite1h: 0.2 },
+  "anthropic/claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite5m: 1.25, cacheWrite1h: 2 },
+};
+
 export default defineConfig({
   master: {
     chain: ["claude-code:opus", "openai-plan:gpt-6.1-sol"],
@@ -45,21 +60,11 @@ export default defineConfig({
   cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
   // API keys, off by default (`optchat key anthropic|openai` stores one). To use one, add an
   // "api-key:anthropic/<model>" ref to a chain and uncomment this: a monthly budget in dollars and
-  // a price per million tokens for each model used (writes at 1.25× input for 5 minutes, 2× for 1
-  // hour; we write 5-minute entries only, the 1-hour rate prices a write the API doesn't split).
-  // A model without a price is never called. PLACEHOLDERS: Opus 5.5 as Anthropic published it in
-  // Sep 2026; Haiku from the claude-api skill's Oct 2026 table, their cache rates the usual 0.1×,
-  // 1.25× and 2× of the input rate, not checked against the console. Verify before relying on the
-  // budget.
+  // a price per million tokens for each model used (`apiKeyPrices`, above). A model without a
+  // price is never called.
   // apiKey: {
   //   monthlyBudget: 20, // the Cursor money
-  //   prices: {
-  //     "anthropic/claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.2, cacheWrite5m: 5, cacheWrite1h: 8 },
-  //     // PLACEHOLDERS. Haiku 5.5, $0.10 in / $0.50 out for prompts up to 100K tokens (more beyond),
-  //     // takes every effort; Haiku 4.5 (snapshot claude-haiku-4-5-20251001), $1 / $5, takes none
-  //     "anthropic/claude-haiku-5-5": { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite5m: 0.125, cacheWrite1h: 0.2 },
-  //     "anthropic/claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite5m: 1.25, cacheWrite1h: 2 },
-  //   },
+  //   prices: apiKeyPrices,
   // },
   devices: {
     mini: { url: "http://optchat-mini:7710", folders: ["~/repos", "~/notes"] },

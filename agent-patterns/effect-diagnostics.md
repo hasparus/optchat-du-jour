@@ -29,10 +29,14 @@ All 135 root / 2 web warnings at that baseline were
 existing platform integrations implement filesystem/process/device IO, HTTP serving and
 provider transport, SSE and sockets. Rewriting runtime behavior is not part of this tooling change.
 
-The root plugin's current **39 exact export identifiers** below include the reviewed
+The root plugin's current **41 exact export identifiers** below include the reviewed
 `effect/encoding/Sse#Retry` addition. The pinned `Sse.ts` defines this decoder-produced retry
 directive as a typed class. Its exact `instanceof` guard normalizes SSE reconnect directives
-without swallowing generic callback errors that merely share the `Retry` tag. This source-guided
+without swallowing generic callback errors that merely share the `Retry` tag. They also include
+`effect/http/HttpClient#make` and `effect/http/HttpClientResponse#fromWeb`, reviewed for the cache
+replay's fake vendors only (test/fake-vendors.ts): an HttpClient that answers in this process, on
+the replay's test clock, so the real api-key and openai-plan clients run unchanged with no socket
+between them and the fake, whose round trip the clock could not see. This source-guided
 addition does not change the historical scan counts above. The web
 plugin accepts only `@effect/platform-bun/BunRuntime#runMain` and `effect/http/FetchHttpClient#layer`
 for its fake-provider e2e server. There are no wildcard/module permissions, experimental API
@@ -49,6 +53,7 @@ effect/encoding/Sse#SseError
 effect/encoding/Sse#decode
 effect/http/FetchHttpClient#layer
 effect/http/HttpClient#HttpClient
+effect/http/HttpClient#make
 effect/http/HttpClientError#isHttpClientError
 effect/http/HttpClientRequest#HttpClientRequest
 effect/http/HttpClientRequest#accept
@@ -59,6 +64,7 @@ effect/http/HttpClientRequest#bodyUrlParams
 effect/http/HttpClientRequest#get
 effect/http/HttpClientRequest#post
 effect/http/HttpClientRequest#setHeaders
+effect/http/HttpClientResponse#fromWeb
 effect/http/HttpRouter#HttpRouter
 effect/http/HttpRouter#params
 effect/http/HttpRouter#serve

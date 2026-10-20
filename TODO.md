@@ -5,7 +5,7 @@ Everything is built and tested against fakes. Each check below needs a real logi
 ## Claude Code (Max plan)
 
 - [ ] Re-run ref §14 P1–P8 on our Claude Code version (SPEC M1).
-- [ ] 1-hour marks on real turns and priming: no ordering errors, cold turns cut (SPEC E6, M1).
+- [ ] 1-hour marks on real turns and priming: no ordering errors, cold turns cut (SPEC E6, M1). Against a fake cache the cache replay has them cut (22 cold turns of 200 against 53 with 5-minute marks); `cold` in a real `usage.jsonl` decides.
 - [ ] A view primed on the Mini, read by a turn on the MacBook: same cache key? (SPEC M1)
 - [ ] Does a priming request killed at `message_start` count against limits? (SPEC M1, ref §14 F6)
 - [ ] How a real Claude Code reports a spent plan mid-turn; we match `usage limit` in the result text (SPEC M5).
@@ -46,7 +46,7 @@ Everything is built and tested against fakes. Each check below needs a real logi
 - [ ] The tool list changed (zoom's `at`): the first request on each engine after the deploy rewrites the tools-and-system-prompt cache once; check `cold` in `usage.jsonl` settles after that (SPEC E48).
 - [ ] A real master pages a long message: `zoom(id, 1)` of a 200 KB paste, then `zoom(id, 1, at)` from each page's footer; and Claude Code's MCP output limit (`MAX_MCP_OUTPUT_TOKENS`, 25,000 tokens by default, a warning at 10,000) against a page of `ZOOM_PAGE` characters and `ZOOM_BYTES` bytes of English, of CJK and of emoji, and against a whole answer before E48 (SPEC E48).
 - [ ] A real compaction of a message past `LEAF`, on each compactor engine: no try calls zoom on the note (the claude-code compactor fails a try that calls a tool), and its line says the message was cut, or keeps the note's zoom (SPEC E49).
-- [ ] Single flight against a real cache: compactions that started together after a batch, each one's `cacheWrite` in `usage.jsonl` against the blocks it added; and on the plan, that an entry can be read once `response.output_item.added` has come (SPEC E50).
+- [ ] Single flight against a real cache (against the fake one, the cache replay finds no compaction writing a prefix another is writing): compactions that started together after a batch, each one's `cacheWrite` in `usage.jsonl` against the blocks it added; and on the plan, that an entry can be read once `response.output_item.added` has come (SPEC E50).
 
 ## ChatGPT plan
 
@@ -68,7 +68,7 @@ Everything is built and tested against fakes. Each check below needs a real logi
 
 - [ ] Real model ids and prices, replacing the placeholders in `optchat.config.ts` (SPEC M5).
 - [ ] Budget against the real bill (SPEC M5).
-- [ ] Anthropic turns: each request reads everything the one before sent, also after a mid-run message (SPEC M5).
+- [ ] Anthropic turns: each request reads everything the one before sent, also after a mid-run message (SPEC M5). The cache replay asserts it against a fake cache; check `cacheRead` on real turns.
 
 ## Machines and network
 
