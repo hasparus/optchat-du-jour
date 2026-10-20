@@ -5,7 +5,7 @@ import { Effect, Option, Schema } from "effect";
 import { ARTIFACT_TOOL_DEFS, type ArtifactTools, noArtifacts } from "./artifacts/tools.ts";
 import type { McpTransport } from "./config.ts";
 import { address } from "./kernel.ts";
-import { headOf, wireJson } from "./text.ts";
+import { headBytes, headOf, wireJson } from "./text.ts";
 import { type Built, children, type Coord, type Entry, getNode, label, localTime, type Mem } from "./tree.ts";
 import { flat } from "./view.ts";
 import { artifactTool, SUBAGENT_NAME } from "./wire.ts";
@@ -92,21 +92,25 @@ export function openNode(mem: Mem, id: number, n: number): Opened | null {
   return message ? { at, message } : null;
 }
 
-// the characters of one zoom answer (E48): under CAP, which a turn's echo of it gets, as
-// SIDE_PAGE's and READ_PAGE's are; a longer answer comes in pages
+// One zoom answer (E48) holds at most ZOOM_PAGE characters, under CAP, which a turn's echo of it
+// gets, as SIDE_PAGE's and READ_PAGE's are, and at most ZOOM_BYTES of UTF-8: Claude Code takes at
+// most 25,000 tokens of one MCP answer (MAX_MCP_OUTPUT_TOKENS), and text that costs a token or
+// more per character (CJK, emoji) stays under it at 32,000 bytes (about 11,000 CJK characters,
+// 8,000 emoji). A longer answer comes in pages.
 export const ZOOM_PAGE = 28_000;
+export const ZOOM_BYTES = 32_000;
 
-// A page of a long answer (E48): up to ZOOM_PAGE characters from `at`, ending after its last line
-// break when it has one, and never inside a character (E21), with which characters it holds and,
-// before the end, the zoom that reads on (`next`). A text that fits whole from 0 is answered as it
-// always was. Null when `at` is not one of its characters.
+// A page of a long answer (E48): up to ZOOM_PAGE characters and ZOOM_BYTES bytes from `at`, never
+// ending inside a character (E21), and after a line break in its second half when it has one,
+// with which characters it holds and, before the end, the zoom that reads on (`next`). A text
+// that fits whole from 0 is answered as it always was. Null when `at` is not one of its characters.
 export function page(text: string, at: number, next: (end: number) => string): string | null {
-  if (at === 0 && text.length <= ZOOM_PAGE) return text;
+  if (at === 0 && text.length <= ZOOM_PAGE && Buffer.byteLength(text) <= ZOOM_BYTES) return text;
   if (!Number.isSafeInteger(at) || at < 0 || at >= text.length) return null;
   const from = (text.codePointAt(at - 1) ?? 0) > 0xFF_FF ? at - 1 : at; // inside a pair: from its first half
-  let part = headOf(text.slice(from), ZOOM_PAGE);
+  let part = headBytes(headOf(text.slice(from), ZOOM_PAGE), ZOOM_BYTES);
   const line = part.lastIndexOf("\n");
-  if (from + part.length < text.length && line > 0) part = part.slice(0, line + 1);
+  if (from + part.length < text.length && line >= part.length / 2) part = part.slice(0, line + 1);
   const end = from + part.length;
   return `${part}\n[characters ${from} to ${end} of ${text.length}${end < text.length ? `; ${next(end)} reads on` : ""}]`;
 }

@@ -62,7 +62,7 @@ export type Ask<E extends Tagged = never> = {
   readonly onOut?: (out: Out) => Effect.Effect<void, E>; // each item of `output` as it completes
   readonly onToolInput?: ToolInputHooks | undefined; // a function call's arguments as they stream
   readonly onSettledUsage?: (spent: Spent) => Effect.Effect<void>;
-  readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
+  readonly onStart?: Effect.Effect<void>; // the response began: at each response.output_item.added (E50)
 };
 export type Reply = { readonly text: string; readonly usage: Usage; readonly model: string; readonly output: readonly Out[] };
 export type Respond = <E extends Tagged = never>(ask: Ask<E>) => Effect.Effect<Reply, EngineError | E>;
@@ -261,6 +261,9 @@ const onEvent = <E extends Tagged>(o: { readonly model: string; readonly label: 
           return { ...r, part, reasoning, told: r.told || d.delta !== "" };
         }
         case "response.output_item.added": {
+          // the model writes its output: the input is read, and cached where it was marked (E50).
+          // Not response.created, which comes before the input is read, and may end in response.failed
+          if (o.onStart) yield* o.onStart;
           if (!o.onToolInput) return r;
           const { item } = yield* addedItem(data);
           if (item.type === "function_call" && item.id !== undefined) calls.set(item.id, { id: item.call_id ?? item.id, name: item.name ?? "" });
@@ -339,7 +342,7 @@ export const readStream = <E extends Tagged = never>(stream: Stream.Stream<Uint8
     let known: Spent | undefined;
     const reported = (spent: Spent | undefined) => { if (spent) known = spent; };
     return Effect.gen(function* () {
-      const r = yield* sseFold(label, stream, init, onEvent({ ...o, label, model, reported }), (state) => state.done !== null, o.onStart);
+      const r = yield* sseFold(label, stream, init, onEvent({ ...o, label, model, reported }), (state) => state.done !== null);
       if (r.refusal) return yield* new Refusal({ message: `${label} refused: ${r.refusal.slice(0, 300)}`, spent: r.spent });
       // cut off on the way: it may pass (E35)
       if (r.done === null) return yield* new ModelError({ message: `${label}: the stream ended without response.completed`, transient: true });

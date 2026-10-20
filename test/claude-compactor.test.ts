@@ -13,10 +13,10 @@ import { EngineExecutionPolicy, RequestNotAdmitted } from "../src/engines/reques
 import { mcpConfig } from "../src/mcp.ts";
 import { newMsg } from "../src/store.ts";
 import { warmRunner } from "../src/claude/warm.ts";
-import { blocks, claudeCodeCompactor, compactSpawn } from "../src/summarize/claude-code.ts";
+import { blocks, claudeCodeCompactor, claudePrefix, compactSpawn } from "../src/summarize/claude-code.ts";
 import { retryText, task } from "../src/summarize/step.ts";
 import { built, getNode } from "../src/tree.ts";
-import { claudePrefix, type Placement } from "../src/turn/claude-code.ts";
+import type { Placement } from "../src/turn/claude-code.ts";
 import type { UsageRecord } from "../src/usage.ts";
 import { long, run, scripted, textOf, tmp, until, withFakeClaude } from "./fake-claude-rig.ts";
 
@@ -81,7 +81,7 @@ test("a compactor call: a turn's argv but model, effort and permission mode; con
   expect(sent.map((b) => b.cache_control ?? null)).toEqual(sent.map((_, k) => (k === 64 || k === 66 ? mark : null)));
   expect(textOf(sent[66])).toBe(task(job));
   // what another call may be writing: the blocks through the last whole one, its mark the one
-  const head = ["claude-code", "sonnet", "medium", "SYSTEM", MASTER_TOOLS.join(",")];
+  const head = { effort: "medium", engine: "claude-code", instructions: "SYSTEM", model: "sonnet", tools: MASTER_TOOLS.join(",") };
   expect(claudePrefix({ effort: "medium", instructions: "SYSTEM", model: "sonnet", tools: MASTER_TOOLS }, sent, "5m")).toEqual({ keys: prefixKeys(head, pieces.slice(0, 65).map(textOf)), marks: [64], ttl: "5m" });
 
   expect(usage).toHaveLength(1);

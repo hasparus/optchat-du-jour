@@ -5,7 +5,7 @@ import { expect, test } from "bun:test";
 import { Schema } from "effect";
 import { cap } from "../src/cap.ts";
 import { CAP, LEAF } from "../src/config.ts";
-import { type Attached, handleMcp, ZOOM_PAGE } from "../src/mcp.ts";
+import { type Attached, handleMcp, ZOOM_BYTES, ZOOM_PAGE } from "../src/mcp.ts";
 import { newMsg } from "../src/store.ts";
 import { leafText, task } from "../src/summarize/step.ts";
 import { type Mem, newMem } from "../src/tree.ts";
@@ -19,6 +19,8 @@ function memory(): Mem {
   addMessage(mem, newMsg(0, "user", `look at this log:\n${PASTE}\n[image 1]`));
   addMessage(mem, newMsg(1, "talk", "a short reply"));
   addMessage(mem, newMsg(2, "talk", `a${"😀".repeat(20_000)}`)); // every pair starts at an odd character
+  addMessage(mem, newMsg(3, "talk", "漢".repeat(40_000))); // 3 bytes a character
+  addMessage(mem, newMsg(4, "talk", `a\n${"x".repeat(60_000)}`)); // a line break at its very start
   addNode(mem, { i: 0, l: 0, text: "user: pasted a log" });
   addNode(mem, { i: 1, l: 0, text: "talk: a short reply" });
   addNode(mem, { i: 0, l: 1, text: "user pasted a log; talk replied" });
@@ -54,6 +56,7 @@ function readAll(mem: Mem, id: number) {
     const part = text.slice(head.length, text.length - (found?.[0].length ?? 0));
     expect(part.length).toBe(Number(to) - at);
     expect(part.length).toBeLessThanOrEqual(ZOOM_PAGE);
+    expect(Buffer.byteLength(part)).toBeLessThanOrEqual(ZOOM_BYTES); // under Claude Code's MCP limit in tokens too
     expect(part.isWellFormed()).toBe(true);
     parts.push(part);
     if (next === undefined) return { breaks, parts };
@@ -69,10 +72,18 @@ test("a 200 KB message comes in pages from character at: each under CAP, cut at 
   expect(parts.join("")).toBe(whole);
   expect(parts.length).toBeGreaterThanOrEqual(Math.ceil(whole.length / ZOOM_PAGE));
   expect(breaks).toBe(parts.length - 1); // every page but the last ends after its last line break
-  // one line of emoji with nothing to break at: a page may end only between two of them
-  const line = readAll(mem, 2);
-  expect(line.parts.join("")).toBe(mem.root[2]?.text ?? "");
-  expect(line.parts.map((p) => p.length)).toEqual([ZOOM_PAGE - 1, 40_001 - (ZOOM_PAGE - 1)]);
+  // one line of emoji with nothing to break at: a page may end only between two of them, and
+  // holds 32,000 bytes at most: 8,000 emoji, 16,000 characters
+  const emojis = readAll(mem, 2);
+  expect(emojis.parts.join("")).toBe(mem.root[2]?.text ?? "");
+  expect(emojis.parts.map((p) => p.length)).toEqual([15_999, 16_000, 8002]);
+  // CJK, 3 bytes a character: 10,666 of them a page
+  const cjk = readAll(mem, 3);
+  expect(cjk.parts.join("")).toBe(mem.root[3]?.text ?? "");
+  expect(cjk.parts.map((p) => p.length)).toEqual([10_666, 10_666, 10_666, 8002]);
+  // a line break early in the window is no place to end a page: no 2-character page
+  const early = readAll(mem, 4);
+  expect(early.parts.map((p) => p.length)).toEqual([ZOOM_PAGE, ZOOM_PAGE, 4002]);
 
   // from inside a surrogate pair, the page starts at its first half
   const emoji = whole.indexOf("😀");
@@ -89,12 +100,12 @@ test("a 200 KB message comes in pages from character at: each under CAP, cut at 
   expect(zoom(mem, { at: 23, id: 0, n: 2 }).text).toBe("1+1|talk: a short reply\n[characters 23 to 46 of 46]");
 });
 
-test("a compaction reads at most LEAF characters of a message: its head and tail, and a line whose zoom reads what was cut", () => {
+test("a compaction reads at most LEAF characters of a message: its head and tail, and a note of where a turn reads what was cut", () => {
   const mem = memory();
   const whole = mem.root[0]?.text ?? "";
   const asked = task({ ctx: [], i: 0, l: 0, msg: mem.root[0] ?? newMsg(0, "user", "") });
   const input = asked.slice(asked.indexOf("<input>\nuser: ") + "<input>\nuser: ".length, asked.lastIndexOf("\n</input>"));
-  const cut = /\n\[… (\d+) chars cut; zoom\(0, 1, (\d+)\) reads them …\]\n/.exec(input);
+  const cut = /\n\[… (\d+) chars cut here; a turn reads them with zoom\(0, 1, (\d+)\) …\]\n/.exec(input);
   expect(cut).not.toBeNull();
   const [line, left, from] = cut ?? [];
   const head = input.slice(0, cut?.index), tail = input.slice((cut?.index ?? 0) + (line?.length ?? 0));
@@ -112,4 +123,7 @@ test("a compaction reads at most LEAF characters of a message: its head and tail
   expect(echo.length).toBeGreaterThan(CAP);
   expect(leafText(3, echo)).toBe(echo);
   expect(leafText(3, "short")).toBe("short");
+  // the bound, to the character
+  expect(leafText(5, "x".repeat(LEAF))).toBe("x".repeat(LEAF));
+  expect(leafText(5, "x".repeat(LEAF + 1))).toBe(`${"x".repeat(LEAF / 2)}\n[… 1 chars cut here; a turn reads them with zoom(5, 1, ${LEAF / 2}) …]\n${"x".repeat(LEAF / 2)}`);
 });

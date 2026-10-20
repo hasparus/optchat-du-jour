@@ -10,9 +10,9 @@ import type { Spawn } from "../claude/process.ts";
 import type { Job } from "../compactor.ts";
 import { CALL_TIMEOUT } from "../config.ts";
 import { type DeviceOffline, type EngineError, fromResult, ModelError, stoppedShort } from "../engines/errors.ts";
-import type { Gate } from "../engines/inflight.ts";
+import { type Gate, type Prefix, prefixFor } from "../engines/inflight.ts";
 import { admitRequest } from "../engines/request-admission.ts";
-import { claudePrefix, type Placement } from "../turn/claude-code.ts";
+import type { Placement } from "../turn/claude-code.ts";
 import { tokensOf, type UsageRecord } from "../usage.ts";
 import { type Try, contextBlocks, sizeRetries, task } from "./step.ts";
 
@@ -40,6 +40,15 @@ export function blocks(job: Job, ttl: "1h" | "5m"): TextBlock[] {
   return markAt([...context.blocks, task(job)], [context.mark, context.blocks.length], ttl);
 }
 
+// What single flight (src/engines/inflight.ts) knows of a call that sends `sent`: its engine,
+// model, effort, system prompt and tools, then its blocks and its marks before its end (the
+// task), which is its own
+export const claudePrefix = (o: Pick<CompactorOptions, "effort" | "instructions" | "model" | "tools">, sent: readonly TextBlock[], ttl: "1h" | "5m"): Prefix | null => {
+  const before = sent.slice(0, -1);
+  const head = { effort: o.effort, engine: "claude-code", instructions: o.instructions, model: o.model, tools: o.tools.join(",") };
+  return prefixFor(head, before.map((b) => b.text), before.flatMap((b, k) => (b.cache_control === undefined ? [] : [k])), ttl);
+};
+
 // A compactor uses a turn's baseArgs (system prompt and master's tools, plus --mcp-config for
 // zoom/date) but its own model, effort and permission mode. No --replay-user-messages: that
 // shapes Claude's output, not the request. With `default`, `-p` and --setting-sources "", Bash,
@@ -64,16 +73,17 @@ const callsTool = (e: Event) =>
 export const claudeCodeCompactor = (o: CompactorOptions) => {
   const timeout = o.timeout ?? CALL_TIMEOUT;
 
-  // the transport: one process per node, each try a message into it, its result the answer. A call
-  // that waits on another writing a prefix of its own waits before its process starts.
+  // the transport: one process per node, each try a message into it, its result the answer. The
+  // process starts first; a call that waits on another writing a prefix of its own waits only to
+  // send, so a writer's claim covers its request, never a process booting (E50).
   const call = (job: Job, failoverFrom: string | null) =>
     Effect.gen(function* () {
       const p = yield* o.placement;
       const first = blocks(job, o.ttl);
+      const claude = yield* p.runner.spawn(compactSpawn(o, p)).pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(failed(e))));
       return yield* o.gate.through(claudePrefix(o, first, o.ttl), (started) =>
         Effect.gen(function* () {
-          const claude = yield* p.runner.spawn(compactSpawn(o, p)).pipe(Effect.catchTag("ClaudeError", (e) => Effect.fail(failed(e))));
-          // a try's events up to its result: the first stream event means the request was taken;
+          // a try's events up to its result: message_start means the request was read;
           // a tool call ends the try (the scope kills the process), since the tools are there for
           // the prefix only
           const answer = Effect.gen(function* () {
@@ -81,7 +91,7 @@ export const claudeCodeCompactor = (o: CompactorOptions) => {
               const next = yield* claude.next;
               if (Option.isNone(next)) return yield* claude.result.pipe(Effect.mapError(failed));
               const e = next.value;
-              if (e.type === "stream_event") yield* started;
+              if (e.type === "stream_event" && e.event.type === "message_start") yield* started; // the input is read (E50)
               if (callsTool(e)) return yield* new ModelError({ message: "the compactor called a tool" });
               if (e.type === "result") return e;
             }
@@ -97,9 +107,10 @@ export const claudeCodeCompactor = (o: CompactorOptions) => {
               return { cut: stoppedShort(result.stop_reason), model, text: result.result ?? "", usage };
             });
           return yield* sizeRetries({ ask, auth: "claude-max", device: o.device, effort: o.effort, engine: "claude-code", failoverFrom, job, log: o.log });
-        }).pipe(Effect.scoped), // the process ends with the node
+        }),
       );
     }).pipe(
+      Effect.scoped, // the process ends with the node
       Effect.timeoutOrElse({
         duration: timeout,
         orElse: () => Effect.fail(new ModelError({ message: `no answer within ${Duration.format(Duration.fromInputUnsafe(timeout))}` })),

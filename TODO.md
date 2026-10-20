@@ -44,9 +44,9 @@ Everything is built and tested against fakes. Each check below needs a real logi
 ## Zoom pages and single flight (E48–E50)
 
 - [ ] The tool list changed (zoom's `at`): the first request on each engine after the deploy rewrites the tools-and-system-prompt cache once; check `cold` in `usage.jsonl` settles after that (SPEC E48).
-- [ ] A real master pages a long message: `zoom(id, 1)` of a 200 KB paste, then `zoom(id, 1, at)` from each page's footer; and Claude Code's MCP output limit against `ZOOM_PAGE` (28,000 characters a page) and against an answer before E48 (SPEC E48).
-- [ ] A real compaction of a message past `LEAF`: its line says the message was cut, or keeps the marker's zoom (SPEC E49).
-- [ ] Single flight against a real cache: compactions that started together after a batch, each one's `cacheWrite` in `usage.jsonl` against the blocks it added; and a priming on the turns' model reading a compaction's entry (SPEC E50).
+- [ ] A real master pages a long message: `zoom(id, 1)` of a 200 KB paste, then `zoom(id, 1, at)` from each page's footer; and Claude Code's MCP output limit (`MAX_MCP_OUTPUT_TOKENS`, 25,000 tokens by default, a warning at 10,000) against a page of `ZOOM_PAGE` characters and `ZOOM_BYTES` bytes of English, of CJK and of emoji, and against a whole answer before E48 (SPEC E48).
+- [ ] A real compaction of a message past `LEAF`, on each compactor engine: no try calls zoom on the note (the claude-code compactor fails a try that calls a tool), and its line says the message was cut, or keeps the note's zoom (SPEC E49).
+- [ ] Single flight against a real cache: compactions that started together after a batch, each one's `cacheWrite` in `usage.jsonl` against the blocks it added; and on the plan, that an entry can be read once `response.output_item.added` has come (SPEC E50).
 
 ## ChatGPT plan
 

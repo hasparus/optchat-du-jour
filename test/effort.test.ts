@@ -156,7 +156,6 @@ const rig = () => {
   });
   const turn = (s: Settings): TurnNeeds => ({
     ...needs(s),
-    gate: makeGate(),
     instructions: "SYSTEM",
     runnerFor: () => Effect.succeed({ cwd: undefined, mcpConfig: "{}", mcpSeen: () => Effect.succeed(false), runner }),
     toolsFor: () => ({ defs: [], run: () => Effect.succeed(toolOk("")) }),
@@ -284,24 +283,31 @@ test("a caption gets its entry's own effort: claude's --effort, a provider's ask
   expect(usage.map((u) => [u.engine, u.effort])).toEqual([["claude-code", "low"]]); // the one fake that says what it cost
 });
 
-test("the in-flight wait keys on the effort: one marked prefix at two efforts never waits, at one it does", async () => {
+// the key of a compactor call's whole marked prefix, on `entry` at `effort` (src/engines/inflight.ts)
+const inflightKey = async (entry: string, effort: Effort) => {
   const ctx = Array.from({ length: 8 }, (_, k) => `${k}+1|user: line ${k}`); // two whole blocks: the second carries the mark
   const marked: Job = { ctx, i: 8, l: 0, msg: newMsg(8, "user", "squeeze me") };
-  // the key of each call's whole marked prefix
   const keys: (string | undefined)[] = [];
   const gate: Gate = { through: (prefix, call) => Effect.sync(() => void keys.push(prefix?.keys.at(-1))).pipe(Effect.andThen(call(Effect.void))) };
-  const r = rig();
-  const keyAt = async (entry: string, effort: Effort) => {
-    const s = settings({ byLevel: [entry], compactorEffort: effort });
-    const [ref] = s.compactor.byLevel[0].chain;
-    const compact = await Effect.runPromise(compactorEngine(ref, { ...r.compactor(s), gate }));
-    await Effect.runPromiseExit(Effect.scoped(compact(marked, null)));
-    return keys.at(-1);
-  };
+  const s = settings({ byLevel: [entry], compactorEffort: effort });
+  const [ref] = s.compactor.byLevel[0].chain;
+  const compact = await Effect.runPromise(compactorEngine(ref, { ...rig().compactor(s), gate }));
+  await Effect.runPromiseExit(Effect.scoped(compact(marked, null)));
+  return keys.at(-1);
+};
+
+test("the in-flight wait keys on the effort: one marked prefix at two efforts never waits, at one it does", async () => {
   for (const entry of ["claude-code:sonnet", "openai-plan:gpt-6-luna", "api-key:anthropic/claude-haiku-5-5"]) {
-    const low = await keyAt(entry, "low"), high = await keyAt(entry, "high"), again = await keyAt(entry, "high");
+    const low = await inflightKey(entry, "low"), high = await inflightKey(entry, "high"), again = await inflightKey(entry, "high");
     expect([low === undefined, low === high, again === high]).toEqual([false, false, true]);
   }
+});
+
+test("single flight keys on the engine and the model: one prefix on two engines, or two models of one, never shares a key (E50)", async () => {
+  const entries = ["claude-code:sonnet", "claude-code:opus", "openai-plan:gpt-6", "openai-plan:gpt-6-luna", "api-key:openai/gpt-6", "api-key:anthropic/claude-haiku-5-5", "api-key:anthropic/claude-opus-4-5"];
+  const keys = await Promise.all(entries.map(async (entry) => inflightKey(entry, "high")));
+  expect(keys.every((k) => k !== undefined)).toBe(true);
+  expect(new Set(keys).size).toBe(entries.length);
 });
 
 test("through the session, a message for an entry with its own effort runs on that entry, and its limit marks that entry down, not the bare ref", async () => {

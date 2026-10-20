@@ -9,8 +9,14 @@ import { headOf, tailOf } from "./text.ts";
 // pair, and N counts every unit left out. A lone surrogate the tool itself wrote becomes U+FFFD:
 // the log is sent to models again and again, and must stay well-formed text.
 export function cap(full: string): string {
-  const text = full.toWellFormed();
-  if (text.length <= CAP) return text;
-  const head = headOf(text, CAP / 2), tail = tailOf(text, CAP / 2);
-  return `${head}\n[… ${text.length - head.length - tail.length} chars cut …]\n${tail}`;
+  return clipMiddle(full.toWellFormed(), CAP, (cut) => `[… ${cut} chars cut …]`);
+}
+
+// A text longer than `limit` characters as its head and its tail, half each, neither cut inside a
+// character, with a line between them that `note` writes from how many characters were left out
+// and where they began; the text itself when it fits. cap() and a compaction's leaf (E49) cut so.
+export function clipMiddle(text: string, limit: number, note: (cut: number, at: number) => string): string {
+  if (text.length <= limit) return text;
+  const head = headOf(text, limit / 2), tail = tailOf(text, limit / 2);
+  return `${head}\n${note(text.length - head.length - tail.length, head.length)}\n${tail}`;
 }

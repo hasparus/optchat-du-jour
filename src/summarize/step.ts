@@ -4,9 +4,9 @@
 // marks; the system prompt and tools are the turns' (docs/optchat.md §5, §7 mistake 6).
 import { Clock, Effect } from "effect";
 import type { Job } from "../compactor.ts";
+import { clipMiddle } from "../cap.ts";
 import { LEAF, NODE, TRIES } from "../config.ts";
 import { type EngineError, ModelError, Refusal } from "../engines/errors.ts";
-import { headOf, tailOf } from "../text.ts";
 import { bytes, children, cut, label, span } from "../tree.ts";
 import { type Tokens, type UsageRecord, isCold } from "../usage.ts";
 import { type Blocks, flat, viewBlocks } from "../view.ts";
@@ -21,14 +21,12 @@ export const contextBlocks = (job: Job): Blocks => viewBlocks(["<chat>", ...job.
 export const RULER = "-".repeat(NODE);
 
 // What a compaction reads of message i (E49): the whole text when it is at most LEAF characters,
-// else its head and its tail, LEAF / 2 each and never cut inside a character (E21), with a line
-// between them that says how much was left out and which zoom reads it, a page at a time
-// (src/mcp.ts page). The log and the tree keep the message whole; only the task is bounded.
-export function leafText(i: number, text: string): string {
-  if (text.length <= LEAF) return text;
-  const head = headOf(text, LEAF / 2), tail = tailOf(text, LEAF / 2);
-  return `${head}\n[… ${text.length - head.length - tail.length} chars cut; zoom(${i}, 1, ${head.length}) reads them …]\n${tail}`;
-}
+// else its head and its tail, cut as cap() cuts a tool's output (clipMiddle), with a line between
+// them for a later reader: how much was left out, and that a turn reads it from where it begins
+// (src/mcp.ts page). Worded as a note, not as a call: the compactor must call no tool. The log and
+// the tree keep the message whole; only the task is bounded.
+export const leafText = (i: number, text: string): string =>
+  clipMiddle(text, LEAF, (cut, at) => `[… ${cut} chars cut here; a turn reads them with zoom(${i}, 1, ${at}) …]`);
 
 // The task, verbatim from docs/optchat.md §4: compress a message, whole up to LEAF characters
 // (leafText), or merge two adjacent lines, each as the view shows it (id+n|text). A merge's

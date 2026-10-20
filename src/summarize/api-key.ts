@@ -13,7 +13,7 @@ import type { Gate } from "../engines/inflight.ts";
 import type { Item, Provider } from "../providers/provider.ts";
 import type { ToolDef } from "../tools/files.ts";
 import type { UsageRecord } from "../usage.ts";
-import { prefixFor } from "./openai-plan.ts";
+import { contextPrefix } from "./openai-plan.ts";
 import { type Try, contextBlocks, sizeRetries, task } from "./step.ts";
 
 // `provider` is the api-key one, from the registry's `providerOf`; its `engine` and `auth` name the
@@ -36,7 +36,8 @@ export const apiKeyCompactor = (o: {
   const call = (job: Job, failoverFrom: string | null) => {
     const context = contextBlocks(job);
     const history: Item[] = [{ mark: context.mark, parts: [...context.blocks, task(job)], type: "user" }];
-    return o.gate.through(prefixFor({ effort: o.effort, engine: `api-key:${provider.engine}`, instructions, model: o.model, tools }, context), (started) => {
+    const head = { effort: o.effort, engine: `api-key:${provider.engine}`, instructions, model: o.model, tools: JSON.stringify(tools) };
+    return o.gate.through(contextPrefix(head, context), (started) => {
       const ask = (t: Try) =>
         Effect.gen(function* () {
           if (t.retry !== null) history.push({ parts: [t.retry.text], type: "user" });

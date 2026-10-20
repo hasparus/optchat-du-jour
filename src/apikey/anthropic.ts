@@ -46,7 +46,7 @@ export type MessagesAsk<E extends Tagged = never> = {
   readonly onToolInput?: ToolInputHooks | undefined; // a tool_use block's input JSON as it streams
   readonly onItem?: (item: Item) => Effect.Effect<void, E>; // each block as it completes, in order
   readonly onSettledUsage?: (spent: Spent, writes?: Writes) => Effect.Effect<void>;
-  readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
+  readonly onStart?: Effect.Effect<void>; // the response began: at message_start (E50)
 };
 // `writes` splits the cache writes by TTL when the API says how; `stop` is the API's stop_reason
 export type MessagesReply = {
@@ -244,7 +244,7 @@ const blockOf = (b: typeof ContentBlock.Type): Block => {
   }
 };
 
-type Hooks<E extends Tagged> = Pick<MessagesAsk<E>, "onItem" | "onReasoning" | "onText" | "onThinking" | "onToolInput">;
+type Hooks<E extends Tagged> = Pick<MessagesAsk<E>, "onItem" | "onReasoning" | "onStart" | "onText" | "onThinking" | "onToolInput">;
 
 const onEvent =
   <E extends Tagged>(o: Hooks<E>) =>
@@ -253,6 +253,7 @@ const onEvent =
       const { type } = yield* typeOf(data);
       switch (type) {
         case "message_start": {
+          if (o.onStart) yield* o.onStart; // the input is read, and cached where it was marked (E50)
           const { message } = yield* messageStart(data);
           const candidate = yield* validateUsage(mergeUsage(r.start, message.usage));
           r.model = message.model ?? r.model;
@@ -352,7 +353,7 @@ export const readMessages = <E extends Tagged = never>(stream: Stream.Stream<Uin
   Effect.suspend(() => {
     const init: Read = { blocks: [], done: false, end: null, model: ask.model, start: null, stop: null };
     return Effect.gen(function* () {
-      const r = yield* sseFold<Read, E>("api-key: anthropic", stream, init, onEvent<E>(ask), (state) => state.done, ask.onStart).pipe(Effect.catchCause((original) => {
+      const r = yield* sseFold<Read, E>("api-key: anthropic", stream, init, onEvent<E>(ask), (state) => state.done).pipe(Effect.catchCause((original) => {
         const spent = spentOf(init);
         const cause = Cause.map(original, (e: EngineError | E): EngineError | E => {
           if (!spent) return e;

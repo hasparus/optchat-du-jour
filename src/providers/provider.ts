@@ -44,7 +44,9 @@ export type Call<E extends Tagged> = {
   // a tool call's input as it streams (SPEC "Artifacts": an artifact's live draft)
   readonly onToolInput?: ToolInputHooks | undefined;
   readonly onSettledUsage?: (spent: Spent) => Effect.Effect<void>;
-  readonly onStart?: Effect.Effect<void>; // the response started: its first stream event (src/engines/inflight.ts)
+  // the response began: Anthropic's message_start, the Responses API's response.output_item.added;
+  // never an error event, response.created or response.failed (src/engines/inflight.ts, E50)
+  readonly onStart?: Effect.Effect<void>;
 };
 
 // A failure that still cost something carries it as `spent`, priced on an API key.
