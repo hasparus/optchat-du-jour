@@ -688,12 +688,18 @@ test("an agent.json that names another folder than its own is left alone, and sa
 test("two runs that report the same words are two reports, each delivered once", async () => {
   await scoped((scope) =>
     Effect.gen(function* () {
+      // agent.json's pending report as each run's end commits it, before its delivery
+      let path = "";
+      const pending: unknown[] = [];
       const r = yield* rig({
         child: { echo: (_input, out) => out.log("talk", "nothing new").pipe(Effect.orDie) },
+        commit: Effect.sync(() => {
+          if (path !== "" && existsSync(path)) pending.push(decodeMeta(readFileSync(path, "utf8")).pending);
+        }),
         master: (call) => Effect.asVoid(call("spawn", { name: "echo", task: "look" })),
         scope,
       });
-      const path = `${r.dir}/agents/echo/agent.json`;
+      path = `${r.dir}/agents/echo/agent.json`;
       yield* r.session.input("go", { clientId: "c1" });
       yield* until("the first report", () => r.log().includes("user: [echo] nothing new"));
       expect(yield* r.subagents.tell("echo", "again")).toBeNull();
@@ -701,6 +707,11 @@ test("two runs that report the same words are two reports, each delivered once",
       yield* until("none pending", () => decodeMeta(readFileSync(path, "utf8")).pending === null);
       yield* Effect.sleep("50 millis");
       expect(r.log().filter((l) => l.startsWith("user: [echo]"))).toEqual(["user: [echo] nothing new", "user: [echo] nothing new"]);
+      // the same words, told apart by the run they end
+      expect(pending.filter((p) => p !== null)).toEqual([
+        { run: 1, text: "[echo] nothing new" },
+        { run: 2, text: "[echo] nothing new" },
+      ]);
     }),
   );
 });
