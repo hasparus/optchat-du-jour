@@ -127,20 +127,24 @@ const inProgress = (repo: string) =>
     return null;
   });
 
-// Gitignored files a finish deletes with the worktree, by name at any depth: what a tool or a build
-// makes again (dependencies, caches, build output, Finder's litter), plus `subagents.disposable`.
-// Any other ignored file (notes, .env.local, output the task asked for) keeps the worktree. A name
-// may hold `*`, any run of characters within it.
+// Gitignored files a finish deletes with the worktree, by the ignored entry's own name at any depth:
+// what a tool or a build makes again (dependencies, caches, build output, Finder's litter), plus
+// `subagents.disposable`. Only the entry's own name counts, never a folder above it: an ignored
+// .env.local in a tracked build/ is someone's. Any other ignored file (notes, .env.local, output the
+// task asked for) keeps the worktree. A name may hold `*`, any run of characters within it.
 export const DISPOSABLE: readonly string[] = ["node_modules", "__pycache__", "*.pyc", ".venv", ".pytest_cache", ".next", ".turbo", "dist", "build", "target", ".DS_Store"];
 const nameRe = (glob: string) => new RegExp(`^${glob.split("*").map((part) => part.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)).join("[^/]*")}$`);
 export const disposable = (extra: readonly string[] = []) => {
   const names = [...DISPOSABLE, ...extra].map(nameRe);
-  return (path: string) => path.split("/").some((part) => part !== "" && names.some((re) => re.test(part)));
+  return (path: string) => {
+    const name = path.replace(/\/$/, "").split("/").at(-1) ?? "";
+    return names.some((re) => re.test(name));
+  };
 };
 
 // gitignored files in the worktree that aren't disposable: each path an ignore rule matches
 // (`--ignored=matching`; a directory it matches counts once, whatever it holds, and is disposable
-// when its own path is)
+// when its own name is)
 const ignoredIn = (path: string, isDisposable: (path: string) => boolean) =>
   must(path, ["status", "--porcelain", "-z", "--ignored=matching"]).pipe(Effect.map((out) => out.split("\0").filter((l) => l.startsWith("!! ") && !isDisposable(l.slice(3))).length));
 

@@ -153,6 +153,20 @@ test("disposable ignored files (dependencies, caches, build output, subagents.di
   expect(await run(finishWorktree(v, "Writer"))).toMatchObject({ ignored: 2, outcome: "nothing" });
 });
 
+test("an ignored file in a tracked build/ is someone's: only an entry's own name is disposable, never a folder above it", async () => {
+  const { folder, root, top } = repo();
+  mkdirSync(`${folder}/build`);
+  writeFileSync(`${folder}/.gitignore`, ".env.local\n*.key\n");
+  writeFileSync(`${folder}/build/release.sh`, "#!/bin/sh\n"); // a build/ folder the repository tracks
+  git(folder, "add", "-A");
+  git(folder, "commit", "-qm", "a tracked build/");
+  const w = await run(addWorktree(root, folder, "Signer", [top]));
+  writeFileSync(`${w.path}/build/.env.local`, "SIGNING_PASSWORD=the one the task asked for\n");
+  writeFileSync(`${w.path}/b.txt`, "work\n");
+  expect(await run(finishWorktree(w, "Signer"))).toMatchObject({ ignored: 1, outcome: "fast-forward" });
+  expect(readFileSync(`${w.path}/build/.env.local`, "utf8")).toBe("SIGNING_PASSWORD=the one the task asked for\n");
+});
+
 test("a repository whose top folder is outside the folders can't be isolated; a dropped worktree goes with its branch", async () => {
   const { folder, root, top } = repo();
   mkdirSync(`${folder}/web`);
