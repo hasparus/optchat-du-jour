@@ -13,7 +13,7 @@ import type { Job } from "../src/compactor.ts";
 import { type Effort, entryLabel, loadSettings, parseRef, parseSettings, Settings } from "../src/config.ts";
 import { UsageLimit } from "../src/engines/errors.ts";
 import { type Gate, makeGate } from "../src/engines/inflight.ts";
-import { type CompactorNeeds, compactorEngine, type TurnNeeds, turnEngine } from "../src/engines/registry.ts";
+import { type CompactorNeeds, compactorEngine, masterPolicy, type TurnNeeds, turnEngine, type TurnPolicy } from "../src/engines/registry.ts";
 import { DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 import { makeMaster } from "../src/master.ts";
 import { makeCaptioner } from "../src/media/caption.ts";
@@ -159,11 +159,12 @@ const rig = () => {
     instructions: "SYSTEM",
     runnerFor: () => Effect.succeed({ cwd: undefined, mcpConfig: "{}", mcpSeen: () => Effect.succeed(false), runner }),
     toolsFor: () => ({ defs: [], run: () => Effect.succeed(toolOk("")) }),
-    warms: () => false,
   });
   return { compactor, efforts: { anthropic, argv, openai, plan: viaPlan }, runner, turn };
 };
 
+// a master's policy whose warm processes follow another engine
+const cold = masterPolicy(() => false);
 const job: Job = { ctx: ["user: a"], i: 1, l: 0, msg: newMsg(1, "user", "squeeze me") };
 const input: TurnInput = { device: "mini", earlier: [], media: [], mid: { next: Effect.never, ready: Effect.succeed([]) }, texts: ["hi"], view: "<chat>\n</chat>" };
 const out: TurnEvents = {
@@ -213,7 +214,7 @@ test("an entry with no effort of its own runs at its role's as its model takes i
     masterEffort: "max",
   });
   for (const ref of s.master.chain) {
-    const engine = await Effect.runPromise(Effect.scoped(turnEngine(ref, r.turn(s))));
+    const engine = await Effect.runPromise(Effect.scoped(turnEngine(ref, r.turn(s), cold)));
     await Effect.runPromiseExit(Effect.scoped(engine.run(input, out, null)));
   }
   for (const ref of s.compactor.byLevel[0].chain) {
@@ -254,7 +255,7 @@ test("each turn engine gets its entry's effort, else the master's", async () => 
   const r = rig();
   const s = settings({ master: chain });
   for (const ref of s.master.chain) {
-    const engine = await Effect.runPromise(Effect.scoped(turnEngine(ref, r.turn(s))));
+    const engine = await Effect.runPromise(Effect.scoped(turnEngine(ref, r.turn(s), cold)));
     await Effect.runPromiseExit(Effect.scoped(engine.run(input, out, null)));
   }
   expect(r.efforts.argv).toEqual(["xhigh", "high"]);
@@ -310,7 +311,7 @@ test("through the session, a message for an entry with its own effort runs on th
       Effect.scoped(
         Effect.gen(function* () {
           const master = yield* makeMaster(s.master.chain.map((ref) => ({ label: entryLabel(ref, s.master.effort), ref: ref.ref })), s.master.effort);
-          const built = yield* Effect.forEach(s.master.chain, (ref) => turnEngine(ref, r.turn(s)));
+          const built = yield* Effect.forEach(s.master.chain, (ref) => turnEngine(ref, r.turn(s), cold));
           // no priming: only turns spawn claude
           const engines = built.map((e) => ({ ref: e.ref, run: e.run, vision: e.vision, warm: e.warm }));
           const chat = yield* openChat(dir, { summarize: () => Effect.succeed("") });
@@ -345,7 +346,7 @@ test("a message for a ref spelled with the master's own effort finds the bare en
       Effect.scoped(
         Effect.gen(function* () {
           const master = yield* makeMaster(s.master.chain.map((ref) => ({ label: entryLabel(ref, s.master.effort), ref: ref.ref })), s.master.effort);
-          const engines = yield* Effect.forEach(s.master.chain, (ref) => turnEngine(ref, r.turn(s)).pipe(Effect.map((e) => ({ ref: e.ref, run: e.run, vision: e.vision, warm: e.warm }))));
+          const engines = yield* Effect.forEach(s.master.chain, (ref) => turnEngine(ref, r.turn(s), cold).pipe(Effect.map((e) => ({ ref: e.ref, run: e.run, vision: e.vision, warm: e.warm }))));
           const chat = yield* openChat(dir, { summarize: () => Effect.succeed("") });
           const session = yield* makeSession({ chat, commit: Effect.succeed(null), defaultDevice: "mini", devices: ["mini"], engines, idle: "1 hour", logUsage: () => Effect.void, master, media: noMedia });
           expect(session.state().effort).toBe("xhigh");
@@ -396,4 +397,11 @@ test("the shipped optchat.config.ts runs on subscriptions only: Haiku at xhigh b
     ["openai-plan:gpt-6-luna", "claude-code:haiku@xhigh"],
     ["openai-plan:gpt-6.1-sol", "claude-code:haiku@xhigh"],
   ]);
+});
+
+test("a pooled turn policy says when it is warm: one without `warms` is a type error, and an unpooled one is never warm", () => {
+  // @ts-expect-error a pooled policy must say when the warm processes follow it (E18)
+  const unsaid: TurnPolicy = { pooled: true };
+  const never: TurnPolicy = { pooled: false };
+  expect([unsaid.pooled, never.pooled, masterPolicy(() => true).pooled]).toEqual([true, false, true]);
 });
