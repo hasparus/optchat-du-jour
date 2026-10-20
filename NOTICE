@@ -47,3 +47,10 @@ What was taken, and from which commit, is tracked in docs/uniichat.md:
 - A subagent's report starting a turn of the master (Agent.ts): SPEC E39.
 - Subagents going on from their logs after a restart (Agent.ts):
   SPEC E40.
+- A page or client older than the server told to reload, by the wire
+  version it connects with (Server.ts): SPEC E44.
+- Esc to interrupt a turn, and send as stop with nothing typed (Term.ts,
+  web/src/main.ts): SPEC "Web UI".
+- A long pasted message folded in the chat (web/src/Html.ts): SPEC
+  "Web UI".
+- A file edit shown as a diff (Machine.ts): SPEC E45.

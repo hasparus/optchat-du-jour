@@ -18,6 +18,8 @@ colors:
   amber-ink: "oklch(0.47 0.1 62)"
   amber-ground: "oklch(0.97 0.03 80)"
   red: "oklch(0.55 0.2 27)"
+  diff-add-ink: "oklch(0.42 0.11 155)"
+  diff-del-ink: "oklch(0.48 0.18 27)"
   dark-shell: "oklch(0.155 0.004 150)"
   dark-sheet: "oklch(0.185 0.005 150)"
   dark-raised: "oklch(0.225 0.005 150)"
@@ -27,6 +29,8 @@ colors:
   dark-code-ground: "oklch(0.16 0.004 150)"
   dark-ivy: "oklch(0.8 0.12 158)"
   dark-red: "oklch(0.7 0.17 25)"
+  dark-diff-add-ink: "oklch(0.82 0.12 155)"
+  dark-diff-del-ink: "oklch(0.8 0.13 25)"
 typography:
   heading:
     fontFamily: "Schibsted Grotesk Variable, Schibsted Grotesk Fallback, -apple-system, system-ui, sans-serif"
@@ -159,6 +163,9 @@ dead; ivy is the one accent. Light and dark are the same structure, not two desi
   stopped on a usage limit or an offline device (the held banner). A limit is a warning, not an error.
 - **Red** (`oklch(0.55 0.2 27)`; dark `oklch(0.7 0.17 25)`): a failed tool call, an error marker, a
   failed upload, the Stop button's outline.
+- **Diff green and red** (`diff-add` live green at 13%, `diff-del` red at 10%, their signs in
+  `oklch(0.42 0.11 155)` and `oklch(0.48 0.18 27)`; dark 15% grounds, signs at 0.82 and 0.8): a line
+  an edit added or removed (Components: Diffs).
 
 ### Neutral
 - **Shell** (`oklch(0.963 0.004 150)`; dark `0.155`): the header band on wide screens.
@@ -314,6 +321,16 @@ Built on shadcn/ui's Trace and Code Block (`components/ui/trace.tsx`, `code-bloc
   on, and only the run's newest plan: a steered message starts a turn of its own, and the plan
   before it closes rather than shimmer beside the new one. The chat's newest plan is open, the
   others closed, until the reader chooses.
+- **Diffs** (`chat/tool-diff.tsx`): an Edit or a MultiEdit is the one tool call drawn open, since what
+  it changed is the work itself: under its line (6 px below, as an artifact's card), a 10 px-radius
+  code-ground panel with a hairline, mono 12 px, a line per row with its sign in a 24 px gutter; a
+  removed line on `diff-del` (red at 10%), an added one on `diff-add` (green at 13%), their signs in
+  `diff-del-ink` and `diff-add-ink` (AA on their grounds, both themes), the text itself in ink. A
+  dashed rule between a MultiEdit's hunks. The first 24 lines, then "Show N more lines" across the
+  panel's foot. The line says "+5 −1" after the path, each count in its sign's ink. Red and green
+  here mean what they mean everywhere in the app: gone, and new. A Write stays closed: "New file · 6
+  lines" in muted 12 px with a chevron, opening to the same panel, its lines untinted. Both draw
+  while the input streams; the line still opens to the input and output as logged.
 - **Sources** (AI Elements' Sources): under a turn's last reply, a line with a globe, "Used 3
   sources". Open: a link per source, its title in ink, its host in muted 12 px, an up-right arrow;
   28 px rows, 40 px on touch. Plain links: no favicons, nothing fetched.
@@ -405,9 +422,18 @@ Modelled on Claude's app: a soft, translucent card with round controls.
   the queue of waiting messages, separated by a hairline. The
   attachments above the text are 64 px tiles (shadcn's Attachment): the photo dimmed while it
   uploads, a 4 px progress bar along its foot, a remove button on its corner, HD on the photo; a
-  failed one in a red tint and ring, its error under it in red 11 px.
+  failed one in a red tint and ring, its error under it in red 11 px. A long paste (past 40 lines or
+  4 KB) is a chip among them, 64 px tall like a tile: a 40 px soft icon tile, "Pasted text" in UI type
+  and "120 lines · 5.2 KB" in 11 px muted, the same remove button on its corner; the chip itself
+  opens its preview under the row (mono 12 px on the code ground, a hairline, 12rem at most, then it
+  scrolls), and washes in the accent fill while open. In the sent bubble the block folds to a muted
+  13 px line, a chevron and "Pasted text · 120 lines", over its first two lines muted, and opens in
+  place.
 - **Status:** above it, one 12 px line: a breathing ivy dot and the shimmering status while a turn
-  runs; muted text for connecting or reconnecting.
+  runs; muted text for connecting or reconnecting. While the turn's engine waits to ask again, the
+  status gives way to "Busy, asking again in 7 s", muted and still (no shimmer), counting down.
+- **Updated:** once the server runs another build, the tray says "OptChat was updated — reload" with
+  a refresh icon in muted ink and an ink Reload button, and the connection dot stops breathing.
 - **Hint:** under it, centred, 11 px muted: the shortcuts on a keyboard, or why send is off.
 
 ### Artifacts
