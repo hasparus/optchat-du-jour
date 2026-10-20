@@ -284,14 +284,14 @@ test("a caption gets its entry's own effort: claude's --effort, a provider's ask
 });
 
 // the key of a compactor call's whole marked prefix, on `entry` at `effort` (src/engines/inflight.ts)
-const inflightKey = async (entry: string, effort: Effort) => {
+const inflightKey = async (entry: string, effort: Effort, tools: CompactorNeeds["tools"] = []) => {
   const ctx = Array.from({ length: 8 }, (_, k) => `${k}+1|user: line ${k}`); // two whole blocks: the second carries the mark
   const marked: Job = { ctx, i: 8, l: 0, msg: newMsg(8, "user", "squeeze me") };
   const keys: (string | undefined)[] = [];
   const gate: Gate = { through: (prefix, call) => Effect.sync(() => void keys.push(prefix?.keys.at(-1))).pipe(Effect.andThen(call(Effect.void))) };
   const s = settings({ byLevel: [entry], compactorEffort: effort });
   const [ref] = s.compactor.byLevel[0].chain;
-  const compact = await Effect.runPromise(compactorEngine(ref, { ...rig().compactor(s), gate }));
+  const compact = await Effect.runPromise(compactorEngine(ref, { ...rig().compactor(s), gate, tools }));
   await Effect.runPromiseExit(Effect.scoped(compact(marked, null)));
   return keys.at(-1);
 };
@@ -308,6 +308,9 @@ test("single flight keys on the engine and the model: one prefix on two engines,
   const keys = await Promise.all(entries.map(async (entry) => inflightKey(entry, "high")));
   expect(keys.every((k) => k !== undefined)).toBe(true);
   expect(new Set(keys).size).toBe(entries.length);
+  // and on the tools, which come before every block: one more tool is another prefix
+  const read = { description: "Read a file", name: "Read", parameters: { properties: { file_path: { type: "string" } }, type: "object" } };
+  for (const entry of ["openai-plan:gpt-6", "api-key:anthropic/claude-haiku-5-5"]) expect(await inflightKey(entry, "high", [read])).not.toBe(await inflightKey(entry, "high"));
 });
 
 test("through the session, a message for an entry with its own effort runs on that entry, and its limit marks that entry down, not the bare ref", async () => {
