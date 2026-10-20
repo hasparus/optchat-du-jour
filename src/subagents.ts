@@ -559,12 +559,14 @@ export const makeSubagents = (o: {
     // reached by another subagent's message, as by its report (E38): refused, not held, so the
     // sender knows at once and says it in its own report, which reaches the chat; a held one would
     // wait unseen in a run that may never come, and arrive stale if it did.
-    const send = (name: string, text: string, from: string, bySubagent = false) =>
+    // `sender`: the user from a card, the master's turn, or a subagent, which the message's label names
+    const send = (name: string, text: string, sender: "user" | Caller) =>
       Effect.gen(function* () {
         const a = find(name);
         if (!a) return Result.fail(`no subagent called ${name}${agents.size === 0 ? "" : ` (there are ${[...agents.values()].map((x) => x.name).join(", ")})`}`);
         if (text.trim() === "") return Result.fail("the message is empty");
-        if (bySubagent && userStopped(a)) return Result.fail(`the user stopped ${a.name}, and a subagent's message doesn't start it again. Say it in your final reply instead, which your report carries`);
+        const from = sender === "user" ? "the user" : sender === "master" ? "OptChat" : sender.agent;
+        if (sender !== "user" && sender !== "master" && userStopped(a)) return Result.fail(`the user stopped ${a.name}, and a subagent's message doesn't start it again. Say it in your final reply instead, which your report carries`);
         const t: Tell = { seq: ++seq, state: "held", text: `[from ${from}] ${text}` };
         if (a.state === "running") {
           a.tells.push(t);
@@ -614,11 +616,10 @@ export const makeSubagents = (o: {
         if (tool === "spawn") return spawn(caller, args);
         const told = Schema.decodeUnknownOption(Told)(args);
         if (told._tag === "None") return refused("tell: give a name and a text");
-        const by = caller === "master" ? "OptChat" : caller.agent;
         // a subagent's key tells only while it runs, as it spawns only then
         if (caller !== "master" && find(caller.agent)?.state !== "running") return refused("tell: only a running subagent can tell one");
         if (caller !== "master" && told.value.name.trim().toLowerCase() === caller.agent.toLowerCase()) return refused("tell: that is you");
-        return send(told.value.name, told.value.text, by, caller !== "master").pipe(
+        return send(told.value.name, told.value.text, caller).pipe(
           Effect.map((r) => (Result.isSuccess(r) ? { error: false, text: r.success } : { error: true, text: `tell: ${r.failure}` })),
         );
       },
@@ -632,7 +633,7 @@ export const makeSubagents = (o: {
 
     // ---- the user's, from a card ----
 
-    const tell = (name: string, text: string) => send(name, text, "the user").pipe(Effect.map((r) => (Result.isSuccess(r) ? null : `tell ${name}: ${r.failure}`)));
+    const tell = (name: string, text: string) => send(name, text, "user").pipe(Effect.map((r) => (Result.isSuccess(r) ? null : `tell ${name}: ${r.failure}`)));
 
     const stop = (name: string) =>
       Effect.gen(function* () {

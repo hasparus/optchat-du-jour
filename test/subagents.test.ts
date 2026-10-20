@@ -1152,7 +1152,7 @@ test("a parent the user stopped is never started again by its child's report, wi
     );
 });
 
-test("a running child's tell to a parent the user stopped is refused, and doesn't start it again; the user's own tell does", async () => {
+test("a running child's tell to a parent the user stopped is refused, and doesn't start it again; the master's tell and the user's own do", async () => {
   await scoped((scope) =>
     Effect.gen(function* () {
       let tools: ((caller: Caller) => AgentTools) | null = null;
@@ -1196,10 +1196,15 @@ test("a running child's tell to a parent the user stopped is refused, and doesn'
       expect(r.stateOf("boss")).toMatchObject({ state: "stopped", why: "stopped by the user" });
       expect(r.calls.filter((c) => c.name === "boss")).toHaveLength(1);
       expect(r.subagents.log("boss")?.entries.some((e) => e.text.includes("12 files"))).toBe(false);
-      // the user's own tell is a decision too: it starts it again
-      expect(yield* r.subagents.tell("boss", "go on")).toBeNull();
+      // the master's tell starts it again: only a subagent's message is refused
+      expect(yield* r.tools("master").call("tell", { name: "boss", text: "carry on" })).toEqual({ error: false, text: "boss had ended (stopped); it starts again with your message." });
       yield* until("boss again", () => r.calls.filter((c) => c.name === "boss").length === 2);
-      expect(r.calls.filter((c) => c.name === "boss")[1]?.input.texts[0]).toContain("[from the user] go on");
+      expect(r.calls.filter((c) => c.name === "boss")[1]?.input.texts[0]).toContain("[from OptChat] carry on");
+      // and so does the user's own tell, once the user stopped it again
+      expect(yield* r.subagents.stop("boss")).toBeNull();
+      expect(yield* r.subagents.tell("boss", "go on")).toBeNull();
+      yield* until("boss a third time", () => r.calls.filter((c) => c.name === "boss").length === 3);
+      expect(r.calls.filter((c) => c.name === "boss")[2]?.input.texts[0]).toContain("[from the user] go on");
     }),
   );
 });
