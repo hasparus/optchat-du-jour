@@ -6,6 +6,7 @@
 // instead of a timer, and an edit's draft is the latest version with the edits written so far.
 import { Effect, Fiber, Option, Schema, type Scope } from "effect";
 import { type ArtifactDraft, draftTool } from "../wire.ts";
+import { stringAt, wholeItems } from "../partial-json.ts";
 import { MAX_ARTIFACT_BYTES } from "./html.ts";
 import { applyEdits, type Edit } from "./store.ts";
 
@@ -13,18 +14,12 @@ import { applyEdits, type Edit } from "./store.ts";
 export const DRAFT_EVERY = "150 millis";
 
 // Decodes the string field `field` of a call's partial JSON as the model writes it, emitting each
-// newly decoded piece. Escapes split across deltas wait for the rest; the closing quote ends it.
+// newly decoded piece (src/partial-json.ts stringAt). Escapes split across deltas wait for the
+// rest; the closing quote ends it.
 export function fieldExtractor(field: string, emit: (chunk: string) => void): (delta: string) => void {
   let raw = "";
   let pos = -1;
   let done = false;
-  const escapes = new Map([
-    ["b", "\b"],
-    ["f", "\f"],
-    ["n", "\n"],
-    ["r", "\r"],
-    ["t", "\t"],
-  ]);
   const start = new RegExp(`"${field}"\\s*:\\s*"`);
   return (delta) => {
     if (done) return;
@@ -34,31 +29,10 @@ export function fieldExtractor(field: string, emit: (chunk: string) => void): (d
       if (!found) return;
       pos = found.index + found[0].length;
     }
-    let out = "";
-    while (pos < raw.length) {
-      const char = raw[pos] ?? "";
-      if (char === '"') {
-        done = true;
-        break;
-      }
-      if (char !== "\\") {
-        out += char;
-        pos++;
-        continue;
-      }
-      if (pos + 1 >= raw.length) break;
-      const next = raw[pos + 1] ?? "";
-      if (next === "u") {
-        if (pos + 6 > raw.length) break;
-        const code = Number.parseInt(raw.slice(pos + 2, pos + 6), 16);
-        out += Number.isInteger(code) ? String.fromCodePoint(code) : "\uFFFD";
-        pos += 6;
-        continue;
-      }
-      out += escapes.get(next) ?? next;
-      pos += 2;
-    }
-    if (out) emit(out);
+    const read = stringAt(raw, pos);
+    pos = read.end;
+    done = read.closed;
+    if (read.text) emit(read.text);
   };
 }
 
@@ -71,35 +45,8 @@ export const nameIn = (raw: string): string | null => {
 
 const decodeEdit = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ new: Schema.String, old: Schema.String })));
 // The edits of an edit_artifact call that the model has written whole so far: each object of the
-// `edits` array once its closing brace is in, read on its own
-export const editsIn = (raw: string): Edit[] => {
-  const at = /"edits"\s*:\s*\[/.exec(raw);
-  if (!at) return [];
-  const edits: Edit[] = [];
-  let depth = 0;
-  let quote = false;
-  let from = -1;
-  for (let k = at.index + at[0].length; k < raw.length; k++) {
-    const char = raw[k];
-    if (quote) {
-      if (char === "\\") k++;
-      else if (char === '"') quote = false;
-      continue;
-    }
-    if (char === '"') quote = true;
-    else if (char === "{") {
-      if (depth === 0) from = k;
-      depth++;
-    } else if (char === "}") {
-      depth--;
-      if (depth === 0 && from >= 0) {
-        const edit = Option.getOrUndefined(decodeEdit(raw.slice(from, k + 1)));
-        if (edit) edits.push(edit);
-      }
-    } else if (char === "]" && depth === 0) break;
-  }
-  return edits;
-};
+// `edits` array once its closing brace is in, read on its own (src/partial-json.ts wholeItems)
+export const editsIn = (raw: string): Edit[] => wholeItems(raw, "edits").flatMap((item) => Option.toArray(decodeEdit(item)));
 
 // What clients are told of one call's draft (src/wire.ts ArtifactDraft); a draft as it stands, for
 // a client that joins while it streams

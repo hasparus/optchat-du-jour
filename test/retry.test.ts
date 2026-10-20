@@ -9,7 +9,7 @@ import { FetchHttpClient } from "effect/http";
 import { makeMessages, type MessagesAsk } from "../src/apikey/anthropic.ts";
 import { HTTP_RETRY_BASE, HTTP_RETRY_LONGEST, HTTP_TRIES, IDLE_ANTHROPIC, IDLE_OPENAI } from "../src/config.ts";
 import { type EngineError, UsageLimit } from "../src/engines/errors.ts";
-import { EngineRetry, type RetryPolicy } from "../src/engines/retry.ts";
+import { EngineRetry, type RetryPause, RetryPauses, type RetryPolicy } from "../src/engines/retry.ts";
 import { type Ask, makeResponses } from "../src/openai/responses.ts";
 import { fakeHttp, sse, type Step } from "./fake-http.ts";
 
@@ -137,6 +137,40 @@ test("Anthropic: a stream quiet after an artifact's input went out as a live dra
   const read = await run(messages(ask({ onToolInput })));
   expect(read._tag === "Success" && textOf(read.success)).toBe("read it");
   expect(server.bodies).toHaveLength(2);
+});
+
+// what RetryPauses heard, each pause as [ms, next, tries], an end as null; `listening` runs a call with it
+const pauses = () => {
+  const heard: ([number, number, number] | null)[] = [];
+  const listen = (p: RetryPause | null) => Effect.sync(() => void heard.push(p && [p.ms, p.next, p.tries]));
+  const listening = <A>(call: Effect.Effect<A, EngineError>) => Effect.provideService(call, RetryPauses, listen);
+  return { heard, listening };
+};
+
+test("each pause before a request is sent again is told as it starts and as it ends (E43): a retry-after as asked, else the doubling pause", async () => {
+  const a = pauses();
+  fresh(apiError(529, "overloaded_error", "busy", { "retry-after-ms": "40" }), apiError(500, "api_error"), whole("hello"));
+  const out = await run(a.listening(messages(ask())));
+  expect(out._tag).toBe("Success");
+  expect(a.heard[0]).toEqual([40, 2, 4]);
+  expect(a.heard[1]).toBeNull();
+  expect(a.heard[2]?.slice(1)).toEqual([3, 4]); // 5 ms doubled, ±20%
+  expect(a.heard[2]?.[0]).toBeWithin(8, 13);
+  expect(a.heard).toHaveLength(4);
+  expect(a.heard[3]).toBeNull();
+
+  // a failure that goes to the chain at once has no pause to tell
+  const b = pauses();
+  fresh(apiError(400, "invalid_request_error"));
+  await run(b.listening(messages(ask())));
+  expect(b.heard).toEqual([]);
+
+  // Responses too
+  const c = pauses();
+  fresh(openAiError(503, "unavailable"), done("hello"));
+  const plan = await run(c.listening(respond(askOpenAi)));
+  expect(plan._tag === "Success" && plan.success.text).toBe("hello");
+  expect(c.heard.map((h) => h?.slice(1) ?? null)).toEqual([[2, 4], null]);
 });
 
 test("Anthropic: what a try that may pass cost still counts when the try after it fails with what won't: a 400, a refusal, a spent key, a long retry-after", async () => {

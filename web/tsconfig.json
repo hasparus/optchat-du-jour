@@ -16,7 +16,7 @@
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true,
 
-    "paths": { "@/*": ["./src/*"], "@wire": ["../src/wire.ts"] },
+    "paths": { "@/*": ["./src/*"], "@wire": ["../src/wire.ts"], "@shared/partial-json": ["../src/partial-json.ts"] },
     "types": ["bun", "vite/client", "vite-plugin-pwa/client"],
     "plugins": [{
       "name": "@effect/language-service",

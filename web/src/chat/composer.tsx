@@ -4,10 +4,12 @@
 // photo is downscaled here and uploaded at once, so it is usually stored (and being described) by
 // the time the text is typed; the message goes out over /ws naming each upload by its digest.
 // Send waits for every upload, says why while it does, and is on when there is text or a finished
-// attachment. The draft (the text and the finished uploads) survives a reload (lib/draft.ts).
+// attachment. The draft (the text, the folded pastes and the finished uploads) survives a reload
+// (lib/draft.ts).
 // While a turn runs (or waits for a model), send follows the session's follow-up
 // setting and a second button (Mod+Enter on a keyboard) sends the other way for this one
-// message; stop is beside them, and with nothing to send, send is stop.
+// message; stop is beside them, and with nothing to send, send is stop (and so is Enter). A long
+// paste folds into a token and a chip (lib/paste.ts); the message sent has the block in its place.
 import {
   PromptInput,
   PromptInputFileInput,
@@ -25,12 +27,15 @@ import { InputGroupButton } from "@/components/ui/input-group";
 import type { Uploader } from "@/lib/attach";
 import type { Link } from "@/lib/connection";
 import { loadDraft, loadHistory, remember, saveDraft } from "@/lib/draft";
+import { expand, folds, insert, nextId, type Paste, present, removeToken, tokenOf } from "@/lib/paste";
+import { emptyEnterStops, ENTER_AFTER_SEND_MS } from "@/lib/stop-keys";
 import type { Restored, SessionStore } from "@/lib/session";
 import { cn } from "@/lib/utils";
 import type { Device, FollowUp, SessionState } from "@wire";
 import { ListEndIcon, ZapIcon } from "lucide-react";
-import { type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
+import { type ClipboardEvent, type KeyboardEvent, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AddContext, addContextChoices } from "./add-context";
+import { PastedChip, PastePreview } from "./pasted";
 import { CompactSelect, FollowUps, ModelPicker } from "./pickers";
 import { useAttachments } from "./use-attachments";
 
@@ -57,6 +62,12 @@ export function Composer({ link, session, state, busy, attached = false, open, d
   const saved = useMemo(loadDraft, []); // read once: the composer owns the draft from here
   const tray = useAttachments(uploader, saved?.media);
   const [text, setText] = useState(saved?.text ?? "");
+  // the long pastes folded into the text's tokens; only those whose token is still there count
+  const [pastes, setPastes] = useState<readonly Paste[]>(saved?.pastes ?? []);
+  const folded = present(text, pastes);
+  const [peek, setPeek] = useState<number | null>(null); // the paste whose preview is open
+  const caret = useRef<number | null>(null); // where the caret goes once a token is in the text
+  const sentAt = useRef(Number.NEGATIVE_INFINITY); // when this composer last sent, on this page's clock
   const box = useId(); // the textarea's id, to focus it
   const touch = useCoarsePointer();
   const hint = useId();
@@ -73,7 +84,7 @@ export function Composer({ link, session, state, busy, attached = false, open, d
   const elsewhere = running && model !== null && turnEngine !== null && model !== turnEngine;
   const followUp = state?.followUp ?? "steer";
   const other: FollowUp = followUp === "steer" ? "queue" : "steer";
-  const content = text.trim() !== "" || tray.items.length > 0;
+  const content = text.trim() !== "" || tray.items.length > 0; // a folded paste is a token in the text
   // the second send button shows: a narrow footer has to make room for it
   const crowded = running && !elsewhere && content;
   // the hidden pickers the "+" sheet opens (./add-context.tsx)
@@ -83,9 +94,40 @@ export function Composer({ link, session, state, busy, attached = false, open, d
   // the draft as it stands, kept for a reload: the text and the uploads that finished
   const readyKey = tray.ready.map((a) => a.sha).join(",");
   useEffect(() => {
-    saveDraft({ media: tray.ready, text });
+    saveDraft({ media: tray.ready, pastes: present(text, pastes), text });
     // oxlint-disable-next-line react-hooks/exhaustive-deps -- readyKey stands for tray.ready, a new array each render
-  }, [text, readyKey]);
+  }, [text, readyKey, pastes]);
+
+  // a token just pasted: the caret after it, as after any paste
+  useLayoutEffect(() => {
+    const at = caret.current;
+    const el = document.getElementById(box);
+    if (at === null || !(el instanceof HTMLTextAreaElement)) return;
+    caret.current = null;
+    el.setSelectionRange(at, at);
+  }, [text, box]);
+
+  // A pasted block long enough to fold goes in as its token, over the selection; a shorter one, or
+  // files (the tray's), are pasted as ever. Line ends are the textarea's own, \n, as when it pastes.
+  const paste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    if (e.clipboardData.files.length > 0) return;
+    const block = e.clipboardData.getData("text/plain").replaceAll(/\r\n?/g, "\n");
+    if (!folds(block)) return;
+    e.preventDefault();
+    const p = { id: nextId(pastes), text: block };
+    const el = e.currentTarget;
+    const put = insert(text, el.selectionStart, el.selectionEnd, tokenOf(p));
+    caret.current = put.caret;
+    setPastes([...folded, p]);
+    setText(put.text);
+    setRecalled(null);
+  };
+  const unpaste = (p: Paste) => {
+    setText((now) => removeToken(now, p));
+    setPastes((now) => now.filter((q) => q.id !== p.id));
+    if (peek === p.id) setPeek(null);
+    document.getElementById(box)?.focus();
+  };
 
   // a message taken back: its text before what is typed now, its uploads into the tray
   const restoredKey = useRef(restored?.key ?? null);
@@ -104,12 +146,17 @@ export function Composer({ link, session, state, busy, attached = false, open, d
 
   const send = (how?: FollowUp) => {
     if (!sendable(text)) return;
-    session.send(text, { device: device ?? undefined, engine: model ?? undefined, followUp: running ? how : undefined, media: tray.ready });
-    if (text.trim() !== "") {
-      remember(text);
-      history.current = [...history.current.filter((t) => t !== text), text];
+    // the text as typed, each folded paste back in its token's place; where they are goes with it, to fold them in the chat
+    const whole = expand(text, folded);
+    session.send(whole.text, { device: device ?? undefined, engine: model ?? undefined, followUp: running ? how : undefined, media: tray.ready, spans: whole.spans });
+    if (whole.text.trim() !== "") {
+      remember(whole.text);
+      history.current = [...history.current.filter((t) => t !== whole.text), whole.text];
     }
+    sentAt.current = Date.now();
     setText("");
+    setPastes([]);
+    setPeek(null);
     setRecalled(null);
     tray.clear();
   };
@@ -119,6 +166,14 @@ export function Composer({ link, session, state, busy, attached = false, open, d
   // Mod+Enter sends the other way while a turn runs.
   const keyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;
+    // nothing to send while a turn runs: Enter is Stop, as the button is; not an Enter that comes
+    // right after one that sent (pressed twice), which would stop the turn the message just joined
+    const settled = Date.now() - sentAt.current > ENTER_AFTER_SEND_MS;
+    if (busy && open && settled && emptyEnterStops(e.nativeEvent, { empty: !content, touch })) {
+      e.preventDefault();
+      if (state?.loop !== undefined) link.abort(state.loop); // the run the user saw (E41), as Stop sends
+      return;
+    }
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       send(other);
@@ -173,17 +228,36 @@ export function Composer({ link, session, state, busy, attached = false, open, d
           {blocked ??
             (touch
               ? null
-              : `Enter to send · Shift+Enter new line${running && !elsewhere ? ` · Ctrl/⌘+Enter ${other === "steer" ? "sends now" : "queues"}` : ""}${history.current.length > 0 ? " · ↑ last message" : ""}`)}
+              : `Enter to send · Shift+Enter new line${running && !elsewhere ? ` · Ctrl/⌘+Enter ${other === "steer" ? "sends now" : "queues"}` : ""}${busy ? " · Esc stops" : history.current.length > 0 ? " · ↑ last message" : ""}`)}
         </p>
       }
       canSubmit={sendable}
+      // Esc closes an open paste preview, and is taken so it stops nothing (lib/stop-keys.ts)
+      onKeyDown={(e) => {
+        if (e.key !== "Escape" || peek === null || e.nativeEvent.isComposing) return;
+        e.preventDefault();
+        setPeek(null);
+      }}
       onFiles={tray.add}
       onSubmit={() => {
         send();
       }}
     >
-      {(tray.items.length > 0 || tray.notice !== null) && (
+      {(tray.items.length > 0 || tray.notice !== null || folded.length > 0) && (
         <PromptInputAttachments>
+          {folded.map((p) => (
+            <PastedChip
+              key={`paste-${p.id}`}
+              onOpen={() => {
+                setPeek(peek === p.id ? null : p.id);
+              }}
+              onRemove={() => {
+                unpaste(p);
+              }}
+              open={peek === p.id}
+              paste={p}
+            />
+          ))}
           {tray.items.map((a) => (
             <PromptInputAttachment
               done={a.asset !== null}
@@ -211,6 +285,11 @@ export function Composer({ link, session, state, busy, attached = false, open, d
               {tray.notice}
             </p>
           )}
+          {folded
+            .filter((p) => p.id === peek)
+            .map((p) => (
+              <PastePreview key={`peek-${p.id}`} paste={p} />
+            ))}
         </PromptInputAttachments>
       )}
       <PromptInputBody>
@@ -221,6 +300,7 @@ export function Composer({ link, session, state, busy, attached = false, open, d
             setText(e.currentTarget.value);
           }}
           onKeyDown={keyDown}
+          onPaste={paste}
           id={box}
           placeholder={placeholder}
           value={text}

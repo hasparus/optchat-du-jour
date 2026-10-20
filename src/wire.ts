@@ -8,6 +8,15 @@ import { Kind, Msg } from "./records.ts";
 export { Kind, Msg } from "./records.ts";
 
 // ---------------------------------------------------------------------------------------------
+// The wire's version (E44): a web page sends it as /ws?wire=N, and a server whose own differs closes
+// the socket with WIRE_STALE, so a page left open across a deploy says "reload" instead of
+// reconnecting for ever. Raised when a change would break a page from before it; a change a page
+// from before it decodes (an optional field, a frame it drops) leaves it as it is.
+export const WIRE = 1;
+// the close code (4000-4999: an application's own, RFC 6455 §7.4.2): 426, HTTP's "Upgrade Required"
+export const WIRE_STALE = 4426;
+
+// ---------------------------------------------------------------------------------------------
 // the session's shared state (STATE_SNAPSHOT, STATE_DELTA)
 
 // "needs-model": a turn stopped on a usage limit or an offline device, waiting for a client to
@@ -197,6 +206,11 @@ export const SessionState = Schema.Struct({
   // the subagents (SPEC M7a): every running one, then the most recent others, newest first.
   // Optional: a server from before them sends none, and a client from before them ignores it
   subagents: Schema.optional(Schema.Array(SubagentInfo)),
+  // The running turn's retry pause (E35, E43): its engine waits `ms` more as of when this state was
+  // made (a client counts down from when it got it, as with `elapsed`), before try `next` of
+  // `tries`; null when it doesn't wait (a delta replaces keys and never removes one, so the end of a
+  // pause is a null). Optional, so either side from before it still decodes.
+  retryPause: Schema.optional(Schema.NullOr(Schema.Struct({ ms: Schema.Number, next: Schema.Number, tries: Schema.Number }))),
   // The turn loop's newest run (E41), counted up from this boot's clock as it starts again: a Stop,
   // a Stop all or a resume names the run the user saw, so one sent again after a reconnect or a
   // restart never stops or settles a later one. Optional, as above
@@ -278,6 +292,14 @@ export const draftTool = (name: string): "publish_artifact" | "edit_artifact" | 
   const tool = artifactTool(name);
   return tool === "read_artifact" ? null : tool;
 };
+// The file tools whose input streams to clients as the model writes it, so the chat draws an edit's
+// diff or a new file before the call is whole (E45). Claude Code's names; our tool loop has none.
+export const LIVE_TOOLS = ["Edit", "MultiEdit", "Write"] as const;
+export const liveTool = (name: string): boolean => LIVE_TOOLS.some((t) => t === name);
+// A subagent's report as the chat logs it (src/subagents/reports.ts): "[Name] " and then the rest.
+// The web never folds one (web/src/lib/paste.ts), so both read the head from here.
+export const reportHead = (name: string) => `[${name}] `;
+export const REPORT_PREFIX = /^\[[A-Za-z][A-Za-z0-9_-]{0,31}\] /;
 // A subagent's name (SPEC M7a), and an artifact's: a letter, then up to 31 letters, digits, "-" or
 // "_": a folder name on every system and never a path, and one that can't end a report's "[Name] "
 // early. Any other string is no name.

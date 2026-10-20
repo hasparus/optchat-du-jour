@@ -10,7 +10,9 @@ import type { SocketLike } from "@/lib/connection";
 import type { Inbound } from "@/lib/protocol";
 import type { Received, SessionState } from "@wire";
 
-type Listener = (event: { readonly data: string }) => void;
+// a frame's data, or a close's code
+type SocketEvent = { readonly data: string; readonly code?: number };
+type Listener = (event: SocketEvent) => void;
 
 export const IDLE: SessionState = {
   budget: 128_000,
@@ -147,12 +149,13 @@ export function fakeServer(greeting: () => readonly Inbound[]) {
         if (this.readyState === 1) for (const id of idsOf(frame)) this.fire("message", { data: JSON.stringify(received(id)) });
       });
     }
-    close() {
+    // closed, by the page or (with a code) by the server
+    close(code?: number) {
       if (this.readyState === 3) return;
       this.readyState = 3;
-      this.fire("close", { data: "" });
+      this.fire("close", code === undefined ? { data: "" } : { code, data: "" });
     }
-    fire(type: string, event: { readonly data: string }) {
+    fire(type: string, event: SocketEvent) {
       for (const l of this.listeners.get(type) ?? []) l(event);
     }
   }

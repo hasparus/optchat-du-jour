@@ -44,6 +44,11 @@ Each item is **ported** (in our code now, with its E-number in SPEC), **planned*
 | Idempotent `POST /api/messages` | E41, `server/routes/api.ts`, `server/messages.ts` | A message by its client's id, answered once, as `/ws` takes one; for iOS Shortcuts and the share extension. Behind the same Tailscale check |
 | Paged snapshots on `/ws` | E42, `server/agui.ts` `snapshotFrame`, `web/src/lib/session.ts` `fill` | A `MESSAGES_SNAPSHOT` frame is at most 128 KiB: the newest entries of its window that fit, maybe none, the window named in its `metadata`; the client reads the rest from `/api/messages`. UniiChat sends what a client lacks of the view, a frame per message or summary, rather than raw entries in a window |
 | Retries on our own HTTP engines, with idle watchdogs | E35, `src/engines/retry.ts` | 4 tries rather than 8, since a failover chain or the user's resume stands behind ours. `retry-after`, `retry-after-ms` and `x-should-retry` are heeded, and the pauses have jitter. Whether a failure may pass is decided where it is classified and carried on the error. A try whose text already went out is never asked again. What failed tries cost is carried to whatever ends the call, and openai-plan's 401 renewal is one of the tries. The idle values are UniiChat's: 5 min on Anthropic, 20 min on OpenAI |
+| Saying "busy, asking again in N s" | E43, `src/engines/retry.ts` `RetryPauses`, `web/src/chat/turn-status.tsx` | During a retry pause of our HTTP engines, the turn's state carries it (`retryPause`), and the status line counts it down; `null` once the try starts or the turn ends. Only the turn says it: a compactor call or a subagent waits quietly |
+| A `?wire=N` version check | E44, `server/routes/ws.ts` `staleWire`, `web/src/lib/connection.ts` | A page of another build gets a typed close (4426) and asks to be reloaded instead of reconnecting; a client that names no version (the REPL, an older page) is served as before |
+| Esc, or an empty Enter, to stop | `web/src/lib/stop-keys.ts`, `web/src/chat/use-stop-keys.ts` | The same abort as Stop, on the chat's tab only. Not while an input method composes, the artifact pane or a select has focus, or a sheet, popover, menu or paste preview takes the key; not on a touch screen's Enter, nor an Enter within a second of the one that sent |
+| Long pastes folded | `web/src/lib/paste.ts`, `web/src/chat/pasted.tsx` | Past 40 lines or 4 KB: a token and a chip in the composer (open, remove), the block folded in the sent bubble, kept by log index. What the model reads is the text as pasted. Other long messages fold whole; reports never |
+| Diffs for Edit and Write calls | E45, `src/partial-json.ts`, `web/src/lib/diff.ts`, `web/src/chat/tool-diff.tsx` | An Edit or MultiEdit as a line diff, a Write as its new file behind its line count, drawn while the input streams: Claude Code's file tools' input now reaches clients before the call is logged, read as an artifact's draft is |
 
 ### Planned
 
@@ -66,15 +71,14 @@ Also planned, from the same reports:
 | --- | --- |
 | A cache-replay test | Our version of `cache.test.ts`: fake Anthropic and Responses caches, gaps up to 2 h, api-key and claude-code layouts and the compactor engines. It turns the cost model into numbers and settles E6 and E26 |
 | The REPL's own silence watchdog | Only the web link watches for the heartbeat so far |
-| The other large frames on `/ws` | Paged snapshots (E42) left these whole: the reply so far and an artifact's draft (up to 512 KB) for a client that joins mid-run, and a state whose held messages are long. Cut into pieces under `SNAPSHOT_BYTES` the same way |
+| The other large frames on `/ws` | Paged snapshots (E42) left these whole: the reply so far, an artifact's draft (up to 512 KB) and a file tool's input so far (E45) for a client that joins mid-run, and a state whose held messages are long. Cut into pieces under `SNAPSHOT_BYTES` the same way |
 | The REPL's own resends | The REPL's messages are answered once (E41), but it forgets them when its socket drops and sends no id with its cancels and settings. It could keep and resend them as the web link does |
-| Saying "busy, asking again in N s" | A turn on our tool loop waits through its retries silently |
 | Rebuilding clipped nodes | Find the `clipped: true` lines and ask again, for instance after a model change |
 | Size retries without the previous reply | A bake-off arm first, against our same-conversation retries |
 | Compactor effort `high` rather than `xhigh` | A bake-off contender |
 | Budget hardening | Bill a stream cut short by the bytes it streamed; reserve worst-case spend for concurrent calls; read OpenAI's `cache_write_tokens`; a long-context price tier |
 | Rate-limit rooms | Under a 429 storm, one request probes while the others wait; chats ahead of imports |
-| Small client items | A `?wire=N` version check, Esc or an empty Enter to stop, long pastes folded, diffs for Edit and Write calls, push at the end of a turn, a turn cut by a restart resumed with a note |
+| Small client items | Push at the end of a turn (there is no push yet, web or in the iOS app, to send it with), a turn cut by a restart resumed with a note. The rest is ported |
 | Smaller core items | Write `view.json` only on a batch; later, the slot index so RAM holds only the view |
 
 ### Declined

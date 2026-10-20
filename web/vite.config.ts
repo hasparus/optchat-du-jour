@@ -71,6 +71,8 @@ export default defineConfig({
       "@": fileURLToPath(new URL("src", import.meta.url)),
       // the server's wire contract: schemas and helpers with no node imports (SPEC "Protocol")
       "@wire": fileURLToPath(new URL("../src/wire.ts", import.meta.url)),
+      // the reader of a tool call's streamed JSON, the server's own (src/partial-json.ts): pure, no node imports
+      "@shared/partial-json": fileURLToPath(new URL("../src/partial-json.ts", import.meta.url)),
       // shadcn's `cn` stands in for clsx and tailwind-merge, which Streamdown and
       // class-variance-authority still import, so the bundle carries one implementation
       // (https://github.com/shadcn-ui/cn/blob/main/docs/aliasing.md). tailwind-merge goes to our

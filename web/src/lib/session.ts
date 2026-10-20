@@ -11,8 +11,9 @@ import { api } from "./api.ts";
 import { applyDraft, type Drafts, noDrafts, savedOver } from "./artifacts.ts";
 import { refOf } from "./attach.ts";
 import type { Link, LinkStatus } from "./connection.ts";
-import { loadSent, saveSent } from "./draft.ts";
+import { type Folds, loadFolds, loadSent, rememberFolds, saveSent } from "./draft.ts";
 import { applyEvent, applyPage, dropBelow, emptyLog, hole, type Log, lowest, tip, trimHeld } from "./log.ts";
+import type { Span } from "./paste.ts";
 import type { Forwarded, Inbound, Patch } from "./protocol.ts";
 import { applyThought, dropLive, keepFrom, noThoughts, toggled, type Thoughts, withHeads, withText } from "./reasoning.ts";
 
@@ -36,6 +37,7 @@ export type Pending = {
   readonly error: string | null;
   readonly forwarded: Forwarded;
   readonly from?: number;
+  readonly spans?: readonly Span[]; // where its long pastes are in `text` (./paste.ts), to fold once it is logged
 };
 
 // a message this client took back, for the composer to hold again; `key` tells one from the next
@@ -64,9 +66,14 @@ export type Session = {
   // versions were saved since this page opened, so what lists them reads the list again
   readonly drafts: Drafts;
   readonly saved: number;
+  // where the long pastes are in the messages sent from here, by log index (./paste.ts): read once,
+  // and kept as each is logged
+  readonly folds: Folds;
 };
 
 const MAX_MARKERS = 100;
+// where a message of ours has its long pastes, once it is logged (./draft.ts Fold)
+const foldOf = (p: Pending) => ({ length: p.text.length, spans: p.spans ?? [] });
 // what a message a page from before E41 kept is marked with: it may be logged, and can't be asked about
 export const UNSENT = "it may not have reached the server: send it again";
 const PAGE = 100; // older entries per page
@@ -75,6 +82,7 @@ const MAX_FILL = 500; // a wider hole under the window is dropped, not fetched
 const initial: Session = {
   asking: [],
   drafts: noDrafts,
+  folds: new Map(),
   log: emptyLog,
   markers: [],
   pending: [],
@@ -179,11 +187,11 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
   const reasoningText = options.reasoningText ?? api.reasoningText;
   // what was sent before a reload and never acked: sent again once connected (E41), unless a page
   // from before E41 kept it
-  const kept = loadSent().map(({ device, engine, followUp, from, id, media, text }): Pending => {
-    const p: Pending = { error: null, forwarded: { device, engine, followUp }, id, media, text };
+  const kept = loadSent().map(({ device, engine, followUp, from, id, media, spans, text }): Pending => {
+    const p: Pending = { error: null, forwarded: { device, engine, followUp }, id, media, spans, text };
     return from === undefined ? p : { ...p, error: UNSENT, from };
   });
-  let s: Session = { ...initial, pending: kept, status: link.status() };
+  let s: Session = { ...initial, folds: loadFolds(), pending: kept, status: link.status() };
   let raw: Record<string, Schema.Json> = {};
   let keys = 0;
   let filling = false;
@@ -195,7 +203,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
   let restores = 0;
 
   const set = (next: Partial<Session>) => {
-    if (next.pending && next.pending !== s.pending) saveSent(next.pending.map(({ forwarded, from, id, media, text }) => ({ ...forwarded, from, id, media, text })));
+    if (next.pending && next.pending !== s.pending) saveSent(next.pending.map(({ forwarded, from, id, media, spans, text }) => ({ ...forwarded, from, id, media, spans, text })));
     s = { ...s, ...next };
     for (const f of subscribers) f();
   };
@@ -213,7 +221,8 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
     const at = s.pending.findIndex((p) => p.id === id);
     const p = s.pending[at];
     if (p === undefined) return; // another client's message
-    set({ pending: index === null ? s.pending.toSpliced(at, 1, { ...p, error: error ?? "not logged" }) : s.pending.toSpliced(at, 1) });
+    if (index === null) set({ pending: s.pending.toSpliced(at, 1, { ...p, error: error ?? "not logged" }) });
+    else set({ folds: rememberFolds(s.folds, index, foldOf(p)), pending: s.pending.toSpliced(at, 1) });
   };
   // A held message left the server's inbox for a client's composer, or could not: ours is no longer
   // pending either way it went to a composer, and the page that asked gets it back.
@@ -405,13 +414,14 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
         subscribers.delete(f);
       };
     },
-    // a message from the composer, with the attachments it uploaded: shown as queued until its
-    // ack. Sent while the link is down, it goes out on the next connection. The rest is its
-    // forwardedProps: the device and the composer's model when it was sent, and `followUp` when it
-    // asks for the other behavior than the session's ("send now" or "queue")
-    send: (text: string, { media = [], ...forwarded }: Forwarded & { readonly media?: readonly Asset[] } = {}) => {
+    // a message from the composer, with the attachments it uploaded and where its long pastes are
+    // (`spans`, to fold them once it is logged): shown as queued until its ack. Sent while the link
+    // is down, it goes out on the next connection. The rest is its forwardedProps: the device and
+    // the composer's model when it was sent, and `followUp` when it asks for the other behavior than
+    // the session's ("send now" or "queue")
+    send: (text: string, { media = [], spans = [], ...forwarded }: Forwarded & { readonly media?: readonly Asset[]; readonly spans?: readonly Span[] } = {}) => {
       const id = crypto.randomUUID();
-      set({ pending: [...s.pending, { error: null, forwarded, id, media, text }] });
+      set({ pending: [...s.pending, { error: null, forwarded, id, media, spans, text }] });
       link.send(text, id, { ...forwarded, attachments: media.map(refOf) });
     },
     // A waiting message back into the composer: one the server holds is asked for (it answers

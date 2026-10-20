@@ -10,10 +10,13 @@
 // opens, and the server answers a repeat without doing it again. So nothing the user did is lost
 // with a socket that drops, nor done twice (after UniiChat's link, docs/uniichat.md).
 import { EventType } from "@ag-ui/core";
+import { WIRE_STALE } from "@wire";
 import { Option } from "effect";
 import { type Action, actionFrame, type AttachmentRef, type Forwarded, type Inbound, parseFrame, runInput, type Settings, type SubagentAction } from "./protocol.ts";
 
-export type LinkStatus = "connecting" | "open" | "closed";
+// "outdated": the server runs another build and closed the socket with WIRE_STALE (E44); the link
+// stays down until the page reloads
+export type LinkStatus = "connecting" | "open" | "closed" | "outdated";
 
 export type Link = {
   // a message: it starts a turn, or joins the running one. Sent while the link is down, it goes out
@@ -50,7 +53,8 @@ export type Link = {
 
 // the part of a WebSocket the link uses; the server sends text frames only
 export type SocketLike = {
-  addEventListener(type: "open" | "close", listener: () => void): void;
+  addEventListener(type: "open", listener: () => void): void;
+  addEventListener(type: "close", listener: (event: { readonly code?: number }) => void): void;
   addEventListener(type: "message", listener: (event: { readonly data: string }) => void): void;
   send(frame: string): void;
   close(): void;
@@ -179,10 +183,16 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
       }
       for (const l of listeners) l(e);
     });
-    ws.addEventListener("close", () => {
+    ws.addEventListener("close", (event) => {
       if (ws !== socket) return;
       clearTimeout(silence);
       socket = null;
+      // a server of another build: reconnecting would get the same answer, so the page reloads instead
+      if (event.code === WIRE_STALE) {
+        closed = true;
+        setStatus("outdated");
+        return;
+      }
       setStatus("closed");
       if (closed) return;
       timer = setTimeout(connect, retry);

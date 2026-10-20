@@ -5,7 +5,7 @@
 // unbuilt messages in order, whose first AHEAD are the ones that may start, and the ready merges
 // level by level. A failed call is tried again at the next message, once it has rested (E33); a
 // node the model refused, or gave no line for, REFUSALS times is built from its source, clipped.
-import { Cause, Clock, Console, Data, Duration, Effect, Exit, Option, PubSub, Semaphore } from "effect";
+import { Cause, Clock, Console, type Context, Data, Duration, Effect, Exit, Option, PubSub, Semaphore } from "effect";
 import { AHEAD, JOBS, REFUSALS, REST_MOST } from "./config.ts";
 import type { Node } from "./records.ts";
 import { newNode, type StoreError } from "./store.ts";
@@ -120,6 +120,10 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
     const report = o.report ?? ((line: string) => Console.error(line));
     const scope = yield* Effect.scope;
     const clock = yield* Clock.Clock;
+    // A job runs in the pump's own context, never in that of whoever logged the message that started
+    // it: a turn's request logs its items and so starts jobs, and its fiber-local services (the
+    // turn's RetryPauses listener, E43) must not follow them in.
+    const context = yield* Effect.context();
     // The queues: the unbuilt messages, in order, and the ready merges of each level. A node is in
     // at most one of: a queue, `running`, `failed` (waiting for the next message). `told`: the
     // nodes whose failure was reported already.
@@ -280,7 +284,7 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
         // if making the context throws, that is the job's failure and goes the same way
         const call = yield* Effect.exit(Effect.sync(() => makeJob(mem, c)));
         running.set(name, c.l);
-        yield* Effect.forkIn(job(c, call), scope);
+        yield* Effect.forkIn(Effect.updateContext(job(c, call), (_: Context.Context<never>) => context), scope);
       }
     });
 

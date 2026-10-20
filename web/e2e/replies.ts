@@ -6,6 +6,15 @@ export const SOL_REPLY = "Answered by the fake ChatGPT plan.";
 // the tool's output when E2E_TOOL_ERROR fails it: nothing in the text says it failed, only the flag
 export const TOOL_ERROR = "ls: cannot open directory '.': Permission denied";
 
+// E2E_EDITS (E45): Claude Code's Edit input, keys in the order it writes them, and its Write input.
+// Fake data only.
+export const EDIT_INPUT = {
+  file_path: "src/trip.ts",
+  old_string: "export const trip = {\n  from: \"Oct 3\",\n  to: \"Oct 8\",\n};\n",
+  new_string: "export const trip = {\n  from: \"Oct 3\",\n  to: \"Oct 9\",\n  nights: 6,\n  city: \"Lisbon\",\n  hotel: \"Casa Azul\",\n  flight: \"TP 1351\",\n};\n",
+};
+export const WRITE_INPUT = { file_path: "notes/packing.md", content: "# Packing\n\n- passport\n- charger\n- sandals\n- rain jacket\n" };
+
 // E2E_PATTERNS: Claude Code's TodoWrite input, before and after the work (the Plan pattern)
 export const PLAN_START = {
   todos: [

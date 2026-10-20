@@ -46,7 +46,7 @@ test("a reply cut off by a cancel is closed and dropped by a snapshot before its
 
 test("a client that joins mid-reply gets the reply so far, then the rest without a repeat", () => {
   const entries = [newMsg(0, "user", "hello")];
-  const c = connect(entries, { drafts: [], reasoning: null, reply: { at: 1, text: "Hello wo" }, runId: "0" });
+  const c = connect(entries, { drafts: [], reasoning: null, reply: { at: 1, text: "Hello wo" }, runId: "0", tool: null });
   expect(c.out.map((e) => e.type)).toEqual([
     EventType.MESSAGES_SNAPSHOT,
     EventType.STATE_SNAPSHOT,
@@ -78,7 +78,7 @@ test("a take-back is a CUSTOM event every client gets: the message with its atta
 
 test("a client that joins while a tool runs gets its result under the call's id", () => {
   const entries = [newMsg(0, "user", "list it"), newMsg(1, "tool", 'Glob {"pattern":"*"}')];
-  const c = connect(entries, { drafts: [], reasoning: null, reply: null, runId: "0" });
+  const c = connect(entries, { drafts: [], reasoning: null, reply: null, runId: "0", tool: null });
   const snap = c.out.find((e) => e.type === EventType.MESSAGES_SNAPSHOT);
   const call = snap?.type === EventType.MESSAGES_SNAPSHOT ? snap.messages.at(-1) : undefined;
   const id = call?.role === "assistant" ? call.toolCalls?.[0]?.id : undefined;
@@ -88,4 +88,46 @@ test("a client that joins while a tool runs gets its result under the call's id"
   c.feed({ entry: echo, runId: "0", type: "logged" });
   const result = c.out.find((e) => e.type === EventType.TOOL_CALL_RESULT);
   expect(result?.type === EventType.TOOL_CALL_RESULT ? result.toolCallId : undefined).toBe(id);
+});
+
+// E45: a file tool's input as it streams
+const input = (at: number, offset: number, delta: string, call = "toolu_1"): SessionEvent => ({ at, call, delta, name: "Edit", offset, runId: "0", type: "tool-input" });
+const argsOf = (out: readonly AGUIEvent[], id: string) => out.flatMap((e) => (e.type === EventType.TOOL_CALL_ARGS && e.toolCallId === id ? [e.delta] : [])).join("");
+const EDIT = JSON.stringify({ file_path: "src/a.ts", new_string: "b", old_string: "a" });
+
+test("an Edit's input streams as its tool call before the entry is logged, then the entry is the call whole (E45)", () => {
+  const entries = [newMsg(0, "user", "fix it")];
+  const c = connect(entries);
+  c.feed({ runId: "0", type: "run-started" }, text(1, 0, "On it."), input(1, 0, EDIT.slice(0, 20)), input(1, 20, EDIT.slice(20)));
+  // the reply closes before the call opens at the index its entry is expected at
+  const end = where(c.out, (e) => e.type === EventType.TEXT_MESSAGE_END && e.messageId === "1");
+  const start = where(c.out, (e) => e.type === EventType.TOOL_CALL_START);
+  expect(end).toBeGreaterThan(-1);
+  expect(start).toBeGreaterThan(end);
+  expect(c.out[start]).toEqual({ parentMessageId: "1", toolCallId: "t1", toolCallName: "Edit", type: EventType.TOOL_CALL_START });
+  expect(argsOf(c.out, "t1")).toBe(EDIT);
+  // the reply is logged at 1 meanwhile: the input so far goes out again under 2, whole
+  const said = newMsg(1, "talk", "On it.");
+  entries.push(said);
+  c.feed({ entry: said, runId: "0", type: "logged" }, input(2, 0, EDIT));
+  const moved = where(c.out, (e) => e.type === EventType.TOOL_CALL_START && e.parentMessageId === "2");
+  expect(moved).toBeGreaterThan(start);
+  expect(argsOf(c.out.slice(moved), "t2")).toBe(EDIT);
+  // the logged entry opens the call again with its whole input, and ends it
+  const call = newMsg(2, "tool", `Edit ${EDIT}`);
+  entries.push(call);
+  const before = c.out.length;
+  c.feed({ entry: call, runId: "0", type: "logged" });
+  expect(c.out.slice(before).map((e) => e.type)).toEqual([EventType.TOOL_CALL_START, EventType.TOOL_CALL_ARGS, EventType.TOOL_CALL_END]);
+});
+
+test("a client that joins mid-input gets the input so far, then the rest without a repeat (E45)", () => {
+  const entries = [newMsg(0, "user", "write it")];
+  const c = connect(entries, { drafts: [], reasoning: null, reply: null, runId: "0", tool: { args: EDIT.slice(0, 30), at: 1, call: "toolu_1", name: "Write" } });
+  c.feed(input(1, 20, EDIT.slice(20, 40)), input(1, 40, EDIT.slice(40)));
+  expect(c.out.filter((e) => e.type === EventType.TOOL_CALL_START)).toHaveLength(1);
+  expect(argsOf(c.out, "t1")).toBe(EDIT);
+  // a second call opens on its own; the run's end forgets the first
+  c.feed(input(1, 0, "{}", "toolu_2"), { error: "cancelled", logged: 1, runId: "0", type: "run-finished" });
+  expect(c.out.filter((e) => e.type === EventType.TOOL_CALL_START)).toHaveLength(2);
 });

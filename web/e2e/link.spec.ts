@@ -18,7 +18,7 @@ const cutFirstSend = async (page: Parameters<typeof open>[0], text: string, deli
   let cut = false;
   const sent: string[] = []; // the frames carrying `text`, on whichever socket
   const carries = (frame: string | Buffer): frame is string => typeof frame === "string" && frame.includes('"messages"') && frame.includes(text);
-  await page.routeWebSocket(/\/ws$/, (ws: WebSocketRoute) => {
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (ws: WebSocketRoute) => {
     const server = ws.connectToServer();
     if (++sockets > 1) {
       // forwarded both ways as they are, what the page sends looked at on its way

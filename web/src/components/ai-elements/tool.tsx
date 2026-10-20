@@ -26,7 +26,7 @@ import {
   SquareTerminalIcon,
   WrenchIcon,
 } from "lucide-react";
-import type { ComponentProps } from "react";
+import type { ComponentProps, ReactNode } from "react";
 
 // CSI and OSC sequences, and the other C0/C1 controls but newline and tab: a tool's output is shown
 // as text, its escape sequences dropped rather than drawn as colours
@@ -72,12 +72,14 @@ export type ToolHeaderProps = Omit<ComponentProps<typeof TraceCollapsibleTrigger
   // what it was called on, one line (lib/rows.ts toolSummary)
   readonly detail: string;
   readonly state: ToolState;
+  // what it changed, after the detail: a file tool's "+3 −1" (chat/tool-diff.tsx)
+  readonly meta?: ReactNode;
 };
 
 // The trigger is the line itself: Trace's 28 px row (40 px on a touch screen), the chevron after
 // the title. A failed call's line is red and says Failed; one that ended with nothing logged says
 // so, muted; the others name their state to a screen reader only.
-export const ToolHeader = ({ className, name, detail, state, ...props }: ToolHeaderProps) => {
+export const ToolHeader = ({ className, name, detail, state, meta, ...props }: ToolHeaderProps) => {
   const Icon = toolIcon(name);
   const shown = state === "error" || state === "ended";
   return (
@@ -89,6 +91,7 @@ export const ToolHeader = ({ className, name, detail, state, ...props }: ToolHea
         <TraceTitle>
           <span className="font-medium text-foreground/85 in-data-[status=error]:text-destructive">{toolName(name)}</span>
           {detail !== "" && <span className="ml-2 font-mono text-xs">{detail}</span>}
+          {meta !== undefined && <span className="ml-2">{meta}</span>}
         </TraceTitle>
         <TraceDescription className={cn(shown ? "text-xs" : "sr-only", state === "error" ? "font-medium text-destructive" : "text-muted-foreground")} data-slot="tool-status">
           {TOOL_STATE_LABELS[state]}

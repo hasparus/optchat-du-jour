@@ -1,0 +1,106 @@
+// A file tool's input streams to clients as the model writes it (E45): the session tells each piece
+// with the log index its entry is expected at and its place in the input, keeps the input so far for
+// a client that joins, and when an entry is logged meanwhile tells the input so far again, whole,
+// under the next index. Any other tool's input streams to no one. A scripted provider, no model.
+import { expect, test } from "bun:test";
+import { Deferred, Effect } from "effect";
+import type { Provider } from "../src/providers/provider.ts";
+import type { SessionEvent } from "../src/session.ts";
+import { UsageLimit } from "../src/engines/errors.ts";
+import { rig, until, USAGE } from "./loop-rig.ts";
+
+const EDIT = JSON.stringify({ file_path: "src/a.ts", old_string: "a\nb\n", new_string: "a\nc\n" });
+const [A, B, C] = [EDIT.slice(0, 20), EDIT.slice(20, 45), EDIT.slice(45)];
+const call = { id: "toolu_1", name: "Edit" };
+
+// streams the Edit's first piece, logs a reply (as an engine that sends a text block late would),
+// streams the rest, and a Read's input; then waits for `go` and ends the turn with no call
+const streaming = (go: Deferred.Deferred<true>) => {
+  const provider: Provider = {
+    auth: "api-key",
+    call: (c) =>
+      Effect.gen(function* () {
+        const hooks = c.onToolInput;
+        if (!hooks) return yield* Effect.die(new Error("no tool input hooks"));
+        yield* hooks.delta(call, A);
+        yield* c.onItem?.({ text: "first a word", type: "text" }) ?? Effect.void;
+        yield* hooks.delta(call, B);
+        yield* hooks.delta(call, C);
+        yield* hooks.delta({ id: "toolu_2", name: "Read" }, '{"file_path":"src/a.ts"}');
+        yield* Deferred.await(go);
+        return { items: [{ text: "first a word", type: "text" as const }], model: "m", usage: USAGE };
+      }),
+    engine: "api-key",
+  };
+  return provider;
+};
+
+const inputs = (events: readonly SessionEvent[]) => events.flatMap((e) => (e.type === "tool-input" ? [e] : []));
+
+test("an Edit's input is told piece by piece at the index its entry is expected at, again whole when that index moves; a Read's is not (E45)", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const go = Deferred.makeUnsafe<true>();
+      const r = yield* rig(streaming(go));
+      yield* r.session.input("fix it");
+      yield* until("the input", () => inputs(r.events).length === 3);
+      expect(inputs(r.events).map((e) => [e.at, e.offset, e.delta, e.call, e.name])).toEqual([
+        [1, 0, A, "toolu_1", "Edit"],
+        [2, 0, A + B, "toolu_1", "Edit"], // the reply took 1: the input so far, under 2
+        [2, A.length + B.length, C, "toolu_1", "Edit"],
+      ]);
+      // a client that joins now gets the input so far
+      expect(r.session.live()?.tool).toEqual({ args: EDIT, at: 2, call: "toolu_1", name: "Edit" });
+      yield* Deferred.succeed(go, true);
+      yield* until("the run's end", () => r.events.some((e) => e.type === "run-finished"));
+      expect(r.session.live()).toBeNull();
+      expect(inputs(r.events)).toHaveLength(3); // the Read's input went to no one
+    }).pipe(Effect.scoped),
+  );
+});
+
+// streams an Edit, then its call is logged, then the request waits for ever
+const logging: Provider = {
+  auth: "api-key",
+  call: (c) =>
+    Effect.gen(function* () {
+      yield* c.onToolInput?.delta(call, EDIT) ?? Effect.void;
+      yield* c.onItem?.({ id: call.id, input: EDIT, name: call.name, type: "call" }) ?? Effect.void;
+      return yield* Effect.never;
+    }),
+  engine: "api-key",
+};
+
+test("once the call is logged its input is no longer live: a client that joins gets the entry, not the input again (E45)", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const r = yield* rig(logging);
+      yield* r.session.input("fix it");
+      yield* until("the call logged", () => r.events.some((e) => e.type === "logged" && e.entry.kind === "tool"));
+      expect(inputs(r.events)).toHaveLength(1);
+      expect(r.session.live()?.tool).toBeNull();
+      yield* r.session.stop();
+    }).pipe(Effect.scoped),
+  );
+});
+
+// streams half an Edit, then its plan runs out: the turn stops and waits for a resume
+const spent: Provider = {
+  auth: "api-key",
+  call: (c) => (c.onToolInput?.delta(call, EDIT.slice(0, 30)) ?? Effect.void).pipe(Effect.andThen(Effect.fail(new UsageLimit({ message: "spent" })))),
+  engine: "api-key",
+};
+
+test("a call cut short by a usage limit: the run ends while the turn waits for a resume, and its input with it (E45)", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const r = yield* rig(spent);
+      yield* r.session.input("fix it");
+      yield* until("the stop", () => r.session.state().phase === "needs-model" && inputs(r.events).length === 1);
+      // the stop ends the run (a resume begins another), so nothing of the cut call is live
+      expect(r.events.some((e) => e.type === "run-finished")).toBe(true);
+      expect(r.session.live()).toBeNull();
+      yield* r.session.stop();
+    }).pipe(Effect.scoped),
+  );
+});

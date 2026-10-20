@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 export { ARTIFACT, EDITED, EDITED_HEADING, LANDING, LANDING_HEADING, OUTSIDE, PUBLISHED } from "./replies.ts";
+export { EDIT_INPUT, WRITE_INPUT } from "./replies.ts";
 export { FETCHED, FIXER_REPORT, FIXER_TASK, NOTES_REPORT, NOTES_TASK, PLAN_DONE, PLAN_START, REPLY, SCOUT_REPORT, SCOUT_TASK, SEARCH_LINKS, SOL_REPLY, SPAWNED, SPAWNED_ISOLATED, THOUGHT, TOOL_ERROR, WOKEN } from "./replies.ts";
 
 type LogEntry = MessagesPage["entries"][number];
@@ -88,12 +89,13 @@ type Options = {
   readonly toolError: boolean;
   readonly patterns: boolean;
   readonly thinking: boolean;
+  readonly edits: boolean;
   readonly subagents: boolean;
   readonly isolated: boolean;
   readonly artifacts: "" | "ui" | "hostile";
 };
 
-async function startServer({ artifacts, isolated, patterns, seeded, spent, subagents, thinking, toolError }: Options, listeners: Pick<Listeners, "tcp" | "udp">): Promise<Server & { readonly stop: () => Promise<void> }> {
+async function startServer({ artifacts, edits, isolated, patterns, seeded, spent, subagents, thinking, toolError }: Options, listeners: Pick<Listeners, "tcp" | "udp">): Promise<Server & { readonly stop: () => Promise<void> }> {
   const home = mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
   let port = 0; // the server picks it on the first start; a restart asks for the one the page knows
   let total = seeded;
@@ -105,6 +107,7 @@ async function startServer({ artifacts, isolated, patterns, seeded, spent, subag
     if (toolError) env.E2E_TOOL_ERROR = "1";
     if (patterns) env.E2E_PATTERNS = "1";
     if (thinking) env.E2E_THINKING = "1";
+    if (edits) env.E2E_EDITS = "1";
     if (subagents) env.E2E_SUBAGENTS = "1";
     if (isolated) env.E2E_ISOLATED = "1";
     if (artifacts !== "") env.E2E_ARTIFACTS = artifacts;
@@ -198,11 +201,12 @@ export const test = base.extend<Options & { server: Server; listeners: Listeners
   toolError: [false, { option: true }], // every Claude turn's tool call fails (TOOL_ERROR)
   patterns: [false, { option: true }], // every Claude turn plans, searches and fetches (E2E_PATTERNS)
   thinking: [false, { option: true }], // every Claude turn thinks before its tool call (E2E_THINKING)
+  edits: [false, { option: true }], // every Claude turn edits a file and writes one (E2E_EDITS)
   subagents: [false, { option: true }], // every Claude turn spawns two subagents (E2E_SUBAGENTS)
   isolated: [false, { option: true }], // the first Claude turn spawns an isolated subagent (E2E_ISOLATED)
   artifacts: ["", { option: true }], // the turns publish and edit artifacts (E2E_ARTIFACTS)
-  server: async ({ artifacts, isolated, seeded, spent, toolError, patterns, thinking, subagents, listeners }, provide) => {
-    const server = await startServer({ artifacts, isolated, patterns, seeded, spent, subagents, thinking, toolError }, listeners);
+  server: async ({ artifacts, edits, isolated, seeded, spent, toolError, patterns, thinking, subagents, listeners }, provide) => {
+    const server = await startServer({ artifacts, edits, isolated, patterns, seeded, spent, subagents, thinking, toolError }, listeners);
     await provide(server);
     await server.stop();
   },

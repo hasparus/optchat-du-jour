@@ -17,6 +17,8 @@
 //   E2E_PATTERNS=1  every Claude turn plans (TodoWrite), searches the web and fetches a page before
 //             its reply, as Claude Code logs them (e2e/replies.ts PLAN, SEARCH_RESULT)
 //   E2E_THINKING=1  every Claude turn thinks (THOUGHT, streamed slowly) before its tool call
+//   E2E_EDITS=1  every Claude turn edits a file (EDIT_INPUT, its input streamed slowly) and writes
+//             one (WRITE_INPUT) before its reply, as Claude Code logs them (E45)
 //   E2E_SUBAGENTS=1  every Claude turn spawns two subagents (SPEC M7a): "notes", which reads and
 //             reports NOTES_REPORT, then "scout", which waits for a message from its card, reads
 //             and reports SCOUT_REPORT (e2e/replies.ts), when the message says "with subagents";
@@ -65,6 +67,8 @@ import {
   THOUGHT,
   TOOL_ERROR,
   WOKEN,
+  EDIT_INPUT,
+  WRITE_INPUT,
 } from "./replies.ts";
 
 const root = new URL("../..", import.meta.url).pathname;
@@ -129,7 +133,17 @@ const fixer = [
   { run: { input: { command: "printf -- '- a demo entry\\n' >> CHANGELOG.md && git -c user.name=Demo -c user.email=demo@example.com commit -qam 'changelog: a demo entry'" }, name: "Bash" } },
   { text: FIXER_REPORT },
 ];
-const turn = Bun.env.E2E_SPENT ? spent : Bun.env.E2E_PATTERNS ? patterns : Bun.env.E2E_THINKING ? thinks : reply;
+// an edit whose input streams in 64-character pieces 300 ms apart, then a new file
+const fileEdits = [
+  { pace: 300, tool: { input: EDIT_INPUT, name: "Edit" } },
+  { toolResult: `The file ${EDIT_INPUT.file_path} has been updated.` },
+  { tool: { input: WRITE_INPUT, name: "Write" } },
+  { toolResult: `File created successfully at: ${WRITE_INPUT.file_path}` },
+  ...words.flatMap((w) => [delta(w), { sleep: 100 }]),
+  { emit: { message: { content: [{ text: words.join(""), type: "text" }], role: "assistant" }, type: "assistant" } },
+  { result: { text: words.join("") } },
+];
+const turn = Bun.env.E2E_SPENT ? spent : Bun.env.E2E_PATTERNS ? patterns : Bun.env.E2E_THINKING ? thinks : Bun.env.E2E_EDITS ? fileEdits : reply;
 // the artifacts. turns: a publish streamed in 64-character pieces 300 ms apart (about 5 s), an edit
 const publishes = [{ mcp: { input: { name: ARTIFACT, html: LANDING }, name: "publish_artifact" }, pace: 300 }, { text: PUBLISHED }];
 const edits = [{ mcp: { input: LANDING_EDIT, name: "edit_artifact" } }, { text: EDITED }];

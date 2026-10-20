@@ -30,6 +30,16 @@ export const EngineRetry = Context.Reference<RetryPolicy>("optchat/EngineRetry",
   defaultValue: () => ({ base: HTTP_RETRY_BASE, longest: HTTP_RETRY_LONGEST, tries: HTTP_TRIES }),
 });
 
+// A retry pause (E43): the wait before the next try, `ms` long, before try `next` of `tries`.
+// RetryPauses hears each one as it starts, then null as it ends (the next try starts) or is cut
+// short. Nothing hears them by default: the tool loop provides a listener around a turn's request,
+// so the turn's clients can say "busy, asking again in N s", and a compactor call or a subagent
+// waits as quietly as before.
+export type RetryPause = { readonly ms: number; readonly next: number; readonly tries: number };
+export const RetryPauses = Context.Reference<(pause: RetryPause | null) => Effect.Effect<void>>("optchat/RetryPauses", {
+  defaultValue: () => () => Effect.void,
+});
+
 // a response's headers, by lowercase name, as the HTTP client keeps them
 type Headers = Readonly<Record<string, string | undefined>>;
 // what of an HTTP response the engines read: its status and headers, and its body as text or bytes
@@ -103,7 +113,8 @@ export type Shown = <A extends readonly unknown[], R>(f: ((...args: A) => R) | u
 // A tool call's streaming input under `shown`: an artifact's that goes out as a live draft shows as
 // much as text does; any other's (a Read's, a Grep's) goes nowhere a client sees, so a try that
 // streamed only that may still be sent again. Its end shows nothing new: a draft's close follows
-// a delta that showed already.
+// a delta that showed already. (Claude Code's file tools, whose input clients see (E45), are not
+// among our HTTP engines' tools.)
 export const shownToolInput = (shown: Shown, hooks: ToolInputHooks | undefined): ToolInputHooks | undefined => {
   const drafted = shown(hooks?.delta);
   if (hooks === undefined || drafted === undefined) return undefined;
@@ -114,13 +125,14 @@ export const shownToolInput = (shown: Shown, hooks: ToolInputHooks | undefined):
 // The request (`once`, one try, its hooks wrapped by `shown`) until it succeeds, fails with what
 // won't pass, has shown something, or has had its tries; then that failure is the call's, no
 // longer marked as one that may pass. What earlier tries cost is merged into the reply (`merge`)
-// or added to the failure, on every way out.
+// or added to the failure, on every way out. Each pause between tries is told to RetryPauses.
 export const askAgain = <A, E extends Tagged>(o: {
   readonly once: (shown: Shown) => Effect.Effect<A, E>;
   readonly merge: (reply: A, before: Spent) => A;
 }): Effect.Effect<A, E | EngineError> =>
   Effect.gen(function* () {
     const policy = yield* EngineRetry;
+    const told = yield* RetryPauses;
     const longest = Duration.toMillis(Duration.fromInputUnsafe(policy.longest));
     const base = Duration.toMillis(Duration.fromInputUnsafe(policy.base));
     let before: Spent | undefined;
@@ -142,6 +154,6 @@ export const askAgain = <A, E extends Tagged>(o: {
       const pause = e.retryAfter ?? base * 2 ** (k - 1) * (0.8 + 0.4 * (yield* Random.next));
       if (pause > longest) return yield* Effect.fail(settled(e, before));
       if (e.spent !== undefined) before = before === undefined ? e.spent : addSpent(before, e.spent);
-      yield* Effect.sleep(Duration.millis(pause));
+      yield* told({ ms: Math.round(pause), next: k + 1, tries: policy.tries }).pipe(Effect.andThen(Effect.sleep(Duration.millis(pause))), Effect.ensuring(told(null)));
     }
   });

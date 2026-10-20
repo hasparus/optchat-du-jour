@@ -41,6 +41,10 @@
     --color-warning-foreground: var(--warning-foreground);
     --color-warning-surface: var(--warning-surface);
     --color-success: var(--success);
+    --color-diff-add: var(--diff-add);
+    --color-diff-add-ink: var(--diff-add-ink);
+    --color-diff-del: var(--diff-del);
+    --color-diff-del-ink: var(--diff-del-ink);
     --color-chart-5: var(--chart-5);
     --color-chart-4: var(--chart-4);
     --color-chart-3: var(--chart-3);
@@ -138,6 +142,11 @@
     --warning-foreground: oklch(0.47 0.1 62);
     --warning-surface: oklch(0.97 0.03 80);
     --destructive: oklch(0.55 0.2 27);
+    /* a file tool's diff (DESIGN.md, Diffs): a line added or removed, its ground and its +/- sign */
+    --diff-add: oklch(0.6 0.14 155 / 13%);
+    --diff-add-ink: oklch(0.42 0.11 155);
+    --diff-del: oklch(0.55 0.2 27 / 10%);
+    --diff-del-ink: oklch(0.48 0.18 27);
     --border: oklch(0.21 0.008 150 / 10%);
     --input: oklch(0.21 0.008 150 / 16%);
     --ring: var(--signal);
@@ -181,6 +190,10 @@
     --warning-foreground: oklch(0.84 0.11 78);
     --warning-surface: oklch(0.25 0.03 75);
     --destructive: oklch(0.7 0.17 25);
+    --diff-add: oklch(0.74 0.14 155 / 15%);
+    --diff-add-ink: oklch(0.82 0.12 155);
+    --diff-del: oklch(0.7 0.17 25 / 15%);
+    --diff-del-ink: oklch(0.8 0.13 25);
     --border: oklch(1 0 0 / 9%);
     --input: oklch(1 0 0 / 14%);
     --elevation-float: inset 0 1px 0 oklch(1 0 0 / 5%), 0 16px 40px -12px oklch(0 0 0 / 60%);

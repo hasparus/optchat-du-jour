@@ -45,6 +45,10 @@ export type SessionEvent =
   | { readonly type: "subagent-started"; readonly runId: string; readonly name: string; readonly task: string }
   | { readonly type: "subagent-finished"; readonly runId: string; readonly name: string; readonly report: string }
   | { readonly type: "subagent-error"; readonly runId: string; readonly name: string; readonly message: string; readonly code: "failed" | "stopped" }
+  // A file tool's input as it streams (E45, src/wire.ts liveTool): `delta`, the next piece of the
+  // JSON of call `call` (Claude Code's id), whose tool entry is expected at log index `at`; `offset`,
+  // where the delta starts in that input so far
+  | { readonly type: "tool-input"; readonly runId: string; readonly at: number; readonly call: string; readonly name: string; readonly delta: string; readonly offset: number }
   // An artifact's live draft while a publish or an edit streams (SPEC "Artifacts"), and a version
   // saved (told by the tools, src/artifacts/tools.ts)
   | { readonly type: "artifact-draft"; readonly draft: DraftOut }
@@ -57,4 +61,8 @@ export type LiveRun = {
   readonly reasoning: { readonly at: number; readonly text: string } | null;
   // the artifacts' drafts streaming in now (SPEC "Artifacts")
   readonly drafts: readonly DraftNow[];
+  // the file tool call whose input streams in now, and its input so far; none once its entry is logged (E45)
+  readonly tool: LiveInput | null;
 };
+
+export type LiveInput = { readonly at: number; readonly call: string; readonly name: string; readonly args: string };
