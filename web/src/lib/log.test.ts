@@ -63,6 +63,6 @@ test("canonical equality does not merge entries at different indices", () => {
 test("a held item is the same only when every field of Item is: each one, changed alone, makes it another", () => {
   const item: Item = { error: true, i: 3, kind: "echo", live: false, text: "out" };
   expect(sameItem(item, { ...item })).toBe(true);
-  const changes: { readonly [K in keyof Item]-?: Item[K] } = { error: false, i: 4, kind: "tool", live: true, text: "other" };
+  const changes = { error: false, i: 4, kind: "tool", live: true, text: "other" } satisfies { readonly [K in keyof Item]-?: Item[K] };
   for (const [k, v] of Object.entries(changes)) expect([k, sameItem(item, { ...item, [k]: v })]).toEqual([k, false]);
 });

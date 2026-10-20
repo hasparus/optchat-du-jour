@@ -283,10 +283,11 @@ test("the side file is read back by range without the text, a piece with it; a t
   expect(await Effect.runPromise(reread.piece(4))).toMatchObject({ i: 4, ms: 9, text: "after the tear" });
 });
 
+// a side file's line with this entry number and cut, as written whatever they are
+const line = (o: { readonly i: number; readonly cut?: number }) => `${JSON.stringify({ date: "2026-10-15T10:00:00.000Z", engine: "e", ms: 5, text: "t", ...o })}\n`;
 test("a side file line whose entry isn't a whole number from 0, or whose cut isn't whole, is unreadable", async () => {
   const dir = tmp();
   mkdirSync(`${dir}/chat/reasoning`, { recursive: true });
-  const line = (o: object) => `${JSON.stringify({ date: "2026-10-15T10:00:00.000Z", engine: "e", ms: 5, text: "t", ...o })}\n`;
   writeFileSync(`${dir}/chat/reasoning/2026-10-15.jsonl`, [line({ i: 1 }), line({ i: -1 }), line({ i: 2.5 }), line({ cut: 0.5, i: 3 }), line({ cut: 7, i: 4 })].join(""));
   const reports: string[] = [];
   const side = await Effect.runPromise(openReasoning(dir, { keep: true, report: (m) => Effect.sync(() => void reports.push(m)) }));

@@ -70,8 +70,9 @@ export function trimHeld(log: Log): Log {
 
 // Every field of an Item, each compared before a held item is reused: a field added to Item and not
 // here is a type error, so it can't be shared unseen.
-const ITEM_FIELDS = { error: true, i: true, kind: true, live: true, text: true } as const satisfies Record<keyof Item, true>;
-export const sameItem = (a: Item, b: Item) => (Object.keys(ITEM_FIELDS) as (keyof Item)[]).every((k) => a[k] === b[k]);
+const field = (k: keyof Item) => (a: Item, b: Item) => a[k] === b[k];
+const ITEM_FIELDS = { error: field("error"), i: field("i"), kind: field("kind"), live: field("live"), text: field("text") } satisfies Record<keyof Item, (a: Item, b: Item) => boolean>;
+export const sameItem = (a: Item, b: Item) => Object.values(ITEM_FIELDS).every((same) => same(a, b));
 
 // Reuse only canonical equality at this index, including live provenance: a confirmed item must
 // not later be dropped below a snapshot window as though it were still live-only.
