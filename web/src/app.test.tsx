@@ -120,12 +120,12 @@ test("sending: the message goes out with the picked device and waits in the queu
   const queue = await screen.findByTestId("queue");
   expect(within(queue).getByText("and now?")).toBeTruthy();
 
-  play(state({ phase: "running" }), ack(lastId(server.sent), 4), ...said(4, "user", "and now?"));
+  play(state({ loop: 7, phase: "running" }), ack(lastId(server.sent), 4), ...said(4, "user", "and now?"));
   await waitFor(() => {
     expect(screen.queryByTestId("queue")).toBeNull();
   });
   fireEvent.click(screen.getByRole("button", { name: "Stop" }));
-  expect(frames(server.sent).at(-1)).toEqual({ type: "abort" });
+  expect(frames(server.sent).at(-1)).toEqual({ loop: 7, type: "abort" }); // the run of the turn loop it was for (E41)
 });
 
 test("a message the log refused stays in the queue, marked not logged with the error", async () => {
@@ -387,6 +387,7 @@ test("Background work: the running turn (engine, device, time, Stop), held messa
       pending: [{ clientId: null, engine: "claude-code:opus", queued: true, text: "and the cron output too" }],
       phase: "running",
       elapsed: 65_000,
+      loop: 3,
     }),
   );
   // the status line opens it too
@@ -400,7 +401,7 @@ test("Background work: the running turn (engine, device, time, Stop), held messa
   ]);
   expect(within(sheet).getByTestId("work-held").textContent).toBe("and the cron output tooMessage · queued for Opus");
   fireEvent.click(within(turn).getByRole("button", { name: "Stop the turn" }));
-  expect(frames(server.sent).at(-1)).toEqual({ type: "abort" });
+  expect(frames(server.sent).at(-1)).toEqual({ loop: 3, type: "abort" });
 });
 
 // a finger lifted from an element

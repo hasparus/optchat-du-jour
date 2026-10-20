@@ -79,7 +79,7 @@ const NOTES: SubagentInfo = {
 };
 
 const sheet = (subagents: readonly SubagentInfo[]) => {
-  const server = fakeServer(() => [snapshot([]), { snapshot: { ...IDLE, subagents }, type: EventType.STATE_SNAPSHOT }]);
+  const server = fakeServer(() => [snapshot([]), { snapshot: { ...IDLE, loop: 5, subagents }, type: EventType.STATE_SNAPSHOT }]);
   const link = openLink("ws://x/ws", { socket: server.socket });
   links.push(link);
   const session = makeSession(link);
@@ -336,7 +336,7 @@ test("Stop all, while a subagent runs, sends one frame for the turn and every su
   expect(stop.getAttribute("aria-label")).toBe("Stop all: 1 subagent");
   fireEvent.click(stop);
   await waitFor(() => {
-    expect(actionsOf(server.sent)).toContainEqual({ type: "stop-all" });
+    expect(actionsOf(server.sent)).toContainEqual({ loop: 5, type: "stop-all" }); // the run of the turn loop it saw (E41)
   });
 });
 

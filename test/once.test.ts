@@ -195,7 +195,11 @@ const socket = async (host: string) => {
 };
 // a take-back of a message the server doesn't hold: every client is told it couldn't be, once per take-back done
 const takeBack = (id: string) => JSON.stringify({ clientId: "nobody", id, type: "take-back" });
-const message = (id: string, text: string) => JSON.stringify({ messages: [{ content: text, id, role: "user" }], runId: crypto.randomUUID(), threadId: "t" });
+// a RunAgentInput with one user message, and with `photo` an image part naming that upload
+const message = (id: string, text: string, photo?: string) => {
+  const content = photo === undefined ? text : [{ text, type: "text" }, { source: { type: "url", value: `asset:${photo}` }, type: "image" }];
+  return JSON.stringify({ messages: [{ content, id, role: "user" }], runId: crypto.randomUUID(), threadId: "t" });
+};
 const logOf = async (host: string) => {
   const res = await fetch(`http://${host}/api/messages?limit=1000`);
   return decodePage(await res.json()).entries;
@@ -205,14 +209,17 @@ test("over /ws a message sent again on another socket, and after a restart, is a
   const home = fresh();
   await serving(home, async (host) => {
     const a = await socket(host);
-    a.ws.send(message("m-1", "hello once"));
+    const b = await socket(host);
+    const missing = "f".repeat(64); // a photo the server doesn't hold: left out, and said
+    a.ws.send(message("m-1", "hello once", missing));
     await a.wait(() => a.named("ack").length > 0);
     expect(a.received()).toEqual([{ id: "m-1", messageId: null, outcome: "taken" }]);
     // the socket that sent it dropped before the receipt, say: the page sends it again on its next
-    const b = await socket(host);
-    b.ws.send(message("m-1", "hello once"));
+    b.ws.send(message("m-1", "hello once", missing));
     await b.wait(() => b.received().length > 0);
     expect(b.received()).toEqual([{ id: "m-1", messageId: "0", outcome: "logged" }]);
+    // a repeat is answered and nothing more: what was said of its photo is said once
+    expect(b.named("info").filter((e) => String(e.value).includes("is not on the server"))).toHaveLength(1);
     a.ws.close();
     b.ws.close();
   });
