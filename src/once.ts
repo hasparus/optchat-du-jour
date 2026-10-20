@@ -8,9 +8,12 @@ import type { Incoming } from "./inbox.ts";
 import type { Received } from "./wire.ts";
 
 // What a message's id names. `new`: never seen, taken now. A repeat: still `held` in the inbox,
-// `logged` as entry `at`, or `taken-back` by a client and never logged.
+// `logged` as entry `at`, or `taken-back` by a client and never logged. `refused`: never seen,
+// and not taken, since it has nothing to send (`why`); not remembered, so one sent again is
+// looked at again.
 export type Receipt =
   | { readonly type: "new" }
+  | { readonly type: "refused"; readonly why: string }
   | { readonly type: "held" }
   | { readonly type: "logged"; readonly at: number }
   | { readonly type: "taken-back" };
@@ -46,4 +49,16 @@ export const receiptOf = (id: string, o: { readonly inbox: readonly Incoming[]; 
 };
 
 // a message's receipt as its client is told it (src/wire.ts Received)
-export const receivedOf = (id: string, r: Receipt): Received => ({ id, messageId: r.type === "logged" ? String(r.at) : null, outcome: r.type === "new" ? "taken" : r.type });
+export const receivedOf = (id: string, r: Receipt): Received => {
+  switch (r.type) {
+    case "new":
+      return { id, messageId: null, outcome: "taken" };
+    case "refused":
+      return { error: r.why, id, messageId: null, outcome: "refused" };
+    case "logged":
+      return { id, messageId: String(r.at), outcome: "logged" };
+    case "held":
+    case "taken-back":
+      return { id, messageId: null, outcome: r.type };
+  }
+};

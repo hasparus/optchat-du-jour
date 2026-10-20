@@ -551,6 +551,58 @@ describe("session", () => {
     expect(session.get().markers.map((m) => [m.tone, m.text])).toEqual([["error", "the server couldn't read something this page sent, and didn't do it: reload the page"]]);
   });
 
+  test("a message the server refused (nothing to send) is marked with why, not sent again on the next connection nor after a reload, and taken back from here", async () => {
+    const server = fakeServer(() => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT }]);
+    server.mode.receipts = "drop";
+    const session = makeSession(openLink("ws://x/ws", { retryMs: 1, socket: server.socket }));
+    await tick();
+    const photo = { bytes: 1000, height: 10, kind: "image" as const, mime: "image/jpeg" as const, sha: "f".repeat(64), width: 10 };
+    session.send("", { media: [photo] });
+    const id = idOf(server, 0);
+    const why = "nothing to send: image ffffffffffff is not on the server";
+    server.play({ name: "received", type: EventType.CUSTOM, value: { error: why, id, messageId: null, outcome: "refused" } });
+    expect(waiting(session)).toEqual([` (not sent: ${why})`]);
+    expect(session.get().markers).toEqual([]); // said on its row, not as a stray marker
+    server.drop();
+    await tick(20);
+    expect(messageIds(server)).toEqual([id]); // refused, it would be refused again
+    // a reload: a fresh page on a fresh socket keeps it, refused, and still doesn't send it
+    const again = fakeServer(() => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT }]);
+    const reloaded = makeSession(openLink("ws://x/ws", { retryMs: 1, socket: again.socket }));
+    await tick();
+    expect(messageIds(again)).toEqual([]);
+    expect(waiting(reloaded)).toEqual([` (not sent: ${why})`]);
+    reloaded.dispose();
+    const [q] = queued(session.get());
+    if (!q) throw new Error("nothing queued");
+    expect([q.where, q.back]).toEqual(["failed", "local"]);
+    expect(session.takeBack(q)).toBe(true);
+    expect(session.get().restored).toMatchObject({ media: [photo], text: "" });
+    expect(waiting(session)).toEqual([]);
+  });
+
+  test("a resume while connected with no run of the turn loop to name is not sent, and says that, not that the page is offline", async () => {
+    const { loop: _, ...noLoop } = IDLE;
+    const server = fakeServer(() => [snapshot([]), { snapshot: { ...noLoop, phase: "needs-model" }, type: EventType.STATE_SNAPSHOT }]);
+    const link = openLink("ws://x/ws", { socket: server.socket });
+    const session = makeSession(link);
+    await tick();
+    expect(link.status()).toBe("open");
+    expect(session.resume("openai-plan:gpt-6.1-sol")).toBe(false);
+    expect(session.get().markers.map((m) => m.text)).toEqual(["the resume was not sent: the server hasn't said which turn waits"]);
+    expect(actions(server).filter((a) => a.type === "resume")).toEqual([]);
+  });
+
+  test("a state key the server stops setting is cleared on this page without a reconnect: waking paused, then not", async () => {
+    const { server, session } = await setup();
+    const wire = relay();
+    server.play(...wire({ state: { ...IDLE, wakePaused: 3 }, type: "state" }));
+    expect(session.get().state?.wakePaused).toBe(3);
+    server.play(...wire({ state: IDLE, type: "state" }));
+    expect(session.get().state).not.toHaveProperty("wakePaused");
+    expect(server.sockets).toHaveLength(1);
+  });
+
   test("a message sent here waits in the queue until the server's ack for its id, also mid-run", async () => {
     const { server, session } = await setup();
     session.send("old"); // the same text as an entry already logged: still pending, by id

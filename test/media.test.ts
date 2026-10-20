@@ -8,13 +8,14 @@ import { Effect } from "effect";
 import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
-import { mediaSettings, NODE, parseSettings } from "../src/config.ts";
+import { CAPTION_WAIT_MOST, mediaSettings, NODE, parseSettings } from "../src/config.ts";
+import { ModelError } from "../src/engines/errors.ts";
 import { MediaError } from "../src/media/image.ts";
 import { makeMedia } from "../src/media/media.ts";
 import { textOnly } from "../src/media/part.ts";
 import { sniff } from "../src/media/sniff.ts";
 import { extract, frameTimes } from "../src/media/video.ts";
-import { type Asset, CAPTION_MAX, cleanCaption, markerOf, splitMarkers, withMarkers } from "../src/wire.ts";
+import { type Asset, CAPTION_MAX, cleanCaption, markerOf, NOT_DESCRIBED, splitMarkers, withMarkers } from "../src/wire.ts";
 
 const dirs: string[] = [];
 afterAll(() => {
@@ -388,4 +389,30 @@ test("an upload no logged message names is left out of the commits; what a messa
   // only the picture nobody sent: its bytes and its metadata
   expect(named.toSorted()).toEqual([`${stray.sha.slice(0, 2)}/${stray.sha}.jpg`, `${stray.sha.slice(0, 2)}/${stray.sha}.json`].toSorted());
   expect(store.high.kind === "image" && store.high.small !== undefined).toBe(true);
+});
+
+test("media.captionWait is at most CAPTION_WAIT_MOST, a minute: past it, or below zero, the config is refused", () => {
+  expect(CAPTION_WAIT_MOST).toBe(60_000);
+  expect(settingsWith().captionWait).toBe(10_000);
+  expect(settingsWith({ captionWait: CAPTION_WAIT_MOST }).captionWait).toBe(60_000);
+  expect(() => settingsWith({ captionWait: CAPTION_WAIT_MOST + 1 })).toThrow();
+  expect(() => settingsWith({ captionWait: -1 })).toThrow();
+});
+
+test("known: the caption a call gave, without asking for one; none before it, nor after a call that failed", async () => {
+  let calls = 0;
+  const captioner = () => Effect.suspend(() => ((calls += 1), calls === 1 ? Effect.fail(new ModelError({ message: "busy" })) : Effect.succeed("a red square")));
+  const out = await Effect.runPromise(
+    Effect.gen(function* () {
+      const m = yield* makeMedia({ captioner, report: () => Effect.void, root: `${fresh()}/assets`, settings: settingsWith() });
+      const photo = yield* Effect.promise(async () => sharp({ create: { background: "#e33", channels: 3, height: 40, width: 60 } }).png().toBuffer());
+      const a = yield* m.ingest(new Uint8Array(photo), "standard"); // its caption call starts here, and fails
+      const first = yield* m.caption(a);
+      const afterFailure = m.known(a);
+      const second = yield* m.caption(a); // asked again: a new call, which answers
+      return { afterFailure, first, known: m.known(a), second };
+    }).pipe(Effect.scoped),
+  );
+  expect(out).toEqual({ afterFailure: null, first: NOT_DESCRIBED, known: "a red square", second: "a red square" });
+  expect(calls).toBe(2); // known asked for none
 });

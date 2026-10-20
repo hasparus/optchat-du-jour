@@ -84,6 +84,8 @@ export const Sent = Schema.Struct({
   from: Schema.optional(Schema.Number),
   // where its long pastes are in `text` (lib/paste.ts), none when it had none
   spans: Schema.optional(Schema.Array(Span)),
+  // why the server refused it (nothing to send): it is marked, and never sent again
+  refused: Schema.optional(Schema.String),
 });
 export type Sent = typeof Sent.Type;
 const Kept = Schema.Struct({ at: Schema.Number, sent: Schema.Array(Sent) });

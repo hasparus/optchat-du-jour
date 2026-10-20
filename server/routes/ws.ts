@@ -91,10 +91,11 @@ export const staleWire = (url: string) => {
 };
 
 // The sheet's Stop all, on the state the user saw: its `loop` must still be the turn loop's newest
-// run, running or ended (E41), else it does nothing at all, and says so. Then reports are hushed
-// first, so the stopped runs' reports, and any other until the user's next message, wake no turn
-// (E39); then the turn, if it runs; then every subagent.
-export const STOP_ALL_LATE = "not stopped: a turn began after the one Stop all was for";
+// run, running or ended (E41), else it does nothing at all, and says so. The loop runs again for a
+// turn, and also only to log a subagent's report, so the user is asked to look again rather than
+// told a turn began. Then reports are hushed first, so the stopped runs' reports, and any other
+// until the user's next message, wake no turn (E39); then the turn, if it runs; then every subagent.
+export const STOP_ALL_LATE = "not stopped: the session moved on since; look again";
 export const stopEverything = (session: Pick<Session, "hush" | "newestLoop" | "stop">, subagents: Pick<Subagents, "stopAll"> | undefined, loop?: number) =>
   Effect.suspend(() =>
     session.newestLoop(loop)
@@ -110,7 +111,7 @@ export const wsRoute = (
     readonly entries: readonly Entry[];
     readonly thread: string;
     readonly window: number;
-    readonly assets: Assets; // the asset store's lookup, and where a client is told of one it named that isn't there
+    readonly assets: Assets; // the asset store's lookup
     readonly heartbeat?: Duration.Input; // HEARTBEAT
   },
 ) => {

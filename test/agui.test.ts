@@ -1,7 +1,10 @@
 // What one WebSocket connection is told (server/agui.ts): a reply cut off by a cancel never shares
-// its id with the entry logged next, and a client that joins mid-reply or mid-tool gets all of it.
+// its id with the entry logged next, a client that joins mid-reply or mid-tool gets all of it, and
+// a state key that goes away is removed from what every client holds.
 import { expect, test } from "bun:test";
 import { type AGUIEvent, EventType } from "@ag-ui/core";
+import { Option } from "effect";
+import { parseInbound } from "../cli/repl.ts";
 import { openStream } from "../server/agui.ts";
 import type { LiveRun, SessionEvent, SessionState } from "../src/session.ts";
 import { newMsg } from "../src/store.ts";
@@ -130,4 +133,13 @@ test("a client that joins mid-input gets the input so far, then the rest without
   // a second call opens on its own; the run's end forgets the first
   c.feed(input(1, 0, "{}", "toolu_2"), { error: "cancelled", logged: 1, runId: "0", type: "run-finished" });
   expect(c.out.filter((e) => e.type === EventType.TOOL_CALL_START)).toHaveLength(2);
+});
+
+test("a state key goes out as an add when the state had none, a replace when it changes, and a remove once the server stops setting it; the REPL decodes each", () => {
+  const c = connect([]);
+  c.feed({ state: { ...STATE, wakePaused: 3 }, type: "state" }, { state: { ...STATE, wakePaused: 4 }, type: "state" }, { state: STATE, type: "state" });
+  const deltas = c.out.flatMap((e) => (e.type === EventType.STATE_DELTA ? [e.delta] : []));
+  expect(deltas).toEqual([[{ op: "add", path: "/wakePaused", value: 3 }], [{ op: "replace", path: "/wakePaused", value: 4 }], [{ op: "remove", path: "/wakePaused" }]]);
+  // the REPL decodes every frame: one it couldn't would be dropped whole, with whatever else it said
+  expect(c.out.filter((e) => e.type === EventType.STATE_DELTA).map((e) => Option.isSome(parseInbound(JSON.stringify(e))))).toEqual([true, true, true]);
 });

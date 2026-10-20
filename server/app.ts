@@ -189,11 +189,11 @@ export const routes = (o: ServerOptions) =>
         Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => (guard(request) ? handle : Effect.succeed(forbidden))),
       );
 
-      yield* wsRoute(router, { assets: { find: media.find, report }, entries: chat.mem.root, heartbeat: o.heartbeat, session, subagents, thread: o.device, window: o.window ?? 200 });
+      yield* wsRoute(router, { assets: { find: media.find }, entries: chat.mem.root, heartbeat: o.heartbeat, session, subagents, thread: o.device, window: o.window ?? 200 });
       yield* mcpRoutes(router, { agents: subagents.tools, artifacts: artifactTools.tools, attached: media.zoomContent, callerOf: subagents.callerOf, mem: chat.mem, secret });
       yield* artifactRoutes(router, { artifacts });
       yield* assetRoutes(router, { media, settings: mediaConfig });
-      yield* apiRoutes(router, { assets: { find: media.find, report }, device: o.device, mem: chat.mem, reasoning, report, session, settings, subagents, usagePath });
+      yield* apiRoutes(router, { assets: { find: media.find }, device: o.device, mem: chat.mem, reasoning, report, session, settings, subagents, usagePath });
       yield* webRoute(router, o.web);
       return { artifacts, chat, session, subagents };
     }),

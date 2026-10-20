@@ -9,6 +9,7 @@ import { Deferred, Effect, Layer, PubSub, Schema } from "effect";
 import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { serverLayer } from "../server/app.ts";
+import { takeMessage } from "../server/messages.ts";
 import { STOP_ALL_LATE, stopEverything } from "../server/routes/ws.ts";
 import { openChat } from "../src/chat.ts";
 import { ACTS, parseSettings } from "../src/config.ts";
@@ -19,7 +20,7 @@ import { UsageLimit } from "../src/engines/errors.ts";
 import { logEntry, newMem } from "../src/tree.ts";
 import { newMsg } from "../src/store.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
-import { MessagesPage, Received } from "../src/wire.ts";
+import { MessagesPage, Received, SessionState } from "../src/wire.ts";
 import { freePort } from "./ports.ts";
 
 const dirs: string[] = [];
@@ -248,6 +249,49 @@ test("the session closes while a turn runs and a message is held: the held one i
   ]);
 });
 
+test("a message left with nothing to send (a photo the server doesn't hold, no text) is refused with why: not held, not logged, and looked at again when sent again", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const { chat, infos, session } = yield* rig(fresh());
+      const photoOnly = { attachments: [{ kind: "image", sha: "f".repeat(64) }], id: "p-1", text: "" };
+      const refused: Received = { error: "nothing to send: image ffffffffffff is not on the server", id: "p-1", messageId: null, outcome: "refused" };
+      expect(yield* takeMessage(session, { find: () => null }, photoOnly)).toEqual(refused);
+      expect(yield* takeMessage(session, { find: () => null }, photoOnly)).toEqual(refused);
+      expect(yield* takeMessage(session, { find: () => null }, { attachments: [], id: "p-2", text: " " })).toEqual({ error: "nothing to send", id: "p-2", messageId: null, outcome: "refused" });
+      yield* Effect.sleep("20 millis");
+      expect(session.state().pending).toEqual([]);
+      expect(session.state().phase).toBe("idle");
+      expect(chat.mem.root).toEqual([]);
+      expect(infos).toEqual([]); // the refusal is its sender's alone
+      // with text beside it, the photo is left out and said, and the text is taken
+      expect(yield* takeMessage(session, { find: () => null }, { ...photoOnly, id: "p-3", text: "and this" })).toEqual({ id: "p-3", messageId: null, outcome: "taken" });
+      yield* until("logged", () => chat.mem.root.length === 1);
+      expect(infos).toEqual(["image ffffffffffff is not on the server: left out of the message"]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("Stop all after a loop that only logged a subagent's report does nothing, and says the session moved on, not that a turn began", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      let turns = 0;
+      const { chat, session } = yield* rig(fresh(), undefined, () => Effect.sync(() => void (turns += 1)));
+      let stops = 0;
+      const subagents = { stopAll: Effect.sync(() => ((stops += 1), [])) };
+      yield* session.input("one", { clientId: "a" });
+      yield* until("idle", () => session.state().phase === "idle" && chat.mem.root.length === 1);
+      const seen = session.state().loop;
+      yield* session.report("[Scout] found it"); // M7a: logged by a loop of its own, which runs no turn
+      yield* until("idle again", () => session.state().phase === "idle" && chat.mem.root.length === 2);
+      expect(turns).toBe(1);
+      expect(session.state().loop).not.toBe(seen);
+      expect(yield* stopEverything(session, subagents, seen)).toBe("not stopped: the session moved on since; look again");
+      expect(STOP_ALL_LATE).not.toContain("turn");
+      expect(stops).toBe(0);
+    }).pipe(Effect.scoped),
+  );
+});
+
 // ---------------------------------------------------------------------------------------------
 // the real server: /ws and POST /api/messages
 
@@ -360,6 +404,29 @@ test("over /ws any other action is done once by its id, whichever socket sends i
     b.ws.close();
   });
 }, 30_000);
+
+test("over /ws and POST /api/messages a photo-only message whose photo the server doesn't hold is refused with why, held nowhere and logged nowhere", async () => {
+  await serving(fresh(), async (host) => {
+    const missing = "f".repeat(64);
+    const why = "nothing to send: image ffffffffffff is not on the server";
+    const a = await socket(host);
+    a.ws.send(message("e-1", "", missing));
+    await a.wait(() => a.received().length > 0);
+    expect(a.received()).toEqual([{ error: why, id: "e-1", messageId: null, outcome: "refused" }]);
+    const res = await fetch(`http://${host}/api/messages`, {
+      body: JSON.stringify({ attachments: [{ kind: "image", sha: missing }], id: "e-2", text: "" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(res.status).toBe(422);
+    expect(decodeReceived(await res.json())).toEqual({ error: why, id: "e-2", messageId: null, outcome: "refused" });
+    const state = await fetch(`http://${host}/api/state`);
+    expect(Schema.decodeUnknownSync(SessionState)(await state.json()).pending).toEqual([]);
+    expect(await logOf(host)).toEqual([]);
+    expect(a.named("ack")).toEqual([]);
+    a.ws.close();
+  });
+}, 20_000);
 
 test("POST /api/messages takes a message once by its id: a retry is told what became of it; a bad body or nothing to send is a 400, a foreign Origin a 403", async () => {
   await serving(fresh(), async (host) => {
