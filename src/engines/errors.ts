@@ -9,7 +9,15 @@ export type Spent = { readonly usage: Tokens; readonly model: string | null; rea
 // `transient`: the failure is the vendor's passing trouble (an overload, a server error, a broken
 // or quiet connection), so the same request may go through if sent again (E35, ./retry.ts); set
 // where the failure is classified. `retryAfter`: how long the server asked us to wait, in ms.
-type Fields = { readonly message: string; readonly spent?: Spent | undefined; readonly transient?: boolean | undefined; readonly retryAfter?: number | undefined };
+// `lostLink`: the device runner's connection dropped mid-call and the runner killed claude there;
+// the call never got its result (a subagent goes on from its side log after it, E40).
+type Fields = {
+  readonly message: string;
+  readonly spent?: Spent | undefined;
+  readonly transient?: boolean | undefined;
+  readonly retryAfter?: number | undefined;
+  readonly lostLink?: boolean | undefined;
+};
 
 export class UsageLimit extends Data.TaggedError("UsageLimit")<Fields> {}
 export class DeviceOffline extends Data.TaggedError("DeviceOffline")<{ readonly message: string }> {}
@@ -72,7 +80,7 @@ export type Billed = ModelError | Refusal | UsageLimit;
 // The same failure with some of its fields changed (`patch`), every other one kept: one place, so
 // none is dropped on the way.
 export const rebuild = (e: Billed, patch: Partial<Fields>): Billed => {
-  const fields: Fields = { message: e.message, retryAfter: e.retryAfter, spent: e.spent, transient: e.transient, ...patch };
+  const fields: Fields = { lostLink: e.lostLink, message: e.message, retryAfter: e.retryAfter, spent: e.spent, transient: e.transient, ...patch };
   switch (e._tag) {
     case "UsageLimit":
       return new UsageLimit(fields);

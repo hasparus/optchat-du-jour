@@ -1,12 +1,17 @@
-// Subagents end to end (SPEC M7a): optchat-server as a process with the fake `claude`, whose
-// master calls spawn over /mcp as a real one would. The subagent's claude is read-only (a write
-// tool and a nested spawn are refused by its permission mode, a direct spawn on its key by the
-// server), its side log is written and committed, its usage recorded as a subagent's, its report
-// reaches the chat, and a /ws client tells one, and stops another, from their cards.
+// Subagents end to end (SPEC "Subagents"): optchat-server as a process with the fake `claude`, whose
+// master calls spawn over /mcp as a real one would, and a device runner (`optchat device macbook`)
+// on loopback as a second machine. A subagent's claude has the master's permissions (it writes a
+// file and runs a command directly in its folder), a /mcp key of its own (on which it spawns one of
+// its own, whose report comes back to it), its side log is written and committed, its usage
+// recorded as a subagent's, its report reaches the chat; an isolated one's commit is merged back
+// into its repository; one spawned on the other device runs there through its runner; and a /ws
+// client tells one, stops another, and stops all from the cards. Git repositories and worktrees
+// are made in temporary directories only. Waking is off here (subagents.wake: false), so each test's
+// turn is the one its message starts; the session's and the unit tests cover waking.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { Option, Schema } from "effect";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { UsageRecord } from "../src/wire.ts";
 import { freePort } from "./ports.ts";
@@ -14,8 +19,11 @@ import { freePort } from "./ports.ts";
 const ROOT = `${import.meta.dir}/../`;
 const FAKE = `${ROOT}test/fake-claude.ts`;
 
-const dir = mkdtempSync(`${tmpdir()}/odj-sub-`);
+const dir = realpathSync(mkdtempSync(`${tmpdir()}/odj-sub-`));
+const far = realpathSync(mkdtempSync(`${tmpdir()}/odj-far-`)); // the other machine's folder
+const repo = `${dir}/repo`; // a git repository an isolated subagent works on
 const port = freePort();
+const devicePort = freePort();
 const base = `http://127.0.0.1:${port}`;
 const env = {
   ...Bun.env,
@@ -27,26 +35,50 @@ const env = {
   OPTCHAT_URL: base,
 };
 let server: Bun.Subprocess<"ignore", "pipe", "pipe">;
+let device: Bun.Subprocess<"ignore", "pipe", "pipe">;
+
+const git = (cwd: string, ...args: string[]) => spawnSync("git", ["-c", "user.name=T", "-c", "user.email=t@example.com", ...args], { cwd, encoding: "utf8" }).stdout.trim();
+
+const up = async (url: string) =>
+  fetch(url).then(
+    (r) => r.ok,
+    () => false,
+  );
 
 beforeAll(async () => {
   writeFileSync(`${dir}/notes.md`, "trip: Oct 3\n");
-  // turns: the first spawns scout, the second sleeper and idler; the third and later answer "ok"
-  // each subagent's script by its name: sleeper and idler start at the same time
+  mkdirSync(repo);
+  git(repo, "init", "-q", "-b", "main");
+  writeFileSync(`${repo}/README.md`, "a repo\n");
+  git(repo, "add", "-A");
+  git(repo, "commit", "-q", "-m", "start");
+  // turns, each by a word of its message: scout; sleeper and idler; brancher (isolated); roamer on the
+  // macbook; two that never end. Each subagent's script by its name
   const script = {
     subagent: {
+      // writes a file and runs a command where it works, spawns helper over its own key, takes
+      // helper's report between its steps, and reports
       scout: [
-        { tool: { input: { command: "touch /tmp/should-not-exist" }, name: "Bash" } },
-        { toolResult: "ran" }, // never reached: the permission mode refused the call
-        { mcp: { input: { name: "nested", task: "t" }, name: "spawn" } },
+        { run: { input: { content: "written by scout\n", file_path: "scout.md" }, name: "Write" } },
+        { run: { input: { command: "echo ran in $(pwd) > ran.txt && cat ran.txt" }, name: "Bash" } },
+        { mcp: { input: { name: "helper", task: "Say hello." }, name: "spawn" } },
+        { take: true },
         { tool: { input: { file_path: `${dir}/notes.md` }, name: "Read" } },
         { toolResult: "trip: Oct 3" },
         { mcp: { input: { id: 0, n: 1 }, name: "zoom" } },
         { text: "The trip is on Oct 3." },
       ],
+      helper: [{ text: "hello from helper" }],
       // waits for a message, then answers it
       sleeper: [{ take: true }, { text: "got your message" }],
       // never answers
       idler: [{ hang: true }],
+      // commits a file in its worktree
+      brancher: [{ run: { input: { command: "printf 'b\\n' > b.md && git add -A && git -c user.name=T -c user.email=t@example.com commit -qm 'add b' && git branch --show-current" }, name: "Bash" } }, { text: "committed b.md" }],
+      // on the other machine
+      roamer: [{ run: { input: { command: "pwd" }, name: "Bash" } }, { text: "roamed" }],
+      stuck1: [{ hang: true }],
+      stuck2: [{ hang: true }],
     },
     // keyed by a word of each message, not by the order claude processes start in (warm ones start
     // ahead of their turn, E18)
@@ -57,6 +89,13 @@ beforeAll(async () => {
         { mcp: { input: { name: "idler", task: "Idle." }, name: "spawn" } },
         { text: "two more running" },
       ],
+      "on a branch": [{ mcp: { input: { folder: repo, isolate: true, name: "brancher", task: "Add b.md." }, name: "spawn" } }, { text: "brancher is on it" }],
+      "the macbook": [{ mcp: { input: { device: "macbook", name: "roamer", task: "Look around." }, name: "spawn" } }, { text: "roamer is on the macbook" }],
+      "that hang": [
+        { mcp: { input: { name: "stuck1", task: "Hang." }, name: "spawn" } },
+        { mcp: { input: { name: "stuck2", task: "Hang." }, name: "spawn" } },
+        { text: "two stuck" },
+      ],
     },
   };
   writeFileSync(env.FAKE_CLAUDE_SCRIPT, JSON.stringify(script));
@@ -64,31 +103,39 @@ beforeAll(async () => {
     master: { chain: ["claude-code:opus"], effort: "high", permissionMode: "bypassPermissions" },
     compactor: { byLevel: [{ from: 0, chain: ["claude-code:sonnet"] }], effort: "medium" },
     cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
-    devices: { mini: { url: "http://127.0.0.1:1", folders: [dir] } },
+    devices: { macbook: { url: `http://127.0.0.1:${devicePort}`, folders: [far] }, mini: { url: "http://127.0.0.1:1", folders: [dir] } },
     defaultDevice: "mini",
     allowedLogins: [],
-    server: { host: "127.0.0.1", port, mcpTransport: "http" },
+    server: { host: "127.0.0.1", port, mcpTransport: "http", publicUrl: base },
+    subagents: { max: 4, wake: false, worktrees: `${dir}/worktrees` },
   };
   writeFileSync(env.OPTCHAT_CONFIG, `export default ${JSON.stringify(settings)};\n`);
-  server = Bun.spawn(["bun", `${ROOT}cli/optchat.ts`, "server"], { env, stderr: "pipe", stdout: "pipe" });
+  server = Bun.spawn(["bun", `${ROOT}cli/optchat.ts`, "server"], { env: { ...env, OPTCHAT_SERVER_DEVICE: "mini" }, stderr: "pipe", stdout: "pipe" });
+  device = Bun.spawn(["bun", `${ROOT}cli/optchat.ts`, "device", "macbook"], { env: { ...env, OPTCHAT_DEVICE_HOST: "127.0.0.1", OPTCHAT_DEVICE_TRUST: "loopback" }, stderr: "pipe", stdout: "pipe" });
   for (let k = 0; k < 100; k++) {
-    const up = await fetch(`${base}/api/state`).then(
-      (r) => r.ok,
-      () => false,
-    );
-    if (up) return;
+    if ((await up(`${base}/api/state`)) && (await up(`http://127.0.0.1:${devicePort}/health`))) return;
     await Bun.sleep(100);
   }
-  throw new Error(`the server did not start: ${await new Response(server.stderr).text()}`);
+  throw new Error(`the server or the device did not start: ${await new Response(server.stderr).text()} ${await new Response(device.stderr).text()}`);
 });
 
 afterAll(async () => {
   server.kill("SIGTERM");
+  device.kill("SIGTERM");
   await server.exited;
+  await device.exited;
   rmSync(dir, { force: true, recursive: true });
+  rmSync(far, { force: true, recursive: true });
 });
 
-const Start = Schema.Struct({ type: Schema.Literal("start"), pid: Schema.Number, role: Schema.String, argv: Schema.Array(Schema.String) });
+const Start = Schema.Struct({
+  type: Schema.Literal("start"),
+  pid: Schema.Number,
+  role: Schema.String,
+  argv: Schema.Array(Schema.String),
+  cwd: Schema.String,
+  env: Schema.Record(Schema.String, Schema.NullOr(Schema.String)),
+});
 const decodeStart = Schema.decodeUnknownOption(Schema.fromJsonString(Start));
 const starts = (role: string) =>
   readFileSync(env.FAKE_CLAUDE_LOG, "utf8")
@@ -125,7 +172,23 @@ const sideLog = async (name: string) => {
   const log = await json(Entries, `/api/subagent?name=${name}`);
   return log.entries;
 };
-const Agents = Schema.Struct({ subagents: Schema.optional(Schema.Array(Schema.Struct({ name: Schema.String, state: Schema.String, ref: Schema.String, effort: Schema.NullOr(Schema.String) }))) });
+const Agents = Schema.Struct({
+  subagents: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        name: Schema.String,
+        state: Schema.String,
+        ref: Schema.String,
+        effort: Schema.NullOr(Schema.String),
+        device: Schema.optional(Schema.String),
+        folder: Schema.optional(Schema.String),
+        parent: Schema.optional(Schema.String),
+        isolated: Schema.optional(Schema.Boolean),
+        merge: Schema.optional(Schema.Struct({ outcome: Schema.String, into: Schema.NullOr(Schema.String), files: Schema.Number })),
+      }),
+    ),
+  ),
+});
 const agents = async () => {
   const state = await json(Agents, "/api/state");
   return state.subagents ?? [];
@@ -140,6 +203,9 @@ const agent = async (name: string) => {
   const all = await agents();
   return all.find((a) => a.name === name);
 };
+
+// the first 60 characters of a line, enough to tell one from another
+const head = (t: string) => t.slice(0, 60);
 
 const eventually = async (what: string, ok: () => Promise<boolean> | boolean, ms = 15_000) => {
   const end = Date.now() + ms;
@@ -170,56 +236,72 @@ const client = async () => {
   return { frames, ws };
 };
 
-test("the master spawns a read-only subagent over /mcp; its report reaches the chat, its steps only its side log", async () => {
+test("a subagent has the master's permissions: it writes a file and runs a command in its folder, and spawns one of its own over its key", async () => {
   const { frames, ws } = await client();
   send(ws, "when is the trip? ask a subagent", "m1");
   await eventually("the report", async () => chatHas((e) => e.text.startsWith("[scout] ")));
   const chat = await messages();
   const report = chat.find((e) => e.text.startsWith("[scout] "));
   expect(report).toMatchObject({ kind: "user", text: "[scout] The trip is on Oct 3." });
-  // the chat has the turn (its spawn call and answer) and the report; nothing of what scout did
+  // the chat has the turn (its spawn call and answer) and scout's report; nothing of what scout or helper did
   expect(chat.map((e) => e.kind)).toEqual(["user", "tool", "echo", "talk", "user"]);
   expect(chat[1]?.text).toStartWith('mcp__optchat__spawn {"name":"scout"');
-  expect(chat[2]?.text).toContain("Started scout on Claude Opus (Claude Code)");
-  expect(chat.some((e) => e.text.includes("touch /tmp/should-not-exist") || e.text.includes("trip: Oct 3"))).toBe(false);
+  expect(chat[2]?.text).toContain(`Started scout on Claude Opus (Claude Code), directly in ${dir} on mini`);
+  expect(chat.some((e) => e.text.includes("hello from helper") || e.text.includes("trip: Oct 3"))).toBe(false);
 
-  // its claude: the master's tools and system prompt, but permission mode default with only the
-  // read tools let through, a key of its own, and never warm
+  // its claude: a turn's argv (the master's permission mode, tools and system prompt, no
+  // --allowedTools), in the master's folder, with a /mcp key of its own; never warm
   const [master] = starts("turn");
   const scout = startOf("scout");
   expect(scout).toBeDefined();
-  expect(flag(scout?.argv ?? [], "--permission-mode")).toBe("default");
-  expect(flag(scout?.argv ?? [], "--allowedTools")).toBe("Read,Glob,Grep,mcp__optchat__zoom,mcp__optchat__date,mcp__optchat__read_artifact");
+  expect(flag(scout?.argv ?? [], "--permission-mode")).toBe("bypassPermissions");
+  expect(scout?.argv).not.toContain("--allowedTools");
   expect(flag(scout?.argv ?? [], "--tools")).toBe(flag(master?.argv ?? [], "--tools"));
   expect(flag(scout?.argv ?? [], "--system-prompt")).toBe(flag(master?.argv ?? [], "--system-prompt"));
   expect(flag(scout?.argv ?? [], "--effort")).toBe("high");
+  expect(scout?.cwd).toBe(dir);
   expect(mcpUrlOf(scout?.argv ?? [])).not.toBe(mcpUrlOf(master?.argv ?? []));
+  expect(mcpUrlOf(scout?.argv ?? [])).not.toContain("agent=");
+  expect(scout?.env.OPTCHAT_SUBAGENT).toBe("scout");
 
-  // its side log: Bash and the nested spawn refused, the Read and zoom answered, then its reply
+  // what it did, for real, in the folder
+  expect(readFileSync(`${dir}/scout.md`, "utf8")).toBe("written by scout\n");
+  expect(readFileSync(`${dir}/ran.txt`, "utf8")).toBe(`ran in ${dir}\n`);
+  // its side log: the write and the command answered, helper spawned on its own key, helper's
+  // report taken between its steps, the read and the zoom, then its reply
   const side = await sideLog("scout");
-  expect(side.map((e) => `${e.kind}${e.error ? "!" : ""}: ${e.text.slice(0, 60)}`)).toEqual([
-    "user: Find when the trip is.",
-    'tool: Bash {"command":"touch /tmp/should-not-exist"}',
-    "echo!: Claude requested permissions to use Bash, but you haven't gr",
-    'tool: mcp__optchat__spawn {"name":"nested","task":"t"}',
-    "echo!: Claude requested permissions to use mcp__optchat__spawn, but",
-    `tool: ${`Read {"file_path":"${dir}/notes.md"}`.slice(0, 60)}`,
-    "echo: trip: Oct 3",
-    'tool: mcp__optchat__zoom {"id":0,"n":1}',
-    "echo: 0+0|user: when is the trip? ask a subagent",
-    "talk: The trip is on Oct 3.",
-  ]);
-  // and on its own key the server refuses spawn and tell too
-  const childUrl = mcpUrlOf(scout?.argv ?? []);
-  expect(await mcpCall(childUrl, "spawn", { name: "nested", task: "t" })).toContain("a subagent can't start or tell subagents");
-  // zoom("scout") on the master's key reads it
+  expect(side.map((e) => head(`${e.kind}${e.error ? "!" : ""}: ${e.text}`))).toEqual(
+    [
+      "user: Find when the trip is.",
+      String.raw`tool: Write {"content":"written by scout\n","file_path":"scout.md"}`,
+      `echo: File created successfully at: ${dir}/scout.md`,
+      'tool: Bash {"command":"echo ran in $(pwd) > ran.txt && cat ran.txt"}',
+      `echo: ran in ${dir}`,
+      'tool: mcp__optchat__spawn {"name":"helper","task":"Say hello."}',
+      `echo: Started helper on Claude Opus (Claude Code), directly in ${dir} on mini`,
+      "user: [helper] hello from helper",
+      `tool: Read {"file_path":"${dir}/notes.md"}`,
+      "echo: trip: Oct 3",
+      'tool: mcp__optchat__zoom {"id":0,"n":1}',
+      "echo: 0+0|user: when is the trip? ask a subagent",
+      "talk: The trip is on Oct 3.",
+    ].map(head),
+  );
+  // helper was scout's: its own key, scout's folder, its report to scout and not the chat
+  expect(await agent("helper")).toMatchObject({ folder: dir, parent: "scout", state: "done" });
+  expect(startOf("helper")?.env.OPTCHAT_SUBAGENT).toBe("helper");
+  expect(mcpUrlOf(startOf("helper")?.argv ?? [])).not.toBe(mcpUrlOf(scout?.argv ?? []));
+  // a key nobody was given is refused; zoom("scout") on the master's key reads it
+  expect(await fetch(`${base}/mcp?key=nobody`, { body: "{}", method: "POST" }).then((r) => r.status)).toBe(403);
   const zoomed = await mcpCall(mcpUrlOf(master?.argv ?? []), "zoom", { id: "scout" });
-  expect(zoomed).toContain("scout: done, on claude-code:opus, 10 entries");
-  expect(zoomed).toContain("9|talk: The trip is on Oct 3.");
+  expect(zoomed).toContain("scout: done, on claude-code:opus, 13 entries");
 
-  // usage.jsonl: its call as a subagent's, with its name, ref and effort
+  // usage.jsonl: its call and helper's as a subagent's, with its name, ref and effort
   const usage = readFileSync(`${env.OPTCHAT_HOME}/usage.jsonl`, "utf8").trim().split("\n").map((l) => decodeUsage(l));
-  expect(usage.filter((u) => u.role === "subagent").map((u) => [u.subagent, u.ref, u.effort, u.engine])).toEqual([["scout", "claude-code:opus", "high", "claude-code"]]);
+  expect(usage.filter((u) => u.role === "subagent").map((u) => [u.subagent, u.ref, u.effort, u.engine]).toSorted((x, y) => String(x[0]).localeCompare(String(y[0])))).toEqual([
+    ["helper", "claude-code:opus", "high", "claude-code"],
+    ["scout", "claude-code:opus", "high", "claude-code"],
+  ]);
   expect(usage.filter((u) => u.role === "turn").every((u) => u.subagent === undefined)).toBe(true);
 
   // the side log and agent.json are committed with the data dir
@@ -263,8 +345,63 @@ test("from their cards over /ws: a tell reaches a running subagent, a stop ends 
   const idler = await agent("idler");
   expect(idler?.state).toBe("stopped");
   expect(frames.some((f) => f.includes('"type":"SUBAGENT_ERROR"') && f.includes('"code":"stopped"'))).toBe(true);
-  // the stopped claude is gone; nothing of either is in the chat but their reports
+  // nothing of either is in the chat but their reports
   const chat = await messages();
   expect(chat.filter((e) => e.text.startsWith("[")).map((e) => e.text.slice(0, 16))).toEqual(["[scout] The trip", "[sleeper] got yo", "[idler] stopped "]);
+  ws.close();
+}, 30_000);
+
+test("an isolated subagent works in its own worktree; its commit is merged back into the repository when it ends", async () => {
+  const { ws } = await client();
+  send(ws, "add b.md on a branch", "m3");
+  await eventually("brancher's report", async () => chatHas((e) => e.text.startsWith("[brancher] ")));
+  const brancher = startOf("brancher");
+  expect(brancher?.cwd).toBe(`${dir}/worktrees/brancher`);
+  const side = await sideLog("brancher");
+  expect(side.find((e) => e.kind === "echo")?.text).toBe("optchat/brancher");
+  const chat = await messages();
+  const report = chat.find((e) => e.text.startsWith("[brancher] "))?.text ?? "";
+  expect(report).toContain("committed b.md\n[main fast-forwarded to optchat/brancher; its worktree and branch are removed; 1 files changed, +1 -0]");
+  expect(readFileSync(`${repo}/b.md`, "utf8")).toBe("b\n");
+  expect(git(repo, "log", "--format=%s", "-1")).toBe("add b");
+  expect(existsSync(`${dir}/worktrees/brancher`)).toBe(false);
+  expect(await agent("brancher")).toMatchObject({ isolated: true, merge: { files: 1, into: "main", outcome: "fast-forward" }, state: "done" });
+  ws.close();
+}, 30_000);
+
+test("a subagent spawned on another device runs there, through its device runner", async () => {
+  const { ws } = await client();
+  send(ws, "look around the macbook", "m4");
+  await eventually("roamer's report", async () => chatHas((e) => e.text.startsWith("[roamer] ")));
+  const roamer = startOf("roamer");
+  // started by the macbook's runner, in its folder, reaching /mcp at the server's public URL
+  expect(roamer?.cwd).toBe(far);
+  expect(mcpUrlOf(roamer?.argv ?? [])).toStartWith(`${base}/mcp?key=`);
+  expect(flag(roamer?.argv ?? [], "--permission-mode")).toBe("bypassPermissions");
+  expect(roamer?.env.OPTCHAT_SUBAGENT).toBe("roamer"); // through the runner's environment allowlist
+  const side = await sideLog("roamer");
+  expect(side.map((e) => `${e.kind}: ${e.text}`)).toEqual(["user: Look around.", 'tool: Bash {"command":"pwd"}', `echo: ${far}`, "talk: roamed"]);
+  expect(await agent("roamer")).toMatchObject({ device: "macbook", folder: far, state: "done" });
+  const usage = readFileSync(`${env.OPTCHAT_HOME}/usage.jsonl`, "utf8").trim().split("\n").map((l) => decodeUsage(l));
+  expect(usage.find((u) => u.subagent === "roamer")?.device).toBe("macbook");
+  ws.close();
+}, 30_000);
+
+test("Stop all from Background work stops the turn and every running subagent", async () => {
+  const { ws } = await client();
+  send(ws, "start two that hang", "m5");
+  await eventually("both running", async () => {
+    const all = await agents();
+    return ["stuck1", "stuck2"].every((n) => all.some((a) => a.name === n && a.state === "running"));
+  });
+  ws.send(JSON.stringify({ type: "stop-all" }));
+  await eventually("both stopped", async () => {
+    const all = await agents();
+    return ["stuck1", "stuck2"].every((n) => all.some((a) => a.name === n && a.state === "stopped"));
+  });
+  await eventually("their reports", async () => {
+    const chat = await messages();
+    return chat.filter((e) => /^\[stuck[12]\] stopped after/.test(e.text)).length === 2;
+  });
   ws.close();
 }, 30_000);

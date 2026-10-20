@@ -3,13 +3,13 @@
 // whose master publishes, edits and reads an artifact over /mcp as a real one would. The log keeps
 // stubs, never the HTML; /api/artifacts lists the versions with the calls that made them; the
 // routes send exactly their headers, answer only past the guard, 404 an unknown or malformed name
-// or version, and never reach outside the artifacts; a subagent's key reads and changes nothing.
+// or version, and never reach outside the artifacts; a subagent publishes, edits and reads over its own key, as the master does (E36).
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { Option, Schema } from "effect";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { ARTIFACT_EMBEDDED_CSP } from "../src/artifacts/html.ts";
-import { ArtifactList, kb, savedVersion } from "../src/wire.ts";
+import { ArtifactList, kb, savedVersion, SubagentLog } from "../src/wire.ts";
 import { freePort } from "./ports.ts";
 
 const ROOT = `${import.meta.dir}/../`;
@@ -32,12 +32,19 @@ let server: Bun.Subprocess<"ignore", "pipe", "pipe">;
 const V1 = `<!doctype html><html><head><title>Landing</title></head><body><h1>Hello</h1><p>${"MARKUP-NOT-IN-LOG ".repeat(200)}</p></body></html>`;
 
 const SIZE = kb(Buffer.byteLength(V1));
+const NOTES = `<!doctype html><html><head><title>Notes</title></head><body><h1>Notes</h1><p>${"SUBAGENT-MARKUP ".repeat(100)}</p></body></html>`;
 
 beforeAll(async () => {
   const script = {
-    // the subagent tries to publish, edit and read over its own key: its claude asks for
-    // permission (refused), so its key's refusal is tried with a direct call below
-    subagent: { reader: [{ mcp: { input: { name: "landing" }, name: "read_artifact" } }, { text: "read it" }] },
+    // the subagent publishes a page of its own, edits it and reads the master's, over its own key
+    subagent: {
+      maker: [
+        { mcp: { input: { html: NOTES, name: "notes" }, name: "publish_artifact" } },
+        { mcp: { input: { edits: [{ new: "<h1>Trip notes</h1>", old: "<h1>Notes</h1>" }], name: "notes" }, name: "edit_artifact" } },
+        { mcp: { input: { name: "landing", version: 2 }, name: "read_artifact" } },
+        { text: "made it" },
+      ],
+    },
     // keyed by a word of the message each test sends, not by the order claude processes start in:
     // a warm process starts ahead of its turn (E18), so that order is not the order of the turns
     turn: {
@@ -45,7 +52,7 @@ beforeAll(async () => {
       "hi there": [{ mcp: { input: { edits: [{ new: "<h1>Hi there</h1>", old: "<h1>Hello</h1>" }], name: "landing" }, name: "edit_artifact" } }, { text: "edited" }],
       "first version": [{ mcp: { input: { name: "landing", version: 1 }, name: "read_artifact" } }, { text: "read" }],
       "break it": [{ mcp: { input: { html: "<p>not a page</p>", name: "landing" }, name: "publish_artifact" } }, { text: "rejected" }],
-      "spawn a reader": [{ mcp: { input: { name: "reader", task: "Read the landing page." }, name: "spawn" } }, { text: "spawned" }],
+      "spawn a maker": [{ mcp: { input: { name: "maker", task: "Make a page of trip notes." }, name: "spawn" } }, { text: "spawned" }],
       "*": [{ text: "ok" }],
     },
   };
@@ -138,7 +145,6 @@ const say = async (text: string, id: string) => {
 const Start = Schema.Struct({ type: Schema.Literal("start"), role: Schema.String, argv: Schema.Array(Schema.String) });
 const decodeStart = Schema.decodeUnknownOption(Schema.fromJsonString(Start));
 const flag = (argv: readonly string[], name: string) => argv[argv.indexOf(name) + 1];
-const McpConfig = Schema.fromJsonString(Schema.Struct({ mcpServers: Schema.Struct({ optchat: Schema.Struct({ url: Schema.String }) }) }));
 
 test("the master publishes, edits and reads by version over /mcp; the log keeps stubs only; drafts stream", async () => {
   await say("make me a landing page", "m1");
@@ -180,27 +186,37 @@ test("the master publishes, edits and reads by version over /mcp; the log keeps 
   expect(readFileSync(`${stream}/artifacts/landing/v2.html`, "utf8")).toBe(V1.replace("<h1>Hello</h1>", "<h1>Hi there</h1>"));
 }, 60_000);
 
-test("a subagent's claude may read_artifact, and its key is refused publish and edit", async () => {
-  await say("spawn a reader", "m5");
-  await eventually("the reader's report", async () => {
+test("a subagent publishes and edits a page of its own and reads the master's, over its own key (E36)", async () => {
+  await say("spawn a maker", "m5");
+  await eventually("the maker's report", async () => {
     const now = await messages();
-    return now.some((e) => e.text.startsWith("[reader] "));
+    return now.some((e) => e.text.startsWith("[maker] "));
   });
   const sub = readFileSync(env.FAKE_CLAUDE_LOG, "utf8")
     .split("\n")
     .flatMap((line) => Option.toArray(decodeStart(line)))
     .find((s) => s.role === "subagent");
-  expect(flag(sub?.argv ?? [], "--allowedTools")).toBe("Read,Glob,Grep,mcp__optchat__zoom,mcp__optchat__date,mcp__optchat__read_artifact");
-  const { url } = Schema.decodeUnknownSync(McpConfig)(flag(sub?.argv ?? [], "--mcp-config") ?? "").mcpServers.optchat;
-  const callOn = async (name: string, args: Readonly<Record<string, Schema.Json>>) => {
-    const body = JSON.stringify({ id: 1, jsonrpc: "2.0", method: "tools/call", params: { arguments: args, name } });
-    const res = await fetch(url, { body, headers: { "content-type": "application/json" }, method: "POST" });
-    return res.text();
-  };
-  expect(await callOn("publish_artifact", { html: V1, name: "landing" })).toContain("a subagent reads artifacts and changes none");
-  expect(await callOn("edit_artifact", { edits: [{ new: "x", old: "Hello" }], name: "landing" })).toContain("a subagent reads artifacts and changes none");
-  expect(await callOn("read_artifact", { name: "landing", version: 2 })).toContain("Hi there");
-  const [landing] = await list();
+  // the master's permission level, no read-only allowlist
+  expect(sub?.argv).not.toContain("--allowedTools");
+  expect(flag(sub?.argv ?? [], "--permission-mode")).toBe("bypassPermissions");
+  const made = await list();
+  const notes = made.find((a) => a.name === "notes");
+  expect(notes?.versions.map((v) => [v.v, v.by])).toEqual([
+    [1, "publish"],
+    [2, "edit"],
+  ]);
+  expect(readFileSync(`${env.OPTCHAT_HOME}/streams/mini/artifacts/notes/v2.html`, "utf8")).toBe(NOTES.replace("<h1>Notes</h1>", "<h1>Trip notes</h1>"));
+  // its side log keeps the stubs too: no page in it, either its own or the one it read
+  const { entries } = await json(SubagentLog, "/api/subagent?name=maker");
+  const echoes = entries.filter((e) => e.kind === "echo").map((e) => e.text);
+  expect(echoes[0]).toBe(`Published notes (${kb(Buffer.byteLength(NOTES))}) [v1]`);
+  expect(echoes[1]).toMatch(/^Edited notes \(.+\) \[v2\]$/);
+  expect(echoes[2]).toMatch(/^landing v2 of 2 /);
+  const side = entries.map((e) => e.text).join("\n");
+  expect(side).not.toContain("SUBAGENT-MARKUP");
+  expect(side).not.toContain("MARKUP-NOT-IN-LOG");
+  // the master's page is as it was
+  const landing = made.find((a) => a.name === "landing");
   expect(landing?.versions.length).toBe(2);
 }, 30_000);
 

@@ -14,7 +14,7 @@ import { type AgUiEvent, openStream } from "../agui.ts";
 // What a client sends: AG-UI's RunAgentInput (its user messages not seen before are the ones to
 // answer), an abort, a take-back of a held message by the id its sender gave it, a change to the
 // session's settings, the resume of a turn waiting for a model on an engine of the master's chain,
-// or a subagent card's tell, stop or model (SPEC M7a). A user message's content is its text, or AG-UI's parts: text, and image
+// or a subagent card's tell, stop or model (SPEC M7a), or the sheet's Stop all (the turn and every subagent). A user message's content is its text, or AG-UI's parts: text, and image
 // or video parts whose source is a URL "asset:<sha256>", an upload PUT /api/assets stored
 // (SPEC "Media"). The server finds each in its own store; a client never names a path.
 // `forwardedProps.followUp` asks for the other follow-up behavior for this one message;
@@ -37,6 +37,8 @@ const Inbound = Schema.Union([
   Schema.Struct({ type: Schema.Literal("tell"), name: Schema.String, text: Schema.String }),
   Schema.Struct({ type: Schema.Literal("stop-subagent"), name: Schema.String }),
   Schema.Struct({ type: Schema.Literal("subagent-model"), name: Schema.String, model: Schema.String }),
+  // Background work's Stop all: the turn, as an abort, and every running subagent, as their Stops
+  Schema.Struct({ type: Schema.Literal("stop-all") }),
   Schema.Struct({
     forwardedProps: Schema.optional(Schema.Struct({ device: Schema.optional(Schema.String), followUp: Schema.optional(FollowUp), engine: Schema.optional(Schema.String) })),
     messages: Schema.Array(InboundMessage),
@@ -90,7 +92,7 @@ export const wsRoute = (
   router: HttpRouter.HttpRouter,
   o: {
     readonly session: Session;
-    readonly subagents?: Pick<Subagents, "pick" | "stop" | "tell">; // none: a card's frames are answered that there are none
+    readonly subagents?: Pick<Subagents, "pick" | "stop" | "stopAll" | "tell">; // none: a card's frames are answered that there are none
     readonly entries: readonly Entry[];
     readonly thread: string;
     readonly window: number;
@@ -150,6 +152,10 @@ export const wsRoute = (
         switch (m.type) {
           case "abort":
             return o.session.cancel;
+          case "stop-all":
+            // reports hushed first: the stopped runs' reports, and any other until the user's next
+            // message, wake no turn; then the turn, then every subagent
+            return o.session.hush.pipe(Effect.andThen(o.session.cancel), Effect.andThen(o.subagents?.stopAll ?? Effect.void));
           case "take-back":
             return o.session.takeBack(m.clientId);
           case "settings":

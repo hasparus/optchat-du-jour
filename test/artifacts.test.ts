@@ -1,7 +1,7 @@
 // From fx0 tests/core.test.mjs and tests/design-draft.test.mjs (Apache-2.0, © Vercel, modified).
 // Artifacts (SPEC "Artifacts", E31): fx0's validator, CSP and bootstrap (ported from fx0's
 // tests/core.test.mjs), the edit's exact replacements, names, the store's versions and atomic
-// writes and their commit, read_artifact by version, a subagent refused publish and edit, the
+// writes and their commit, read_artifact by version, a subagent's as the master's (E36), the
 // live draft's decoders, and the log's stubs: neither the main log nor the tree ever holds the HTML.
 import { afterAll, expect, test } from "bun:test";
 import { Effect, Predicate, PubSub, Schema, type Scope } from "effect";
@@ -17,8 +17,7 @@ import { applyEdits, ARTIFACT_NAME, ARTIFACTS_UNCOMMITTED, artifactsLeftOut, bad
 import { readStyle, STYLES } from "../src/artifacts/styles.ts";
 import { ARTIFACT_TOOL_DEFS, loggedText, makeArtifactTools, stubEcho, stubToolEntry } from "../src/artifacts/tools.ts";
 import { openChat } from "../src/chat.ts";
-import { SUBAGENT_ALLOWED } from "../src/engines/registry.ts";
-import { TOOLS } from "../src/mcp.ts";
+import { type Caller, TOOLS } from "../src/mcp.ts";
 import { makePersist } from "../src/persist.ts";
 import { makeSession, noMedia, type SessionEvent } from "../src/session.ts";
 import type { StoreError } from "../src/store.ts";
@@ -216,10 +215,10 @@ test("the artifacts are committed with the data dir, unless artifacts.commit is 
 
 // ---- the tools ----
 
-const call = (tools: ReturnType<typeof makeArtifactTools>, caller: "master" | "subagent", tool: "publish_artifact" | "edit_artifact" | "read_artifact", args: Readonly<Record<string, Schema.Json>>) =>
+const call = (tools: ReturnType<typeof makeArtifactTools>, caller: Caller, tool: "publish_artifact" | "edit_artifact" | "read_artifact", args: Readonly<Record<string, Schema.Json>>) =>
   tools.tools(caller).call(tool, args);
 
-test("the tools: publish, edit and read_artifact by version; a subagent may read and is refused publish and edit", async () => {
+test("the tools: publish, edit and read_artifact by version; a subagent has all three as the master has (E36)", async () => {
   const dir = tmp();
   const told: string[] = [];
   await run(
@@ -238,11 +237,13 @@ test("the tools: publish, edit and read_artifact by version; a subagent may read
       // a rejection the model can fix comes back as a tool error saying why
       expect(yield* call(tools, "master", "publish_artifact", { html: page('<iframe src="x"></iframe>'), name: "card" })).toEqual({ error: true, text: "publish_artifact: artifact must not contain <iframe> elements" });
       expect(yield* call(tools, "master", "publish_artifact", { name: "card" })).toEqual({ error: true, text: "publish_artifact needs name and html, both strings." });
-      // a subagent reads, and changes nothing
-      expect((yield* call(tools, "subagent", "read_artifact", { name: "card", version: 2 })).text).toContain("<h1>Bye</h1>");
-      expect(yield* call(tools, "subagent", "publish_artifact", { html: page("<p>x</p>"), name: "card" })).toEqual({ error: true, text: "publish_artifact: a subagent reads artifacts and changes none." });
-      expect(yield* call(tools, "subagent", "edit_artifact", { edits: [{ new: "x", old: "Bye" }], name: "card" })).toEqual({ error: true, text: "edit_artifact: a subagent reads artifacts and changes none." });
+      // a subagent reads, publishes and edits as the master does (E36)
+      const scout: Caller = { agent: "Scout" };
+      expect((yield* call(tools, scout, "read_artifact", { name: "card", version: 2 })).text).toContain("<h1>Bye</h1>");
+      expect(yield* call(tools, scout, "publish_artifact", { html: page("<p>x</p>"), name: "scouted" })).toEqual({ error: false, text: "Published scouted (0.1 KB) [v1]" });
+      expect(yield* call(tools, scout, "edit_artifact", { edits: [{ new: "<p>y</p>", old: "<p>x</p>" }], name: "scouted" })).toEqual({ error: false, text: "Edited scouted (0.1 KB) [v2]" });
       expect(artifacts.info("card")?.versions.length).toBe(2);
+      expect(artifacts.info("scouted")?.versions.length).toBe(2);
       // a long page comes a part at a time
       const long = page(`<p>${"z".repeat(70_000)}</p>`);
       yield* call(tools, "master", "publish_artifact", { html: long, name: "long" });
@@ -257,15 +258,12 @@ test("the tools: publish, edit and read_artifact by version; a subagent may read
       expect((yield* call(tools, "master", "read_artifact", { name: "style/geocities" })).error).toBe(true);
     }),
   );
-  expect(told).toEqual(["card v1", "card v2", "long v1"]);
+  expect(told).toEqual(["card v1", "card v2", "scouted v1", "scouted v2", "long v1"]);
 });
 
-test("the tool list: the three artifact tools after zoom, date, spawn and tell; a subagent's claude may read_artifact", () => {
+test("the tool list: the three artifact tools after zoom, date, spawn and tell", () => {
   expect(TOOLS.map((t) => t.name)).toEqual(["zoom", "date", "spawn", "tell", "publish_artifact", "edit_artifact", "read_artifact"]);
   expect(ARTIFACT_TOOL_DEFS.map((t) => t.name)).toEqual(["publish_artifact", "edit_artifact", "read_artifact"]);
-  expect(SUBAGENT_ALLOWED).toContain("mcp__optchat__read_artifact");
-  expect(SUBAGENT_ALLOWED).not.toContain("mcp__optchat__publish_artifact");
-  expect(SUBAGENT_ALLOWED).not.toContain("mcp__optchat__edit_artifact");
 });
 
 // ---- the log's stubs (E31) ----

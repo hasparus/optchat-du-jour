@@ -5,13 +5,12 @@
 // serves these on POST /tool; the server's own device runs the same code in-process.
 import { Data, Duration, Effect, FileSystem, Option, Schema } from "effect";
 import { isAbsolute, resolve } from "node:path";
-import { expandHome } from "../paths.ts";
+import { expandHome, within } from "../paths.ts";
 import { headOf } from "../text.ts";
 import { type GrepJob, binary } from "./grep-search.ts";
 
 export class Outside extends Data.TaggedError("Outside")<{ readonly message: string }> {}
 
-const within = (path: string, root: string) => path === root || path.startsWith(`${root.replace(/\/$/, "")}/`);
 
 // `path`'s real path when it is one of `folders` or inside one
 export const confine = (path: string, folders: readonly string[]) =>

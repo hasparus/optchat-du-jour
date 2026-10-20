@@ -1,9 +1,10 @@
 // The artifact tools (SPEC "Artifacts"), from fx0 lib/tools.ts's publish_design, edit_design and
 // read_design (Apache-2.0, © Vercel, modified): many artifacts by name instead of one design per
 // chat. They sit on /mcp beside zoom and date for a claude-code turn and in the tool loop's box on
-// the other engines; a subagent's calls of publish and edit are refused, as its spawn and tell are.
+// the other engines; a subagent has all three as the master has them (SPEC "Subagents", E36).
 // Also the log's stubs (E31): what the log keeps of these calls instead of the HTML.
 import { Effect, Option, Schema } from "effect";
+import type { Caller } from "../mcp.ts";
 import { artifactTool, type ArtifactTool, type ArtifactVersion, kb, savedTag, splitTool } from "../wire.ts";
 import { type Artifacts, MAX_EDITS } from "./store.ts";
 import { readStyle, STYLE_PREFIX, STYLES } from "./styles.ts";
@@ -43,7 +44,7 @@ export const ARTIFACT_TOOL_DEFS = [
 // log's echo get at most
 export const READ_PAGE = 28_000;
 export type ArtifactCall = (tool: ArtifactTool, args: Readonly<Record<string, Schema.Json>>) => Effect.Effect<{ readonly text: string; readonly error: boolean }>;
-// the tools as a caller may use them: the master all three, a subagent read_artifact only
+// the tools as a caller may use them: the master and every subagent all three (E36)
 export type ArtifactTools = { readonly call: ArtifactCall };
 export const noArtifacts: ArtifactTools = { call: (tool) => Effect.succeed({ error: true, text: `${tool}: there are no artifacts here.` }) };
 
@@ -113,12 +114,10 @@ export const makeArtifactTools = (o: { readonly artifacts: Artifacts; readonly c
     });
 
   return {
-    tools: (caller: "master" | "subagent"): ArtifactTools => ({
-      call: (tool, args) => {
-        if (tool === "read_artifact") return read(args);
-        if (caller === "subagent") return Effect.succeed(refused(`${tool}: a subagent reads artifacts and changes none.`));
-        return tool === "publish_artifact" ? publish(args) : edit(args);
-      },
+    // every caller, the master or a subagent, may publish, edit and read (E36: a subagent has the
+    // master's tools); the caller is taken for the day an artifact says who made a version
+    tools: (_caller: Caller): ArtifactTools => ({
+      call: (tool, args) => (tool === "read_artifact" ? read(args) : tool === "publish_artifact" ? publish(args) : edit(args)),
     }),
   };
 };

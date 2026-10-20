@@ -79,9 +79,10 @@ export const engineLabel = (ref: string, runs?: string | null) => {
   return `${name} (${where}${effort === null ? "" : `, ${effort}`})`;
 };
 
-// A subagent (SPEC M7a): a background run the master started with spawn(name, task, model?),
-// on the server's own device, read-only. `state`: running, done (it gave its final reply),
-// stopped (by the user, or by a server restart) or failed (`why` says). `ref` is the engine it
+// A subagent (SPEC "Subagents"): a background run the master (or another subagent) started with
+// spawn(name, task, model?, isolate?, device?, folder?), with the master's tools, on `device`.
+// `state`: running, done (it gave its final reply), stopped (by the user, or by a restart it
+// could not go on after) or failed (`why` says). `ref` is the engine it
 // runs on, as the master's chain spells it (canonicalRef), `label` that ref for people, `effort`
 // the effort it runs at (null: its model takes none); a model the user picks on its card is the
 // ref from its next call. `started` is an ISO date; `elapsed`, how long it has run (ms) as of
@@ -90,6 +91,40 @@ export const engineLabel = (ref: string, runs?: string | null) => {
 // short. Every field past `elapsed` is optional, so a server that sends less still decodes.
 export const SubagentState = Schema.Literals(["running", "done", "stopped", "failed"]);
 export type SubagentState = typeof SubagentState.Type;
+// An isolated subagent's git worktree (E37): the repository's top folder it was made from, the
+// worktree's own path, its branch (`optchat/<Name>`), the commit it started from, and the branch
+// the folder was on then (`from`; null: none, a detached HEAD), the only one it merges back into.
+// Paths are the device's own.
+export const Isolation = Schema.Struct({
+  repo: Schema.String,
+  path: Schema.String,
+  branch: Schema.String,
+  base: Schema.String,
+  from: Schema.optional(Schema.NullOr(Schema.String)),
+});
+export type Isolation = typeof Isolation.Type;
+// How an isolated run's branch went back into its folder when it ended (E37): fast-forwarded,
+// merged with a merge commit, nothing to merge, a conflict (branch and worktree kept, `conflicts`
+// naming the files), or not merged for another reason (`detail`: the folder now on another
+// branch or none, a merge or rebase in progress there, local changes in the way, git failing;
+// branch and worktree kept). `into`: the folder's branch; `files`, `insertions`, `deletions`: what
+// the branch changed since it started (its diffstat); `ignored`: gitignored files in the worktree,
+// which is then kept even after a merge, so they aren't deleted with it.
+export const MergeOutcome = Schema.Literals(["fast-forward", "merged", "nothing", "conflict", "not-merged"]);
+export type MergeOutcome = typeof MergeOutcome.Type;
+export const Merge = Schema.Struct({
+  outcome: MergeOutcome,
+  into: Schema.NullOr(Schema.String),
+  detail: Schema.String,
+  files: Schema.Number,
+  insertions: Schema.Number,
+  deletions: Schema.Number,
+  conflicts: Schema.optional(Schema.Array(Schema.String)),
+  ignored: Schema.optional(Schema.Number),
+});
+export type Merge = typeof Merge.Type;
+// a merge that left the worktree in place: its branch not merged, or gitignored files in it
+export const worktreeKept = (m: Merge) => m.outcome === "conflict" || m.outcome === "not-merged" || (m.ignored ?? 0) > 0;
 export const SubagentInfo = Schema.Struct({
   name: Schema.String,
   task: Schema.String,
@@ -103,6 +138,14 @@ export const SubagentInfo = Schema.Struct({
   entries: Schema.optional(Schema.Number),
   lastLine: Schema.optional(Schema.String),
   why: Schema.optional(Schema.String),
+  // M7b, all optional too: the folder it works in (the device's own path), whether it works in a
+  // worktree of its own (`isolated`) and that worktree while it has one, its last run's merge back,
+  // and the subagent that spawned it (none: OptChat)
+  folder: Schema.optional(Schema.String),
+  isolated: Schema.optional(Schema.Boolean),
+  worktree: Schema.optional(Isolation),
+  merge: Schema.optional(Merge),
+  parent: Schema.optional(Schema.String),
 });
 export type SubagentInfo = typeof SubagentInfo.Type;
 
@@ -148,6 +191,9 @@ export const SessionState = Schema.Struct({
   // how long the current phase has run, in ms, as of when this state was made (measured on the
   // server's own clock, so no two clocks are compared): a client adds the time since it got it
   elapsed: Schema.optional(Schema.Number),
+  // reports no longer wake the master (E39): it was woken this many turns in a row, with no user
+  // message between them; the next message resumes waking. Optional, like the list below.
+  wakePaused: Schema.optional(Schema.Number),
   // the subagents (SPEC M7a): every running one, then the most recent others, newest first.
   // Optional: a server from before them sends none, and a client from before them ignores it
   subagents: Schema.optional(Schema.Array(SubagentInfo)),

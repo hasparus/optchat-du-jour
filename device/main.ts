@@ -11,7 +11,7 @@
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import { Effect, Layer, Option } from "effect";
 import { claudeBinary } from "../src/claude/process.ts";
-import { ConfigError, loadSettings } from "../src/config.ts";
+import { ConfigError, loadSettings, subagentSettings } from "../src/config.ts";
 import { type Trust, cachedWhois, callerNames, tailnetAddress, tailnetSuffix, tailscaleWhois } from "./auth.ts";
 import { deviceLayer } from "./runner.ts";
 
@@ -46,7 +46,7 @@ export const main = (name: string) =>
     const host = found.value;
     const callers = trust._tag === "tailnet" ? trust.names.join(", ") || "nobody" : "this machine only";
     yield* Effect.logInfo(`optchat-device ${name}: http://${host}:${port}, folders ${device.folders.join(", ")}, callers ${callers}`);
-    return yield* Layer.launch(deviceLayer({ claude: claudeBinary(), folders: device.folders, host, name, port, trust }));
+    return yield* Layer.launch(deviceLayer({ claude: claudeBinary(), folders: device.folders, host, name, port, trust, worktrees: subagentSettings(settings).worktrees }));
   }).pipe(Effect.provide(BunServices.layer));
 
 if (import.meta.main) BunRuntime.runMain(main(Bun.env.OPTCHAT_DEVICE ?? ""));

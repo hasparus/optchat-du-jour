@@ -31,6 +31,14 @@ export const SCOUT_TASK = "Find the trip dates in the demo notes.";
 export const SCOUT_REPORT = "The trip is Oct 3 to Oct 9; the hotel is booked.";
 export const SPAWNED = "Two subagents are on it: notes and scout.";
 
+// E2E_ISOLATED (SPEC "Subagents", M7b): the turn spawns "fixer" isolated in a demo git repository;
+// it commits a file in its worktree and reports; its branch is merged back, and the report wakes
+// the master, whose next turn answers WOKEN. Fake data only.
+export const FIXER_TASK = "Add a changelog entry to the demo repo.";
+export const FIXER_REPORT = "Added the changelog entry and committed it.";
+export const SPAWNED_ISOLATED = "fixer is on it, on a branch of its own.";
+export const WOKEN = "fixer's change is merged into main; nothing else to do.";
+
 // E2E_ARTIFACTS (SPEC "Artifacts"): fake pages only. "ui": the first turn publishes LANDING (its
 // input streamed slowly, so the draft shows), the second edits its heading; "hostile": the turn
 // publishes hostile(udp, tcp), which tries every way out of its sandbox and writes what happened into #out.

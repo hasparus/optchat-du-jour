@@ -9,7 +9,8 @@
 // tree (SessionState.compactions) and the device runners' connection (/api/devices, read again
 // each time the sheet opens). Nothing is kept once it ends: there is no "finished" history, since
 // the server has none to give, but for the subagents (SPEC M7a), which the server lists done too:
-// they come in `extra` (./subagents.tsx), a group of AI Elements' Subagent cards.
+// they come in `extra` (./subagents.tsx), a group of AI Elements' Subagent cards. While a turn or
+// a subagent runs, Stop all at the top stops the turn and every running subagent at once.
 import { SheetDrawer } from "@/components/sheet-drawer";
 import { Button } from "@/components/ui/button";
 import { TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceDescription, TraceIcon, TraceLine, TraceTitle } from "@/components/ui/trace";
@@ -144,6 +145,8 @@ export function BackgroundWork({
 
   const running = (turn === null ? 0 : 1) + levels.length;
   const none = (extra?.length ?? 0) === 0;
+  // what Stop all stops: the turn, and the subagents running
+  const agents = (state?.subagents ?? []).filter((a) => a.state === "running").length;
   return (
     <SheetDrawer
       className={side === "bottom" ? "max-h-[85dvh]" : undefined}
@@ -156,6 +159,25 @@ export function BackgroundWork({
       trigger={trigger}
     >
       <div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-2 pt-1 pb-3">
+        {(turn !== null || agents > 0) && (
+          <div className="flex justify-end">
+            <Button
+              aria-label={agents === 0 ? "Stop all: the turn" : `Stop all: ${turn === null ? "" : "the turn and "}${agents} ${agents === 1 ? "subagent" : "subagents"}`}
+              className="rounded-full bg-soft text-foreground hover:bg-soft-strong pointer-coarse:h-10"
+              data-testid="stop-all"
+              disabled={s.status !== "open"}
+              onClick={() => {
+                link.stopAll();
+              }}
+              size="sm"
+              title={s.status === "open" ? "Stop the turn and every running subagent" : "Not connected to the server"}
+              variant="ghost"
+            >
+              <SquareIcon className="size-3 fill-current" strokeWidth={0} />
+              Stop all
+            </Button>
+          </div>
+        )}
         {running === 0 && held.length === 0 && none && <p className="text-ui text-muted-foreground">Nothing is running. The next message starts a turn.</p>}
         {running > 0 && state !== null && (
           <Group count={running} icon={<BotIcon className="size-3.5" />} title="Running">

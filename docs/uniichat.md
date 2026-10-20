@@ -2,7 +2,7 @@
 
 [UniiChat](https://github.com/VictorTaelin/uniichat) is Victor Taelin's own OptChat: the code behind docs/optchat.md, open-sourced under Apache-2.0 (Copyright 2026 Higher Order Company). We read it and port ideas, written in our own style; we copy none of its code or text. [NOTICE](../NOTICE) credits what we took.
 
-**Pinned:** `0500bf6` (`0500bf6a8ea4bf0ce047488562022b1b6532cc30`), 2026-10-19. Everything below compares that commit with our main at `4be9d68` (M7a). The comparison was four reports, one each on the memory core, the model engines, agents and devices, and the clients and protocol. This file keeps what they found, and how far we got.
+**Pinned:** `0500bf6` (`0500bf6a8ea4bf0ce047488562022b1b6532cc30`), 2026-10-19. Everything below compares that commit with our main at `4be9d68` (M7a). The comparison was four reports, one each on the memory core, the model engines, agents and devices, and the clients and protocol. This file keeps what they found, and how far we got. M7b (E36–E40) has since ported its subagents' power, waking and resume; the summary below is as of the pin.
 
 ## What it has, what we have
 
@@ -35,6 +35,11 @@ Each item is **ported** (in our code now, with its E-number in SPEC), **planned*
 | Transient failures never retried in a hot loop | E33, `src/compactor.ts` `rest` | A logged entry tries a failed call again only once it has rested `WAIT_RETRY`, and the pump tries it again itself once it has rested, between messages too, each failure in a row doubling the rest up to 5 min; a message reaching the session, and a waiting turn's retry, still try at once. UniiChat waits 60 s inside the call instead; we keep failover across plans |
 | No provider keys in a spawned `claude` | E34, `src/claude/process.ts` `childEnv` | UniiChat's server removes its own keys from the environment. We drop `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, the Bedrock, Vertex and Foundry settings, the base URLs and the default-model overrides from every `claude`, the device runner's included |
 | A WebSocket heartbeat | SPEC "Protocol", `server/routes/ws.ts`, `web/src/lib/connection.ts` | The server sends a connection the state every 5 s when nothing else went out (a `STATE_DELTA`, which every client decodes, unlike UniiChat's bare `"+"`); the web link drops a socket silent for 10 s. UniiChat's frames are a view of at most 128 KB; our opening snapshot can be megabytes, so a socket that opened but never delivered a frame goes on the backoff and the next open socket gets a window twice as long, instead of being reopened at once; a hung handshake keeps 10 s, so a dead network is back within about 20 s |
+| Subagents with the master's power | E36, `src/subagents.ts`, `src/engines/registry.ts` `subagentPolicy` | UniiChat's agents get shell, read, write and edit on any open device. Ours get the master's permission mode and tools (Bash, Edit, Write, WebFetch, WebSearch on `claude-code`, the device tools on our tool loop, the artifact tools too), on any configured device through the runner a turn there uses (`spawn`'s `device`), in any of its folders (`folder`). Unlike UniiChat's: at most `SUBAGENTS_MAX` (4) at once, every level counted, and the device runner keeps its tailnet WhoIs boundary |
+| Subagents that work directly in a folder, with nothing waiting on a merge | E36, E37, `src/worktree.ts` | As UniiChat's do, by default; `isolate: true` adds what UniiChat has no answer for, a git worktree of its own merged back off the folder's working tree when a run ends cleanly, kept with a reason in the report when it can't be |
+| A report starts a turn | E39, `src/session.ts` `wakeWith` | UniiChat's report is a `work` message that starts a turn. Ours waits `WAKE_DEBOUNCE` (2 s) so a burst of reports is one turn, never wakes for a run the user stopped or after Stop all, and pauses after `WAKE_LIMIT` (8) woken turns in a row with no user message; `subagents.wake: false` turns it off. A report that comes mid-turn waits for the turn to end rather than entering the running call |
+| Subagents go on after a restart | E40, `src/subagents.ts` `restore` | UniiChat tells every agent the server restarted. Ours resume oldest first within the cap, from the side log, at most `RESUMES_MAX` (2) restarts in a row with no call completing; a call cut short by a dropped device link goes on after `LINK_WAIT`, at most `LINK_TRIES` (3) times a run |
+| Stop all, for turns and subagents | SPEC "Subagents", `server/routes/ws.ts`, `web/src/chat/background-work.tsx` | One button cancels the turn and stops every subagent, and hushes their reports until the user's next message |
 | Retries on our own HTTP engines, with idle watchdogs | E35, `src/engines/retry.ts` | 4 tries rather than 8, since a failover chain or the user's resume stands behind ours. `retry-after`, `retry-after-ms` and `x-should-retry` are heeded, and the pauses have jitter. Whether a failure may pass is decided where it is classified and carried on the error. A try whose text already went out is never asked again. What failed tries cost is carried to whatever ends the call, and openai-plan's 401 renewal is one of the tries. The idle values are UniiChat's: 5 min on Anthropic, 20 min on OpenAI |
 
 ### Planned
@@ -52,7 +57,6 @@ The first group was left out of the robustness PR on purpose.
 | The live Memory view in the chat | UniiChat's transcript is the view, with summaries that open in place and fill in live. Ours: the raw log, plus a Memory tab reloaded by hand |
 | The terminal UI | Line editing, history, `/help` from the key table, markdown painted in the terminal's own palette |
 | The iOS share extension | After an idempotent `POST /api/messages`, which also gives iOS Shortcuts |
-| M7b: writing subagents | A git worktree each plus a lease for folders that aren't repositories; subagents on other devices; read-only subagents resumed after a restart |
 
 Also planned, from the same reports:
 
@@ -67,7 +71,7 @@ Also planned, from the same reports:
 | Compactor effort `high` rather than `xhigh` | A bake-off contender |
 | Budget hardening | Bill a stream cut short by the bytes it streamed; reserve worst-case spend for concurrent calls; read OpenAI's `cache_write_tokens`; a long-context price tier |
 | Rate-limit rooms | Under a 429 storm, one request probes while the others wait; chats ahead of imports |
-| Small client items | A `?wire=N` version check, Esc or an empty Enter to stop, a "stop all" for turns and subagents, long pastes folded, diffs for Edit and Write calls, push at the end of a turn, a turn cut by a restart resumed with a note |
+| Small client items | A `?wire=N` version check, Esc or an empty Enter to stop, long pastes folded, diffs for Edit and Write calls, push at the end of a turn, a turn cut by a restart resumed with a note |
 | Smaller core items | Write `view.json` only on a batch; later, the slot index so RAM holds only the view |
 
 ### Declined
@@ -84,7 +88,8 @@ Also planned, from the same reports:
 | Group commit with one `syncfs` per batch | Ours, one fsync per line, is stricter, and the volume is small |
 | Devices as open terminals, with an unconfined shell, `write` and `edit` on any path | A session cookie becomes remote code execution on every open machine. Ours: a tailnet WhoIs boundary and confined folders |
 | Computer use | Not now; if wanted, as a per-device MCP server for a claude-code turn |
-| Unbounded agent logs and unbounded `spawn` | Ours cap both (E30) |
+| Unbounded agent logs and unbounded `spawn` | Ours cap both: side logs as E30 has them, running subagents at `SUBAGENTS_MAX` (E36) |
+| A lease or a lock per folder for subagents | The user chose power over caution: subagents work directly, kept apart by Claude Code's refusal of an edit to stale text and by each call naming the others in the same folder, and `isolate: true` gives a worktree when that isn't enough (E36, E37) |
 | Hosted-service machinery: accounts, magic links, billing, per-network rate limits, handover deploys | One user on a tailnet |
 | Telemetry to a third party | None |
 | Voice through a server-side transcriber | The phone's keyboard dictates. A desktop mic would use our local whisper |

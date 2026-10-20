@@ -1,6 +1,7 @@
-// Subagents in Background work (SPEC M7a, DESIGN.md "Background work"): a group of AI Elements'
+// Subagents in Background work (SPEC "Subagents", DESIGN.md "Background work"): a group of AI Elements'
 // Subagent cards, one per subagent the server lists in its state (`subagents`: every running one,
-// then the newest others). Each card says how it went and for how long, its model as a picker for
+// then the newest others). Each card says how it went and for how long, where it works (its device,
+// its folder, its branch when isolated, and how that went back), its model as a picker for
 // its next call (the Model Selector, as the composer's), its task, its steps and its report from
 // its own side log (read from /api/subagent as its `entries` grow, only the new ones), a Stop while
 // it runs, and a Tell line: to a running one, read between its tool calls; to one that has ended,
@@ -32,10 +33,16 @@ export const stepsOf = (entries: readonly Msg[]): SubagentStep[] => {
 
 // what the card shows of a subagent: the server's summary, and what its side log says
 export const runOf = (info: SubagentInfo, entries: readonly Msg[], shownElapsed: number): SubagentRun => ({
+  // an isolated one's branch is optchat/<name>, also once it is merged and gone
+  branch: info.worktree?.branch ?? (info.isolated === true ? `optchat/${info.name}` : null),
   device: info.device ?? "this server",
   elapsed: elapsed(shownElapsed),
   engine: info.label ?? info.ref,
+  folder: info.folder ?? null,
+  isolated: info.isolated === true,
+  merge: info.merge ?? null,
   name: info.name,
+  parent: info.parent ?? null,
   reason: info.why ?? null,
   report: info.state === "done" ? (entries.findLast((e) => e.kind === "talk")?.text ?? null) : null,
   resumable: true,
@@ -161,6 +168,11 @@ export function Subagents({ session, link }: { readonly session: SessionStore; r
   const { state } = s;
   return (
     <Group count={list.length} icon={<NetworkIcon className="size-3.5" />} title="Subagents">
+      {state.wakePaused !== undefined && (
+        <p className="text-xs text-muted-foreground" data-testid="wake-paused" role="status">
+          Waking paused after {state.wakePaused} turns: reports wait for your next message.
+        </p>
+      )}
       {list.map((info) => (
         <SubagentCard info={info} key={info.name} link={link} now={now} online={s.status === "open"} state={state} stateAt={s.stateAt} />
       ))}

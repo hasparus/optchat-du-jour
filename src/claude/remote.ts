@@ -11,7 +11,8 @@ import { isIP } from "node:net";
 import { DeviceOffline } from "../engines/errors.ts";
 import { type Runner, type Spawn, exitText, makeClaude } from "./process.ts";
 import { TOOL_TIMEOUT, type ToolOutput, toolError } from "../tools/files.ts";
-import { Health, type ToDevice, type ToolCall, ToolReply, decodeFromDevice, frame, inbox } from "./wire.ts";
+import { WorktreeError, type Worktrees } from "../worktree.ts";
+import { Health, type ToDevice, type ToolCall, ToolReply, type WorktreeRequest, WorktreeReply, decodeFromDevice, frame, inbox } from "./wire.ts";
 
 export type RemoteTimeouts = {
   readonly connect: Duration.Input; // an asleep or unreachable peer on the tailnet hangs rather than refuses
@@ -100,6 +101,9 @@ export const remoteRunner = (device: string, url: string, timeouts: Partial<Remo
     // stdout lines until the Exit frame, or until the connection drops
     const lines = yield* Queue.unbounded<string, Cause.Done>();
     const ended = yield* Deferred.make<string>();
+    // the connection dropped before the Exit frame (the runner then kills claude there): the call's
+    // error says so in a field (ModelError's `lostLink`), not only in its words
+    let lost = false;
     const pump: Effect.Effect<string> = Effect.gen(function* () {
       for (;;) {
         const m = decodeFromDevice(yield* Queue.take(frames));
@@ -107,13 +111,20 @@ export const remoteRunner = (device: string, url: string, timeouts: Partial<Remo
         if (m.value._tag === "Line") yield* Queue.offer(lines, m.value.line);
         if (m.value._tag === "Exit") return exitText(m.value, device);
       }
-    }).pipe(Effect.catch((error) => Effect.succeed(`lost the connection to ${device}: ${error.message}`)));
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.sync(() => {
+          lost = true;
+          return `lost the connection to ${device}: ${error.message}`;
+        }),
+      ),
+    );
     yield* pump.pipe(
       Effect.flatMap((why) => Deferred.succeed(ended, why)),
       Effect.andThen(Queue.end(lines)),
       Effect.forkScoped,
     );
-    return yield* makeClaude({ exit: Deferred.await(ended), lines: Stream.fromQueue(lines), stdin });
+    return yield* makeClaude({ exit: Deferred.await(ended), lines: Stream.fromQueue(lines), lostLink: () => lost, stdin });
   });
   return { spawn, warm: () => Effect.void }; // claude elsewhere starts on demand (E18)
 };
@@ -166,3 +177,35 @@ export const remoteTool =
       Effect.catch((error) => Effect.succeed(toolError(`Error: ${device} did not run ${name}: ${error.message}`))),
     );
   };
+
+const decodeWorktreeReply = Schema.decodeUnknownEffect(Schema.fromJsonString(WorktreeReply));
+// how long a worktree's add or finish may take on a device: a few git commands, each at most 2
+// minutes there, and a merge of a large branch is the slowest
+const WORKTREE_TIMEOUT = "5 minutes";
+
+// Another device's worktrees (E37), made and finished by its runner (POST /worktree). An
+// unreachable device or a refusal is a WorktreeError, which the subagent's spawn or report says.
+export const remoteWorktrees = (device: string, url: string): Worktrees => {
+  const post = (request: WorktreeRequest) =>
+    Effect.gen(function* () {
+      const base = yield* ipv4(url);
+      const response = yield* ask(HttpClientRequest.post(new URL("/worktree", base)).pipe(HttpClientRequest.bodyText(JSON.stringify(request), "application/json")));
+      if (response.status !== 200) return yield* new WorktreeError({ message: `${device}'s device runner answered ${response.status}` });
+      const reply = yield* decodeWorktreeReply(response.text);
+      if (reply._tag === "Failed") return yield* new WorktreeError({ message: `${device}: ${reply.message}` });
+      return reply;
+    }).pipe(
+      Effect.timeout(WORKTREE_TIMEOUT),
+      Effect.catch((error) => Effect.fail(error._tag === "WorktreeError" ? error : new WorktreeError({ message: `${device}: ${error.message}` }))),
+    );
+  return {
+    add: (folder, name) =>
+      post({ _tag: "Add", folder, name }).pipe(Effect.flatMap((r) => (r._tag === "Added" ? Effect.succeed(r.worktree) : Effect.fail(new WorktreeError({ message: `${device}: an unexpected answer` }))))),
+    discard: (worktree) =>
+      post({ _tag: "Discard", name: worktree.branch.replace(/^optchat\//, ""), worktree }).pipe(
+        Effect.flatMap((r) => (r._tag === "Discarded" ? Effect.void : Effect.fail(new WorktreeError({ message: `${device}: an unexpected answer` })))),
+      ),
+    finish: (worktree, name) =>
+      post({ _tag: "Finish", name, worktree }).pipe(Effect.flatMap((r) => (r._tag === "Finished" ? Effect.succeed(r.merge) : Effect.fail(new WorktreeError({ message: `${device}: an unexpected answer` }))))),
+  };
+};

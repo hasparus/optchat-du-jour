@@ -86,6 +86,14 @@ test("a subagent's four states: running (open, Stop, Tell), finished with its re
   await expect(failed.locator('[data-slot="subagent-reason"]')).toHaveText("usage limit: Claude AI usage limit reached");
 
   await expect(page.getByTestId("story-stopped").getByText("Stopped reader")).toBeVisible();
+
+  // where they work (M7b): an isolated one's branch and its merge, a conflict kept, a nested one
+  const fixer = page.getByTestId("story-fixer");
+  await expect(fixer.locator('[data-slot="subagent-branch"]')).toHaveText("optchat/fixer");
+  await expect(fixer.locator('[data-slot="subagent-merge"]')).toHaveText("Merged into main (fast-forward): 3 files changed, +40 −2");
+  const clash = page.getByTestId("story-clash");
+  await expect(clash.locator('[data-slot="subagent-merge"]')).toHaveText("Not merged: conflicts with main in src/app.ts. optchat/clash is kept: 2 files changed, +5 −1");
+  await expect(page.getByTestId("story-helper").getByText("spawned by fixer", { exact: true })).toBeVisible();
 });
 
 test("the Background work sheet's subagent slot: a group of its own, Stop and Tell from there", async ({ page, stories }) => {
@@ -94,10 +102,10 @@ test("the Background work sheet's subagent slot: a group of its own, Stop and Te
   await page.getByRole("button", { name: "Background work with subagents" }).click();
   const sheet = page.getByTestId("background-work");
   await expect(sheet.getByRole("button", { name: "Subagents" })).toBeVisible();
-  await expect(sheet.getByTestId("work-subagent")).toHaveCount(4);
-  // the running one is open; the others are one line each
+  await expect(sheet.getByTestId("work-subagent")).toHaveCount(7);
+  // the running ones are open; the others are one line each
   await expect(sheet.getByLabel("Tell scout")).toBeVisible();
-  await expect(sheet.locator('[data-slot="subagent"][data-state="open"]')).toHaveCount(1);
+  await expect(sheet.locator('[data-slot="subagent"][data-state="open"]')).toHaveCount(2);
   await sheet.getByRole("button", { name: "Stop scout" }).click();
   await expect(page.getByTestId("story-calls")).toHaveText("stop scout");
 });

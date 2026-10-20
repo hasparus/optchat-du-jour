@@ -1,13 +1,13 @@
 // /mcp (E8): zoom and date as an MCP server, over a WebSocket (a GET that upgrades, one JSON-RPC
-// message per text frame each way) or one POST per message, with spawn and tell (SPEC M7a).
+// message per text frame each way) or one POST per message, with spawn and tell (SPEC "Subagents").
 // tailscale serve hides the peer, so the URL carries a secret, made at startup and sent only inside
-// --mcp-config: the master's, or the subagents' (their spawn and tell are refused).
+// --mcp-config: the master's, or one subagent's own (E38), which says who calls spawn and tell.
 import { Effect } from "effect";
 import { type HttpRouter, type HttpServerRequest, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 import { type ArtifactTools, noArtifacts } from "../../src/artifacts/tools.ts";
 import { forbidden } from "../../src/http.ts";
-import { type AgentTools, answerMcp, type Attached, noAgents } from "../../src/mcp.ts";
+import { type AgentTools, answerMcp, type Attached, type Caller, noAgents } from "../../src/mcp.ts";
 import type { Mem } from "../../src/tree.ts";
 
 export const mcpRoutes = (
@@ -16,21 +16,22 @@ export const mcpRoutes = (
     readonly mem: Mem;
     readonly secret: string;
     readonly attached: Attached;
-    // the subagents' key and tools (SPEC M7a); none: only the master's key is let in
-    readonly subagentSecret?: string;
-    readonly agents?: (caller: "master" | "subagent") => AgentTools;
-    // the artifact tools as each caller may use them (SPEC "Artifacts"); none: they refuse
-    readonly artifacts?: (caller: "master" | "subagent") => ArtifactTools;
+    // the subagents' tools, and whose key is whose (SPEC "Subagents"); none: only the master's key is let in
+    readonly agents?: (caller: Caller) => AgentTools;
+    readonly callerOf?: (key: string) => Caller | null;
+    // the artifact tools (SPEC "Artifacts"), every caller's as the master's (E36); none: they refuse
+    readonly artifacts?: (caller: Caller) => ArtifactTools;
   },
 ) => {
   // whose key the URL carries: the master's, a subagent's, or none we know
-  const callerOf = (request: HttpServerRequest.HttpServerRequest) => {
+  const callerOf = (request: HttpServerRequest.HttpServerRequest): Caller | null => {
     const key = new URL(request.url, "http://x").searchParams.get("key");
-    if (key === o.secret) return "master" as const;
-    return o.subagentSecret !== undefined && key === o.subagentSecret ? ("subagent" as const) : null;
+    if (key === null) return null;
+    if (key === o.secret) return "master";
+    return o.callerOf?.(key) ?? null;
   };
-  const toolsOf = (caller: "master" | "subagent") => o.agents?.(caller) ?? noAgents;
-  const artifactsOf = (caller: "master" | "subagent") => o.artifacts?.(caller) ?? noArtifacts;
+  const toolsOf = (caller: Caller) => o.agents?.(caller) ?? noAgents;
+  const artifactsOf = (caller: Caller) => o.artifacts?.(caller) ?? noArtifacts;
   return Effect.gen(function* () {
     yield* router.add("POST", "/mcp", (request) =>
       Effect.gen(function* () {

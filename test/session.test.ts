@@ -46,6 +46,7 @@ const rig = (
     readonly summarize?: Effect.Effect<void, CompactError>;
     readonly answer?: (job: Job) => Effect.Effect<string, CompactError | NoLine>; // the compactor's whole answer, instead of `summarize`'s
     readonly waitRetry?: Duration.Input;
+    readonly wake?: Duration.Input; // reports wake an idle master after this debounce (E39); none: M7a
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -79,6 +80,7 @@ const rig = (
       logUsage: () => Effect.void,
       media: noMedia,
       waitRetry: o.waitRetry ?? "1 hour",
+      wake: o.wake ?? null,
     });
     const events: SessionEvent[] = [];
     const sub = yield* PubSub.subscribe(session.events);
@@ -1459,6 +1461,123 @@ test("a report that comes while a turn waits for summaries goes before that turn
       yield* until("the second turn", () => views.length === 2);
       expect(views[1]).toContain("[scout] short report");
       expect(r.log().map(([, text]) => (text ?? "").slice(0, 20))).toEqual(["w".repeat(20), "an answer", "[scout] short report", "second", "an answer"]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+// Waking the master (E39): a report that reaches an idle master starts a turn of its own, with the
+// others that come within the debounce, as the turn's messages; a report that comes mid-turn goes
+// into the next turn's view when one is due, else wakes the master once the turn ends; a report
+// after a halt starts no turn on the messages parked then.
+const recording = (seen: TurnInput[], gate?: Deferred.Deferred<true>): TurnEngine => ({
+  ref: "fake:x",
+  run: (input, out) =>
+    Effect.sync(() => seen.push(input)).pipe(
+      Effect.andThen(gate === undefined || seen.length > 1 ? Effect.void : Deferred.await(gate)),
+      Effect.andThen(Effect.suspend(() => out.log("talk", `answer ${seen.length}`))),
+    ),
+  vision: false,
+  warm: () => Effect.void,
+});
+
+test("reports that reach an idle master wake it: those within the debounce in one turn, as its messages", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const seen: TurnInput[] = [];
+      const r = yield* rig(recording(seen), { wake: "150 millis" });
+      const first = yield* r.session.report("[scout] found the notes").pipe(Effect.forkScoped);
+      yield* Effect.sleep("60 millis");
+      expect(seen).toHaveLength(0); // the debounce: no turn yet, and nothing logged
+      expect(r.log()).toEqual([]);
+      const second = yield* r.session.report("[fixer] fixed the test").pipe(Effect.forkScoped);
+      yield* Fiber.join(first);
+      yield* Fiber.join(second);
+      yield* until("the woken turn", () => seen.length === 1 && r.idle());
+      // one turn for both, each report one of its messages, logged after its view was rendered
+      expect(seen[0]?.texts).toEqual(["[scout] found the notes", "[fixer] fixed the test"]);
+      expect(seen[0]?.view).not.toContain("found the notes");
+      expect(r.log()).toEqual([
+        ["user", "[scout] found the notes"],
+        ["user", "[fixer] fixed the test"],
+        ["talk", "answer 1"],
+      ]);
+      yield* Effect.sleep("300 millis");
+      expect(seen).toHaveLength(1);
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("a report mid-turn goes into the next turn's view when one is due, else wakes the master when the turn ends", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const seen: TurnInput[] = [];
+      const gate = yield* Deferred.make<true>();
+      const r = yield* rig(recording(seen, gate), { wake: "50 millis" });
+      yield* r.session.input("first", { clientId: "c1" });
+      yield* until("the turn", () => seen.length === 1);
+      // a report, and a message queued for the next turn, while the turn runs
+      yield* r.session.report("[scout] in the view").pipe(Effect.forkScoped);
+      yield* r.session.input("second", { clientId: "c2", followUp: "queue" });
+      yield* Deferred.succeed(gate, true);
+      yield* until("the second turn", () => seen.length === 2 && r.idle());
+      expect(seen[1]?.view).toContain("[scout] in the view");
+      expect(seen[1]?.texts).toEqual(["second"]);
+      // a report mid-turn with nothing queued: the master wakes on it once the turn ends
+      const hold = yield* Deferred.make<true>();
+      const busy: TurnInput[] = [];
+      const r2 = yield* rig(recording(busy, hold), { wake: "50 millis" });
+      yield* r2.session.input("go", { clientId: "c1" });
+      yield* until("the turn", () => busy.length === 1);
+      yield* r2.session.report("[scout] after the turn").pipe(Effect.forkScoped);
+      yield* Effect.sleep("100 millis");
+      expect(busy).toHaveLength(1); // not offered to the running call
+      yield* Deferred.succeed(hold, true);
+      yield* until("woken", () => busy.length === 2 && r2.idle());
+      expect(busy[1]?.texts).toEqual(["[scout] after the turn"]);
+      expect(r2.log()).toEqual([
+        ["user", "go"],
+        ["talk", "answer 1"],
+        ["user", "[scout] after the turn"],
+        ["talk", "answer 2"],
+      ]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("with wake on, a report after the log refused a message still starts no turn on the parked message", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      let runs = 0;
+      const engine: TurnEngine = { ref: "fake:x", run: (_input, out) => Effect.sync(() => (runs += 1)).pipe(Effect.andThen(out.log("talk", "an answer"))), vision: false, warm: () => Effect.void };
+      const r = yield* rig(engine, { wake: "20 millis" });
+      r.disk.full = true;
+      yield* r.session.input("parked", { clientId: "c1" });
+      yield* until("idle", r.idle);
+      r.disk.full = false;
+      yield* r.session.report("[scout] found it");
+      yield* Effect.sleep("200 millis");
+      expect(runs).toBe(0);
+      expect(r.log()).toEqual([["user", "[scout] found it"]]);
+      expect(r.session.state().phase).toBe("idle");
+      // a newer message takes the parked one with it, as without wake
+      yield* r.session.input("and now?", { clientId: "c2" });
+      yield* until("the run's end", () => r.events.some((e) => e.type === "run-finished"));
+      expect(r.log().map(([, text]) => text)).toEqual(["[scout] found it", "parked", "and now?", "an answer"]);
+      expect(runs).toBe(1);
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("with wake off (M7a) a report never starts a turn", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const seen: TurnInput[] = [];
+      const r = yield* rig(recording(seen));
+      yield* r.session.report("[scout] found it");
+      expect(r.log()).toEqual([["user", "[scout] found it"]]);
+      yield* Effect.sleep("100 millis");
+      expect(seen).toHaveLength(0);
+      expect(r.session.state().phase).toBe("idle");
     }).pipe(Effect.scoped),
   );
 });

@@ -42,3 +42,8 @@ What was taken, and from which commit, is tracked in docs/uniichat.md:
 - A failed model request asked again on `retry-after` and
   `x-should-retry`, and a stream with no bytes for a while cut, with
   UniiChat's idle times (Agent.ts, Anthropic.ts, OpenAI.ts): SPEC E35.
+- Subagents with the master's tools on any device, working directly in
+  a folder (Agent.ts, Machine.ts): SPEC E36.
+- A subagent's report starting a turn of the master (Agent.ts): SPEC E39.
+- Subagents going on from their logs after a restart (Agent.ts):
+  SPEC E40.

@@ -8,7 +8,8 @@ import type { DeviceOffline } from "../engines/errors.ts";
 import { wireJson } from "../text.ts";
 import { type Block, type Event, type Result, parseEvent } from "./events.ts";
 
-export class ClaudeError extends Data.TaggedError("ClaudeError")<{ readonly message: string }> {}
+// `lostLink`: a device runner's connection dropped before claude there ended (src/claude/remote.ts)
+export class ClaudeError extends Data.TaggedError("ClaudeError")<{ readonly message: string; readonly lostLink?: boolean | undefined }> {}
 
 export type Claude = {
   // one stream-json user message
@@ -52,6 +53,8 @@ export const makeClaude = Effect.fnUntraced(function* (o: {
   readonly stdin: Queue.Queue<string>;
   readonly lines: Stream.Stream<string, ClaudeError>;
   readonly exit: Effect.Effect<string>;
+  // whether its output ended because a device runner's connection dropped (src/claude/remote.ts)
+  readonly lostLink?: () => boolean;
 }) {
   const events = yield* Queue.unbounded<Option.Option<Event>>();
   const closed = yield* Deferred.make<true>();
@@ -80,7 +83,7 @@ export const makeClaude = Effect.fnUntraced(function* (o: {
   const result: Effect.Effect<Result, ClaudeError> = Effect.gen(function* () {
     for (;;) {
       const e = yield* next;
-      if (Option.isNone(e)) return yield* new ClaudeError({ message: yield* o.exit });
+      if (Option.isNone(e)) return yield* new ClaudeError({ lostLink: o.lostLink?.() === true ? true : undefined, message: yield* o.exit });
       if (e.value.type === "result") return e.value;
     }
   });

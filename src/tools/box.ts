@@ -1,8 +1,8 @@
 // A turn's tools on an engine with its own loop (SPEC "Engines", tools on non-Claude engines; M5):
 // the read-only file tools of the turn's device, zoom and date answered from memory on the server,
-// spawn and tell (SPEC M7a), and the artifact tools (SPEC "Artifacts"), as /mcp answers them for
-// claude (E8). Write tools are not offered in M5. A subagent's box offers the same list (the
-// cached prefix), and its spawn, tell, publish_artifact and edit_artifact refuse.
+// spawn and tell (SPEC "Subagents"), and the artifact tools (SPEC "Artifacts"), as /mcp answers them
+// for claude (E8). Write tools are not offered in M5. A subagent's box offers the same list (the
+// cached prefix), its spawn and tell its own (E38), and the artifact tools as the master has them (E36).
 import { Effect, Option, Schema } from "effect";
 import { type ArtifactTools, noArtifacts } from "../artifacts/tools.ts";
 import { type AgentTools, memoryTool, noAgents, TOOLS } from "../mcp.ts";
@@ -30,7 +30,7 @@ export const toolBox = (o: {
   readonly files: FileTools;
   readonly mem: Mem;
   readonly agents?: AgentTools;
-  readonly artifacts?: ArtifactTools; // SPEC "Artifacts": a subagent's refuse publish and edit
+  readonly artifacts?: ArtifactTools; // SPEC "Artifacts": a subagent's as the master's (E36)
 }): ToolBox => ({
   defs: toolDefs(o),
   run: (name, input) => {

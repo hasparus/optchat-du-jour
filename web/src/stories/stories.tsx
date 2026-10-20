@@ -1,6 +1,6 @@
 // The story page (web/stories.html): UI that the app has no data for yet, in each of its states,
 // for a look and for the e2e (e2e/stories.spec.ts). Vite serves it in dev; the build takes only
-// index.html, so it never ships. Today: AI Elements' Subagent (SPEC M7a: the app wires it in
+// index.html, so it never ships. Today: AI Elements' Subagent (SPEC "Subagents": the app wires it in
 // chat/subagents.tsx) with fixture runs, alone and in the Background work sheet's `extra` slot, over
 // the scripted server the unit tests use (test/fixture.ts).
 import { BackgroundWork, Group } from "@/chat/background-work";
@@ -15,7 +15,7 @@ import { NetworkIcon } from "lucide-react";
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "../index.css";
-import { RUNS } from "./subagent-runs";
+import { PLACED, RUNS } from "./subagent-runs";
 
 const server = fakeServer(() => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT }]);
 const link = openLink("ws://stories.invalid/ws", { retryMs: 1, socket: server.socket });
@@ -40,10 +40,16 @@ function Stories() {
   return (
     <TooltipProvider>
       <main className="mx-auto flex max-w-184 flex-col gap-6 px-4 py-6">
-        <h1 className="text-base font-semibold">Subagent (SPEC M7a, fixture runs)</h1>
+        <h1 className="text-base font-semibold">Subagent (SPEC "Subagents", fixture runs)</h1>
         {RUNS.map((run) => (
           <section className="flex flex-col gap-2" data-testid={`story-${run.status}`} key={run.name}>
             <h2 className="text-2xs text-muted-foreground">{run.status}</h2>
+            <Subagent defaultOpen onStop={stop} onTell={tell} run={run} />
+          </section>
+        ))}
+        {PLACED.map((run) => (
+          <section className="flex flex-col gap-2" data-testid={`story-${run.name}`} key={run.name}>
+            <h2 className="text-2xs text-muted-foreground">{run.isolated === true ? `isolated, ${run.merge?.outcome ?? "running"}` : `${run.status}, spawned by ${run.parent ?? "OptChat"}`}</h2>
             <Subagent defaultOpen onStop={stop} onTell={tell} run={run} />
           </section>
         ))}
@@ -60,8 +66,8 @@ function Stories() {
         <BackgroundWork
           devices={devices}
           extra={[
-            <Group count={RUNS.length} icon={<NetworkIcon className="size-3.5" />} key="subagents" title="Subagents">
-              {RUNS.map((run) => (
+            <Group count={RUNS.length + PLACED.length} icon={<NetworkIcon className="size-3.5" />} key="subagents" title="Subagents">
+              {[...RUNS, ...PLACED].map((run) => (
                 <div data-testid="work-subagent" key={run.name} role="listitem">
                   <Subagent onStop={stop} onTell={tell} run={run} />
                 </div>

@@ -1,194 +1,141 @@
-// Subagents, phase 1 (SPEC M7a; docs/optchat.md §5–§6, the earlier gist's §9). The master starts
-// one with spawn(name, task, model?): a run in the background, on the server's own device, through
-// the same engines as a turn, read-only (Read, Glob, Grep, zoom and date). It outlives the master's
-// turn, cancelled or not. Its steps go to a side log of its own, never to the chat's log or tree;
-// only its report does: a `user` entry starting "[Name] " (E23), logged by the session when no turn
-// runs, never starting one (src/session.ts `report`). tell(name, text) reaches a running one between
-// its tool calls, and starts one that has ended again. zoom("Name") reads a side log. The user
-// stops one, tells it something or picks its model from its card (server/routes/ws.ts).
+// Subagents (SPEC "Subagents"; docs/optchat.md §5–§6, the earlier gist's §9). The master starts one
+// with spawn(name, task, model?, isolate?, device?, folder?): a run in the background, through the
+// same engines and the same device runner as a turn, with the master's own tools and permissions
+// (E36). It works directly in a folder by default, the master's own unless it names another, or
+// in a git worktree of its own when isolated, which is merged back when it ends (E37, src/worktree.ts).
+// It outlives the master's turn, cancelled or not. A subagent may spawn and tell subagents of its own,
+// within the same cap; their reports come to it (E38). Its steps go to a side log of its own, never
+// to the chat's log or tree; only its report does: a `user` entry starting "[Name] " (E23), which
+// wakes an idle master (E39, src/session.ts `report`). tell(name, text) reaches a running one
+// between its tool calls, and starts one that has ended again. zoom("Name") reads a side log. The
+// user stops one (or all), tells it something or picks its model from its card (server/routes/ws.ts).
 //
 // On disk, beside the stream's chat/ (SPEC "Subagents"):
 //   streams/<device>/agents/<Name>/log.jsonl   its side log: one line per entry, the main log's
 //                                              records (records.ts Msg), append-only, fsynced
-//   streams/<device>/agents/<Name>/agent.json  what it is: task, model, state, times, its log's
-//                                              length and newest line, and the text of a report
-//                                              not in the chat yet (`pending`, with its run's
-//                                              number); replaced whole
+//   streams/<device>/agents/<Name>/agent.json  what it is: task, model, device, folder, worktree,
+//                                              parent, state, times, its log's length and newest
+//                                              line, the last merge, and the text of a report not
+//                                              delivered yet (`pending`, with its run's number);
+//                                              replaced whole
 // Both are committed with the data dir. A run that a restart cut short is found "running" at the
-// next start: it is marked stopped and reported so, and nothing resumes it. A side log is held in
-// memory only while its subagent runs or is listed; the others are read again when asked for.
+// next start and goes on, from its side log, as after a tell (E40). A side log is held in memory
+// only while its subagent runs or is listed; the others are read again when asked for.
 //
 // A report is made once, as its run ends, before anything else can happen to the subagent (a tell
-// may start it again at once), and kept as `pending` until the chat has it: a restart sends the
-// same text, unless the chat already holds it.
+// may start it again at once), and kept as `pending` until its reader has it, the chat or the
+// subagent that spawned it: a restart sends the same text, unless its reader holds it already.
 //
 // Each call of a run is one engine call: the view (the turn's that spawned it, or that told it,
-// cached as that turn's), then one opening text: who it is, its task, and on a later call what its
-// side log holds so far (its newest entries, within SIDE_CONTEXT) and the messages it was sent
-// since. Messages sent while a call runs are offered to it; what it never took starts the next call.
-import { Cause, Clock, Deferred, Effect, Exit, Fiber, Option, PubSub, Queue, Result, Schema, type Scope } from "effect";
+// cached as that turn's), then one opening text: who it is, where it works and who else works
+// there, its task, and on a later call what its side log holds so far (its newest entries, within
+// SIDE_CONTEXT) and the messages it was sent since. Messages sent while a call runs are offered to
+// it; what it never took starts the next call.
+import { Cause, Clock, Deferred, type Duration, Effect, Exit, Fiber, Option, PubSub, Queue, Result, Schema, type Scope } from "effect";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { posix } from "node:path";
 import { loggedText } from "./artifacts/tools.ts";
 import { type Effort, entryLabel, isEffort, type Ref, runEffort } from "./config.ts";
 import type { EngineError } from "./engines/errors.ts";
-import { type AgentTools, SUBAGENT_NAME } from "./mcp.ts";
-import { Msg } from "./records.ts";
+import { type AgentTools, type Caller, SUBAGENT_NAME } from "./mcp.ts";
+import { expandHome, within } from "./paths.ts";
 import { failureText, type SessionEvent } from "./session.ts";
 import { appendLine, newMsg, replaceFile, StoreError } from "./store.ts";
-import { headOf } from "./text.ts";
 import type { Entry, Mem } from "./tree.ts";
 import type { Mid, TurnEngine, TurnEvents } from "./turn/engine.ts";
 import type { UsageRecord } from "./usage.ts";
 import { render, settle } from "./view.ts";
-import { canonicalRef, effortSplit, type SubagentInfo, type SubagentLog, SubagentState } from "./wire.ts";
+import { canonicalRef, effortSplit, type SubagentInfo, type SubagentLog } from "./wire.ts";
+import { ensureWorktree, mergeBack, type Worktrees } from "./worktree.ts";
+import {
+  type Agent,
+  type AgentPlace,
+  agentOf,
+  cwdOf,
+  decodeMeta,
+  history,
+  infoOf,
+  intro,
+  lineOf,
+  metaOf,
+  type Pending,
+  readLog,
+  shownEntry,
+  SIDE_PAGE,
+  type SubagentHost,
+  SUBAGENTS_SHOWN,
+  type Tell,
+  USER_STOP,
+} from "./subagents/agent.ts";
+import { makeReports, reportOf } from "./subagents/reports.ts";
 
-// at most this many run at once; a spawn or a tell that would start one more is refused, naming them
-export const SUBAGENTS_AT_ONCE = 2;
-// the characters of a final reply its report carries; past that it is cut, and zoom("Name") has it whole
-export const REPORT_MAX = 8000;
-// the characters one zoom("Name") answers with; the next page starts where it says (the master logs
-// the answer as an echo, capped at CAP, 30,000)
-export const SIDE_PAGE = 28_000;
-// the characters of its own side log a later call of a subagent is sent, its newest entries
-export const SIDE_CONTEXT = 60_000;
-// the subagents the state lists: every running one, then the newest others up to this many in all
-export const SUBAGENTS_SHOWN = 8;
-// the characters of a side log's newest line the state carries
-const LAST_LINE = 160;
+export { type AgentPlace, REPORT_MAX, SIDE_CONTEXT, SIDE_PAGE, type SubagentHost, SUBAGENTS_SHOWN } from "./subagents/agent.ts";
+
+// A call cut short by a dropped device runner link (the runner killed its claude) goes on from its
+// side log after LINK_WAIT, at most LINK_TRIES times in a run, as after a restart (E40); then it
+// fails and reports. The process itself doesn't survive the drop (deferred, SPEC M7b).
+export const LINK_TRIES = 3;
+export const LINK_WAIT = "5 seconds";
+// A run a restart cut short goes on at most this many restarts in a row with no call of it
+// completing since; the next restart stops it and reports why (E40), so a server that crashes
+// soon after it starts doesn't call the model again at every start
+export const RESUMES_MAX = 2;
 const NAME = SUBAGENT_NAME; // src/mcp.ts: a letter, then up to 31 letters, digits, - or _
-
-// what the session gives the supervisor, once it exists (it needs the supervisor's list first)
-export type SubagentHost = {
-  readonly report: (text: string) => Effect.Effect<void>;
-  readonly turnNow: () => { readonly ref: string; readonly view: string } | null;
-  readonly lastView: () => string | null;
-};
 
 export type Subagents = {
   readonly list: () => readonly SubagentInfo[];
   readonly changes: PubSub.PubSub<true>;
-  // spawn, tell and zoom("Name") for a turn's tools: the master's, or a subagent's, which can't
-  // start or tell one (no nesting)
-  readonly tools: (caller: "master" | "subagent") => AgentTools;
+  // spawn, tell and zoom("Name") for a turn's tools: the master's, or a subagent's (E38)
+  readonly tools: (caller: Caller) => AgentTools;
+  // who holds this /mcp key: a subagent, by its name; null for a key no subagent was given
+  readonly callerOf: (key: string) => Caller | null;
   // the user's actions from a card: null when done, else why not
   readonly tell: (name: string, text: string) => Effect.Effect<string | null>;
   readonly stop: (name: string) => Effect.Effect<string | null>;
+  // the user's Stop all: every running subagent, stopped; their names
+  readonly stopAll: Effect.Effect<readonly string[]>;
   readonly pick: (name: string, model: string) => Effect.Effect<string | null>;
   readonly log: (name: string, from?: number, limit?: number) => SubagentLog | null;
-  // after a restart: the runs it cut short are stopped, and every report not in the chat yet is sent
+  // after a restart: the runs it cut short go on, and every report not delivered yet is sent
   readonly restore: Effect.Effect<void>;
 };
 
-const Meta = Schema.Struct({
-  name: Schema.String,
-  task: Schema.String,
-  ref: Schema.String,
-  effort: Schema.NullOr(Schema.String),
-  state: SubagentState,
-  started: Schema.String,
-  ended: Schema.NullOr(Schema.String),
-  why: Schema.NullOr(Schema.String),
-  runs: Schema.Number,
-  // the report made when its last run ended and not in the chat yet, word for word
-  pending: Schema.optional(Schema.NullOr(Schema.Struct({ run: Schema.Number, text: Schema.String }))),
-  // its side log's length and newest line (LAST_LINE characters), so a subagent that isn't listed
-  // needn't be read; a file without them is read once at startup
-  entries: Schema.optional(Schema.Number),
-  lastLine: Schema.optional(Schema.NullOr(Schema.String)),
-});
-type Meta = typeof Meta.Type;
-const decodeMeta = Schema.decodeUnknownOption(Schema.fromJsonString(Meta));
-const decodeEntry = Schema.decodeUnknownOption(Schema.fromJsonString(Msg));
-
-// a report not in the chat yet, and the run it ends (its `runs` then): two runs' reports with the
-// same words stay two reports
-type Pending = { readonly run: number; readonly text: string };
-
-// a message sent to a subagent: held for its next call, or offered to the running one
-type Tell = { readonly seq: number; readonly text: string; state: "held" | "offered" };
-
-type Agent = {
-  readonly name: string;
-  readonly task: string;
-  ref: string; // as the master's chain spells it (canonicalRef)
-  engineRef: Ref | null; // null: a ref the config no longer has (after a restart)
-  effort: Effort | undefined;
-  state: SubagentState;
-  started: number;
-  ended: number | null;
-  why: string | null;
-  runs: number;
-  pending: Pending | null; // the report not in the chat yet
-  entries: Entry[] | null; // its side log, while in memory (`entriesOf` reads it again)
-  count: number; // its side log's length
-  lastLine: string | null; // its newest line, as the state shows it
-  tells: Tell[];
-  offerTo: Queue.Queue<Tell> | null;
-  fiber: Fiber.Fiber<void, EngineError | StoreError> | null;
-  stopping: boolean; // the user stopped it: an interrupt is that, not the server going down
-  view: string | null;
-};
-
-const iso = (ms: number) => new Date(ms).toISOString();
 const bareOf = (ref: string) => effortSplit(ref)[0];
-const capText = (names: readonly string[]) => `${names.length} subagents run already (${names.join(", ")}), at most ${SUBAGENTS_AT_ONCE} at once`;
+// a run interrupted, and its end handed on (`launch`): what a stop waits for
+const stopped = (a: Pick<Agent, "fiber" | "watcher">) => {
+  const { fiber, watcher } = a;
+  return Effect.andThen(fiber === null ? Effect.void : Fiber.interrupt(fiber), watcher === null ? Effect.void : Fiber.await(watcher));
+};
+// a message for a subagent as its call is offered it
+const asMid = (t: Tell): Mid => ({ media: [], seq: t.seq, text: t.text });
 const refused = (text: string) => Effect.succeed({ error: true, text });
-const flat = (text: string) => text.replaceAll(/\s+/g, " ").trim();
 
-// "12 s", "2 min 05 s": how long a run took, for its report
-const took = (ms: number) => {
-  const s = Math.max(0, Math.round(ms / 1000));
-  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, "0")} s`;
-};
-
-// What the first message of each call says after the view (one system prompt for every call,
-// docs/optchat.md §5, so who it is goes here). Claude Code may still run a command it classes as
-// read-only (`ls`, `git log`), so it is not told that none runs.
-const intro = (name: string) =>
-  `[optchat: You are the subagent "${name}", started by OptChat for the task below. The view above is OptChat's memory, context only: do what your task says, not what the user's last message says. You read files (Read, Glob, Grep) and memory (zoom, date) and change nothing: writing a file, and any command that could change something, is refused. Messages from OptChat or the user may reach you while you work. Your final reply is your report to OptChat: what you found and what will matter later, in a few lines.]`;
-
-// the line the state shows of a side log entry
-const lineOf = (e: Pick<Entry, "kind" | "text">) => headOf(flat(`${e.kind}: ${e.text}`), LAST_LINE);
-
-// a side log as its file holds it: the lines that read, in order
-const readLog = (path: string): Entry[] =>
-  existsSync(path)
-    ? readFileSync(path, "utf8")
-        .split("\n")
-        .flatMap((line) => {
-          const e = line.trim() === "" ? undefined : decodeEntry(line);
-          return e?._tag === "Some" ? [{ ...e.value, size: e.value.size ?? 0 }] : [];
-        })
-    : [];
-
-const shownEntry = (e: Pick<Entry, "i" | "kind" | "text">) => `${e.i}|${e.kind}: ${e.text}`;
-
-// a later call's own history: its newest entries within SIDE_CONTEXT, after the task (entry 0)
-const history = (name: string, entries: readonly Entry[]) => {
-  const kept: string[] = [];
-  let room = SIDE_CONTEXT;
-  let k = entries.length - 1;
-  for (; k >= 1; k--) {
-    const line = shownEntry(entries[k] ?? { i: k, kind: "note", text: "" });
-    if (line.length > room) break;
-    room -= line.length + 1;
-    kept.unshift(line);
-  }
-  const left = k >= 1 ? `\n[${k} older entries left out: zoom("${name}", 1) reads them]` : "";
-  return `[optchat: You worked on this before. Your own log so far, oldest first (zoom("${name}") reads it too); carry on from there:]${left}\n${kept.join("\n")}`;
-};
+// what a restart tells a subagent it cut short, as it goes on (E40)
+const RESTARTED = "[from OptChat] The server restarted while you worked, and stopped your last call. Your log so far is above: carry on with your task from there, checking what your last steps left.";
+// and what a dropped link does
+const RECONNECTED = (device: string) =>
+  `[from OptChat] The connection to ${device} dropped while you worked, and stopped your last call. Your log so far is above: carry on with your task from there, checking what your last steps left.`;
 
 export const makeSubagents = (o: {
   readonly dir: string; // the stream: streams/<device>
-  readonly device: string; // the server's own: every call runs here
+  readonly device: string; // the server's own
+  // the configured devices and their folders: where a subagent may run, and its default folder
+  readonly devices: Readonly<Record<string, { readonly folders: readonly string[] }>>;
   readonly chain: readonly Ref[]; // the master's chain: the models a subagent may run on
   readonly effort: Effort; // the master's effort
-  readonly engine: (ref: Ref) => Effect.Effect<TurnEngine>; // a subagent's engine for a ref (src/engines/registry.ts, child)
+  readonly max: number; // subagents running at once, every level counted (subagents.max)
+  // a subagent's engine for a ref, placed for one call (src/engines/registry.ts, child)
+  readonly engine: (ref: Ref, at: AgentPlace) => Effect.Effect<TurnEngine>;
+  // a device's worktrees (src/worktree.ts); none: that device can't isolate
+  readonly worktrees: (device: string) => Worktrees | undefined;
+  // a folder asked for on a device, checked against that device's folders: its path, or why not
+  readonly folderFor?: (device: string, path: string) => Result.Result<string, string>;
   readonly host: Deferred.Deferred<SubagentHost>;
   readonly mem: Mem; // for a view when no turn has been sent one yet
   readonly commit: Effect.Effect<string | null>;
   readonly logUsage: (record: UsageRecord) => Effect.Effect<void>;
   readonly publish: (e: SessionEvent) => Effect.Effect<void>;
+  readonly linkWait?: Duration.Input; // LINK_WAIT; tests make it short
 }): Effect.Effect<Subagents, never, Scope.Scope> =>
   Effect.gen(function* () {
     const root = `${o.dir}/agents`;
@@ -198,7 +145,22 @@ export const makeSubagents = (o: {
     const changes = yield* PubSub.sliding<true>(1);
     const changed = PubSub.publish(changes, true).pipe(Effect.asVoid);
     const info = (message: string) => o.publish({ message, type: "info" });
+    const folderFor = o.folderFor ?? ((_device: string, path: string) => Result.succeed(path));
     let seq = 0;
+    // the /mcp keys given out, each to one subagent (E38): made at each start, never on disk
+    const keys = new Map<string, string>();
+    const newKey = (name: string) => {
+      const key = crypto.randomUUID();
+      keys.set(key, name);
+      return key;
+    };
+
+    // a device's own folder for a subagent asked for none: its first folder, `~` expanded on this
+    // machine (another's runner expands its own); undefined for a device with none
+    const firstFolder = (device: string) => {
+      const first = o.devices[device]?.folders[0];
+      return first === undefined ? undefined : device === o.device ? expandHome(first) : first;
+    };
 
     // ---- the models ----
 
@@ -225,21 +187,8 @@ export const makeSubagents = (o: {
     // ---- on disk ----
 
     const folder = (name: string) => `${root}/${name}`;
-    const metaOf = (a: Agent): Meta => ({
-      effort: a.effort ?? null,
-      ended: a.ended === null ? null : iso(a.ended),
-      entries: a.count,
-      lastLine: a.lastLine,
-      name: a.name,
-      pending: a.pending,
-      ref: a.ref,
-      runs: a.runs,
-      started: iso(a.started),
-      state: a.state,
-      task: a.task,
-      why: a.why,
-    });
     const save = (a: Agent) => replaceFile(folder(a.name), "agent.json", `${JSON.stringify(metaOf(a))}\n`);
+    const saveOrSay = (a: Agent) => save(a).pipe(Effect.catch((error) => info(error.message)));
     // its side log, read again from the file when it isn't in memory
     const entriesOf = (a: Agent): Entry[] => {
       a.entries ??= readLog(`${folder(a.name)}/log.jsonl`);
@@ -289,116 +238,76 @@ export const makeSubagents = (o: {
           continue;
         }
         const entries = m.state === "running" || m.entries === undefined ? readLog(`${folder(name)}/log.jsonl`) : null;
-        const last = entries?.at(-1);
         const model = resolve(m.ref);
-        loaded.push({
-          count: entries?.length ?? m.entries ?? 0,
-          effort: Result.isSuccess(model) ? model.success.effort : m.effort !== null && isEffort(m.effort) ? m.effort : undefined,
-          ended: m.ended === null ? null : Date.parse(m.ended),
-          engineRef: Result.isSuccess(model) ? model.success.ref : null,
-          entries,
-          fiber: null,
-          lastLine: entries === null ? (m.lastLine ?? null) : last === undefined ? null : lineOf(last),
-          name,
-          offerTo: null,
-          pending: m.pending ?? null,
-          ref: m.ref,
-          runs: m.runs,
-          started: Date.parse(m.started),
-          state: m.state,
-          stopping: false,
-          task: m.task,
-          tells: [],
-          view: null,
-          why: m.why,
-        });
+        const device = m.device ?? o.device;
+        loaded.push(agentOf(m, { device, entries, folder: firstFolder(device) ?? "", key: newKey(name), model: Result.isSuccess(model) ? model.success : null }));
       }
     const agents = new Map<string, Agent>(loaded.map((a) => [a.name.toLowerCase(), a]));
     const find = (name: string) => agents.get(name.trim().toLowerCase());
-    const runningNames = () => [...agents.values()].filter((a) => a.state === "running").map((a) => a.name);
+    const running = () => [...agents.values()].filter((a) => a.state === "running");
+    const capText = (names: readonly string[]) => `${names.length} subagents run already (${names.join(", ")}), at most ${o.max} at once`;
+    // the others working directly in the same folder as `a` right now, or in one inside the other
+    const sharing = (a: Agent) =>
+      a.worktree === null ? running().filter((x) => x !== a && x.worktree === null && x.device === a.device && (within(x.folder, a.folder) || within(a.folder, x.folder))) : [];
 
     // ---- the state clients see ----
 
-    const infoOf = (a: Agent): SubagentInfo => {
-      const base: SubagentInfo = {
-        device: o.device,
-        effort: a.effort ?? null,
-        elapsed: Math.max(0, (a.ended ?? now()) - a.started),
-        entries: a.count,
-        label: a.engineRef ? entryLabel(a.engineRef, o.effort) : a.ref,
-        name: a.name,
-        ref: a.ref,
-        started: iso(a.started),
-        state: a.state,
-        task: a.task,
-      };
-      const withLast = a.lastLine === null ? base : { ...base, lastLine: a.lastLine };
-      return a.why === null ? withLast : { ...withLast, why: a.why };
-    };
+    const infoNow = (a: Agent) => infoOf(a, now(), o.effort);
     // every running one, then the newest others, up to SUBAGENTS_SHOWN
     const shown = () => {
       const all = [...agents.values()].toSorted((x, y) => y.started - x.started);
-      const running = all.filter((a) => a.state === "running");
-      const others = all.filter((a) => a.state !== "running").slice(0, Math.max(0, SUBAGENTS_SHOWN - running.length));
-      return [...running, ...others];
+      const live = all.filter((a) => a.state === "running");
+      const others = all.filter((a) => a.state !== "running").slice(0, Math.max(0, SUBAGENTS_SHOWN - live.length));
+      return [...live, ...others];
     };
-    const list = () => shown().map(infoOf);
+    const list = () => shown().map(infoNow);
     // the side logs of subagents no longer listed leave memory (their cards are gone)
     const evict = () => {
-      const kept = new Set(shown());
-      for (const a of agents.values()) if (!kept.has(a)) a.entries = null;
+      const listed = new Set(shown());
+      for (const a of agents.values()) if (!listed.has(a)) a.entries = null;
     };
 
     // ---- reports ----
 
-    // What reaches the chat when a run ends: its final reply, or why there is none
-    // (as its run ends: `ended` is when)
-    const reportOf = (a: Agent, ended: number) => {
-      const head = `[${a.name}] `;
-      const ran = took(ended - a.started);
-      const more = `zoom("${a.name}") reads its log (${a.count} entries)`;
-      if (a.state === "done") {
-        const reply = entriesOf(a).findLast((e) => e.kind === "talk")?.text.trim() ?? "";
-        if (reply === "") return `${head}finished after ${ran} without a reply; ${more}.`;
-        const kept = headOf(reply, REPORT_MAX);
-        return kept === reply ? `${head}${reply}` : `${head}${kept}\n[… ${reply.length - kept.length} characters cut: ${more}]`;
-      }
-      if (a.state === "failed") return `${head}failed after ${ran} (${a.why ?? "no reason given"}) on ${a.ref}; ${more}.`;
-      return `${head}stopped after ${ran}: ${a.why ?? "stopped"}. ${more}; tell("${a.name}", …) starts it again.`;
+    const reports = makeReports({
+      begin: (a, view) => begin(a, view),
+      cannotStart: (a) => cannotStart(a),
+      chat: () => o.mem.root,
+      entriesOf,
+      find,
+      host: o.host,
+      nextSeq: () => ++seq,
+      save: saveOrSay,
+      scope,
+    });
+    const { deliver, delivered } = reports;
+
+    // why a subagent that has ended can't start again now; null when it can
+    const cannotStart = (a: Agent) => {
+      const live = running().map((x) => x.name);
+      if (live.length >= o.max) return capText(live);
+      if (a.engineRef === null) return `its model ${a.ref} is not in the master's chain any more: pick one on its card (${chainText()})`;
+      return null;
     };
 
-    // This report, word for word, into the chat once the session logs it; then no longer pending,
-    // unless a later run's report is pending by then. Forked: the session logs it when no turn runs.
-    const sendReport = (a: Agent, report: Pending) =>
-      Effect.gen(function* () {
-        const host = yield* Deferred.await(o.host);
-        yield* host.report(report.text);
-        if (a.pending?.run !== report.run) return;
-        a.pending = null;
-        yield* save(a).pipe(Effect.catch((error) => info(error.message)));
-      }).pipe(Effect.forkIn(scope), Effect.asVoid);
-
     // A run ended: its state and its report, made at once, before this fiber yields (a tell may
-    // start it again from the next step on), then saved, committed and sent.
+    // start it again from the next step on), then saved, committed and delivered. Reports from its
+    // own subagents it never took go to the chat, so none waits on a run that won't come.
     const ended = (a: Agent, runId: string, exit: Exit.Exit<void, EngineError | StoreError>): Effect.Effect<void> =>
       Effect.suspend(() => {
         a.fiber = null;
         a.offerTo = null;
         for (const t of a.tells) t.state = "held";
         // a message that came as its last call ended: one more call, as if it had come a moment sooner
-        if (Exit.isSuccess(exit) && a.tells.length > 0)
-          return Effect.forkIn(run(a, runId), scope).pipe(
-            Effect.tap((fiber) => Effect.sync(() => (a.fiber = fiber))),
-            Effect.asVoid,
-          );
+        if (Exit.isSuccess(exit) && a.tells.length > 0) return launch(a, runId);
         if (Exit.isSuccess(exit)) {
           a.state = "done";
           a.why = null;
         } else if (Cause.hasInterruptsOnly(exit.cause)) {
-          // the server is going down: left "running" on disk, for the next start to report
+          // the server is going down: left "running" on disk, for the next start to resume
           if (!a.stopping) return Effect.void;
           a.state = "stopped";
-          a.why = "stopped by the user";
+          a.why = USER_STOP;
         } else {
           const failure = Cause.findErrorOption(exit.cause);
           const defect = Cause.squash(exit.cause);
@@ -407,19 +316,24 @@ export const makeSubagents = (o: {
         }
         a.stopping = false;
         a.ended = now();
-        const report: Pending = { run: a.runs, text: reportOf(a, a.ended) };
+        if (a.state === "done") a.resumes = 0;
+        // a run the user stopped wakes no one: the stop is a decision, not news to act on (E39)
+        const report: Pending = a.why === USER_STOP ? { run: a.runs, text: reportOf(a, a.ended, entriesOf(a)), wake: false } : { run: a.runs, text: reportOf(a, a.ended, entriesOf(a)) };
         a.pending = report;
+        const orphans = a.tells.flatMap((t) => (t.report === undefined ? [] : [t.report]));
+        a.tells = a.tells.filter((t) => t.report === undefined);
         const told: SessionEvent =
           a.state === "done"
             ? { name: a.name, report: report.text, runId, type: "subagent-finished" }
             : { code: a.state === "stopped" ? "stopped" : "failed", message: a.why ?? a.state, name: a.name, runId, type: "subagent-error" };
         return Effect.gen(function* () {
-          yield* save(a).pipe(Effect.catch((error) => info(error.message)));
+          yield* saveOrSay(a);
           yield* o.publish(told);
           evict();
           yield* changed;
           yield* o.commit.pipe(Effect.flatMap((failed) => (failed ? info(`git: ${failed}`) : Effect.void)));
-          yield* sendReport(a, report);
+          yield* reports.orphaned(a, orphans);
+          yield* deliver(a, report);
         });
       });
 
@@ -437,23 +351,49 @@ export const makeSubagents = (o: {
         return render(o.mem);
       });
 
-    const run = (a: Agent, runId: string): Effect.Effect<void, EngineError | StoreError> =>
+    // an isolated one's worktree for this call: its own, or a new one (src/worktree.ts)
+    const worktreeFor = (a: Agent) =>
       Effect.gen(function* () {
+        const w = yield* ensureWorktree(o.worktrees(a.device), { ...a, local: a.device === o.device }).pipe(Effect.mapError((e) => new StoreError({ message: e.message })));
+        if (w === a.worktree) return;
+        a.worktree = w;
+        yield* saveOrSay(a);
+        yield* changed;
+      });
+
+    // An isolated run's branch back into its folder (src/worktree.ts): never interrupted halfway, a
+    // stop waits for it; a failure is the merge's answer, the branch kept
+    const merged = (a: Agent) =>
+      Effect.gen(function* () {
+        if (a.worktree === null) return;
+        const back = yield* mergeBack(o.worktrees(a.device), a.worktree, a.name);
+        a.merge = back.merge;
+        a.worktree = back.worktree;
+        yield* saveOrSay(a);
+        yield* changed;
+      }).pipe(Effect.uninterruptible);
+
+    // a message it was sent, in its side log now; a report from its own subagent is delivered then
+    const logTell = (a: Agent, t: Tell) => append(a, "user", t.text).pipe(Effect.andThen(t.report === undefined ? Effect.void : delivered(t.report.child, t.report.run)));
+
+    const run = (a: Agent): Effect.Effect<void, EngineError | StoreError> =>
+      Effect.gen(function* () {
+        let drops = 0; // calls a dropped link cut short in this run
         for (let fresh = a.count <= 1; ; fresh = false) {
           if (a.engineRef === null) return yield* new StoreError({ message: `${a.ref} is not a model of the master's chain any more (${chainText()})` });
-          const engine = yield* o.engine(a.engineRef);
+          if (a.isolate) yield* worktreeFor(a);
+          const engine = yield* o.engine(a.engineRef, { cwd: cwdOf(a), device: a.device, key: a.key, name: a.name });
           const { ref } = a;
           const view = yield* viewFor(a);
           a.view = view;
           // what was sent since its last call: logged now, and part of this call's opening
           const sent = a.tells.filter((t) => t.state === "held");
           a.tells = a.tells.filter((t) => !sent.includes(t));
-          for (const t of sent) yield* append(a, "user", t.text);
+          for (const t of sent) yield* logTell(a, t);
           const before = entriesOf(a);
-          const opening = [intro(a.name), `Task: ${a.task}`, ...(fresh ? [] : [history(a.name, before.slice(0, before.length - sent.length))]), ...sent.map((t) => t.text)].join("\n\n");
+          const opening = [intro(a, sharing(a)), `Task: ${a.task}`, ...(fresh ? [] : [history(a.name, before.slice(0, before.length - sent.length))]), ...sent.map((t) => t.text)].join("\n\n");
           const q = yield* Queue.unbounded<Tell>();
           a.offerTo = q;
-          const asMid = (t: Tell): Mid => ({ media: [], seq: t.seq, text: t.text });
           const out: TurnEvents = {
             info: (message) => info(`[${a.name}] ${message}`),
             // its side log keeps the artifact tools' stubs too (E31): zoom("Name") answers from it
@@ -467,7 +407,7 @@ export const makeSubagents = (o: {
                 const t = a.tells.find((x) => x.seq === m.seq);
                 if (!t) return Effect.void;
                 a.tells = a.tells.filter((x) => x !== t);
-                return append(a, "user", t.text);
+                return logTell(a, t);
               }),
             usage: (record) => {
               const own: UsageRecord = { ...record, ref, role: "subagent", subagent: a.name };
@@ -475,16 +415,51 @@ export const makeSubagents = (o: {
             },
           };
           const mid = { next: Queue.take(q).pipe(Effect.map(asMid)), ready: Queue.clear(q).pipe(Effect.map((ts) => ts.map(asMid))) };
-          yield* engine.run({ device: o.device, earlier: [], media: [], mid, texts: [opening], view }, out, null);
+          const ran = yield* Effect.result(engine.run({ device: a.device, earlier: [], media: [], mid, texts: [opening], view }, out, null));
           // what it was offered and never took is held for one more call
           a.offerTo = null;
           for (const t of a.tells) t.state = "held";
+          if (Result.isFailure(ran)) {
+            const e = ran.failure;
+            if (e._tag !== "ModelError" || e.lostLink !== true || drops >= LINK_TRIES) return yield* Effect.fail(e);
+            drops += 1;
+            yield* info(`[${a.name}] ${e.message}; it goes on from its log in a moment`);
+            a.tells.unshift({ seq: ++seq, state: "held", text: RECONNECTED(a.device) });
+            yield* Effect.sleep(o.linkWait ?? LINK_WAIT);
+            continue;
+          }
+          // a call completed: a restart that comes now resumes it afresh (E40)
+          if (a.resumes > 0) {
+            a.resumes = 0;
+            yield* saveOrSay(a);
+          }
+          if (a.tells.length > 0) {
+            yield* changed;
+            continue;
+          }
+          // a clean end: an isolated one's branch goes back; a message that came meanwhile is one more call
+          yield* merged(a);
           if (a.tells.length === 0) return;
           yield* changed;
         }
-      }).pipe(Effect.onExit((exit) => ended(a, runId, exit)));
+      });
 
-    // a run starts (spawned, or told after it ended), counted against the cap by the caller
+    // A run in a fiber of its own, and a watcher that hands its end to `ended`, however it ends:
+    // also when it is interrupted before it ever ran (Stop all as it starts), when an onExit of its
+    // own would never be registered. A stop that came while it was being started finds it now.
+    const launch = (a: Agent, runId: string) =>
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkIn(run(a), scope);
+        a.fiber = fiber;
+        a.watcher = yield* Fiber.await(fiber).pipe(
+          Effect.flatMap((exit) => ended(a, runId, exit)),
+          Effect.forkIn(scope),
+        );
+        if (a.stopping) yield* Fiber.interrupt(fiber);
+      });
+
+    // a run starts (spawned, told after it ended, or resumed after a restart), counted against the
+    // cap by the caller
     const begin = (a: Agent, view: string | null) =>
       Effect.gen(function* () {
         a.runs += 1;
@@ -492,78 +467,95 @@ export const makeSubagents = (o: {
         a.started = now();
         a.ended = null;
         a.why = null;
-        a.stopping = false;
+        a.merge = null;
         a.view = view;
         const runId = `${a.name}+${a.runs}`;
         yield* save(a);
         yield* o.publish({ name: a.name, runId, task: a.task, type: "subagent-started" });
-        a.fiber = yield* Effect.forkIn(run(a, runId), scope);
+        yield* launch(a, runId);
         yield* changed;
       });
 
     // ---- the tools ----
 
-    const Spawn = Schema.Struct({ name: Schema.String, task: Schema.String, model: Schema.optional(Schema.String) });
+    // one subagent per call (SPEC "Subagents", E36): the master names each one, and a turn that
+    // wants several calls spawn several times, each answered at once
+    const Spawn = Schema.Struct({
+      name: Schema.String,
+      task: Schema.String,
+      model: Schema.optional(Schema.String),
+      isolate: Schema.optional(Schema.Boolean),
+      device: Schema.optional(Schema.String),
+      folder: Schema.optional(Schema.String),
+    });
     const Told = Schema.Struct({ name: Schema.String, text: Schema.String });
 
-    const spawn = (args: Readonly<Record<string, Schema.Json>>) =>
+    const spawn = (caller: Caller, args: Readonly<Record<string, Schema.Json>>) =>
       Effect.gen(function* () {
         const decoded = Schema.decodeUnknownOption(Spawn)(args);
-        if (decoded._tag === "None") return yield* refused("spawn: give a name and a task (and a model, if not this turn's)");
+        if (decoded._tag === "None") return yield* refused("spawn: give a name and a task (and a model, isolate, device or folder, if not yours)");
         const { model, name, task } = decoded.value;
         if (!NAME.test(name)) return yield* refused(`spawn: "${name}" is not a name: a letter, then up to 31 letters, digits, - or _ ("scout", "repo-2")`);
         if (task.trim() === "") return yield* refused("spawn: the task is empty");
         const host = yield* Deferred.await(o.host);
+        // who spawns: a turn of the master, or a running subagent (E38), whose model, device,
+        // folder and view are the defaults
         const turn = host.turnNow();
-        if (turn === null) return yield* refused("spawn: only a turn can start a subagent");
+        const parent = caller === "master" ? null : find(caller.agent);
+        if (caller === "master" && turn === null) return yield* refused("spawn: only a turn can start a subagent");
+        if (caller !== "master" && parent?.state !== "running") return yield* refused("spawn: only a running subagent can start one");
+        const from = parent === null || parent === undefined ? turn : { on: parent.device, ref: parent.ref, view: parent.view ?? "" };
+        if (from === null) return yield* refused("spawn: only a turn can start a subagent");
         const taken = find(name);
         if (taken) return yield* refused(`spawn: there is a subagent called ${taken.name} already (${taken.state}): tell("${taken.name}", …) gives it more work, or pick another name`);
-        const running = runningNames();
-        if (running.length >= SUBAGENTS_AT_ONCE) return yield* refused(`spawn: ${capText(running)}. Its report will come; or ask the user to stop one`);
-        const picked = resolve(model ?? turn.ref);
+        const live = running().map((a) => a.name);
+        if (live.length >= o.max) return yield* refused(`spawn: ${capText(live)}. Their reports will come; or ask the user to stop one`);
+        const picked = resolve(model ?? from.ref);
         if (Result.isFailure(picked)) return yield* refused(`spawn: ${picked.failure}`);
+        const device = decoded.value.device ?? from.on;
+        if (!(device in o.devices)) return yield* refused(`spawn: ${device} is not a device (${Object.keys(o.devices).join(", ")})`);
+        // its folder: the one asked for (relative to the caller's own), else the caller's own on the
+        // same device (a subagent's spawns work where it works), else the device's first
+        const own = parent?.device === device ? cwdOf(parent) : firstFolder(device);
+        if (own === undefined) return yield* refused(`spawn: ${device} has no folders to work in`);
+        const asked = decoded.value.folder;
+        const checked = asked === undefined ? Result.succeed(own) : folderFor(device, posix.isAbsolute(asked) || asked.startsWith("~") ? asked : posix.join(own, asked));
+        if (Result.isFailure(checked)) return yield* refused(`spawn: ${checked.failure}`);
         const { effort, ref } = picked.success;
-        const a: Agent = {
-          effort,
-          ended: null,
-          count: 0,
-          engineRef: ref,
-          entries: [],
-          fiber: null,
-          lastLine: null,
-          name,
-          offerTo: null,
-          pending: null,
-          ref: ref.ref,
-          runs: 0,
-          started: now(),
-          state: "running",
-          stopping: false,
-          task,
-          tells: [],
-          view: null,
-          why: null,
-        };
-        agents.set(name.toLowerCase(), a); // at once: a second spawn in the same step finds it
+        const isolate = decoded.value.isolate === true;
+        const trees = o.worktrees(device);
+        if (isolate && trees === undefined) return yield* refused(`spawn: ${device} can't make worktrees`);
+        const meta = { effort: effort ?? null, ended: null, folder: checked.success, isolate, name, parent: parent?.name ?? null, ref: ref.ref, runs: 0, started: new Date(now()).toISOString(), state: "running", task, why: null, device } as const;
+        const a = agentOf(meta, { device, entries: [], folder: checked.success, key: newKey(name), model: { effort, ref } });
+        agents.set(name.toLowerCase(), a); // at once: a second spawn in the same step finds it, and the cap counts it
         const started = Effect.gen(function* () {
+          // an isolated one's worktree before anything is written: a folder that can't be isolated is the tool's error
+          if (isolate && trees !== undefined) a.worktree = yield* trees.add(a.folder, name).pipe(Effect.mapError((e) => new StoreError({ message: e.message })));
           yield* Effect.try({ catch: (e) => new StoreError({ message: String(e) }), try: () => mkdirSync(folder(name), { recursive: true }) });
           yield* append(a, "user", task);
-          yield* begin(a, turn.view);
+          yield* begin(a, from.view === "" ? null : from.view);
         });
-        const failed = yield* Effect.result(started);
+        // one step a stop can't split: a parent stopped while it spawns (Stop all) finds its child
+        // either not made or started, never listed as running with no run behind it
+        const failed = yield* Effect.result(started).pipe(Effect.uninterruptible);
         if (Result.isFailure(failed)) {
           agents.delete(name.toLowerCase());
+          // a worktree it made goes too, so the same name can be spawned again
+          const made = a.worktree;
+          if (made !== null && trees !== undefined) yield* trees.discard(made).pipe(Effect.catch((error) => info(`spawn ${name}: ${error.message}`)));
           return yield* refused(`spawn: ${failed.failure.message}`);
         }
+        const where = a.worktree === null ? `directly in ${a.folder} on ${device}` : `in its own worktree ${a.worktree.path} on ${device}, branch ${a.worktree.branch} from ${a.worktree.repo}`;
+        const reader = parent === null || parent === undefined ? "the chat" : "you";
         return {
           error: false,
-          text: `Started ${name} on ${entryLabel(ref, o.effort)}. It runs in the background; its report will reach the chat as a message starting "[${name}] ". Don't wait for it.`,
+          text: `Started ${name} on ${entryLabel(ref, o.effort)}, ${where}. It runs in the background; its report will reach ${reader} as a message starting "[${name}] ". Don't wait for it.`,
         };
       });
 
     // a message for a subagent: offered to the call it runs, else held for the next; one that has
     // ended starts again with it, within the cap
-    const send = (name: string, text: string, from: "OptChat" | "the user") =>
+    const send = (name: string, text: string, from: string) =>
       Effect.gen(function* () {
         const a = find(name);
         if (!a) return Result.fail(`no subagent called ${name}${agents.size === 0 ? "" : ` (there are ${[...agents.values()].map((x) => x.name).join(", ")})`}`);
@@ -577,10 +569,10 @@ export const makeSubagents = (o: {
           }
           return Result.succeed(`Sent to ${a.name}; it reads it between its tool calls.`);
         }
-        const running = runningNames();
-        if (running.length >= SUBAGENTS_AT_ONCE) return Result.fail(`${a.name} has ended (${a.state}) and starting it again would make one too many: ${capText(running)}`);
-        if (a.engineRef === null) return Result.fail(`${a.name}'s model ${a.ref} is not in the master's chain any more: pick one on its card (${chainText()})`);
+        const why = cannotStart(a);
+        if (why !== null) return Result.fail(`${a.name} has ended (${a.state}) and can't start again now: ${why}`);
         a.tells.push(t);
+        a.resumes = 0;
         const host = yield* Deferred.await(o.host);
         const was = a.state;
         const started = yield* Effect.result(begin(a, host.turnNow()?.view ?? null));
@@ -612,18 +604,26 @@ export const makeSubagents = (o: {
       return [head, ...lines].join("\n") + more;
     };
 
-    const tools = (caller: "master" | "subagent"): AgentTools => ({
+    const tools = (caller: Caller): AgentTools => ({
       call: (tool, args) => {
-        if (caller === "subagent") return refused(`${tool}: a subagent can't start or tell subagents`);
-        if (tool === "spawn") return spawn(args);
+        if (tool === "spawn") return spawn(caller, args);
         const told = Schema.decodeUnknownOption(Told)(args);
         if (told._tag === "None") return refused("tell: give a name and a text");
-        return send(told.value.name, told.value.text, "OptChat").pipe(
+        const by = caller === "master" ? "OptChat" : caller.agent;
+        // a subagent's key tells only while it runs, as it spawns only then
+        if (caller !== "master" && find(caller.agent)?.state !== "running") return refused("tell: only a running subagent can tell one");
+        if (caller !== "master" && told.value.name.trim().toLowerCase() === caller.agent.toLowerCase()) return refused("tell: that is you");
+        return send(told.value.name, told.value.text, by).pipe(
           Effect.map((r) => (Result.isSuccess(r) ? { error: false, text: r.success } : { error: true, text: `tell: ${r.failure}` })),
         );
       },
       zoom,
     });
+
+    const callerOf = (key: string): Caller | null => {
+      const name = keys.get(key);
+      return name === undefined || find(name) === undefined ? null : { agent: name };
+    };
 
     // ---- the user's, from a card ----
 
@@ -633,12 +633,22 @@ export const makeSubagents = (o: {
       Effect.gen(function* () {
         const a = find(name);
         if (!a) return `stop: no subagent called ${name}`;
-        const { fiber } = a;
-        if (a.state !== "running" || fiber === null) return `stop: ${a.name} is not running (${a.state})`;
+        if (a.state !== "running") return `stop: ${a.name} is not running (${a.state})`;
         a.stopping = true;
-        yield* Fiber.interrupt(fiber);
+        // one still being started has no fiber yet: it stops as it starts (`launch`); else its end
+        // is waited for, report and all
+        yield* stopped(a);
         return null;
       });
+
+    // Every running one: all are marked stopping before any is interrupted, so a child's report as it
+    // ends never starts a parent that is about to stop (src/subagents/reports.ts)
+    const stopAll = Effect.suspend(() => {
+      const live = running();
+      for (const a of live) a.stopping = true;
+      // one still being started has no fiber yet: it stops as it starts (begin)
+      return Effect.forEach(live, stopped, { concurrency: "unbounded", discard: true }).pipe(Effect.as(live.map((a) => a.name)));
+    });
 
     // the model of its next call: the running one, if any, keeps its own
     const pick = (name: string, model: string) =>
@@ -650,7 +660,7 @@ export const makeSubagents = (o: {
         a.engineRef = picked.success.ref;
         a.ref = picked.success.ref.ref;
         a.effort = picked.success.effort;
-        yield* save(a).pipe(Effect.catch((error) => info(error.message)));
+        yield* saveOrSay(a);
         yield* changed;
         return null;
       });
@@ -661,42 +671,48 @@ export const makeSubagents = (o: {
       if (!a) return null;
       const entries = entriesOf(a).slice(from, from + limit);
       if (!shown().includes(a)) a.entries = null;
-      return { entries, subagent: infoOf(a) };
+      return { entries, subagent: infoNow(a) };
     };
 
-    // whether the chat holds this report already, since the run ended: a restart between the
-    // chat's line and agent.json's would otherwise send it twice
-    const inChat = (text: string, since: number) => {
-      const { root: chatLog } = o.mem;
-      for (let k = chatLog.length - 1; k >= 0; k--) {
-        const e = chatLog[k];
-        if (e === undefined || Date.parse(e.date) < since) return false;
-        if (e.kind === "user" && e.text === text) return true;
-      }
-      return false;
-    };
-
+    // After a restart (E40): each run it cut short goes on, oldest first, as after a tell, while
+    // the cap allows; one past it (subagents.max lowered) or without a model is stopped and
+    // reported, as M7a did with all of them. Then every report not delivered yet is sent, unless
+    // its reader holds it already.
     const restore = Effect.gen(function* () {
       for (const p of problems) yield* info(p);
-      for (const a of agents.values()) {
-        if (a.state === "running" && a.fiber === null) {
-          const last = entriesOf(a).at(-1);
+      const cut = [...agents.values()].filter((a) => a.state === "running" && a.fiber === null).toSorted((x, y) => x.started - y.started);
+      for (const a of cut) a.state = "stopped"; // not running until resumed: the cap counts the resumed ones only
+      for (const a of cut) {
+        const looping = a.resumes >= RESUMES_MAX;
+        const why = looping ? null : cannotStart(a);
+        if (!looping && why === null) {
+          a.resumes += 1;
+          a.tells.push({ seq: ++seq, state: "held", text: RESTARTED });
+          const resumed = yield* Effect.result(begin(a, null));
+          if (Result.isSuccess(resumed)) continue;
+          a.tells = [];
           a.state = "stopped";
-          a.why = "the server restarted while it ran; nothing resumes it";
-          a.ended = last === undefined ? now() : Date.parse(last.date) || now();
-          a.pending = { run: a.runs, text: reportOf(a, a.ended) };
-          yield* save(a).pipe(Effect.catch((error) => info(error.message)));
         }
+        const last = entriesOf(a).at(-1);
+        a.why = looping
+          ? `the server restarted ${a.resumes + 1} times while it ran, with no call of it completing since`
+          : `the server restarted while it ran, and it could not go on: ${why ?? "its state could not be saved"}`;
+        a.ended = last === undefined ? now() : Date.parse(last.date) || now();
+        a.resumes = 0;
+        a.pending = { run: a.runs, text: reportOf(a, a.ended, entriesOf(a)) };
+        yield* saveOrSay(a);
+      }
+      for (const a of agents.values()) {
         const { ended, pending } = a;
-        if (pending === null || a.state === "running") continue;
-        if (ended !== null && inChat(pending.text, ended)) {
+        if (pending === null) continue; // a resumed one's too: the report of a run before the one cut short
+        if (ended !== null && reports.readerHolds(a, pending.text, ended)) {
           a.pending = null;
-          yield* save(a).pipe(Effect.catch((error) => info(error.message)));
-        } else yield* sendReport(a, pending);
+          yield* saveOrSay(a);
+        } else yield* deliver(a, pending);
       }
       evict();
       yield* changed;
     });
 
-    return { changes, list, log, pick, restore, stop, tell, tools };
+    return { callerOf, changes, list, log, pick, restore, stop, stopAll, tell, tools };
   });

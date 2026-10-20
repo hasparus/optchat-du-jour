@@ -2,57 +2,24 @@
 // pushed when it has a remote (E10). Git is a backup here, never a reason to fail a turn: every
 // problem comes back as a message for the caller to show. The push runs in the background, so an
 // unreachable remote never holds up the end of a turn.
-import { Data, Effect, type Scope, Semaphore } from "effect";
+import { Effect, type Scope, Semaphore } from "effect";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { GitFailed, must as mustRun, run, said } from "./git.ts";
 
-class GitFailed extends Data.TaggedError("GitFailed")<{ readonly message: string }> {}
-
-// Run from inside a git hook, git exports where *that* repo lives; a child git would then commit
-// there instead of in the data dir. These are dropped from every git we run.
-const REPO_VARS = new Set(["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR", "GIT_PREFIX"]);
-
-const gitEnv = () => {
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !REPO_VARS.has(k)) env[k] = v;
-  env.GIT_TERMINAL_PROMPT = "0"; // a push without credentials fails instead of asking
-  return env;
-};
-
-// A fixed author and no signing, so a commit works on a machine with no git identity and never
-// stops to ask for a key's passphrase. Hooks a global config may name are not ours to run.
-const OWN = ["-c", "user.name=optchat", "-c", "user.email=optchat@localhost", "-c", "commit.gpgSign=false", "-c", "core.hooksPath=/dev/null"];
-
-type Ran = { readonly code: number; readonly out: string; readonly err: string };
-
-// one git command in `dir`; interrupting it kills the process
-const git = (dir: string, args: readonly string[]) =>
-  Effect.tryPromise({
-    catch: (error) => new GitFailed({ message: `cannot run git: ${error instanceof Error ? error.message : String(error)}` }),
-    try: async (signal): Promise<Ran> => {
-      const proc = Bun.spawn(["git", ...OWN, ...args], { cwd: dir, env: gitEnv(), signal, stderr: "pipe", stdin: "ignore", stdout: "pipe" });
-      const [code, out, err] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-      return { code, err, out };
-    },
-  });
-
-const failed = (args: readonly string[], r: Ran) =>
-  new GitFailed({ message: `git ${args[0] ?? ""}: ${(r.err || r.out).trim() || `exit code ${r.code}`}` });
-
-// a command that must succeed: its stderr becomes the message when it doesn't
-const must = (dir: string, args: readonly string[]) =>
-  git(dir, args).pipe(Effect.flatMap((r) => (r.code === 0 ? Effect.succeed(r) : Effect.fail(failed(args, r)))));
+// every command commits as optchat itself (the data dir's own identity)
+const must = (dir: string, args: readonly string[]) => mustRun(dir, args, "own");
 
 // whether anything is staged: `diff --quiet` says so by its exit code
 const staged = (dir: string) => {
   const args = ["diff", "--quiet", "--cached"];
-  return git(dir, args).pipe(Effect.flatMap((r) => (r.code <= 1 ? Effect.succeed(r.code === 1) : Effect.fail(failed(args, r)))));
+  return run(dir, args).pipe(Effect.flatMap((r) => (r.code <= 1 ? Effect.succeed(r.code === 1) : Effect.fail(new GitFailed({ message: `git diff: ${said(r)}` })))));
 };
 
 const files = (what: string, f: () => void) =>
   Effect.try({ catch: (error) => new GitFailed({ message: `${what}: ${error instanceof Error ? error.message : String(error)}` }), try: f });
 
-// how long a commit or a push may take
+// how long a whole commit or push may take
 const GIT_TIMEOUT = "2 minutes";
 const inTime = <A, R>(work: Effect.Effect<A, GitFailed, R>) =>
   work.pipe(Effect.timeoutOrElse({ duration: GIT_TIMEOUT, orElse: () => Effect.fail(new GitFailed({ message: `git took longer than ${GIT_TIMEOUT}` })) }));

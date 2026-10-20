@@ -14,8 +14,13 @@
 // `POST /tool` runs one read-only tool (src/tools/files.ts) in the device's folders: a ToolCall in,
 // a ToolReply out. A refused path, a missing file or a timeout is the reply's text, not an HTTP
 // error, with `error: true` (E28; a runner from before it leaves it out).
+//
+// `POST /worktree` makes or finishes an isolated subagent's git worktree in the device's folders
+// (src/worktree.ts, E37): a WorktreeRequest in, a WorktreeReply out. The runner derives the
+// worktree's path and branch from the subagent's name; the server never names a path to write.
 import { Effect, Queue, Schema, type Scope } from "effect";
 import { Socket } from "effect/socket";
+import { Isolation, Merge } from "../wire.ts";
 
 export const Spawn = Schema.TaggedStruct("Spawn", {
   args: Schema.Array(Schema.String),
@@ -50,6 +55,22 @@ export const ToolCall = Schema.Struct({ name: Schema.String, input: Schema.Json 
 export type ToolCall = typeof ToolCall.Type;
 export const ToolReply = Schema.Struct({ output: Schema.String, error: Schema.optional(Schema.Boolean) });
 export type ToolReply = typeof ToolReply.Type;
+
+// POST /worktree
+export const WorktreeRequest = Schema.Union([
+  Schema.TaggedStruct("Add", { folder: Schema.String, name: Schema.String }),
+  Schema.TaggedStruct("Finish", { worktree: Isolation, name: Schema.String }),
+  // a worktree made for a spawn that then failed: removed with its branch
+  Schema.TaggedStruct("Discard", { worktree: Isolation, name: Schema.String }),
+]);
+export type WorktreeRequest = typeof WorktreeRequest.Type;
+export const WorktreeReply = Schema.Union([
+  Schema.TaggedStruct("Added", { worktree: Isolation }),
+  Schema.TaggedStruct("Finished", { merge: Merge }),
+  Schema.TaggedStruct("Discarded", {}),
+  Schema.TaggedStruct("Failed", { message: Schema.String }),
+]);
+export type WorktreeReply = typeof WorktreeReply.Type;
 
 export const decodeToDevice = Schema.decodeUnknownOption(Schema.fromJsonString(ToDevice));
 export const decodeFromDevice = Schema.decodeUnknownOption(Schema.fromJsonString(FromDevice));
