@@ -14,11 +14,14 @@
 // docs/optchat.md §3.3 marks Anthropic's; the request end is cached implicitly (`prompt_cache_options` left at its default). A
 // model that refuses the breakpoint field (the reference measured that on the Codex route) gets
 // the request again without it, and is sent none from then on, said once.
-import { Cause, Context, Data, Effect, Layer, Option, Schema, Stream } from "effect";
-import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
-import { type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
+import { Cause, Context, Data, Duration, Effect, Layer, Option, Schema, Stream } from "effect";
+import { HttpClient, HttpClientRequest } from "effect/http";
+import { IDLE_OPENAI } from "../config.ts";
+import { addSpent, type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
 import { admitRequest } from "../engines/request-admission.ts";
+import { askAgain, bytes, errorBody, httpFailure, post as send, type Shown, shownToolInput, type Wire } from "../engines/retry.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
+import type { ToolInputHooks } from "../engines/tool-input.ts";
 import { isPicture, type Part } from "../media/part.ts";
 import { wireJson } from "../text.ts";
 import type { Tokens as Usage } from "../usage.ts";
@@ -57,6 +60,7 @@ export type Ask<E extends Tagged = never> = {
   // start of each item's part. Only clients see it (SPEC "Reasoning"); the item goes back as it came
   readonly onReasoning?: (delta: string, fresh: boolean) => Effect.Effect<void>;
   readonly onOut?: (out: Out) => Effect.Effect<void, E>; // each item of `output` as it completes
+  readonly onToolInput?: ToolInputHooks | undefined; // a function call's arguments as they stream
   readonly onSettledUsage?: (spent: Spent) => Effect.Effect<void>;
   readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
 };
@@ -185,12 +189,19 @@ const decodeErrorBody = Schema.decodeUnknownOption(Schema.fromJsonString(ErrorBo
 
 // a spent or rate-limited plan, or a plan this user may not share: the chain moves on (E4)
 const LIMIT = /usage_limit|rate_limit|insufficient_quota|not_eligible|quota/;
+// what a failed stream may say that asking again can cure (E35): the server's own failure, a rate
+// limit; and what is no hiccup whatever the status says: the plan's cap, a key out of quota
+const PASSING = /^(server_error|rate_limit_exceeded|internal_error|timeout)$/;
+const CAPPED = /usage_limit|insufficient_quota|not_eligible|quota/;
 
 // `label` names the engine in the message: openai-plan, or api-key for a key's calls
+// `status` null: a failure told in the stream, which may pass (E35) when its code says so; an
+// HTTP error's chance to pass is the status's and its headers' (src/engines/retry.ts httpFailure)
 export const classify = (status: number | null, code: string | null | undefined, message: string | undefined, label = "openai-plan", spent?: Spent): EngineError => {
   const text = `${label}: ${[status, code, message].filter((x) => x !== null && x !== undefined && x !== "").join(" ")}`;
-  if (status === 429 || (code !== null && code !== undefined && LIMIT.test(code))) return new UsageLimit({ message: text, spent });
-  return new ModelError({ message: text, spent });
+  const transient = status === null && PASSING.test(code ?? "") ? true : undefined;
+  if (status === 429 || (code !== null && code !== undefined && LIMIT.test(code))) return new UsageLimit({ message: text, spent, transient });
+  return new ModelError({ message: text, spent, transient });
 };
 
 export const usageOf = (u: typeof ApiUsage.Type | null | undefined): Usage => {
@@ -218,11 +229,16 @@ type Read = {
   readonly spent: Spent | undefined;
 };
 
-type Hooks<E extends Tagged> = Pick<Ask<E>, "onSettledUsage" | "onOut" | "onReasoning" | "onStart" | "onText" | "onThinking">;
+type Hooks<E extends Tagged> = Pick<Ask<E>, "onSettledUsage" | "onOut" | "onReasoning" | "onStart" | "onText" | "onThinking" | "onToolInput">;
+// a function call begins (its item's id, its call id and name), its arguments stream, they end
+const addedItem = json(Schema.Struct({ item: Schema.Struct({ type: Schema.String, id: Schema.optional(Schema.String), call_id: Schema.optional(Schema.String), name: Schema.optional(Schema.String) }) }));
+const argumentsDelta = json(Schema.Struct({ item_id: Schema.String, delta: Schema.String }));
+const argumentsDone = json(Schema.Struct({ item_id: Schema.String }));
 
-const onEvent =
-  <E extends Tagged>(o: { readonly model: string; readonly label: string; readonly reported: (spent: Spent | undefined) => void } & Hooks<E>) =>
-  (r: Read, data: string): Effect.Effect<Read, E | EngineError | Schema.SchemaError> => {
+const onEvent = <E extends Tagged>(o: { readonly model: string; readonly label: string; readonly reported: (spent: Spent | undefined) => void } & Hooks<E>) => {
+  // the function calls whose arguments stream, by their item's id (only with onToolInput)
+  const calls = new Map<string, { readonly id: string; readonly name: string }>();
+  return (r: Read, data: string): Effect.Effect<Read, E | EngineError | Schema.SchemaError> => {
     // an item of `output` is whole: it goes out now, so what follows it streams after it
     const out = (item: Out) => Effect.as(o.onOut ? o.onOut(item) : Effect.void, { ...r, output: [...r.output, item] });
     return Effect.gen(function* () {
@@ -243,6 +259,27 @@ const onEvent =
           if (o.onReasoning && d.delta !== "") yield* o.onReasoning(d.delta, part !== r.part);
           if (o.onThinking) yield* o.onThinking(Math.ceil(reasoning / 4));
           return { ...r, part, reasoning, told: r.told || d.delta !== "" };
+        }
+        case "response.output_item.added": {
+          if (!o.onToolInput) return r;
+          const { item } = yield* addedItem(data);
+          if (item.type === "function_call" && item.id !== undefined) calls.set(item.id, { id: item.call_id ?? item.id, name: item.name ?? "" });
+          return r;
+        }
+        case "response.function_call_arguments.delta": {
+          if (!o.onToolInput) return r;
+          const d = yield* argumentsDelta(data);
+          const call = calls.get(d.item_id);
+          if (call !== undefined) yield* o.onToolInput.delta(call, d.delta);
+          return r;
+        }
+        case "response.function_call_arguments.done": {
+          if (!o.onToolInput) return r;
+          const d = yield* argumentsDone(data);
+          const call = calls.get(d.item_id);
+          calls.delete(d.item_id);
+          if (call !== undefined) yield* o.onToolInput.end(call.id);
+          return r;
         }
         case "response.refusal.delta":
           return { ...r, refusal: r.refusal + (yield* delta(data)).delta };
@@ -291,6 +328,7 @@ const onEvent =
     }).pipe(Effect.catchCause((cause) => Effect.failCause(Cause.map(cause, (e: E | EngineError | Schema.SchemaError): E | EngineError =>
       e instanceof Schema.SchemaError ? new ModelError({ message: `${o.label}: invalid response event or usage counters` }) : e))));
   };
+};
 
 // A stream counts only when it ends in response.completed, and ends there: whatever follows (a
 // `data: [DONE]` line, say) is never read. One that starts well can still fail.
@@ -303,7 +341,8 @@ export const readStream = <E extends Tagged = never>(stream: Stream.Stream<Uint8
     return Effect.gen(function* () {
       const r = yield* sseFold(label, stream, init, onEvent({ ...o, label, model, reported }), (state) => state.done !== null, o.onStart);
       if (r.refusal) return yield* new Refusal({ message: `${label} refused: ${r.refusal.slice(0, 300)}`, spent: r.spent });
-      if (r.done === null) return yield* new ModelError({ message: `${label}: the stream ended without response.completed` });
+      // cut off on the way: it may pass (E35)
+      if (r.done === null) return yield* new ModelError({ message: `${label}: the stream ended without response.completed`, transient: true });
       return r.done;
     }).pipe(Effect.onExit(() => known && o.onSettledUsage ? o.onSettledUsage(known) : Effect.void));
   });
@@ -317,9 +356,12 @@ export type Bearer = {
 
 // The Responses API at `api` (…/v1) with `bearer`: the plan's tokens or an API key (SPEC "Engines").
 // `report` hears, once per model, that a model refused the breakpoints and is sent none.
-export const makeResponses = (o: { readonly api: string; readonly label: string; readonly bearer: Bearer; readonly report?: (message: string) => Effect.Effect<void> }) =>
+// A request that fails on the API's side before anything of it went out is sent again (E35,
+// src/engines/retry.ts); a stream with no bytes for `idle` (IDLE_OPENAI) is dead.
+export const makeResponses = (o: { readonly api: string; readonly label: string; readonly bearer: Bearer; readonly report?: (message: string) => Effect.Effect<void>; readonly idle?: Duration.Input }) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
+    const wire: Wire = { idle: o.idle ?? IDLE_OPENAI, label: o.label };
     // the models that refused `prompt_cache_breakpoint`: their requests go without it from then on
     const unmarked = new Set<string>();
     const post = <E extends Tagged>(ask: Ask<E>, token: string, marked: boolean) => {
@@ -328,18 +370,18 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
         HttpClientRequest.accept("text/event-stream"),
         HttpClientRequest.bodyText(body(ask, marked), "application/json"),
       );
-      return admitRequest().pipe(Effect.andThen(http.execute(request)));
+      return admitRequest().pipe(Effect.andThen(send(http, request, wire)));
     };
-    // A model that refuses the breakpoints (a 400 naming the field) gets the same request again
-    // without them, and none from then on, which the user hears once, rather than failing every
-    // call; our marks are then off for it.
-    const once = <E extends Tagged>(ask: Ask<E>, token: string) =>
+    // One try. A model that refuses the breakpoints (a 400 naming the field) gets the same request
+    // again without them, and none from then on, which the user hears once, rather than failing
+    // every call; our marks are then off for it.
+    const once = <E extends Tagged>(ask: Ask<E>, token: string, shown: Shown) =>
       Effect.gen(function* () {
         const marked = !unmarked.has(ask.model);
         let res = yield* post(ask, token, marked);
         let raw: string | null = null;
         if (marked && res.status === 400) {
-          raw = yield* res.text;
+          raw = yield* errorBody(res, wire);
           const refused = Option.getOrUndefined(decodeErrorBody(raw))?.error;
           if (refused?.param === "prompt_cache_breakpoint" || (refused?.message ?? "").includes("prompt_cache_breakpoint")) {
             const first = !unmarked.has(ask.model); // a call sent alongside may have been refused already
@@ -349,30 +391,48 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
             raw = null;
           }
         }
-        if (res.status === 401) return yield* new Unauthorized({ message: (raw ?? (yield* res.text)).slice(0, 300) });
+        if (res.status === 401) return yield* new Unauthorized({ message: (raw ?? (yield* errorBody(res, wire))).slice(0, 300) });
         if (res.status !== 200) {
-          const text = raw ?? (yield* res.text);
-          const parsed = decodeErrorBody(text);
-          return yield* parsed._tag === "Some"
-            ? classify(res.status, parsed.value.error.code, parsed.value.error.message, o.label)
-            : classify(res.status, null, text.slice(0, 300), o.label);
+          const text = raw ?? (yield* errorBody(res, wire));
+          const body = Option.getOrUndefined(decodeErrorBody(text))?.error;
+          const error = body ? classify(res.status, body.code, body.message, o.label) : classify(res.status, null, text.slice(0, 300), o.label);
+          return yield* httpFailure(res, error, CAPPED.test(body?.code ?? ""));
         }
-        const stream = res.stream.pipe(Stream.mapError((err) => new ModelError({ message: `${o.label}: ${err.message}` })));
-        return yield* readStream(stream, ask.model, { label: o.label, onSettledUsage: ask.onSettledUsage, onOut: ask.onOut, onReasoning: ask.onReasoning, onStart: ask.onStart, onText: ask.onText, onThinking: ask.onThinking });
-      }).pipe(Effect.catchIf(HttpClientError.isHttpClientError, (err) => Effect.fail(new ModelError({ message: `${o.label}: ${err.message}` }))));
+        return yield* readStream(bytes(res, wire), ask.model, {
+          label: o.label,
+          onOut: shown(ask.onOut),
+          onReasoning: shown(ask.onReasoning),
+          onSettledUsage: ask.onSettledUsage,
+          onStart: ask.onStart,
+          onText: shown(ask.onText),
+          onThinking: shown(ask.onThinking),
+          onToolInput: shownToolInput(shown, ask.onToolInput),
+        });
+      });
 
-    // a 401 renews the token once, then counts as signed out
+    // A 401 renews the token once, inside the tries: the try fails as one to send again at once,
+    // with the new token. A second 401 counts as signed out, which the chain moves past. One
+    // askAgain per call, so what every try cost reaches whatever ends it.
     const respond: Respond = (ask) =>
       Effect.gen(function* () {
-        const token = yield* o.bearer.current;
-        return yield* once(ask, token).pipe(
-          Effect.catchIf(isUnauthorized, () =>
-            o.bearer.renew(token).pipe(
-              Effect.flatMap((fresh) => once(ask, fresh)),
-              Effect.catchIf(isUnauthorized, (u) => Effect.fail(new UsageLimit({ message: `${o.label}: still unauthorized after a refresh: ${u.message}` }))),
-            ),
-          ),
-        );
+        let token = yield* o.bearer.current;
+        let renewed = false;
+        const renew = (u: Unauthorized) =>
+          renewed
+            ? Effect.fail(new UsageLimit({ message: `${o.label}: still unauthorized after a refresh: ${u.message}` }))
+            : o.bearer.renew(token).pipe(
+                Effect.flatMap((fresh) =>
+                  Effect.sync(() => {
+                    token = fresh;
+                    renewed = true;
+                  }),
+                ),
+                Effect.andThen(Effect.fail(new ModelError({ message: `${o.label}: unauthorized, so the token was renewed: ${u.message}`, retryAfter: 0, transient: true }))),
+              );
+        return yield* askAgain({
+          merge: (reply: Reply, before) => ({ ...reply, usage: addSpent(before, { model: reply.model, usage: reply.usage }).usage }),
+          once: (shown) => once(ask, token, shown).pipe(Effect.catchIf(isUnauthorized, renew)),
+        });
       });
     return respond;
   });

@@ -3,7 +3,7 @@
 // WebSocket or POST, ./routes/mcp.ts), /api/* (read-only JSON, ./routes/api.ts) and / (the built
 // web UI, ./routes/web.ts). This file builds the parts and hands them to the routes.
 import { BunHttpServer, BunServices } from "@effect/platform-bun";
-import { Context, Deferred, Effect, Layer, PubSub } from "effect";
+import { Context, Deferred, type Duration, Effect, Layer, PubSub } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServerRequest } from "effect/http";
 import { makeBudget } from "../src/apikey/budget.ts";
 import { ApiKeys, apiKeysLayer } from "../src/apikey/clients.ts";
@@ -11,7 +11,9 @@ import { openChat } from "../src/chat.ts";
 import { Runner } from "../src/claude/process.ts";
 import { WarmLocalRunner } from "../src/claude/warm.ts";
 import type { Summarize } from "../src/compactor.ts";
-import { entryLabel, mediaSettings, reasoningSettings, type Settings, subagentSettings, WAKE_DEBOUNCE } from "../src/config.ts";
+import { artifactsLeftOut, openArtifacts } from "../src/artifacts/store.ts";
+import { makeArtifactTools } from "../src/artifacts/tools.ts";
+import { artifactSettings, entryLabel, mediaSettings, reasoningSettings, type Settings, subagentSettings, WAIT_RETRY, WAKE_DEBOUNCE } from "../src/config.ts";
 import type { DownList } from "../src/engines/chain.ts";
 import { makeGate } from "../src/engines/inflight.ts";
 import { subagentPolicy, turnEngine } from "../src/engines/registry.ts";
@@ -32,6 +34,7 @@ import { type UsageRecord, logUsage } from "../src/usage.ts";
 import { allowed, policyFor } from "./auth.ts";
 import { makePlacements } from "./placement.ts";
 import { apiRoutes } from "./routes/api.ts";
+import { artifactRoutes } from "./routes/artifacts.ts";
 import { assetRoutes } from "./routes/assets.ts";
 import { mcpRoutes } from "./routes/mcp.ts";
 import { webRoute } from "./routes/web.ts";
@@ -46,6 +49,7 @@ export type ServerOptions = {
   readonly web?: string; // the built web UI
   readonly summarize?: Summarize; // tests replace the compactor
   readonly window?: number; // log entries in a client's first snapshot
+  readonly heartbeat?: Duration.Input; // HEARTBEAT; tests make it short
   readonly secrets?: Layer.Layer<Secrets>; // the plan's tokens and the API keys; SecretsLive unless a test says
 };
 
@@ -89,7 +93,8 @@ export const routes = (o: ServerOptions) =>
       const compactor: { readonly down?: DownList; readonly summarize: Summarize } = o.summarize
         ? { summarize: o.summarize }
         : yield* makeSummarize({ ...needs, device: o.device, gate: makeGate(), instructions, placement: runnerFor(o.device), tools: defsFor(settings.defaultDevice) });
-      const chat = yield* openChat(stream, { report, summarize: compactor.summarize });
+      // a failed call rests WAIT_RETRY before a logged entry tries it again (E33); the waiting turn's own retry doesn't wait
+      const chat = yield* openChat(stream, { report, rest: WAIT_RETRY, summarize: compactor.summarize });
       // a turn's thinking, kept beside the log in the stream's chat/reasoning/ (SPEC "Reasoning")
       const thinking = reasoningSettings(settings);
       const reasoning = yield* openReasoning(stream, { keep: thinking.keep, report });
@@ -106,11 +111,19 @@ export const routes = (o: ServerOptions) =>
       const persist = yield* makePersist(report, () => [
         ...media.unreferenced(chat.mem.root.flatMap((e) => (e.kind === "user" ? [e.text] : []))).map((path) => `/assets/${path}`),
         ...reasoningLeftOut(thinking.commit),
+        ...artifactsLeftOut(artifactSettings(settings).commit),
       ]);
+      // the artifacts the master and its subagents publish (SPEC "Artifacts"), beside the stream's
+      // chat/; a saved version is told to every client
+      const artifacts = yield* openArtifacts(stream, { report });
+      const artifactTools = makeArtifactTools({
+        artifacts,
+        changed: (name, version) => PubSub.publish(events, { name, type: "artifact", version }).pipe(Effect.asVoid),
+      });
       // The subagents (SPEC "Subagents"): they run where a master turn on their device runs, through
-      // the engines a turn has, at the master's permissions (E36), each with its own /mcp key and
-      // tool box, and need the session (for reports and the turn's view), which needs their list: it
-      // is handed to them once it exists.
+      // the engines a turn has, at the master's permissions and with its tools, artifacts' too (E36),
+      // each with its own /mcp key and tool box, and need the session (for reports and the turn's
+      // view), which needs their list: it is handed to them once it exists.
       const commit = Effect.suspend(() => persist(o.home, `chore(chat): ${chat.mem.root.length} messages`));
       const host = yield* Deferred.make<SubagentHost>();
       const agentSettings = subagentSettings(settings);
@@ -123,7 +136,11 @@ export const routes = (o: ServerOptions) =>
         effort: settings.master.effort,
         // read when a run starts, long after `subagents` is set
         engine: (ref, at) =>
-          turnEngine(ref, { ...needs, instructions, runnerFor: () => agentRunnerFor(at), toolsFor: (device) => toolsWith(device, chat.mem, subagents.tools({ agent: at.name })) }, subagentPolicy(at.name)),
+          turnEngine(
+            ref,
+            { ...needs, instructions, runnerFor: () => agentRunnerFor(at), toolsFor: (device) => toolsWith(device, chat.mem, subagents.tools({ agent: at.name }), artifactTools.tools({ agent: at.name })) },
+            subagentPolicy(at.name),
+          ),
         folderFor,
         host,
         logUsage: usage,
@@ -132,7 +149,7 @@ export const routes = (o: ServerOptions) =>
         publish: (e) => PubSub.publish(events, e).pipe(Effect.asVoid),
         worktrees: (device) => worktrees.get(device),
       });
-      const toolsFor = (device: string) => toolsWith(device, chat.mem, subagents.tools("master"));
+      const toolsFor = (device: string) => toolsWith(device, chat.mem, subagents.tools("master"), artifactTools.tools("master"));
       const engines = yield* Effect.forEach(settings.master.chain, (ref) =>
         turnEngine(ref, { ...needs, instructions, runnerFor, toolsFor, warms: () => master.latest() === ref.ref }),
       );
@@ -153,6 +170,7 @@ export const routes = (o: ServerOptions) =>
         subagents,
         wake: agentSettings.wake ? WAKE_DEBOUNCE : null,
         wakeLimit: agentSettings.wakeLimit,
+        artifactBase: (name) => artifacts.read(name).pipe(Effect.map((found) => found?.html ?? null), Effect.orElseSucceed(() => null)),
       });
       yield* Deferred.succeed(host, { lastView: session.lastView, report: session.report, turnNow: session.turnNow });
       yield* subagents.restore; // runs a restart cut short go on (E40); reports not delivered yet are sent
@@ -171,12 +189,13 @@ export const routes = (o: ServerOptions) =>
         Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => (guard(request) ? handle : Effect.succeed(forbidden))),
       );
 
-      yield* wsRoute(router, { assets: { find: media.find, report }, entries: chat.mem.root, session, subagents, thread: o.device, window: o.window ?? 200 });
-      yield* mcpRoutes(router, { agents: subagents.tools, attached: media.zoomContent, callerOf: subagents.callerOf, mem: chat.mem, secret });
+      yield* wsRoute(router, { assets: { find: media.find, report }, entries: chat.mem.root, heartbeat: o.heartbeat, session, subagents, thread: o.device, window: o.window ?? 200 });
+      yield* mcpRoutes(router, { agents: subagents.tools, artifacts: artifactTools.tools, attached: media.zoomContent, callerOf: subagents.callerOf, mem: chat.mem, secret });
+      yield* artifactRoutes(router, { artifacts });
       yield* assetRoutes(router, { media, settings: mediaConfig });
       yield* apiRoutes(router, { device: o.device, mem: chat.mem, reasoning, report, session, settings, subagents, usagePath });
       yield* webRoute(router, o.web);
-      return { chat, session, subagents };
+      return { artifacts, chat, session, subagents };
     }),
   );
 

@@ -4,6 +4,7 @@
 // and ./api-key.ts.
 import type { Effect, Schema } from "effect";
 import type { EngineError, Spent, Tagged } from "../engines/errors.ts";
+import type { ToolInputHooks } from "../engines/tool-input.ts";
 import type { Part } from "../media/part.ts";
 import type { ToolDef } from "../tools/files.ts";
 import type { Tokens, UsageRecord } from "../usage.ts";
@@ -40,6 +41,8 @@ export type Call<E extends Tagged> = {
   readonly onReasoning?: (delta: string, fresh: boolean) => Effect.Effect<void>;
   // every text and call item of the reply as it completes, in reply order, before the call returns
   readonly onItem?: (item: Item) => Effect.Effect<void, E>;
+  // a tool call's input as it streams (SPEC "Artifacts": an artifact's live draft)
+  readonly onToolInput?: ToolInputHooks | undefined;
   readonly onSettledUsage?: (spent: Spent) => Effect.Effect<void>;
   readonly onStart?: Effect.Effect<void>; // the response started: its first stream event (src/engines/inflight.ts)
 };

@@ -37,11 +37,6 @@ export const ipv4 = (url: string) =>
     return u;
   });
 
-// How a call's error reads when its device runner's connection dropped mid-call (the runner then
-// killed claude there): a subagent goes on from its side log after it (src/subagents.ts, E40)
-export const lostConnection = (device: string, why: string) => `lost the connection to ${device}: ${why}`;
-export const isLostConnection = (message: string) => message.startsWith("lost the connection to ");
-
 export const spawnUrl = (base: URL) => {
   const u = new URL("/spawn", base);
   u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
@@ -106,6 +101,9 @@ export const remoteRunner = (device: string, url: string, timeouts: Partial<Remo
     // stdout lines until the Exit frame, or until the connection drops
     const lines = yield* Queue.unbounded<string, Cause.Done>();
     const ended = yield* Deferred.make<string>();
+    // the connection dropped before the Exit frame (the runner then kills claude there): the call's
+    // error says so in a field (ModelError's `lostLink`), not only in its words
+    let lost = false;
     const pump: Effect.Effect<string> = Effect.gen(function* () {
       for (;;) {
         const m = decodeFromDevice(yield* Queue.take(frames));
@@ -113,13 +111,20 @@ export const remoteRunner = (device: string, url: string, timeouts: Partial<Remo
         if (m.value._tag === "Line") yield* Queue.offer(lines, m.value.line);
         if (m.value._tag === "Exit") return exitText(m.value, device);
       }
-    }).pipe(Effect.catch((error) => Effect.succeed(lostConnection(device, error.message))));
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.sync(() => {
+          lost = true;
+          return `lost the connection to ${device}: ${error.message}`;
+        }),
+      ),
+    );
     yield* pump.pipe(
       Effect.flatMap((why) => Deferred.succeed(ended, why)),
       Effect.andThen(Queue.end(lines)),
       Effect.forkScoped,
     );
-    return yield* makeClaude({ exit: Deferred.await(ended), lines: Stream.fromQueue(lines), stdin });
+    return yield* makeClaude({ exit: Deferred.await(ended), lines: Stream.fromQueue(lines), lostLink: () => lost, stdin });
   });
   return { spawn, warm: () => Effect.void }; // claude elsewhere starts on demand (E18)
 };

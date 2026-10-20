@@ -6,6 +6,7 @@
 // connect that way (E8).
 import { Effect, Result } from "effect";
 import { posix } from "node:path";
+import { type ArtifactTools, noArtifacts } from "../src/artifacts/tools.ts";
 import type { Runner } from "../src/claude/process.ts";
 import { remoteRunner, remoteTool, remoteWorktrees } from "../src/claude/remote.ts";
 import { type Settings, subagentSettings } from "../src/config.ts";
@@ -92,10 +93,12 @@ export const makePlacements = (o: {
     // subagent on our own tool loop reads its worktree), though the tools' text names the folders only
     const localFiles = yield* makeFileTools([...(devices[o.device]?.folders ?? []), expandHome(root)]);
     const files = new Map<string, FileTools>(Object.entries(devices).map(([name, d]) => [name, name === o.device ? localFiles : remoteTool(name, d.url)] as const));
-    // `agents`: spawn, tell and zoom("Name") as the caller may use them (SPEC M7a)
-    const toolsFor = (device: string, mem: Mem, agents: AgentTools = noAgents) =>
+    // `agents`: spawn, tell and zoom("Name") as the caller may use them (SPEC M7a); `artifacts`, the
+    // artifact tools likewise (SPEC "Artifacts")
+    const toolsFor = (device: string, mem: Mem, agents: AgentTools = noAgents, artifacts: ArtifactTools = noArtifacts) =>
       toolBox({
         agents,
+        artifacts,
         device,
         files: files.get(device) ?? ((name) => Effect.succeed(toolError(`Error: ${device} is not a configured device, so ${name} can't run`))),
         folders: devices[device]?.folders ?? [],

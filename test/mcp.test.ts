@@ -55,6 +55,9 @@ test("zoom and date over JSON-RPC: the handshake, the verbatim tools, a zoom dow
     ["date", "The date and time of message id."],
     ["spawn", TOOLS[2].description],
     ["tell", TOOLS[3].description],
+    ["publish_artifact", TOOLS[4].description],
+    ["edit_artifact", TOOLS[5].description],
+    ["read_artifact", TOOLS[6].description],
   ]);
   // zoom's id may be a subagent's name (SPEC M7a): a server with none says so
   expect(callTool(mem, "zoom", { id: "scout" })).toBe("No subagent scout.");

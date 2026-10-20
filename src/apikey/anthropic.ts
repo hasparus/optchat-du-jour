@@ -9,11 +9,14 @@
 // compaction on the turns' model reads the turns' (E26). 3 of Anthropic's 4. Every entry is a 5-minute one, the API's
 // default (docs/optchat.md §3.3; E6's 1-hour entries are the Claude subscription's). Thinking blocks come back in the
 // next request exactly as they arrived, signature and all, as tool use with thinking requires.
-import { Cause, Effect, Option, Schema, Stream } from "effect";
-import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
-import { type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
+import { Cause, Duration, Effect, Option, Schema, Stream } from "effect";
+import { HttpClient, HttpClientRequest } from "effect/http";
+import { IDLE_ANTHROPIC } from "../config.ts";
+import { addSpent, type EngineError, ModelError, rebuild, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
 import { admitRequest } from "../engines/request-admission.ts";
+import { askAgain, bytes, errorBody, httpFailure, post, shownToolInput, type Wire } from "../engines/retry.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
+import type { ToolInputHooks } from "../engines/tool-input.ts";
 import { isPicture } from "../media/part.ts";
 import type { ToolDef } from "../tools/files.ts";
 import type { Item } from "../providers/provider.ts";
@@ -40,6 +43,7 @@ export type MessagesAsk<E extends Tagged = never> = {
   readonly onText?: (delta: string) => Effect.Effect<void>;
   readonly onThinking?: (tokens: number) => Effect.Effect<void>; // the size of the thought so far
   readonly onReasoning?: (delta: string, fresh: boolean) => Effect.Effect<void>; // its text; the signature never goes out
+  readonly onToolInput?: ToolInputHooks | undefined; // a tool_use block's input JSON as it streams
   readonly onItem?: (item: Item) => Effect.Effect<void, E>; // each block as it completes, in order
   readonly onSettledUsage?: (spent: Spent, writes?: Writes) => Effect.Effect<void>;
   readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
@@ -202,10 +206,18 @@ const decodeErrorBody = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.
 
 // a spent key, a rate limit, an overloaded API or a key it won't take: the chain moves on (E4)
 const LIMITS = new Set(["rate_limit_error", "overloaded_error", "authentication_error", "permission_error", "billing_error"]);
+// what an `error` event in a stream may say that asking again can cure (E35): the API overloaded,
+// failing or rate limiting; a request it refused, or a key it won't take, it refuses again
+const PASSING = new Set(["overloaded_error", "api_error", "rate_limit_error", "timeout_error"]);
+// an answer that is no hiccup however the status reads: the key's credit is gone
+const spentKey = (type: string | undefined, message: string | undefined) => type === "billing_error" || /credit balance/i.test(message ?? "");
+// `status` null: an `error` event in the stream, which may pass (E35) when its type says so; an
+// HTTP error's chance to pass is the status's and its headers' (src/engines/retry.ts httpFailure)
 export const classifyAnthropic = (status: number | null, type: string | undefined, message: string | undefined, spent?: Spent): EngineError => {
   const text = `api-key: anthropic ${[status, type, message].filter((x) => x !== null && x !== undefined && x !== "").join(" ")}`;
-  const limited = status === 429 || status === 529 || status === 401 || status === 403 || (type !== undefined && LIMITS.has(type)) || /credit balance/i.test(message ?? "");
-  return limited ? new UsageLimit({ message: text, spent }) : new ModelError({ message: text, spent });
+  const limited = status === 429 || status === 529 || status === 401 || status === 403 || (type !== undefined && LIMITS.has(type)) || spentKey(type, message);
+  const transient = status === null && type !== undefined && PASSING.has(type) ? true : undefined;
+  return limited ? new UsageLimit({ message: text, spent, transient }) : new ModelError({ message: text, spent, transient });
 };
 
 type Block =
@@ -232,7 +244,7 @@ const blockOf = (b: typeof ContentBlock.Type): Block => {
   }
 };
 
-type Hooks<E extends Tagged> = Pick<MessagesAsk<E>, "onItem" | "onReasoning" | "onText" | "onThinking">;
+type Hooks<E extends Tagged> = Pick<MessagesAsk<E>, "onItem" | "onReasoning" | "onText" | "onThinking" | "onToolInput">;
 
 const onEvent =
   <E extends Tagged>(o: Hooks<E>) =>
@@ -259,7 +271,10 @@ const onEvent =
             b.text += delta.text;
             if (o.onText) yield* o.onText(delta.text);
           }
-          if (b?.type === "tool_use" && delta.partial_json !== undefined) b.json += delta.partial_json;
+          if (b?.type === "tool_use" && delta.partial_json !== undefined) {
+            b.json += delta.partial_json;
+            if (o.onToolInput) yield* o.onToolInput.delta({ id: b.id, name: b.name }, delta.partial_json);
+          }
           if (b?.type === "thinking") {
             const fresh = b.thinking === "";
             b.thinking += delta.thinking ?? "";
@@ -273,6 +288,7 @@ const onEvent =
         case "content_block_stop": {
           const { index } = yield* blockStop(data);
           const b = r.blocks[index];
+          if (b?.type === "tool_use" && o.onToolInput) yield* o.onToolInput.end(b.id);
           if (b && o.onItem) for (const item of itemOf(b)) yield* o.onItem(item);
           return r;
         }
@@ -340,15 +356,15 @@ export const readMessages = <E extends Tagged = never>(stream: Stream.Stream<Uin
         const spent = spentOf(init);
         const cause = Cause.map(original, (e: EngineError | E): EngineError | E => {
           if (!spent) return e;
-          if (e instanceof ModelError && e.spent === undefined) return new ModelError({ message: e.message, spent });
-          if (e instanceof Refusal && e.spent === undefined) return new Refusal({ message: e.message, spent });
-          if (e instanceof UsageLimit && e.spent === undefined) return new UsageLimit({ message: e.message, spent });
+          // the same failure, with what the stream told it cost; whether it may pass stays (E35)
+          if ((e instanceof ModelError || e instanceof Refusal || e instanceof UsageLimit) && e.spent === undefined) return rebuild(e, { spent });
           return e;
         });
         return Effect.failCause(cause);
       }));
       if (r.stop === "refusal") return yield* new Refusal({ message: "api-key: anthropic refused this request (stop_reason: refusal)", spent: spentOf(r) });
-      if (!r.done) return yield* new ModelError({ message: "api-key: anthropic: the stream ended without message_stop", spent: spentOf(r) });
+      // cut off on the way: it may pass (E35)
+      if (!r.done) return yield* new ModelError({ message: "api-key: anthropic: the stream ended without message_stop", spent: spentOf(r), transient: true });
       return { items: r.blocks.flatMap(itemOf), model: r.model, stop: r.stop, ...usageOf(r.start, r.end) } satisfies MessagesReply;
     }).pipe(Effect.onExit((exit) => {
       const spent = spentOf(init);
@@ -357,10 +373,13 @@ export const readMessages = <E extends Tagged = never>(stream: Stream.Stream<Uin
     }));
   });
 
-// The client: `key` is the API key now, UsageLimit when there is none (the chain moves on).
-export const makeMessages = (o: { readonly base: string; readonly key: Effect.Effect<string, UsageLimit> }) =>
+// The client: `key` is the API key now, UsageLimit when there is none (the chain moves on). A
+// request that fails on the API's side before anything of it went out is sent again (E35,
+// src/engines/retry.ts); a response with no bytes for `idle` (IDLE_ANTHROPIC) is dead.
+export const makeMessages = (o: { readonly base: string; readonly key: Effect.Effect<string, UsageLimit>; readonly idle?: Duration.Input }) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
+    const wire: Wire = { idle: o.idle ?? IDLE_ANTHROPIC, label: "api-key: anthropic" };
     const messages: Messages = (ask) =>
       Effect.gen(function* () {
         const key = yield* o.key;
@@ -369,14 +388,29 @@ export const makeMessages = (o: { readonly base: string; readonly key: Effect.Ef
           HttpClientRequest.accept("text/event-stream"),
           HttpClientRequest.bodyText(requestBody(ask), "application/json"),
         );
-        yield* admitRequest();
-        const res = yield* http.execute(req);
-        if (res.status !== 200) {
-          const raw = yield* res.text;
-          const parsed = decodeErrorBody(raw);
-          return yield* parsed._tag === "Some" ? classifyAnthropic(res.status, parsed.value.error.type, parsed.value.error.message) : classifyAnthropic(res.status, undefined, raw.slice(0, 300));
-        }
-        return yield* readMessages(res.stream.pipe(Stream.mapError((err) => new ModelError({ message: `api-key: anthropic: ${err.message}` }))), ask);
-      }).pipe(Effect.catchIf(HttpClientError.isHttpClientError, (err) => Effect.fail(new ModelError({ message: `api-key: anthropic: ${err.message}` }))));
+        return yield* askAgain({
+          // what failed tries cost is this reply's too; their cache writes aren't split by TTL
+          merge: (reply: MessagesReply, before) => ({ ...reply, usage: addSpent(before, { model: reply.model, usage: reply.usage }).usage, writes: undefined }),
+          once: (shown) =>
+            Effect.gen(function* () {
+              yield* admitRequest();
+              const res = yield* post(http, req, wire);
+              if (res.status !== 200) {
+                const raw = yield* errorBody(res, wire);
+                const body = Option.getOrUndefined(decodeErrorBody(raw))?.error;
+                const error = body ? classifyAnthropic(res.status, body.type, body.message) : classifyAnthropic(res.status, undefined, raw.slice(0, 300));
+                return yield* httpFailure(res, error, spentKey(body?.type, body?.message ?? raw));
+              }
+              return yield* readMessages(bytes(res, wire), {
+                ...ask,
+                onItem: shown(ask.onItem),
+                onReasoning: shown(ask.onReasoning),
+                onText: shown(ask.onText),
+                onThinking: shown(ask.onThinking),
+                onToolInput: shownToolInput(shown, ask.onToolInput),
+              });
+            }),
+        });
+      });
     return messages;
   });

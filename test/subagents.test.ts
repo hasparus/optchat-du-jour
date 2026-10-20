@@ -1010,7 +1010,7 @@ test("isolate needs a git repository: a folder that isn't one is a tool error, a
 test("a call cut short by a dropped device link goes on from its side log; a link that keeps dropping fails it", async () => {
   await scoped((scope) =>
     Effect.gen(function* () {
-      const lost = new ModelError({ message: "lost the connection to mac: socket closed" });
+      const lost = new ModelError({ lostLink: true, message: "lost the connection to mac: socket closed" });
       const r = yield* rig({
         child: {
           flaky: (_input, out, call) => (call === 1 ? out.log("tool", 'Bash {"command":"make"}').pipe(Effect.orDie, Effect.andThen(Effect.fail(lost))) : out.log("talk", "built").pipe(Effect.orDie)),

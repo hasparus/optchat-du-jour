@@ -104,7 +104,6 @@ export const providerOf = (ref: ProviderRef, o: EngineNeeds, effort?: string): E
 
 // How a turn engine's claude runs: in its own permission mode (none: the master's, from the
 // config), with tools let through without asking, kept warm (and so primed) when the session says
-// so, or never (`pooled: false`: no warm process is started for it or handed to it, E18)
 // so, or never (`pooled: false`: no warm process is started for it or handed to it, E18), with more
 // environment for its claude (`env`: a subagent's name)
 export type TurnPolicy = { readonly permissionMode?: string; readonly allowedTools?: readonly string[]; readonly pooled: boolean; readonly env?: Readonly<Record<string, string>> };

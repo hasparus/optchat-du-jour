@@ -5,9 +5,12 @@ import type { AGUIEvent, Message } from "@ag-ui/core";
 import { EventType } from "@ag-ui/core";
 import type { LiveRun, SessionEvent } from "../src/session.ts";
 import type { Entry } from "../src/tree.ts";
-import { reasoningId, type SessionState, splitTool, toolCallId, withCut } from "../src/wire.ts";
+import { type ArtifactDraft, reasoningId, type SessionState, splitTool, toolCallId, withCut } from "../src/wire.ts";
 
 export type AgUiEvent = AGUIEvent;
+
+// CUSTOM "artifact-draft": one piece of a call's draft (src/wire.ts ArtifactDraft)
+const artifactDraft = (d: ArtifactDraft): AgUiEvent => ({ name: "artifact-draft", type: EventType.CUSTOM, value: d });
 
 // The tool call the next echo answers, once `e` is logged: a tool entry opens its call, an echo
 // closes it. One rule for the snapshot (toMessages) and for a connection's live events, so a
@@ -198,6 +201,8 @@ export function openStream(o: {
     first.push({ runId: run, threadId: o.thread, type: EventType.RUN_STARTED });
     if (o.live.reasoning && o.live.reasoning.at >= from) first.push(...thinking(o.live.reasoning.at, 0, o.live.reasoning.text));
     if (o.live.reply && o.live.reply.at >= from) first.push(...reply(o.live.reply.at, 0, o.live.reply.text));
+    // an artifact's draft so far, whole (SPEC "Artifacts")
+    for (const d of o.live.drafts) first.push(artifactDraft({ closed: d.closed, delta: d.html, id: d.id, name: d.name, offset: 0, replace: true, runId: o.live.runId, tool: d.tool }));
   }
 
   const translate = (e: SessionEvent): AgUiEvent[] => {
@@ -249,6 +254,12 @@ export function openStream(o: {
         return [{ result: e.report, subagentRunId: e.runId, type: EventType.SUBAGENT_FINISHED }];
       case "subagent-error":
         return [{ code: e.code, message: e.message, subagentRunId: e.runId, type: EventType.SUBAGENT_ERROR }];
+      // an artifact's live draft, and a version saved (SPEC "Artifacts"); a client from before them
+      // drops the frames it can't decode
+      case "artifact-draft":
+        return [artifactDraft(e.draft)];
+      case "artifact":
+        return [{ name: "artifact", type: EventType.CUSTOM, value: { name: e.name, version: e.version } }];
       case "state": {
         const ops = delta(state, e.state);
         state = e.state;
@@ -257,5 +268,17 @@ export function openStream(o: {
     }
   };
 
-  return { first, translate };
+  // The heartbeat (HEARTBEAT, docs/uniichat.md): what a connection is sent when nothing else was
+  // for a while, so a client can tell a quiet socket from a dead one. It is the state as it is now,
+  // as a STATE_DELTA: every client, old ones too, decodes and applies it; it is empty when nothing
+  // changed, and otherwise carries what drifted (the phase's `elapsed`, a subagent's), so a client
+  // that counts time from when it got the state counts right. Sent by the loop that sends the
+  // events, only once none has come for a while, so it is never older than what it follows.
+  const beat = (now: SessionState): AgUiEvent[] => {
+    const ops = delta(state, now);
+    state = now;
+    return [{ delta: ops, type: EventType.STATE_DELTA }];
+  };
+
+  return { beat, first, translate };
 }

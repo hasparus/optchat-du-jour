@@ -90,6 +90,10 @@ const replay = async (mode: "caught-up" | "lag") => {
   // the node and its source only, so the two trees are the same set of records.
   const tree = (dir: string) => records(dir, "tree").toSorted();
   check(`${mode}: the tree records, as a set`, tree(ours), tree(theirs));
+  // The reference never clips a node; ours clips one the model refused REFUSALS times (E33). The
+  // fixture's failures are outages, never refusals, so no node of ours may be clipped: the set
+  // above would differ by the `clipped` key, and this says why.
+  ok(`${mode}: no node of ours is clipped (the fixture never refuses)`, !tree(ours).some((r) => r.includes('"clipped"')));
   console.log(`${mode}: ${mine.calls.length} compactor calls (${mine.calls.filter((c) => !c.endsWith("/1")).length} retries); the views part after ${Math.min(mine.split.calls, refs.split.calls)} calls`);
   // The calls. Caught up, each message's node and then the merges it makes ready, level by level,
   // in both: the same calls in the same order, all of them. Lagging, the order parts by design

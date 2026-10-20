@@ -9,7 +9,7 @@ import { type Event, markAt, type TextBlock } from "../claude/events.ts";
 import type { Spawn } from "../claude/process.ts";
 import type { Job } from "../compactor.ts";
 import { CALL_TIMEOUT } from "../config.ts";
-import { type DeviceOffline, type EngineError, fromResult, ModelError } from "../engines/errors.ts";
+import { type DeviceOffline, type EngineError, fromResult, ModelError, stoppedShort } from "../engines/errors.ts";
 import { type Gate, prefixKey } from "../engines/inflight.ts";
 import { admitRequest } from "../engines/request-admission.ts";
 import type { Placement } from "../turn/claude-code.ts";
@@ -103,7 +103,7 @@ export const claudeCodeCompactor = (o: CompactorOptions) => {
               const usage = tokensOf(result.usage), model = claude.model() ?? null;
               if (result.is_error || result.stop_reason === "refusal")
                 return yield* fromResult(result.result ?? `the call ended with ${result.subtype ?? "an error"}`, result.stop_reason, { model, usage });
-              return { model, text: result.result ?? "", usage };
+              return { cut: stoppedShort(result.stop_reason), model, text: result.result ?? "", usage };
             });
           return yield* sizeRetries({ ask, auth: "claude-max", device: o.device, effort: o.effort, engine: "claude-code", failoverFrom, job, log: o.log });
         }).pipe(Effect.scoped), // the process ends with the node

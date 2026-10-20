@@ -5,7 +5,7 @@ import { openStream } from "../../../server/agui.ts";
 import type { SessionEvent } from "../../../src/session.ts";
 import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { ack, type Entry, fakeServer, IDLE, parseSent, said, snapshot, state } from "../test/fixture";
-import { openLink, STALE_MS, wakeOnReturn } from "./connection";
+import { openLink, SILENT_MS, type SocketLike, STALE_MS, wakeOnReturn } from "./connection";
 import { sentKey } from "./draft";
 import { applyEvent, applyPage, emptyLog, hole, type Log, MAX_HELD, tip, trimHeld, visible, withDraft } from "./log";
 import { type Inbound, parseFrame } from "./protocol";
@@ -118,6 +118,136 @@ describe("link", () => {
     expect(link.abort()).toBe(true);
     expect(server.sent[1]).toBe('{"type":"abort"}');
     link.close();
+  });
+
+  test("heartbeat: a socket the server says nothing on for silentMs is dead: closed, and opened again at once; any frame keeps it", async () => {
+    expect(SILENT_MS).toBe(10_000); // two of the server's 5 s heartbeats missed (HEARTBEAT)
+    const server = fakeServer(() => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT }]);
+    const link = openLink("ws://x/ws", { retryMs: 60_000, silentMs: 60, socket: server.socket });
+    const statuses: string[] = [];
+    link.onStatus((s) => {
+      statuses.push(s);
+    });
+    await tick();
+    // the server's heartbeat (an empty STATE_DELTA when nothing changed) keeps it open
+    for (let k = 0; k < 8; k++) {
+      await tick(20);
+      server.play({ delta: [], type: EventType.STATE_DELTA });
+    }
+    expect(server.sockets).toHaveLength(1);
+    expect(link.status()).toBe("open");
+    // then nothing: a half-open socket gets no close event, so the link lets it go by itself, and
+    // opens another at once, not after the minute's backoff
+    await tick(100);
+    expect(server.sockets.length).toBeGreaterThanOrEqual(2);
+    expect(server.sockets[0]?.readyState).toBe(3);
+    expect(statuses.slice(0, 4)).toEqual(["open", "closed", "connecting", "open"]);
+    link.close();
+    const after = server.sockets.length;
+    await tick(150);
+    expect(server.sockets).toHaveLength(after); // closed for good: no watchdog left behind
+  });
+
+  test("heartbeat: a socket that never opens is let go after silentMs too, and tried again on the backoff", async () => {
+    const opened: string[] = [];
+    // a handshake that hangs: no open, no close, no frame
+    const link = openLink("ws://x/ws", {
+      retryMs: 30,
+      silentMs: 40,
+      socket: (url) => {
+        opened.push(url);
+        const hung: SocketLike = {
+          addEventListener: () => {
+            // never opens, never closes, never says anything
+          },
+          close: () => {
+            // nothing to close
+          },
+          send: () => {
+            // nobody listens
+          },
+        };
+        return hung;
+      },
+    });
+    await tick(60);
+    expect(opened).toHaveLength(1);
+    expect(link.status()).toBe("closed");
+    await tick(60);
+    expect(opened.length).toBeGreaterThanOrEqual(2);
+    link.close();
+  });
+
+  test("heartbeat: a first frame slower than the window, on a slow link, is waited for on the next socket, not lost in a reconnect loop", async () => {
+    let opened = 0, delivered = 0;
+    const slow = () => {
+      opened++;
+      const opens: (() => void)[] = [];
+      const messages: ((e: { readonly data: string }) => void)[] = [];
+      let gone = false;
+      const ws: SocketLike = {
+        addEventListener: (type: "open" | "close" | "message", l: never) => {
+          if (type === "open") opens.push(l);
+          if (type === "message") messages.push(l);
+        },
+        close: () => {
+          gone = true;
+        },
+        send: () => {
+          // nobody listens
+        },
+      };
+      setTimeout(() => {
+        if (!gone) for (const l of opens) l();
+      }, 1);
+      // the opening snapshot takes 90 ms to arrive, one and a half windows; then a beat every 20 ms
+      const say = (data: string) => {
+        for (const l of messages) l({ data });
+      };
+      setTimeout(() => {
+        if (gone) return;
+        delivered++;
+        say(JSON.stringify({ messages: [], type: EventType.MESSAGES_SNAPSHOT }));
+        const beats = setInterval(() => {
+          if (gone) clearInterval(beats);
+          else say(JSON.stringify({ delta: [], type: EventType.STATE_DELTA }));
+        }, 20);
+      }, 90);
+      return ws;
+    };
+    const link = openLink("ws://x/ws", { retryMs: 50, silentMs: 60, socket: slow });
+    await tick(800);
+    // the first socket is let go at 60 ms having said nothing: the backoff, then a socket with a
+    // window twice as long, which gets the snapshot and stays
+    expect(opened).toBe(2);
+    expect(delivered).toBe(1);
+    expect(link.status()).toBe("open");
+    link.close();
+  });
+
+  test("heartbeat: back from the background, a kept socket's overdue silence timer starts again rather than dropping it", async () => {
+    const server = fakeServer(() => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT }]);
+    const link = openLink("ws://x/ws", { retryMs: 60_000, silentMs: 80, socket: server.socket });
+    await tick(50);
+    link.wake(STALE_MS - 1); // away a little while: the socket is kept
+    await tick(60); // 110 ms since the last frame, 60 since the wake
+    expect(server.sockets).toHaveLength(1);
+    expect(link.status()).toBe("open");
+    link.close();
+  });
+
+  test("heartbeat: the server's beat is the state now, as a STATE_DELTA, which any client decodes; it moves only what drifted", () => {
+    const told = { ...IDLE, elapsed: 1000, phase: "running" as const };
+    const stream = openStream({ entries: [], live: null, state: told, thread: "mini", window: 10 });
+    // nothing changed: an empty delta, which every client decodes and applies as a no-op
+    const quiet = stream.beat(told);
+    expect(quiet).toEqual([{ delta: [], type: EventType.STATE_DELTA }]);
+    expect(Option.isSome(parseFrame(JSON.stringify(quiet[0])))).toBe(true);
+    // while a turn runs, the phase's elapsed time moves on: the beat carries it, so a client that
+    // counts from when it got the state counts right
+    const later = stream.beat({ ...told, elapsed: 6000 });
+    expect(later).toEqual([{ delta: [{ op: "replace", path: "/elapsed", value: 6000 }], type: EventType.STATE_DELTA }]);
+    expect(Option.isSome(parseFrame(JSON.stringify(later[0])))).toBe(true);
   });
 
   test("wake: a link that is down connects again at once, not after its backoff; closed for good, it stays closed", async () => {

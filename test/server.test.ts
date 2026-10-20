@@ -31,9 +31,10 @@ const env = {
 let server: Bun.Subprocess<"ignore", "pipe", "pipe">;
 
 beforeAll(async () => {
-  // the second turn (the REPL's) is slow: the REPL must wait for its answer, not for an idle state
-  // the first turn thinks before it answers (SPEC "Reasoning")
-  writeFileSync(env.FAKE_CLAUDE_SCRIPT, JSON.stringify({ turn: [[{ thought: THOUGHT }, { text: REPLY }], [{ sleep: 1500 }, { text: REPLY }]] }));
+  // the first turn ("hello") thinks before it answers (SPEC "Reasoning"); the others, the REPL's
+  // among them, are slow: the REPL must wait for its answer, not for an idle state. Keyed by a word
+  // of the message, not by the order claude processes start in (warm ones start ahead, E18)
+  writeFileSync(env.FAKE_CLAUDE_SCRIPT, JSON.stringify({ turn: { hello: [{ thought: THOUGHT }, { text: REPLY }], "*": [{ sleep: 1500 }, { text: REPLY }] } }));
   const settings = {
     master: { chain: ["claude-code:opus"], effort: "high", permissionMode: "bypassPermissions" },
     compactor: { byLevel: [{ from: 0, chain: ["claude-code:sonnet"] }], effort: "medium" },
@@ -216,7 +217,7 @@ test("/mcp over a WebSocket: one JSON-RPC message per frame each way; a wrong ke
   ws.close();
   expect(replies).toMatchObject([
     { id: 1, result: { protocolVersion: "2025-06-18", serverInfo: { name: "optchat" } } },
-    { id: 2, result: { tools: [{ name: "zoom" }, { name: "date" }, { name: "spawn" }, { name: "tell" }] } },
+    { id: 2, result: { tools: [{ name: "zoom" }, { name: "date" }, { name: "spawn" }, { name: "tell" }, { name: "publish_artifact" }, { name: "edit_artifact" }, { name: "read_artifact" }] } },
     { id: 3, result: { content: [{ text: "0+0|user: hello", type: "text" }] } },
   ]);
 

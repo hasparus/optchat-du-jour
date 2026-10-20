@@ -19,12 +19,16 @@
 //   E2E_THINKING=1  every Claude turn thinks (THOUGHT, streamed slowly) before its tool call
 //   E2E_SUBAGENTS=1  every Claude turn spawns two subagents (SPEC M7a): "notes", which reads and
 //             reports NOTES_REPORT, then "scout", which waits for a message from its card, reads
-//             and reports SCOUT_REPORT (e2e/replies.ts); every later turn (a report wakes the
-//             master) answers as a plain turn does
-//   E2E_ISOLATED=1  the first Claude turn spawns "fixer" isolated in a demo git repository of its
-//             own (a temporary one, not the data dir), which commits a file in its worktree and
-//             reports FIXER_REPORT; its branch is merged back, and the report wakes the master,
-//             whose next turn answers WOKEN
+//             and reports SCOUT_REPORT (e2e/replies.ts), when the message says "with subagents";
+//             every other turn (a report wakes the master) answers as a plain turn does
+//   E2E_ISOLATED=1  a Claude turn whose message says "on a branch" spawns "fixer" isolated in a demo
+//             git repository of its own (a temporary one, not the data dir), which commits a file in
+//             its worktree and reports FIXER_REPORT; its branch is merged back, and the report wakes
+//             the master, whose turn (any other message) answers WOKEN
+//   E2E_ARTIFACTS=ui  a Claude turn publishes LANDING, its input streamed slowly, unless its
+//             message says "long weekend": that one edits it (LANDING_EDIT). =hostile: every turn
+//             publishes hostile(E2E_STUN_PORT, E2E_TCP_PORT), whose WebRTC aims at that UDP port and whose
+//             preconnect hints at that TCP one (SPEC "Artifacts")
 import { BunRuntime } from "@effect/platform-bun";
 import { Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -38,7 +42,30 @@ import { login } from "../../src/openai/auth.ts";
 import { memorySecrets } from "../../src/secrets.ts";
 import { fakeOpenAi } from "../../test/fake-openai.ts";
 import { freePort } from "../../test/ports.ts";
-import { FETCHED, FIXER_REPORT, FIXER_TASK, NOTES_REPORT, NOTES_TASK, PLAN_DONE, PLAN_START, SCOUT_REPORT, SCOUT_TASK, SEARCH_RESULT, SOL_REPLY, SPAWNED, SPAWNED_ISOLATED, THOUGHT, TOOL_ERROR, WOKEN } from "./replies.ts";
+import {
+  ARTIFACT,
+  EDITED,
+  FETCHED,
+  FIXER_REPORT,
+  FIXER_TASK,
+  hostile as hostilePage,
+  LANDING,
+  LANDING_EDIT,
+  NOTES_REPORT,
+  NOTES_TASK,
+  PLAN_DONE,
+  PLAN_START,
+  PUBLISHED,
+  SCOUT_REPORT,
+  SCOUT_TASK,
+  SEARCH_RESULT,
+  SOL_REPLY,
+  SPAWNED,
+  SPAWNED_ISOLATED,
+  THOUGHT,
+  TOOL_ERROR,
+  WOKEN,
+} from "./replies.ts";
 
 const root = new URL("../..", import.meta.url).pathname;
 const home = Bun.env.E2E_HOME ?? mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
@@ -102,10 +129,20 @@ const fixer = [
   { run: { input: { command: "printf -- '- a demo entry\\n' >> CHANGELOG.md && git -c user.name=Demo -c user.email=demo@example.com commit -qam 'changelog: a demo entry'" }, name: "Bash" } },
   { text: FIXER_REPORT },
 ];
-const turn = Bun.env.E2E_SPENT ? spent : Bun.env.E2E_PATTERNS ? patterns : Bun.env.E2E_THINKING ? thinks : Bun.env.E2E_SUBAGENTS ? spawns : demo === null ? reply : isolated;
-// a turn that spawns plays once; the turns after it (a report wakes the master) answer plainly
-const later = demo === null ? reply : [{ text: WOKEN }];
-const turns = Bun.env.E2E_SUBAGENTS || demo !== null ? [[turn], [later]] : [[turn]];
+const turn = Bun.env.E2E_SPENT ? spent : Bun.env.E2E_PATTERNS ? patterns : Bun.env.E2E_THINKING ? thinks : reply;
+// the artifacts. turns: a publish streamed in 64-character pieces 300 ms apart (about 5 s), an edit
+const publishes = [{ mcp: { input: { name: ARTIFACT, html: LANDING }, name: "publish_artifact" }, pace: 300 }, { text: PUBLISHED }];
+const edits = [{ mcp: { input: LANDING_EDIT, name: "edit_artifact" } }, { text: EDITED }];
+const hostile = [{ mcp: { input: { name: "hostile", html: hostilePage(Number(Bun.env.E2E_STUN_PORT ?? 9), Number(Bun.env.E2E_TCP_PORT ?? 9)) }, name: "publish_artifact" } }, { text: PUBLISHED }];
+// by a word of the message: a warm process starts ahead of its turn, so not by the order they start
+// (a report that wakes the master says none of these words, so it gets "*")
+const turnsOf = () => {
+  if (Bun.env.E2E_SUBAGENTS) return { "*": [reply], "with subagents": [spawns] };
+  if (demo !== null) return { "*": [[{ text: WOKEN }]], "on a branch": [isolated] };
+  if (Bun.env.E2E_ARTIFACTS === "ui") return { "*": [publishes], "long weekend": [edits] };
+  return Bun.env.E2E_ARTIFACTS === "hostile" ? [[hostile]] : [[turn]];
+};
+const turns = turnsOf();
 writeFileSync(`${home}/script.json`, JSON.stringify({ subagent: { fixer: [fixer], notes: [notes], scout: [scout] }, turn: turns }));
 writeFileSync(`${home}/fake.jsonl`, "");
 Object.assign(process.env, {

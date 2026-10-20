@@ -125,10 +125,30 @@ export function makeMapper(out: TurnEvents, passed: Mid[], mcp: (status: string)
     return Effect.andThen(mcp(status), status === "connected" ? Effect.void : out.info(`no zoom or date in this turn: MCP server optchat is ${status}`));
   };
 
+  // the tool calls whose input is streaming, by their block's index: their id and name
+  const calls = new Map<number, { readonly id: string; readonly name: string }>();
+  // each tool call's name by its id, so an echo can say which tool it answers (a stub, E31)
+  const named = new Map<string, string>();
   const onStream = (e: typeof StreamEvent.Type) => {
-    if (e.event.type !== "content_block_delta") return Effect.void;
-    const d = e.event.delta;
+    const ev = e.event;
+    if (ev.type === "content_block_start") {
+      const b = ev.content_block;
+      if (b.type === "tool_use" && b.id !== undefined && b.name !== undefined && ev.index !== undefined) calls.set(ev.index, { id: b.id, name: b.name });
+      return Effect.void;
+    }
+    if (ev.type === "content_block_stop") {
+      const call = ev.index === undefined ? undefined : calls.get(ev.index);
+      if (call === undefined || ev.index === undefined) return Effect.void;
+      calls.delete(ev.index);
+      return out.toolInput?.end(call.id) ?? Effect.void;
+    }
+    if (ev.type !== "content_block_delta") return Effect.void;
+    const d = ev.delta;
     if (d.type === "text_delta") return out.text(d.text);
+    if (d.type === "input_json_delta") {
+      const call = ev.index === undefined ? undefined : calls.get(ev.index);
+      return call === undefined || !out.toolInput ? Effect.void : out.toolInput.delta(call, d.partial_json);
+    }
     const said = d.thinking ?? "";
     thoughtChars += said.length;
     const fresh = thoughtText === 0;
@@ -146,7 +166,10 @@ export function makeMapper(out: TurnEvents, passed: Mid[], mcp: (status: string)
       e.message.content,
       (block) => {
         if (isText(block)) return block.text.trim() ? out.log("talk", block.text) : Effect.void;
-        if (isToolUse(block)) return out.log("tool", `${block.name} ${JSON.stringify(block.input)}`);
+        if (isToolUse(block)) {
+          if (block.id !== undefined) named.set(block.id, block.name);
+          return out.log("tool", `${block.name} ${JSON.stringify(block.input)}`);
+        }
         if (!isThinking(block)) return Effect.void;
         // a thought ended; never logged (docs/optchat.md §7). Its text, when no delta carried it
         const whole = thoughtText === 0 && block.thinking ? out.reasoning(block.thinking, true) : Effect.void;
@@ -180,7 +203,8 @@ export function makeMapper(out: TurnEvents, passed: Mid[], mcp: (status: string)
       (block) => {
         if (block.type !== "tool_result") return Effect.void;
         const result = isToolResult(block) ? block : undefined;
-        return out.log("echo", cap(resultText(result?.content)), { error: result?.is_error === true });
+        const tool = result?.tool_use_id === undefined ? undefined : named.get(result.tool_use_id);
+        return out.log("echo", cap(resultText(result?.content)), tool === undefined ? { error: result?.is_error === true } : { error: result?.is_error === true, tool });
       },
       { discard: true },
     );
@@ -221,7 +245,7 @@ const readUntil = <A>(claude: Claude, stop: (e: Event) => Option.Option<A>, each
 const died = (claude: Claude) =>
   claude.result.pipe(
     Effect.matchEffect({
-      onFailure: (e) => Effect.fail(new ModelError({ message: e.message })),
+      onFailure: (e) => Effect.fail(new ModelError({ lostLink: e.lostLink, message: e.message })),
       onSuccess: () => Effect.fail(new ModelError({ message: "the process ended" })),
     }),
   );

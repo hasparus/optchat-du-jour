@@ -7,6 +7,7 @@
 // as `earlier`, and on `mid` the messages the engine before never took, then any new ones.
 import type { Effect } from "effect";
 import type { EngineError } from "../engines/errors.ts";
+import type { ToolInputHooks } from "../engines/tool-input.ts";
 import type { Part } from "../media/part.ts";
 import type { Kind } from "../records.ts";
 import type { StoreError } from "../store.ts";
@@ -47,8 +48,10 @@ export const openingText = (input: Pick<TurnInput, "again" | "earlier" | "texts"
 };
 
 export type TurnEvents = {
-  // `error`: an echo whose tool reported that it failed, kept on the entry for clients (E28)
-  readonly log: (kind: Exclude<Kind, "user">, body: string, flags?: { readonly error?: boolean }) => Effect.Effect<void, StoreError>;
+  // `error`: an echo whose tool reported that it failed, kept on the entry for clients (E28);
+  // `tool`: the name of the tool an echo answers, when the engine knows it (the log keeps a stub of
+  // a read_artifact answer, E31)
+  readonly log: (kind: Exclude<Kind, "user">, body: string, flags?: { readonly error?: boolean; readonly tool?: string }) => Effect.Effect<void, StoreError>;
   // the call passed this mid-run message to the model: it is logged as `user` now, once
   readonly took: (message: Mid) => Effect.Effect<void, StoreError>;
   readonly text: (delta: string) => Effect.Effect<void>; // live reply text, never logged as such
@@ -59,6 +62,11 @@ export type TurnEvents = {
   readonly reasoning: (delta: string, fresh: boolean) => Effect.Effect<void>;
   readonly info: (message: string) => Effect.Effect<void>;
   readonly usage: (record: UsageRecord) => Effect.Effect<void>;
+  // A tool call's input as the model writes it, before the call is whole: `delta`, the next piece
+  // of its JSON, under the call's own id; `end` once it is whole (or the reply stopped). Only what
+  // an artifact's live draft needs (SPEC "Artifacts"): an engine that streams no tool input never
+  // calls it, and a caller that shows no drafts (a subagent) leaves it out.
+  readonly toolInput?: ToolInputHooks;
 };
 
 export type TurnEngine = {

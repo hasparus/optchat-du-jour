@@ -27,6 +27,20 @@ Everything is built and tested against fakes. Each check below needs a real logi
 - [ ] Does a subagent on the turn's model read the turn's cached view? Its argv is a turn's but for its cwd and MCP URL (neither is sent to the model): its first call's `cacheRead` (SPEC E26, E36).
 - [ ] A subagent on `openai-plan` (the master's chain's Sol): its tool loop's spawn and tell as its own, Read through the device runner, its report back (SPEC Subagents).
 
+## Artifacts (M8)
+
+- [ ] A real master makes an artifact only when a visual or interactive result helps or the user asks (prompts/system.txt "Artifacts"), passes the validator first time most of the time (a refusal costs a round), edits rather than republishes, puts a request's changes in one `edit_artifact`, and never pastes a page into the chat (SPEC "Artifacts").
+- [ ] Claude Code streams an MCP tool call's input as `input_json_delta` under `--include-partial-messages` (the live draft on claude-code needs it; the fake claude does it), and keeps the schema's order (`name` first) when it writes the input.
+- [ ] The Responses API on the ChatGPT plan streams `response.function_call_arguments.delta` after `response.output_item.added` (the draft on openai-plan); Anthropic's `partial_json` on api-key.
+- [ ] The tool list changed (three tools): the first request on each engine after the deploy rewrites the tools-and-system-prompt cache once; check `cold` in `usage.jsonl` settles after that (SPEC E32).
+- [ ] `read_artifact` of a 512 KB page: Claude Code's MCP output limit against `READ_PAGE` (28,000 characters a part), and the model paging with `from`.
+- [ ] iOS app (WKWebView): the wrapper and its `sandbox="allow-scripts"` frame load (both are the server's pages, which `loadsInApp` lets in; no `data:` frame), the page runs its scripts, the heartbeat keeps it, a link in a page opens through `window.open` (in the Safari sheet, as the app's other links do, or not at all), WebKit ignores `credentialless` without breaking the frame, and the draft frame (same-origin, no scripts) is patched. Copy through `ClipboardItem` with a promise; download is hidden in the app.
+- [ ] The pane's sheet on the phone: full height on vaul, a drag down closes it, the frame scrolls inside it without dragging the sheet, and the keyboard never opens over it.
+- [ ] A long page's live draft on the phone: patching up to 512 KB every 150 ms stays smooth.
+- [ ] The frame guard on WebKit (Safari, the iOS app's WKWebView): a `srcdoc` frame a page makes is removed before it runs, as on Chromium (the e2e probe with a UDP listener runs on Chromium only), so its WebRTC never sends STUN. Known residual until then.
+- [ ] Resource hints an artifact's script adds (`<link rel=dns-prefetch>`, `preconnect`): no CSP governs them, so a host name the page writes into one may be looked up or connected to. Every artifact route says `X-DNS-Prefetch-Control: off`, and the e2e probe sees no TCP connection or request, but its Chromium acts on no hint even on a plain page (checked against a net log), so nothing is measured. Measure on a Chrome that does (headed, or with the predictor on) and, if they leave, drop `link` elements the page adds at insertion, as the frame guard does frames. Known residual until then.
+- [ ] `Sec-Fetch-Dest: iframe` on the artifact page and draft loads in WKWebView (Safari sends Fetch Metadata from 16.4; an older one would get 404s and show no artifact).
+
 ## ChatGPT plan
 
 - [x] `optchat login openai` end to end: callback, refresh, Keychain (SPEC M3).

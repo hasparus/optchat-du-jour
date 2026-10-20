@@ -52,8 +52,8 @@ beforeAll(async () => {
   writeFileSync(`${repo}/README.md`, "a repo\n");
   git(repo, "add", "-A");
   git(repo, "commit", "-q", "-m", "start");
-  // turns: the first spawns scout, the second sleeper and idler, the third brancher (isolated), the
-  // fourth roamer on the macbook, the fifth two that never end; each subagent's script by its name
+  // turns, each by a word of its message: scout; sleeper and idler; brancher (isolated); roamer on the
+  // macbook; two that never end. Each subagent's script by its name
   const script = {
     subagent: {
       // writes a file and runs a command where it works, spawns helper over its own key, takes
@@ -80,21 +80,23 @@ beforeAll(async () => {
       stuck1: [{ hang: true }],
       stuck2: [{ hang: true }],
     },
-    turn: [
-      [{ mcp: { input: { name: "scout", task: "Find when the trip is." }, name: "spawn" } }, { text: "scout is on it" }],
-      [
+    // keyed by a word of each message, not by the order claude processes start in (warm ones start
+    // ahead of their turn, E18)
+    turn: {
+      "ask a subagent": [{ mcp: { input: { name: "scout", task: "Find when the trip is." }, name: "spawn" } }, { text: "scout is on it" }],
+      "two more": [
         { mcp: { input: { model: "claude-code:opus@low", name: "sleeper", task: "Wait for word." }, name: "spawn" } },
         { mcp: { input: { name: "idler", task: "Idle." }, name: "spawn" } },
         { text: "two more running" },
       ],
-      [{ mcp: { input: { folder: repo, isolate: true, name: "brancher", task: "Add b.md." }, name: "spawn" } }, { text: "brancher is on it" }],
-      [{ mcp: { input: { device: "macbook", name: "roamer", task: "Look around." }, name: "spawn" } }, { text: "roamer is on the macbook" }],
-      [
+      "on a branch": [{ mcp: { input: { folder: repo, isolate: true, name: "brancher", task: "Add b.md." }, name: "spawn" } }, { text: "brancher is on it" }],
+      "the macbook": [{ mcp: { input: { device: "macbook", name: "roamer", task: "Look around." }, name: "spawn" } }, { text: "roamer is on the macbook" }],
+      "that hang": [
         { mcp: { input: { name: "stuck1", task: "Hang." }, name: "spawn" } },
         { mcp: { input: { name: "stuck2", task: "Hang." }, name: "spawn" } },
         { text: "two stuck" },
       ],
-    ],
+    },
   };
   writeFileSync(env.FAKE_CLAUDE_SCRIPT, JSON.stringify(script));
   const settings = {

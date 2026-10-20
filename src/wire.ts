@@ -234,6 +234,68 @@ export const span = ({ l, i }: { readonly l: number; readonly i: number }) => {
 };
 
 // ---------------------------------------------------------------------------------------------
+// Artifacts (SPEC "Artifacts"): one self-contained HTML page the master publishes, by name, with a
+// version per publish or edit. The tools' names, as the master calls them on every engine (on
+// claude-code as mcp__optchat__<name>).
+export const ARTIFACT_TOOLS = ["publish_artifact", "edit_artifact", "read_artifact"] as const;
+export type ArtifactTool = (typeof ARTIFACT_TOOLS)[number];
+// a tool entry's or a tool call's name as the artifact tool it is, or null: mcp__optchat__x is x
+export const artifactTool = (name: string): ArtifactTool | null => {
+  const bare = name.startsWith("mcp__optchat__") ? name.slice("mcp__optchat__".length) : name;
+  return ARTIFACT_TOOLS.find((t) => t === bare) ?? null;
+};
+// A subagent's name (SPEC M7a), and an artifact's: a letter, then up to 31 letters, digits, "-" or
+// "_": a folder name on every system and never a path, and one that can't end a report's "[Name] "
+// early. Any other string is no name.
+export const SUBAGENT_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
+// One version: its number (1 up), size in bytes, ISO date, and which tool made it. Which call made
+// it is said by that call's echo alone (`savedTag`): nothing on disk guesses at the log
+export const ArtifactVersion = Schema.Struct({
+  v: Schema.Number,
+  bytes: Schema.Number,
+  date: Schema.String,
+  by: Schema.Literals(["publish", "edit"]),
+});
+export type ArtifactVersion = typeof ArtifactVersion.Type;
+// an artifact: its name as first published, and its versions, oldest first (artifact.json)
+export const ArtifactInfo = Schema.Struct({ name: Schema.String, versions: Schema.Array(ArtifactVersion) });
+export type ArtifactInfo = typeof ArtifactInfo.Type;
+// /api/artifacts: every artifact, the most recently changed first
+export const ArtifactList = Schema.Struct({ artifacts: Schema.Array(ArtifactInfo) });
+export type ArtifactList = typeof ArtifactList.Type;
+
+// The end of a publish's or an edit's echo, which says the version the call saved (or found
+// unchanged): " [v3]", always last, so a name like plan-v2 can't be read as a version
+export const savedTag = (v: number) => ` [v${v}]`;
+export const savedVersion = (echo: string): number | null => {
+  const digits = /\s\[v(\d+)\]$/.exec(echo)?.[1];
+  return digits === undefined ? null : Number(digits);
+};
+
+// "12.4 KB": an artifact's size as the tools, the log's stubs and the web UI say it
+export const kb = (bytes: number) => `${(bytes / 1024).toFixed(1)} KB`;
+
+// What may run in a live draft's document (fx0's DRAFT_CSP): styles and embedded assets, no script.
+// The server's /artifact/draft sends it with `; frame-ancestors 'self'`, the client keeps it on
+// every document it patches in
+export const ARTIFACT_DRAFT_CSP = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; base-uri 'none'; form-action 'none'";
+
+// CUSTOM "artifact-draft": one piece of a call's live draft (SPEC "Artifacts"), under the run it
+// streams in: the page from `offset` on, or with `replace` the whole page; `closed` once the call's
+// input is whole (or the draft stopped at MAX_ARTIFACT_BYTES); `name`, the artifact's once written
+export const ArtifactDraft = Schema.Struct({
+  runId: Schema.String,
+  id: Schema.String,
+  tool: Schema.Literals(["publish", "edit"]),
+  name: Schema.NullOr(Schema.String),
+  offset: Schema.Number,
+  delta: Schema.String,
+  replace: Schema.Boolean,
+  closed: Schema.Boolean,
+});
+export type ArtifactDraft = typeof ArtifactDraft.Type;
+
+// ---------------------------------------------------------------------------------------------
 // /api/*
 
 // /api/messages: log entries (records.ts Msg, with the size the server adds), oldest first

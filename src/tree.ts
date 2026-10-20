@@ -59,7 +59,8 @@ export function built(mem: Mem, c: Coord): boolean {
 // a node is whatever was recorded for it first: a later record for the same place is ignored
 export function setNode(mem: Mem, record: Node) {
   if (built(mem, record)) return;
-  mem.tree.set(key(record), { i: record.i, l: record.l, size: bytes(record.text), text: record.text });
+  const one = { i: record.i, l: record.l, size: bytes(record.text), text: record.text };
+  mem.tree.set(key(record), record.clipped === true ? { ...one, clipped: true } : one);
 }
 
 // docs/optchat.md §2: a node is named by its first message and how many messages it spans
@@ -112,6 +113,24 @@ export function ready(mem: Mem, c: Coord) {
 export function freeText(mem: Mem, c: Coord): string | null {
   const source = c.l === 0 ? msgText(entry(mem, c.i)) : children(c).map((k) => node(mem, k).text).join("\n");
   return bytes(source) <= NODE ? source : null;
+}
+
+// the first `limit` bytes of a text, never ending inside a UTF-8 character (docs/optchat.md §4 "The size")
+export function cut(text: string, limit = NODE): string {
+  const raw = Buffer.from(text, "utf8");
+  if (raw.length <= limit) return text;
+  let end = limit;
+  while (end > 0 && ((raw[end] ?? 0) & 0b1100_0000) === 0b1000_0000) end--; // a continuation byte: back up to its start
+  return raw.subarray(0, end).toString("utf8");
+}
+
+// A node the model would not summarize (E33, after UniiChat's rule): its source cut to fit, as a
+// free node is its source whole. A message's is "kind: text" cut at NODE bytes; a merge's is each
+// half cut at just under half of NODE, a line apart, so the second half is never dropped whole.
+export function clippedText(mem: Mem, c: Coord): string {
+  if (c.l === 0) return cut(msgText(entry(mem, c.i)));
+  const half = (NODE - 1) >> 1;
+  return children(c).map((k) => cut(node(mem, k).text, half)).join("\n");
 }
 
 const two = (v: number) => (v < 10 ? `0${v}` : String(v));

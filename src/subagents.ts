@@ -34,8 +34,8 @@
 import { Cause, Clock, Deferred, type Duration, Effect, Exit, Fiber, Option, PubSub, Queue, Result, Schema, type Scope } from "effect";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { posix } from "node:path";
-import { isLostConnection } from "./claude/remote.ts";
-import { type Effort, entryLabel, type Ref, runEffort, isEffort } from "./config.ts";
+import { loggedText } from "./artifacts/tools.ts";
+import { type Effort, entryLabel, isEffort, type Ref, runEffort } from "./config.ts";
 import type { EngineError } from "./engines/errors.ts";
 import { type AgentTools, type Caller, SUBAGENT_NAME } from "./mcp.ts";
 import { expandHome, within } from "./paths.ts";
@@ -396,7 +396,8 @@ export const makeSubagents = (o: {
           a.offerTo = q;
           const out: TurnEvents = {
             info: (message) => info(`[${a.name}] ${message}`),
-            log: (kind, body, flags) => append(a, kind, body, kind === "echo" && flags?.error === true),
+            // its side log keeps the artifact tools' stubs too (E31): zoom("Name") answers from it
+            log: (kind, body, flags) => append(a, kind, loggedText(kind, body, flags?.tool), kind === "echo" && flags?.error === true),
             reasoning: () => Effect.void,
             text: () => Effect.void,
             thinking: () => Effect.void,
@@ -420,7 +421,7 @@ export const makeSubagents = (o: {
           for (const t of a.tells) t.state = "held";
           if (Result.isFailure(ran)) {
             const e = ran.failure;
-            if (e._tag !== "ModelError" || !isLostConnection(e.message) || drops >= LINK_TRIES) return yield* Effect.fail(e);
+            if (e._tag !== "ModelError" || e.lostLink !== true || drops >= LINK_TRIES) return yield* Effect.fail(e);
             drops += 1;
             yield* info(`[${a.name}] ${e.message}; it goes on from its log in a moment`);
             a.tells.unshift({ seq: ++seq, state: "held", text: RECONNECTED(a.device) });
