@@ -4,7 +4,8 @@
 // the message sent has the block where its token was, so the model reads exactly what was pasted.
 // In the chat the block shows folded under the same summary. Pure: the composer keeps the pastes
 // (with the draft, lib/draft.ts) and the user message draws the folds (chat/pasted.tsx).
-import { kb } from "@wire";
+import { kb, SUBAGENT_NAME } from "@wire";
+import { linesOf } from "./lines";
 
 // Past 40 lines a paste is a document rather than a sentence: more than a laptop screen of the
 // chat's 15 px text (about 25 px a line) and two of a phone's, so drawn whole it pushes what was
@@ -16,8 +17,7 @@ export const FOLD_BYTES = 4096;
 
 const encoder = new TextEncoder();
 export const bytesOf = (text: string) => encoder.encode(text).length;
-// lines as a reader counts them: a final newline ends the last line, it doesn't start one
-export const lineCount = (text: string) => (text === "" ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0));
+export const lineCount = (text: string) => linesOf(text).length;
 export const folds = (text: string) => lineCount(text) > FOLD_LINES || bytesOf(text) > FOLD_BYTES;
 
 // how big a block is, said briefly: its lines, or its size when it is one long line
@@ -65,13 +65,19 @@ export const expand = (text: string, pastes: readonly Paste[]) => {
   return { spans, text: out + text.slice(from) };
 };
 
+// A subagent's report, as the server logs one (src/subagents/reports.ts): "[Name] " and the rest.
+// It never folds: it is the subagent's own answer, kept short (REPORT_MAX), not a paste.
+const REPORT = new RegExp(`^\\[${SUBAGENT_NAME.source.slice(1, -1)}\\] `);
+
 // A message's text in parts: plain, a pasted block, or a long text folded whole. `spans`: where its
-// pasted blocks are, when this browser sent it (lib/draft.ts loadFolds); a message sent elsewhere,
-// or before a reload lost them, folds whole when it is as long as a paste that folds.
+// pasted blocks are, for a message sent from this browser (none: it had none, and nothing of it
+// folds); null for any other (another client's, one older than what this browser keeps, one posted
+// to /api/messages), which folds whole when it is as long as a paste that folds, unless it is a
+// subagent's report.
 export type Part = { readonly kind: "plain" | "pasted" | "long"; readonly text: string };
 export const foldParts = (text: string, spans: readonly Span[] | null): Part[] => {
-  const known = (spans ?? []).filter(([s, e]) => s >= 0 && e <= text.length && s < e).toSorted((a, b) => a[0] - b[0]);
-  if (known.length === 0) return [{ kind: folds(text) ? "long" : "plain", text }];
+  if (spans === null) return [{ kind: folds(text) && !REPORT.test(text) ? "long" : "plain", text }];
+  const known = spans.filter(([s, e]) => s >= 0 && e <= text.length && s < e).toSorted((a, b) => a[0] - b[0]);
   const parts: Part[] = [];
   let at = 0;
   for (const [s, e] of known) {
@@ -82,15 +88,4 @@ export const foldParts = (text: string, spans: readonly Span[] | null): Part[] =
   }
   if (at < text.length) parts.push({ kind: "plain", text: text.slice(at) });
   return parts;
-};
-
-// A short, stable name for a text, to find the spans this browser kept for it (FNV-1a, 32 bits, and
-// the length): a text never needs to be stored to be recognised
-export const textKey = (text: string) => {
-  let h = 0x81_1C_9D_C5;
-  for (let k = 0; k < text.length; k++) {
-    h ^= text.codePointAt(k) ?? 0;
-    h = Math.imul(h, 0x01_00_01_93);
-  }
-  return `${(h >>> 0).toString(36)}.${text.length}`;
 };

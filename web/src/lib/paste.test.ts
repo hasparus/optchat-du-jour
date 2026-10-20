@@ -1,7 +1,7 @@
 // Long pastes, folded (lib/paste.ts): which ones fold, their tokens, the text sent (exactly what was
 // pasted, where it was pasted), and the parts a sent message folds into.
 import { expect, test } from "bun:test";
-import { expand, FOLD_BYTES, FOLD_LINES, foldParts, folds, insert, lineCount, nextId, present, removeToken, sizeOf, textKey, tokenOf } from "./paste";
+import { expand, FOLD_BYTES, FOLD_LINES, foldParts, folds, insert, lineCount, nextId, present, removeToken, sizeOf, tokenOf } from "./paste";
 
 const lines = (n: number) => Array.from({ length: n }, (_, k) => `line ${k + 1}`).join("\n");
 
@@ -43,7 +43,7 @@ test("inserted over the selection with the caret after it; removed with its toke
   expect(nextId([p, { id: 1, text: "" }])).toBe(4);
 });
 
-test("a sent message folds its pasted blocks where this browser kept them, else whole when it is that long", () => {
+test("a message from this browser folds its pasted blocks only; any other folds whole when that long, unless it is a report", () => {
   const block = lines(60);
   const text = `see:\n${block}\nthanks`;
   const at = text.indexOf(block);
@@ -52,15 +52,15 @@ test("a sent message folds its pasted blocks where this browser kept them, else 
     { kind: "pasted", text: block },
     { kind: "plain", text: "\nthanks" },
   ]);
+  // sent from here with no paste: a long typed message stays as typed
+  expect(foldParts(text, [])).toEqual([{ kind: "plain", text }]);
+  // from elsewhere: whole
   expect(foldParts(text, null)).toEqual([{ kind: "long", text }]);
   expect(foldParts("short", null)).toEqual([{ kind: "plain", text: "short" }]);
+  // a subagent's report, however long, never folds; a bracket that names no subagent does
+  expect(foldParts(`[scout] ${block}`, null)).toEqual([{ kind: "plain", text: `[scout] ${block}` }]);
+  expect(foldParts(`[not a name] ${block}`, null)[0]?.kind).toBe("long");
   // spans past the text, or overlapping, are not this text's
   expect(foldParts("short", [[0, 99]])).toEqual([{ kind: "plain", text: "short" }]);
   expect(foldParts(text, [[at, at + block.length], [at + 1, at + 5]]).filter((p) => p.kind === "pasted")).toHaveLength(1);
-});
-
-test("a text's key is the same for the same text and differs for another", () => {
-  expect(textKey(lines(50))).toBe(textKey(lines(50)));
-  expect(textKey(lines(50))).not.toBe(textKey(lines(51)));
-  expect(textKey("ab")).not.toBe(textKey("ba"));
 });

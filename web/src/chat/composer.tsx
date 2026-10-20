@@ -26,8 +26,8 @@ import {
 import { InputGroupButton } from "@/components/ui/input-group";
 import type { Uploader } from "@/lib/attach";
 import type { Link } from "@/lib/connection";
-import { loadDraft, loadHistory, remember, rememberFolds, saveDraft } from "@/lib/draft";
-import { expand, folds, insert, nextId, type Paste, present, removeToken, textKey, tokenOf } from "@/lib/paste";
+import { loadDraft, loadHistory, remember, saveDraft } from "@/lib/draft";
+import { expand, folds, insert, nextId, type Paste, present, removeToken, tokenOf } from "@/lib/paste";
 import { emptyEnterStops } from "@/lib/stop-keys";
 import type { Restored, SessionStore } from "@/lib/session";
 import { cn } from "@/lib/utils";
@@ -40,6 +40,10 @@ import { CompactSelect, FollowUps, ModelPicker } from "./pickers";
 import { useAttachments } from "./use-attachments";
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+
+// An Enter this soon after the one that sent is that keypress again, not a Stop: a double press is
+// a few hundred ms apart, and a second wanted to stop the turn the message joined is no sooner
+export const ENTER_AFTER_SEND_MS = 1000;
 
 export type ComposerProps = {
   readonly link: Link;
@@ -67,6 +71,7 @@ export function Composer({ link, session, state, busy, attached = false, open, d
   const folded = present(text, pastes);
   const [peek, setPeek] = useState<number | null>(null); // the paste whose preview is open
   const caret = useRef<number | null>(null); // where the caret goes once a token is in the text
+  const sentAt = useRef(Number.NEGATIVE_INFINITY); // when this composer last sent, on this page's clock
   const box = useId(); // the textarea's id, to focus it
   const touch = useCoarsePointer();
   const hint = useId();
@@ -145,14 +150,14 @@ export function Composer({ link, session, state, busy, attached = false, open, d
 
   const send = (how?: FollowUp) => {
     if (!sendable(text)) return;
-    // the text as typed, each folded paste back in its token's place; where they are is kept, to fold them in the chat
+    // the text as typed, each folded paste back in its token's place; where they are goes with it, to fold them in the chat
     const whole = expand(text, folded);
-    session.send(whole.text, { device: device ?? undefined, engine: model ?? undefined, followUp: running ? how : undefined, media: tray.ready });
-    rememberFolds(textKey(whole.text), whole.spans);
+    session.send(whole.text, { device: device ?? undefined, engine: model ?? undefined, followUp: running ? how : undefined, media: tray.ready, spans: whole.spans });
     if (whole.text.trim() !== "") {
       remember(whole.text);
       history.current = [...history.current.filter((t) => t !== whole.text), whole.text];
     }
+    sentAt.current = Date.now();
     setText("");
     setPastes([]);
     setPeek(null);
@@ -165,8 +170,10 @@ export function Composer({ link, session, state, busy, attached = false, open, d
   // Mod+Enter sends the other way while a turn runs.
   const keyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;
-    // nothing to send while a turn runs: Enter is Stop, as the button is
-    if (busy && open && emptyEnterStops(e.nativeEvent, document, { empty: !content, touch })) {
+    // nothing to send while a turn runs: Enter is Stop, as the button is; not an Enter that comes
+    // right after one that sent (pressed twice), which would stop the turn the message just joined
+    const settled = Date.now() - sentAt.current > ENTER_AFTER_SEND_MS;
+    if (busy && open && settled && emptyEnterStops(e.nativeEvent, { empty: !content, touch })) {
       e.preventDefault();
       link.abort();
       return;
@@ -229,6 +236,12 @@ export function Composer({ link, session, state, busy, attached = false, open, d
         </p>
       }
       canSubmit={sendable}
+      // Esc closes an open paste preview, and is taken so it stops nothing (lib/stop-keys.ts)
+      onKeyDown={(e) => {
+        if (e.key !== "Escape" || peek === null || e.nativeEvent.isComposing) return;
+        e.preventDefault();
+        setPeek(null);
+      }}
       onFiles={tray.add}
       onSubmit={() => {
         send();

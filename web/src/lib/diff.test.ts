@@ -1,24 +1,11 @@
-// What a file tool's call changes (lib/diff.ts): its input read as far as it has streamed, the line
-// diff of an Edit, the hunks of a MultiEdit, a Write's new file; any other tool has none.
+// What a file tool's call changes (lib/diff.ts): the line diff of an Edit, the hunks of a MultiEdit
+// within one budget of cells, a Write's new file, all from the input as far as it has streamed
+// (its reader is src/partial-json.ts's, tested in test/partial-json.test.ts); any other tool has none.
 import { expect, test } from "bun:test";
-import { fileChange, lineDiff, readPartial } from "./diff";
+import { fileChange, lineDiff, MAX_CELLS } from "./diff";
 
 // in the order Claude Code writes its keys: the old text streams before the new one
 const EDIT = { file_path: "src/a.ts", old_string: "const a = 1;\nconst b = 2;\nconst c = 3;\n", new_string: 'const a = 1;\nconst b = "two";\nconst c = 3;\n' };
-
-test("a JSON text is read as far as it goes: a string cut short as it has come, what hasn't begun left out", () => {
-  const whole = { ...EDIT, n: 12.5, ok: true, no: null, list: [1, "x", { deep: false }] };
-  expect(readPartial(JSON.stringify(whole))).toEqual(whole);
-  expect(readPartial(String.raw`{"file_path":"src/a.ts","old_string":"line one\nli`)).toEqual({ file_path: "src/a.ts", old_string: "line one\nli" });
-  expect(readPartial('{"file_path":"src/a.ts","old_')).toEqual({ file_path: "src/a.ts" });
-  expect(readPartial('{"file_path":"src/a.ts","old_string":')).toEqual({ file_path: "src/a.ts" });
-  expect(readPartial('{"a":"x\\')).toEqual({ a: "x" }); // a dangling escape
-  expect(readPartial(String.raw`{"a":"\u00e9\u00`)).toEqual({ a: "é" });
-  expect(readPartial(String.raw`{"a":"\"quoted\" \t tab"}`)).toEqual({ a: '"quoted" \t tab' });
-  expect(readPartial('{"n":12')).toEqual({}); // a number that may go on
-  expect(readPartial('{"edits":[{"old_string":"a","new_string":"b"},{"old_string":"c')).toEqual({ edits: [{ new_string: "b", old_string: "a" }, { old_string: "c" }] });
-  expect(readPartial("")).toBeUndefined();
-});
 
 const big = (tag: string) => Array.from({ length: 1200 }, (_, k) => `${tag}${k}`).join("\n");
 
@@ -51,7 +38,7 @@ test("an Edit is its diff with counts; a MultiEdit a hunk per edit; a Write its 
   const multi = fileChange("MultiEdit", JSON.stringify({ edits: [{ new_string: "b", old_string: "a" }, { new_string: "d\ne", old_string: "c" }], file_path: "x.md" }));
   expect(multi?.kind === "edit" ? multi.hunks.length : 0).toBe(2);
   expect(multi).toMatchObject({ added: 3, removed: 2 });
-  expect(fileChange("Write", JSON.stringify({ content: "one\ntwo\nthree\n", file_path: "n.txt" }))).toEqual({ content: "one\ntwo\nthree\n", kind: "write", lines: 3, path: "n.txt", whole: true });
+  expect(fileChange("Write", JSON.stringify({ content: "one\ntwo\nthree\n", file_path: "n.txt" }))).toEqual({ kind: "write", lines: ["one", "two", "three"], path: "n.txt", whole: true });
   expect(fileChange("Read", JSON.stringify({ file_path: "a" }))).toBeNull();
   expect(fileChange("Bash", JSON.stringify({ command: "ls" }))).toBeNull();
 });
@@ -69,5 +56,43 @@ test("streaming: the diff grows with the input, and is whole once the input is",
   expect(partial?.kind === "edit" && partial.whole).toBe(false);
   expect(partial?.kind === "edit" ? partial.hunks[0]?.filter((l) => l.kind === "add").map((l) => l.text) : []).toEqual(['const b = "two']);
   const writing = fileChange("Write", String.raw`{"file_path":"n.txt","content":"one\ntwo\nth`);
-  expect(writing).toMatchObject({ kind: "write", lines: 3, whole: false });
+  expect(writing).toMatchObject({ kind: "write", lines: ["one", "two", "th"], whole: false });
+});
+
+// n lines, every other one `tag`'s own and the first among them, so nothing is trimmed as shared at
+// the start: a longest common subsequence keeps the other half
+const alternating = (n: number, tag: string) => Array.from({ length: n }, (_, k) => (k % 2 === 1 ? `same ${k}` : `${tag} ${k}`)).join("\n");
+const sameInMiddle = (lines: readonly { readonly kind: string }[]) => lines.slice(1, -1).filter((l) => l.kind === "same").length;
+
+test("within MAX_CELLS the middle keeps its common lines; past it, all removed then all added", () => {
+  expect(MAX_CELLS).toBe(1_000_000);
+  // 1,000 × 999 cells (the last line is shared, so trimmed): within the budget
+  expect(sameInMiddle(lineDiff(alternating(1000, "old"), alternating(1000, "new")))).toBeGreaterThan(400);
+  // 1,001 × 1,001: past it
+  const past = lineDiff(alternating(1001, "old"), alternating(1001, "new"));
+  expect(sameInMiddle(past)).toBe(0);
+  expect(past.filter((l) => l.kind === "del")).toHaveLength(1001);
+  expect(past.findLastIndex((l) => l.kind === "del")).toBeLessThan(past.findIndex((l) => l.kind === "add"));
+});
+
+test("2,000 × 2,000 lines, 4 million cells: the fallback's shape, quickly", () => {
+  const t0 = performance.now();
+  const change = fileChange("Edit", JSON.stringify({ file_path: "x", old_string: alternating(2000, "old"), new_string: alternating(2000, "new") }));
+  const ms = performance.now() - t0;
+  const lines = change?.kind === "edit" ? (change.hunks[0] ?? []) : [];
+  // the last line is shared (trimmed); every other line of the 1,999 left is too, but no LCS ran
+  expect(change).toMatchObject({ added: 1999, removed: 1999 });
+  expect(lines.slice(0, 1999).every((l) => l.kind === "del")).toBe(true);
+  expect(lines.slice(1999, -1).every((l) => l.kind === "add")).toBe(true);
+  expect(lines.at(-1)).toEqual({ kind: "same", text: "same 1999" });
+  expect(ms).toBeLessThan(250);
+});
+
+test("one budget for the whole call: a MultiEdit's later hunks fall back once its earlier ones spent it", () => {
+  const edit = { old_string: alternating(800, "old"), new_string: alternating(800, "new") };
+  const change = fileChange("MultiEdit", JSON.stringify({ file_path: "x", edits: [edit, edit] }));
+  const hunks = change?.kind === "edit" ? change.hunks : [];
+  expect(hunks).toHaveLength(2);
+  expect(sameInMiddle(hunks[0] ?? [])).toBeGreaterThan(300); // 640,000 cells: within the budget
+  expect(sameInMiddle(hunks[1] ?? [])).toBe(0); // 640,000 more: past it
 });

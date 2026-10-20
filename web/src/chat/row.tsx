@@ -18,12 +18,11 @@ import { cn } from "@/lib/utils";
 import { splitMarkers } from "@wire";
 import { CheckIcon, CodeIcon, CopyIcon, NotebookPenIcon, TextIcon } from "lucide-react";
 import { Component, createContext, memo, type ReactNode, use, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { loadFolds } from "@/lib/draft";
-import { textKey } from "@/lib/paste";
+import type { Span } from "@/lib/paste";
 import { ArtifactCard, madeDetail } from "./artifact-card";
 import { FoldedText } from "./pasted";
 import { DiffStat, ToolDiff } from "./tool-diff";
-import { fileChange } from "@/lib/diff";
+import { fileChange, type FileChange } from "@/lib/diff";
 
 // copy the reply as written; the check stays a moment
 function CopyAction({ text }: { text: string }) {
@@ -176,10 +175,9 @@ function Reply({ id, text, streaming, sources }: { id: string; text: string; str
 // marker's 12 hex digits; only user rows show them, so nothing a model wrote is ever fetched. A
 // thumbnail is a plain link to the full asset: it has no state or action for Attachment to carry,
 // and keeps its own shape where Attachment's image media is a square crop.
-function UserMessage({ text }: { text: string }) {
+// `folds`: where its long pastes are, when it was sent from this browser; null for any other (./pasted.tsx)
+function UserMessage({ text, folds }: { readonly text: string; readonly folds: readonly Span[] | null }) {
   const { body, markers } = splitMarkers(text);
-  // where its long pastes are, when it was sent from this browser (./pasted.tsx folds them)
-  const spans = useMemo(() => loadFolds().get(textKey(body)) ?? null, [body]);
   return (
     <Message align="end" data-testid="user-message">
       <MessageContent className="gap-1.5">
@@ -201,7 +199,7 @@ function UserMessage({ text }: { text: string }) {
         )}
         <Bubble align="end" className="max-w-[85%] sm:max-w-[min(80%,36rem)]" variant="soft">
           <BubbleContent className="rounded-2xl px-3.5 py-2 text-read whitespace-pre-wrap">
-            <FoldedText spans={spans} text={body} />
+            <FoldedText spans={folds} text={body} />
             {markers.length > 0 && (
               <span className="font-mono text-xs text-muted-foreground">
                 {body === "" ? "" : "\n"}
@@ -282,6 +280,8 @@ export type ChatRowProps = {
   // the artifact version a publish or edit row made (SPEC "Artifacts"), and opening it in the pane
   made?: Made | null | undefined;
   onArtifact?: ((name: string, v: number | null) => void) | undefined;
+  // a user message's long pastes, when this browser sent it (null: another's, or unknown)
+  folds?: readonly Span[] | null | undefined;
 };
 
 const noToggle = () => {
@@ -301,9 +301,13 @@ const rowText = (row: Row) => {
   }
 };
 
-export const ChatRow = memo(function ChatRow({ row, streaming, toolState, plan, sources, thought, onThought = noToggle, made, onArtifact }: ChatRowProps) {
+export const ChatRow = memo(function ChatRow({ row, streaming, toolState, plan, sources, thought, onThought = noToggle, made, onArtifact, folds }: ChatRowProps) {
   const thinks = thought !== undefined && (row.kind === "talk" || row.kind === "tool" || row.kind === "thinking");
-  const view = <RowView made={made} onArtifact={onArtifact} plan={plan} row={row} sources={sources} streaming={streaming} toolState={toolState} />;
+  // a file tool's change, read again only when its input grows (it may stream, E45)
+  const name = row.kind === "tool" ? row.name : null;
+  const args = row.kind === "tool" ? row.args : null;
+  const change = useMemo(() => (name === null || args === null ? null : fileChange(name, args)), [name, args]);
+  const view = <RowView change={change} folds={folds} made={made} onArtifact={onArtifact} plan={plan} row={row} sources={sources} streaming={streaming} toolState={toolState} />;
   return (
     <RowBoundary text={rowText(row)}>
       {thinks ? (
@@ -318,12 +322,12 @@ export const ChatRow = memo(function ChatRow({ row, streaming, toolState, plan, 
   );
 });
 
-function RowView({ row, streaming, toolState, plan, sources, made, onArtifact }: ChatRowProps) {
+function RowView({ row, streaming, toolState, plan, sources, made, onArtifact, change, folds }: ChatRowProps & { readonly change: FileChange | null }) {
   switch (row.kind) {
     case "thinking":
       return null;
     case "user":
-      return <UserMessage text={row.text} />;
+      return <UserMessage folds={folds ?? null} text={row.text} />;
     case "note":
       return (
         <Message align="end" data-testid="user-message">
@@ -343,8 +347,7 @@ function RowView({ row, streaming, toolState, plan, sources, made, onArtifact }:
     case "tool": {
       const steps = plan === undefined ? null : planOf(row);
       if (steps !== null) return <PlanRow plan={plan} row={row} steps={steps} toolState={toolState} />;
-      // a file tool's change, drawn under its line (./tool-diff.tsx), also while its input streams
-      const change = fileChange(row.name, row.args);
+      // a file tool's change is drawn under its line (./tool-diff.tsx), also while its input streams
       const line = (
         <Tool>
           <ToolHeader

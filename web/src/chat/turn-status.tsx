@@ -1,21 +1,21 @@
-// What the dock says of the turn and the link beyond the status line (SPEC "Web UI", Chat): while
-// the turn's engine waits to ask again, a quiet countdown in place of the shimmering status (E43);
+// What the dock says of the turn and the link beyond the status line (SPEC "Web UI", Chat): during
+// the turn's retry pause, a quiet countdown in place of the shimmering status (E43);
 // and once the server runs another build, a banner on the composer's tray to reload (E44).
 import { Button } from "@/components/ui/button";
 import type { SessionState } from "@wire";
 import { RefreshCwIcon } from "lucide-react";
 import { useNow } from "./background-work";
 
-type Retry = NonNullable<SessionState["retry"]>;
+type RetryPause = NonNullable<SessionState["retryPause"]>;
 
-// whole seconds left of a pause told `ms` long at `stateAt` (this page's clock, when the state came)
-export const secondsLeft = (retry: Retry, stateAt: number, now: number) => Math.max(0, Math.ceil((retry.ms - (now - stateAt)) / 1000));
+// whole seconds left of a retry pause told `ms` long at `stateAt` (this page's clock, when the state came)
+export const secondsLeft = (pause: RetryPause, stateAt: number, now: number) => Math.max(0, Math.ceil((pause.ms - (now - stateAt)) / 1000));
 
 // "Busy, asking again in 7 s", counting down once a second; at 0, until the next try is told
-export function RetryCountdown({ retry, stateAt }: { readonly retry: Retry; readonly stateAt: number }) {
-  const left = secondsLeft(retry, stateAt, useNow(true));
+export function RetryCountdown({ pause, stateAt }: { readonly pause: RetryPause; readonly stateAt: number }) {
+  const left = secondsLeft(pause, stateAt, useNow(true));
   return (
-    <span className="text-muted-foreground tabular-nums" data-testid="retry-countdown" title={`Try ${retry.next} of ${retry.tries}`}>
+    <span className="text-muted-foreground tabular-nums" data-testid="retry-countdown" title={`Try ${pause.next} of ${pause.tries}`}>
       {left > 0 ? `Busy, asking again in ${left} s` : "Busy, asking again…"}
     </span>
   );

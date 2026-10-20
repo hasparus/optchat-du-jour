@@ -426,7 +426,7 @@ Modelled on Claude's app: a soft, translucent card with round controls.
   4 KB) is a chip among them, 64 px tall like a tile: a 40 px soft icon tile, "Pasted text" in UI type
   and "120 lines · 5.2 KB" in 11 px muted, the same remove button on its corner; the chip itself
   opens its preview under the row (mono 12 px on the code ground, a hairline, 12rem at most, then it
-  scrolls), and washes in the accent fill while open. In the sent bubble the block folds to a muted
+  scrolls; Esc closes it), and washes in the accent fill while open. In the sent bubble the block folds to a muted
   13 px line, a chevron and "Pasted text · 120 lines", over its first two lines muted, and opens in
   place.
 - **Status:** above it, one 12 px line: a breathing ivy dot and the shimmering status while a turn

@@ -165,6 +165,7 @@ export function App({ link, session, uploader }: { link: Link; session: SessionS
           </header>
           <TabsContent className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden" forceMount value="chat">
             <Chat
+              active={tab === "chat"}
               devices={devices.data ?? []}
               link={link}
               onTargetShown={shown}

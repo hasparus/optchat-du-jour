@@ -17,7 +17,7 @@ test("while the turn's engine waits to ask again, the status says so and counts 
   play(state({ engine: "claude-code:opus", phase: "running" }));
   const status = await screen.findByTestId("status");
   expect(within(status).queryByTestId("retry-countdown")).toBeNull();
-  play(state({ retry: { ms: 3000, next: 2, tries: 4 } }));
+  play(state({ retryPause: { ms: 3000, next: 2, tries: 4 } }));
   const countdown = within(status).getByTestId("retry-countdown");
   expect(countdown.textContent).toBe("Busy, asking again in 3 s");
   expect(countdown.getAttribute("title")).toBe("Try 2 of 4");
@@ -28,7 +28,7 @@ test("while the turn's engine waits to ask again, the status says so and counts 
     { timeout: 2500 },
   );
   // the next try started: the state no longer says it waits
-  play(state({ retry: null }));
+  play(state({ retryPause: null }));
   await waitFor(() => {
     expect(within(screen.getByTestId("status")).queryByTestId("retry-countdown")).toBeNull();
   });
@@ -36,10 +36,10 @@ test("while the turn's engine waits to ask again, the status says so and counts 
 });
 
 test("the seconds left count from when this page got the state, and stop at none", () => {
-  const retry = { ms: 5000, next: 2, tries: 4 };
-  expect(secondsLeft(retry, 1000, 1000)).toBe(5);
-  expect(secondsLeft(retry, 1000, 2001)).toBe(4);
-  expect(secondsLeft(retry, 1000, 9000)).toBe(0);
+  const pause = { ms: 5000, next: 2, tries: 4 };
+  expect(secondsLeft(pause, 1000, 1000)).toBe(5);
+  expect(secondsLeft(pause, 1000, 2001)).toBe(4);
+  expect(secondsLeft(pause, 1000, 9000)).toBe(0);
 });
 
 test("a server of another build: the link stays down, and the tray says OptChat was updated, with a reload", async () => {

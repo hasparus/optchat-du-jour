@@ -223,10 +223,12 @@ export type ChatProps = {
   readonly onTargetShown: () => void;
   // the running turn's status line was tapped: open Background work
   readonly onWork?: () => void;
+  // the chat is the tab shown: only then does Esc stop the turn
+  readonly active: boolean;
   readonly uploader?: Uploader; // tests replace PUT /api/assets
 };
 
-export function Chat({ link, session, state, devices, target, onTargetShown, onWork, uploader }: ChatProps) {
+export function Chat({ link, session, state, devices, target, onTargetShown, onWork, active, uploader }: ChatProps) {
   const [loading, setLoading] = useState(false);
   // the artifacts (SPEC "Artifacts"): their list, read again when a version is saved; the one the
   // pane shows (v null: its latest), beside the chat on a wide screen, in a sheet on a phone
@@ -284,8 +286,8 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
   // model, or messages waiting
   const outdated = state.status === "outdated";
   const tray = outdated || state.state?.phase === "needs-model" || waiting.length > 0;
-  // the turn's engine waits to ask again (E43): a quiet countdown instead of the status
-  const retry = state.state?.phase === "running" ? (state.state.retry ?? null) : null;
+  // the turn's retry pause (E43): a quiet countdown instead of the status
+  const retryPause = state.state?.phase === "running" ? (state.state.retryPause ?? null) : null;
   const line = status(state);
   // the server says the log is empty: a first visit, not a page still loading
   const empty = state.state !== null && rows.length === 0 && state.markers.length === 0;
@@ -300,7 +302,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
   const stop = useCallback(() => {
     link.abort();
   }, [link]);
-  useStopKeys(busy && state.status === "open", stop, root);
+  useStopKeys(busy && state.status === "open" && active, stop);
 
   // one older page, prepended: true while there may be more, null when it couldn't be read
   const loadOlder = useCallback(async () => {
@@ -418,6 +420,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
                         toolState={row.kind === "tool" ? toolStateOf(row, busy, row.key === lastTool) : "done"}
                         made={madeBy(row, artifacts)}
                         onArtifact={openArtifact}
+                        folds={row.kind === "user" ? (state.folds.get(row.id) ?? null) : undefined}
                       />
                     </MessageScrollerItem>
                     {placed.after.get(k)?.map((m) => (
@@ -467,7 +470,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
                     type="button"
                   >
                     <span aria-hidden="true" className="size-1.5 shrink-0 animate-breathe rounded-full bg-signal" />
-                    {retry === null ? <Shimmer>{line}</Shimmer> : <RetryCountdown retry={retry} stateAt={state.stateAt} />}
+                    {retryPause === null ? <Shimmer>{line}</Shimmer> : <RetryCountdown pause={retryPause} stateAt={state.stateAt} />}
                   </button>
                 ) : (
                   <span className="text-muted-foreground">{line}</span>

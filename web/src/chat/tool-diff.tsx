@@ -77,7 +77,6 @@ function Lines({ lines, testId }: { readonly lines: readonly (DiffLine | "gap")[
 // a Write's new file: closed behind its line count until opened
 function NewFile({ change }: { readonly change: Extract<FileChange, { kind: "write" }> }) {
   const [open, setOpen] = useState(false);
-  const lines = change.content === "" ? [] : change.content.replace(/\n$/, "").split("\n");
   return (
     <div className="flex min-w-0 flex-col gap-1">
       <button
@@ -90,9 +89,9 @@ function NewFile({ change }: { readonly change: Extract<FileChange, { kind: "wri
         type="button"
       >
         <ChevronRightIcon aria-hidden="true" className={cn("size-3.5 transition-transform duration-150", open && "rotate-90")} />
-        {change.whole ? "New file" : "Writing"} · <span className="tabular-nums">{plural(change.lines, "line")}</span>
+        {change.whole ? "New file" : "Writing"} · <span className="tabular-nums">{plural(change.lines.length, "line")}</span>
       </button>
-      {open && <Lines lines={lines.map((text): DiffLine => ({ kind: "same", text }))} testId="new-file" />}
+      {open && <Lines lines={change.lines.map((text): DiffLine => ({ kind: "same", text }))} testId="new-file" />}
     </div>
   );
 }
