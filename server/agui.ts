@@ -306,6 +306,9 @@ export function openStream(o: {
         return [artifactDraft(e.draft)];
       case "artifact":
         return [{ name: "artifact", type: EventType.CUSTOM, value: { name: e.name, version: e.version } }];
+      // the view's lines changed (E47): bounded by the feed (MEMORY_BYTES); a client from before it drops it
+      case "memory":
+        return [{ name: "memory", type: EventType.CUSTOM, value: e.change }];
       case "state": {
         const ops = delta(state, e.state);
         state = e.state;

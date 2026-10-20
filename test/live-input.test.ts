@@ -97,8 +97,10 @@ test("a call cut short by a usage limit: the run ends while the turn waits for a
       const r = yield* rig(spent);
       yield* r.session.input("fix it");
       yield* until("the stop", () => r.session.state().phase === "needs-model" && inputs(r.events).length === 1);
-      // the stop ends the run (a resume begins another), so nothing of the cut call is live
-      expect(r.events.some((e) => e.type === "run-finished")).toBe(true);
+      // the stop ends the run (a resume begins another), so nothing of the cut call is live. The
+      // state says needs-model first and the run ends after it (SPEC "Protocol"), so wait for both
+      yield* until("the run's end", () => r.events.some((e) => e.type === "run-finished"));
+      expect(r.session.state().phase).toBe("needs-model");
       expect(r.session.live()).toBeNull();
       yield* r.session.stop();
     }).pipe(Effect.scoped),

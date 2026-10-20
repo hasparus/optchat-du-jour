@@ -1,154 +1,82 @@
-// The Memory screen (SPEC "Web UI", Memory; E2): what the model sees. The view as `id+n|text` lines
-// with their range, dates and size, a Context meter against VIEW, and a zoom: tapping a line opens
-// its two children, down to the full message, which "show in chat" finds in the log. This replaces
-// the reference's `optchat browse`.
+// The Memory screen (SPEC "Web UI", Memory; E2, E46): what the model reads each turn, as the chat's
+// Memory mode draws it (./memory-view.tsx, rows by ../chat/log-row.tsx), with how full the view is:
+// its lines, its size and a Context meter against the high mark. Live: a line appended, merged or
+// summarized shows as it happens, with nothing to reload. "Show in the log" opens the chat at a
+// block's first message. This replaces the reference's `optchat browse`.
 import { Context, ContextContent, ContextContentHeader, ContextTrigger, kb } from "@/components/ai-elements/context";
-import { Badge } from "@/components/ui/badge";
+import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Button } from "@/components/ui/button";
-import { api } from "@/lib/api";
-import { type NodeView, span, type ViewLine } from "@wire";
-import { useApi } from "@/lib/use-api";
-import { cn } from "@/lib/utils";
-import { ArrowLeftIcon, ChevronRightIcon, MessageSquareIcon, RefreshCwIcon } from "lucide-react";
-import { useCallback, useState } from "react";
+import { memoryItems, type MemoryStore } from "@/lib/memory";
+import type { Session, SessionStore } from "@/lib/session";
+import type { ArtifactInfo } from "@wire";
+import { useEffect, useMemo } from "react";
+import { LogRowProvider } from "../chat/log-row";
+import { MemoryError, MemoryItems, MemoryParts, useMemory } from "./memory-view";
 
-type At = { readonly l: number; readonly i: number };
-
-const name = (n: { id: number; n: number }) => `${n.id}+${n.n}`;
-const range = (line: ViewLine) => (line.from === line.to || line.to === null ? (line.from ?? "") : `${line.from} – ${line.to}`);
-
-function Line({ line, onOpen }: { line: ViewLine; onOpen: () => void }) {
-  return (
-    <li>
-      <button className="group w-full rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-accent active:bg-accent" data-testid="view-line" onClick={onOpen} type="button">
-        <div className="flex items-baseline gap-2 text-xs text-muted-foreground">
-          <span className="font-mono text-foreground">{name(line)}</span>
-          <span className="truncate">{range(line)}</span>
-          <span className="ml-auto shrink-0 tabular-nums">{line.size === null ? "" : `${line.size} B`}</span>
-          <ChevronRightIcon aria-hidden="true" className="size-3.5 shrink-0 self-center opacity-0 transition-opacity group-hover:opacity-100" />
-        </div>
-        <p className={cn("mt-1 line-clamp-3 text-read wrap-break-word", !line.built && "text-muted-foreground italic")}>{line.text}</p>
-      </button>
-    </li>
+export function Memory({
+  memory,
+  session,
+  state,
+  onShowInChat,
+  artifacts,
+}: {
+  readonly memory: MemoryStore;
+  readonly session: Pick<SessionStore, "toggleThought">;
+  readonly state: Session;
+  readonly onShowInChat: (i: number) => void;
+  // every artifact and its versions, App's (one reader of /api/artifacts for both screens)
+  readonly artifacts: readonly ArtifactInfo[];
+}) {
+  useEffect(() => memory.show(), [memory]);
+  const m = useMemory(memory);
+  const items = useMemo(() => memoryItems(m.lines, m.want), [m.lines, m.want]);
+  const parts = useMemo(() => ({ memory, onShow: onShowInChat }), [memory, onShowInChat]);
+  // a row reads what the chat's does: folds, thoughts, an artifact's card (opened in the chat)
+  const { folds, thoughts } = state;
+  // a tool call can still be running only while a turn runs, and only the newest, as in the log
+  const busy = state.state !== null && state.state.phase !== "idle";
+  const lastTool = items.findLast((x) => x.kind === "row" && x.row.kind === "tool")?.key;
+  const rows = useMemo(
+    () => ({ artifacts, busy, folds, lastTool, onArtifact: (_name: string, _v: number | null, i: number) => {
+        onShowInChat(i);
+      }, onThought: session.toggleThought, thoughts }),
+    [artifacts, busy, folds, lastTool, session.toggleThought, thoughts, onShowInChat],
   );
-}
-
-function Zoom({ at, onOpen, onBack, onShow }: { at: At; onOpen: (next: At) => void; onBack: () => void; onShow: (i: number) => void }) {
-  const read = useCallback(async () => api.node(at.l, at.i), [at.l, at.i]);
-  const { data, error } = useApi<NodeView>(read);
+  const view = state.state;
+  const lines = m.rev === null ? null : m.lines.length;
   return (
-    <div className="space-y-4" data-testid="zoom">
-      <Button className="-ml-2 text-muted-foreground hover:text-foreground" onClick={onBack} size="sm" variant="ghost">
-        <ArrowLeftIcon /> back
-      </Button>
-      {error !== null && <p className="text-sm text-destructive">{error}</p>}
-      {data !== null && "kind" in data ? (
-        <div className="space-y-2">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="font-mono text-foreground">{name(data)}</span>
-            <Badge className="rounded-full font-medium" variant="secondary">
-              {data.kind}
-            </Badge>
-            <span className="tabular-nums">{data.date}</span>
-          </div>
-          <pre className="rounded-xl border bg-code p-3.5 font-mono text-xs/relaxed wrap-break-word whitespace-pre-wrap" data-testid="zoom-message">
-            {data.text}
-          </pre>
-          <Button
-            className="rounded-full"
-            onClick={() => {
-              onShow(data.id);
-            }}
-            size="sm"
-            variant="outline"
-          >
-            <MessageSquareIcon /> show in chat
-          </Button>
-        </div>
-      ) : null}
-      {data !== null && "children" in data ? (
-        <div className="space-y-2">
-          <div className="space-y-1">
-            <span className="font-mono text-xs text-muted-foreground">{name(data)}</span>
-            <p className="text-read">{data.text ?? "(not summarized yet)"}</p>
-          </div>
-          <ul className="space-y-2 border-l pl-3">
-            {data.children.map((c) => (
-              <li key={`${c.l}:${c.i}`}>
-                <button
-                  className="w-full rounded-lg px-3 py-2.5 text-left hairline transition-colors hover:bg-accent"
-                  data-testid="zoom-child"
-                  onClick={() => {
-                    onOpen({ i: c.i, l: c.l });
-                  }}
-                  type="button"
-                >
-                  <span className="font-mono text-xs text-muted-foreground">{name(span(c))}</span>
-                  <p className={cn("mt-1 text-read wrap-break-word", !c.built && "text-muted-foreground italic")}>{c.text ?? "(not summarized yet)"}</p>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-export function Memory({ onShowInChat }: { onShowInChat: (i: number) => void }) {
-  const { data, error, reload } = useApi(api.view);
-  const [path, setPath] = useState<At[]>([]);
-  const at = path.at(-1);
-
-  return (
-    <div className="mx-auto w-full max-w-2xl space-y-4 px-4 py-6 sm:px-6">
-      <div className="flex items-start justify-between gap-2">
-        <div>
+    <div className="mx-auto w-full max-w-184 space-y-5 px-4 py-6 sm:px-6" data-testid="memory">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
           <h1 className="text-base font-semibold tracking-tight">Memory</h1>
           <p className="mt-1 text-ui text-muted-foreground">
-            {data === null ? "Loading…" : `What the model reads each turn: ${data.lines.length} lines, ${kb(data.size)}`}
+            {lines === null || view === null ? "What the model reads each turn" : `What the model reads each turn: ${lines.toLocaleString()} lines, ${kb(view.viewBytes)}`}
           </p>
         </div>
-        <div className="flex items-center gap-1">
-          {data !== null && (
-            <Context maxBytes={data.budget} usedBytes={data.size}>
-              <ContextTrigger size="sm" />
-              <ContextContent align="end">
-                <ContextContentHeader />
-              </ContextContent>
-            </Context>
-          )}
-          <Button aria-label="Reload" className="text-muted-foreground hover:text-foreground" onClick={reload} size="icon-sm" variant="ghost">
-            <RefreshCwIcon />
+        {view !== null && (
+          <Context maxBytes={view.budget} usedBytes={view.viewBytes}>
+            <ContextTrigger size="sm" />
+            <ContextContent align="end">
+              <ContextContentHeader />
+            </ContextContent>
+          </Context>
+        )}
+      </div>
+      {m.rev === null && (m.error === null ? <Shimmer className="text-ui">reading the view…</Shimmer> : <MemoryError error={m.error} memory={memory} />)}
+      {m.want > 0 && (
+        <div className="flex justify-center">
+          <Button className="h-8 rounded-full text-xs text-muted-foreground hairline pointer-coarse:h-10" onClick={memory.earlier} size="sm" variant="ghost">
+            {`${m.want.toLocaleString()} older lines`}
           </Button>
         </div>
-      </div>
-      {error !== null && <p className="text-sm text-destructive">{error}</p>}
-      {at ? (
-        <Zoom
-          at={at}
-          key={`${at.l}:${at.i}`}
-          onBack={() => {
-            setPath(path.slice(0, -1));
-          }}
-          onOpen={(next) => {
-            setPath([...path, next]);
-          }}
-          onShow={onShowInChat}
-        />
-      ) : (
-        <ul className="-mx-3 space-y-0.5">
-          {data?.lines.map((line) => (
-            <Line
-              key={`${line.l}:${line.i}`}
-              line={line}
-              onOpen={() => {
-                setPath([{ i: line.i, l: line.l }]);
-              }}
-            />
-          ))}
-        </ul>
       )}
+      <MemoryParts value={parts}>
+        <LogRowProvider value={rows}>
+          <div className="flex min-w-0 flex-col gap-3">
+            <MemoryItems items={items} />
+          </div>
+        </LogRowProvider>
+      </MemoryParts>
     </div>
   );
 }

@@ -3,7 +3,7 @@
 import type { DraftNow, DraftOut } from "./artifacts/draft.ts";
 import type { Entry } from "./tree.ts";
 import type { UsageRecord } from "./usage.ts";
-import type { ArtifactVersion, Asset, SessionState } from "./wire.ts";
+import type { ArtifactVersion, Asset, MemoryChange, SessionState } from "./wire.ts";
 
 export type SessionEvent =
   | { readonly type: "logged"; readonly entry: Entry; readonly runId: string | null }
@@ -52,7 +52,10 @@ export type SessionEvent =
   // An artifact's live draft while a publish or an edit streams (SPEC "Artifacts"), and a version
   // saved (told by the tools, src/artifacts/tools.ts)
   | { readonly type: "artifact-draft"; readonly draft: DraftOut }
-  | { readonly type: "artifact"; readonly name: string; readonly version: ArtifactVersion };
+  | { readonly type: "artifact"; readonly name: string; readonly version: ArtifactVersion }
+  // The view's lines changed (E47, server/memory-feed.ts): a message's line, a batch's merges, a
+  // summary written into a line, as hunks bounded to one frame
+  | { readonly type: "memory"; readonly change: MemoryChange };
 
 export type LiveRun = {
   readonly runId: string;

@@ -481,6 +481,31 @@ icon, the title in ink and its kind and state in 12 px muted under it; a failed 
 what the server tells: no group without lines, and no history of finished work but the subagents
 the server still lists; with nothing running it says so in one muted line.
 
+### Memory view
+SPEC E46: the chat's transcript as the view the model reads (`memory/memory-view.tsx`), and the
+Memory screen, both drawn from one store.
+
+- **Toggle:** "Log · Memory", the segmented control in its well, 24 px tall (40 px on touch), on a
+  raised pill with the Float shadow, floating over the transcript's top edge at the column's end,
+  as the scroll-to-end button floats over its bottom; the content keeps 48 px above its first row
+  so at rest it covers nothing.
+- **A line that is its own message** (it fits in a summary): the log's row, unchanged.
+- **Summary block, closed:** a 14 px-radius hairline box (a card in a sheet: no shadow), 10 × 12 px
+  padding (12 px on touch), a hover wash. Its head in 12 px muted: a chevron, the node's name as the
+  model reads it in mono ink (`12+8`, an id), what it covers ("8 messages", "Reply") and when, and a
+  layers icon at the end for a merge. Under it the summary in Read type, ink, line breaks kept.
+  Waiting for its summary: "Summarizing…" under the shimmer, until it fills in.
+- **Open:** the head alone as a 28 px bar (40 px on touch) with the chevron turned, and what it holds
+  under Trace's indented rule (7 px in, 12 px of padding, 16 px from `sm`), 8 px apart: its halves as
+  blocks or rows, or at level 0 one 12 px muted line, "The model reads:" and the summary in ink,
+  over the message as the log shows it. Under the halves, small ghost pills: "All N messages" (from
+  level 2) and back, "Back to its two halves", "Show 100 more of N", "Show in the log".
+- **Names:** a block's button is named by its head (`12+8 · 8 messages · when`); its summary
+  describes it, so a screen reader doesn't read 512 bytes as a name.
+- **A read that failed:** in place of the lines it would have read, "The memory couldn't be read:
+  why" in red with a "Try again" pill (`role="alert"`), never under the shimmer.
+- No colour of its own: a summary is grey structure around ink text, and state is the shimmer.
+
 ### Navigation
 - **Segmented control** (`components/ui/segmented.tsx`): text choices (13 px, 500), 28 px tall,
   40 px on touch. Chosen: raised fill, ink text and the `lift` shadow (a hairline ring and 1 px).
@@ -498,9 +523,8 @@ the server still lists; with nothing running it says so in one muted line.
   8 px-radius tiles; the chosen one has an ivy ring and an 8% ivy wash.
 
 ### Screens
-- **Memory:** a title, a muted line saying what it is and its size, the context meter as a pill. Lines
-  as full-width rows (mono `id+n`, range, size; the summary in Read type, three lines), a hover wash,
-  a chevron on hover. Zoom: back, the node's summary, its children indented behind a hairline.
+- **Memory:** a title, a muted line saying what it is (its lines and size), the context meter as a
+  pill, then the memory view's blocks, as in the chat (Memory view, below).
 - **Stats:** a title, then one strip of four figures (20 px semibold over 12 px labels) split by
   hairlines, segmented toggles, charts under hairline-topped section titles (no cards), tables with
   hairline rows and tabular numerals.

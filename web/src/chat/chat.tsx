@@ -30,14 +30,14 @@ import type { Link } from "@/lib/connection";
 import { visible } from "@/lib/log";
 import { chatRows, entryRows, planStates, type Row, rowFor, rowIndexFor, thoughtHolder, toolStateOf, turnSources } from "@/lib/rows";
 import { type Marker as StatusMarker, type Queued, queued, type Session, type SessionStore } from "@/lib/session";
-import { canonicalRef, type Device, engineLabel, type SessionState, shortSha } from "@wire";
+import { type ArtifactInfo, canonicalRef, type Device, engineLabel, type SessionState, shortSha } from "@wire";
 import { cn } from "@/lib/utils";
 import { AlertCircleIcon, FilmIcon, InfoIcon, TriangleAlertIcon, Undo2Icon } from "lucide-react";
 import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SheetDrawer } from "@/components/sheet-drawer";
 import { madeBy } from "@/lib/artifacts";
 import { ArtifactCard, draftDetail } from "./artifact-card";
-import { useArtifactList, useWide } from "./use-artifacts";
+import { useWide } from "./use-artifacts";
 import type { Uploader } from "@/lib/attach";
 import { loadModel, saveModel } from "@/lib/draft";
 import { Composer } from "./composer";
@@ -46,6 +46,14 @@ import { ChatRow, ReplyActions } from "./row";
 import { Outdated, RetryCountdown } from "./turn-status";
 import { useStopKeys } from "./use-stop-keys";
 import { useStickToEnd } from "./use-stick-to-end";
+import type { MemoryStore } from "@/lib/memory";
+import { MemoryTranscript } from "../memory/memory-transcript";
+import { LogRowProvider } from "./log-row";
+import { TranscriptToggle, useTranscript } from "./memory-mode";
+
+// the transcript's content, the log's and the memory's alike: one column, the dock's height clear
+// below the last row (--dock-h, set by useStickToEnd), 48 px above the first for the toggle
+const CONTENT = "mx-auto w-full max-w-184 gap-0 px-4 pt-12 pb-[calc(var(--dock-h,9rem)+1.5rem)] sm:px-6";
 
 // The preview pane is only fetched when an artifact is first opened (its draft preview and export
 // with it), so the chat's first paint doesn't wait for it
@@ -226,13 +234,24 @@ export type ChatProps = {
   // the chat is the tab shown: only then does Esc stop the turn
   readonly active: boolean;
   readonly uploader?: Uploader; // tests replace PUT /api/assets
+  readonly memory: MemoryStore; // the memory view (E46): the transcript's Memory mode draws it
+  // every artifact and its versions (App reads them once for the chat and the Memory screen)
+  readonly artifacts: readonly ArtifactInfo[];
 };
 
-export function Chat({ link, session, state, devices, target, onTargetShown, onWork, active, uploader }: ChatProps) {
+export function Chat({ link, session, state, devices, target: asked, onTargetShown, onWork, active, uploader, memory, artifacts }: ChatProps) {
+  // The transcript (./memory-mode.tsx): the log, or the memory view (../memory/memory-transcript.tsx).
+  // A message to show (from the Memory screen, or a block's "Show in the log") shows in the log.
+  const [mode, setMode] = useTranscript();
+  const [shownHere, setShownHere] = useState<number | null>(null);
+  const target = asked ?? shownHere;
+  useEffect(() => {
+    if (target !== null && mode === "memory") setMode("log");
+  }, [target, mode, setMode]);
   const [loading, setLoading] = useState(false);
-  // the artifacts (SPEC "Artifacts"): their list, read again when a version is saved; the one the
-  // pane shows (v null: its latest), beside the chat on a wide screen, in a sheet on a phone
-  const artifacts = useArtifactList(state.saved, state.status === "open");
+  // the artifacts (SPEC "Artifacts"): their list (`artifacts`, App's), read again when a version is
+  // saved; the one the pane shows (v null: its latest), beside the chat on a wide screen, in a sheet
+  // on a phone
   const [pane, setPane] = useState<{ readonly name: string; readonly v: number | null } | null>(null);
   const wide = useWide();
   const openArtifact = useCallback((name: string, v: number | null) => {
@@ -277,7 +296,6 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
   const rows = useMemo(() => chatRows(items, settled, draft, thinkingAt), [items, settled, draft, thinkingAt]);
   // the row the live thought shows above, given to it as is (rows.ts thoughtHolder)
   const holder = useMemo(() => (thinkingAt === null ? undefined : thoughtHolder(rows, thinkingAt)?.key), [rows, thinkingAt]);
-  const placed = placeMarkers(state.markers, rows);
   const draftKey = draft ? `e${draft.i}` : null;
   const first = rows[0]?.id ?? 0;
   const busy = state.state !== null && state.state.phase !== "idle";
@@ -329,11 +347,11 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
     return () => {
       io.disconnect();
     };
-  }, [loadOlder]);
+  }, [loadOlder, mode]);
 
   // "show in chat": load pages until the message is among the rows, then scroll to it
   useEffect(() => {
-    if (target === null || loading) return;
+    if (target === null || loading || mode !== "log") return;
     if (rows.length > 0 && first > target) {
       void loadOlder().then((more) => {
         if (more === null) onTargetShown(); // offline: give up rather than retry for ever
@@ -342,8 +360,9 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
     }
     const row = rowFor(rows, target);
     if (row) scrollToMessage(row.key, { align: "start" });
+    setShownHere(null);
     onTargetShown();
-  }, [target, rows, first, loading, loadOlder, scrollToMessage, onTargetShown]);
+  }, [target, rows, first, loading, loadOlder, scrollToMessage, onTargetShown, mode]);
 
   const lastTool = rows.findLast((r) => r.kind === "tool")?.key;
   // a plan is live only in the run that goes on now: from the user entry RUN_STARTED named
@@ -353,6 +372,60 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
   const plans = useMemo(() => planStates(rows, liveFrom), [rows, liveFrom]);
   const sources = useMemo(() => turnSources(rows), [rows]);
   const picked = device ?? state.state?.device ?? devices.find((d) => d.local)?.name ?? null;
+
+  // The log's rows with the status markers between them, and an artifact the model is still writing
+  // after the running turn's rows until its call is in the log (SPEC "Artifacts"): the whole log,
+  // or in Memory mode what comes after the view's last message
+  const renderRows = (shown: readonly Row[], above = true) => {
+    const placed = placeMarkers(state.markers, shown);
+    return (
+      <>
+        {above &&
+          placed.above.map((m) => (
+            <StatusRow key={`k${m.key}`} marker={m} />
+          ))}
+        {shown.map((row, k) => (
+          <Fragment key={row.key}>
+            <MessageScrollerItem data-kind={row.kind} data-log-index={row.id} messageId={row.key} scrollAnchor={row.kind === "user"}>
+              <ChatRow
+                plan={plans.get(row.key)}
+                row={row}
+                sources={sources.get(row.key)}
+                streaming={row.key === draftKey}
+                onThought={session.toggleThought}
+                thought={row.key === holder ? live : row.kind === "talk" || row.kind === "tool" ? thoughts.get(row.id) : undefined}
+                toolState={row.kind === "tool" ? toolStateOf(row, busy, row.key === lastTool) : "done"}
+                made={madeBy(row, artifacts)}
+                onArtifact={openArtifact}
+                fold={row.kind === "user" ? state.folds.get(row.id) : undefined}
+              />
+            </MessageScrollerItem>
+            {placed.after.get(k)?.map((m) => (
+              <StatusRow key={`k${m.key}`} marker={m} />
+            ))}
+          </Fragment>
+        ))}
+        {drafting.map((d) => (
+          <div className="py-1" data-testid="artifact-drafting" key={`draft-${d.id}`}>
+            <ArtifactCard
+              detail={draftDetail(d)}
+              live
+              name={d.name ?? "New artifact"}
+              onOpen={() => {
+                if (d.name !== null) openArtifact(d.name, null);
+              }}
+              testId="artifact-draft-card"
+            />
+          </div>
+        ))}
+      </>
+    );
+  };
+  // what a log row inside the memory view reads (./log-row.tsx)
+  const logRowParts = useMemo(
+    () => ({ artifacts, busy, folds: state.folds, lastTool, onArtifact: openArtifact, onThought: session.toggleThought, thoughts }),
+    [artifacts, busy, state.folds, lastTool, openArtifact, session.toggleThought, thoughts],
+  );
 
   const paneView =
     pane === null ? null : (
@@ -387,66 +460,45 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
           {/* focus and scroll-into-view stop short of the floating dock (WCAG 2.4.11: a focused control
               is never hidden under it) */}
           <MessageScrollerViewport aria-label="Chat" className="relative scroll-pb-(--dock-h)" preserveScrollOnPrepend>
-            <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-px" ref={top} />
-            {first > 0 && (
-              <div className="flex justify-center pt-4">
-                <button
-                  className="min-h-8 rounded-full px-3 text-xs text-muted-foreground hairline transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60 pointer-coarse:min-h-10"
-                  disabled={loading}
-                  onClick={() => void loadOlder()}
-                  type="button"
-                >
-                  {loading ? <Shimmer>loading…</Shimmer> : "earlier messages"}
-                </button>
-              </div>
-            )}
-            {empty && <EmptyChat />}
-            {/* the dock floats over the transcript's end; the content keeps its height clear below
-                the last row (--dock-h, set by useStickToEnd) */}
-            <ReplyActions>
-              <MessageScrollerContent className="mx-auto w-full max-w-184 gap-0 px-4 pt-6 pb-[calc(var(--dock-h,9rem)+1.5rem)] sm:px-6" data-region="chat-content">
-                {placed.above.map((m) => (
-                  <StatusRow key={`k${m.key}`} marker={m} />
-                ))}
-                {rows.map((row, k) => (
-                  <Fragment key={row.key}>
-                    <MessageScrollerItem data-kind={row.kind} data-log-index={row.id} messageId={row.key} scrollAnchor={row.kind === "user"}>
-                      <ChatRow
-                        plan={plans.get(row.key)}
-                        row={row}
-                        sources={sources.get(row.key)}
-                        streaming={row.key === draftKey}
-                        onThought={session.toggleThought}
-                        thought={row.key === holder ? live : row.kind === "talk" || row.kind === "tool" ? thoughts.get(row.id) : undefined}
-                        toolState={row.kind === "tool" ? toolStateOf(row, busy, row.key === lastTool) : "done"}
-                        made={madeBy(row, artifacts)}
-                        onArtifact={openArtifact}
-                        fold={row.kind === "user" ? state.folds.get(row.id) : undefined}
-                      />
-                    </MessageScrollerItem>
-                    {placed.after.get(k)?.map((m) => (
-                      <StatusRow key={`k${m.key}`} marker={m} />
-                    ))}
-                  </Fragment>
-                ))}
-                {/* an artifact the model is still writing, after the running turn's rows until its
-                    call is in the log (SPEC "Artifacts") */}
-                {drafting.map((d) => (
-                  <div className="py-1" data-testid="artifact-drafting" key={`draft-${d.id}`}>
-                    <ArtifactCard
-                      detail={draftDetail(d)}
-                      live
-                      name={d.name ?? "New artifact"}
-                      onOpen={() => {
-                        if (d.name !== null) openArtifact(d.name, null);
-                      }}
-                      testId="artifact-draft-card"
-                    />
+            {mode === "memory" ? (
+              <ReplyActions>
+                <LogRowProvider value={logRowParts}>
+                  <MemoryTranscript
+                    contentClassName={CONTENT}
+                    memory={memory}
+                    onShow={setShownHere}
+                    renderRows={(after) => renderRows(after, false)}
+                    rows={rows}
+                  />
+                </LogRowProvider>
+              </ReplyActions>
+            ) : (
+              <>
+                <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-px" ref={top} />
+                {first > 0 && (
+                  <div className="flex justify-center pt-4">
+                    <button
+                      className="min-h-8 rounded-full px-3 text-xs text-muted-foreground hairline transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60 pointer-coarse:min-h-10"
+                      disabled={loading}
+                      onClick={() => void loadOlder()}
+                      type="button"
+                    >
+                      {loading ? <Shimmer>loading…</Shimmer> : "earlier messages"}
+                    </button>
                   </div>
-                ))}
-              </MessageScrollerContent>
-            </ReplyActions>
+                )}
+                {empty && <EmptyChat />}
+                {/* the dock floats over the transcript's end; the content keeps its height clear below
+                    the last row (--dock-h, set by useStickToEnd) */}
+                <ReplyActions>
+                  <MessageScrollerContent className={CONTENT} data-region="chat-content">
+                    {renderRows(rows)}
+                  </MessageScrollerContent>
+                </ReplyActions>
+              </>
+            )}
           </MessageScrollerViewport>
+          <TranscriptToggle mode={mode} onMode={setMode} />
           <MessageScrollerButton className="size-9 rounded-full border-0 bg-raised text-foreground shadow-float hover:bg-raised hover:text-foreground data-[direction=end]:bottom-[calc(var(--dock-h,9rem)+0.75rem)]" />
         </MessageScroller>
 

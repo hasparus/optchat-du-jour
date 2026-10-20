@@ -46,6 +46,12 @@ export const HEARTBEAT = "5 seconds";
 // (SILENT) at 100 kbit/s, and a slower link has the client's growing window. A window of 200
 // entries of 600 bytes each still fits whole, and then no page is read (test/paging.test.ts).
 export const SNAPSHOT_BYTES = 128 * 1024;
+// A CUSTOM `memory` frame on /ws (E47), what changed in the view's lines, holds the new lines
+// themselves only while it stays under this many bytes; past it a change says where and how many,
+// and a client that shows them reads them from /api/memory/view. A message's line, or one that
+// filled in, is about a kilobyte, so the usual frame carries it; a batch that merged far apart
+// may not. 16 KiB is about 1.3 s at 100 kbit/s.
+export const MEMORY_BYTES = 16 * 1024;
 // The ids of client actions other than messages the server remembers answering (E41), the newest
 // first; a message's id is the session's to remember (src/once.ts).
 export const ACTS = 1000;

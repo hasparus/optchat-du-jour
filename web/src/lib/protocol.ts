@@ -2,7 +2,7 @@
 // the boundary, and the frames a client sends. The state they carry and the JSON of /api/* are
 // the server's own schemas (src/wire.ts, imported as @wire), not a copy.
 import { EventType } from "@ag-ui/core";
-import { ArtifactDraft, ArtifactVersion, Asset, type FollowUp, Received } from "@wire";
+import { ArtifactDraft, ArtifactVersion, Asset, type FollowUp, MemoryChange, Received } from "@wire";
 import { Option, Schema } from "effect";
 
 const ToolCall = Schema.Struct({
@@ -115,6 +115,8 @@ export const Inbound = Schema.Union([
   Schema.Struct({ type: Schema.Literal(EventType.CUSTOM), name: Schema.Literal("artifact-draft"), value: ArtifactDraft }),
   // a version of an artifact was saved
   Schema.Struct({ type: Schema.Literal(EventType.CUSTOM), name: Schema.Literal("artifact"), value: Schema.Struct({ name: Schema.String, version: ArtifactVersion }) }),
+  // the view's lines changed (E47): hunks in order, numbered one after the other (./memory.ts)
+  Schema.Struct({ type: Schema.Literal(EventType.CUSTOM), name: Schema.Literal("memory"), value: MemoryChange }),
   // a held message a client took back: its text and attachments again (`text` null and `error`
   // set when it was too late)
   Schema.Struct({

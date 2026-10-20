@@ -1,6 +1,6 @@
 // The read-only JSON of /api/* (SPEC "Server, WebSocket API and CLI"), decoded at the boundary with
 // the server's own schemas (src/wire.ts).
-import { ArtifactList, Devices, MessagesPage, NodeView, ReasoningHeads, ReasoningPiece, SubagentLog, Usage, View } from "@wire";
+import { ArtifactList, Devices, MemoryChildren, MemoryPage, MessagesPage, ReasoningHeads, ReasoningPiece, SubagentLog, Usage } from "@wire";
 import { Schema } from "effect";
 
 async function get<S extends Schema.Top & { readonly DecodingServices: never }>(path: string, schema: S): Promise<S["Type"]> {
@@ -24,8 +24,10 @@ export const api = {
     if (!res.ok) throw new Error(`/api/reasoning/text: ${res.status} ${res.statusText}`);
     return Schema.decodeUnknownPromise(ReasoningPiece)(await res.json());
   },
-  view: async () => get("/api/view", View),
-  node: async (l: number, i: number) => get(`/api/node?l=${l}&i=${i}`, NodeView),
+  // the memory view (E46, E47): its lines before `before` (none: the newest), and node (l, i) opened
+  // `depth` levels down, its descendants from the `from`-th
+  memoryView: async (before: number | null, limit: number) => get(`/api/memory/view?${before === null ? "" : `before=${before}&`}limit=${limit}`, MemoryPage),
+  memoryChildren: async (l: number, i: number, depth = 1, from = 0, limit = 100) => get(`/api/memory/children?l=${l}&i=${i}&depth=${depth}&from=${from}&limit=${limit}`, MemoryChildren),
   usage: async () => get("/api/usage", Usage),
   devices: async () => get("/api/devices", Devices),
   // a subagent and its side log from entry `from` on, `limit` entries at most (SPEC M7a)
