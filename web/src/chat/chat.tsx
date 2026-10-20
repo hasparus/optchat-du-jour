@@ -30,14 +30,14 @@ import type { Link } from "@/lib/connection";
 import { visible } from "@/lib/log";
 import { chatRows, entryRows, planStates, type Row, rowFor, rowIndexFor, thoughtHolder, toolStateOf, turnSources } from "@/lib/rows";
 import { type Marker as StatusMarker, type Queued, queued, type Session, type SessionStore } from "@/lib/session";
-import { canonicalRef, type Device, engineLabel, type SessionState, shortSha } from "@wire";
+import { type ArtifactInfo, canonicalRef, type Device, engineLabel, type SessionState, shortSha } from "@wire";
 import { cn } from "@/lib/utils";
 import { AlertCircleIcon, FilmIcon, InfoIcon, TriangleAlertIcon, Undo2Icon } from "lucide-react";
 import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SheetDrawer } from "@/components/sheet-drawer";
 import { madeBy } from "@/lib/artifacts";
 import { ArtifactCard, draftDetail } from "./artifact-card";
-import { useArtifactList, useWide } from "./use-artifacts";
+import { useWide } from "./use-artifacts";
 import type { Uploader } from "@/lib/attach";
 import { loadModel, saveModel } from "@/lib/draft";
 import { Composer } from "./composer";
@@ -235,9 +235,11 @@ export type ChatProps = {
   readonly active: boolean;
   readonly uploader?: Uploader; // tests replace PUT /api/assets
   readonly memory: MemoryStore; // the memory view (E46): the transcript's Memory mode draws it
+  // every artifact and its versions (App reads them once for the chat and the Memory screen)
+  readonly artifacts: readonly ArtifactInfo[];
 };
 
-export function Chat({ link, session, state, devices, target: asked, onTargetShown, onWork, active, uploader, memory }: ChatProps) {
+export function Chat({ link, session, state, devices, target: asked, onTargetShown, onWork, active, uploader, memory, artifacts }: ChatProps) {
   // The transcript (./memory-mode.tsx): the log, or the memory view (../memory/memory-transcript.tsx).
   // A message to show (from the Memory screen, or a block's "Show in the log") shows in the log.
   const [mode, setMode] = useTranscript();
@@ -247,9 +249,9 @@ export function Chat({ link, session, state, devices, target: asked, onTargetSho
     if (target !== null && mode === "memory") setMode("log");
   }, [target, mode, setMode]);
   const [loading, setLoading] = useState(false);
-  // the artifacts (SPEC "Artifacts"): their list, read again when a version is saved; the one the
-  // pane shows (v null: its latest), beside the chat on a wide screen, in a sheet on a phone
-  const artifacts = useArtifactList(state.saved, state.status === "open");
+  // the artifacts (SPEC "Artifacts"): their list (`artifacts`, App's), read again when a version is
+  // saved; the one the pane shows (v null: its latest), beside the chat on a wide screen, in a sheet
+  // on a phone
   const [pane, setPane] = useState<{ readonly name: string; readonly v: number | null } | null>(null);
   const wide = useWide();
   const openArtifact = useCallback((name: string, v: number | null) => {
@@ -421,8 +423,8 @@ export function Chat({ link, session, state, devices, target: asked, onTargetSho
   };
   // what a log row inside the memory view reads (./log-row.tsx)
   const logRowParts = useMemo(
-    () => ({ artifacts, folds: state.folds, onArtifact: openArtifact, onThought: session.toggleThought, thoughts }),
-    [artifacts, state.folds, openArtifact, session.toggleThought, thoughts],
+    () => ({ artifacts, busy, folds: state.folds, lastTool, onArtifact: openArtifact, onThought: session.toggleThought, thoughts }),
+    [artifacts, busy, state.folds, lastTool, openArtifact, session.toggleThought, thoughts],
   );
 
   const paneView =

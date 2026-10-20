@@ -107,7 +107,7 @@ export function MemoryGap({ count }: { readonly count: number }) {
 export function MemoryItem({ item }: { readonly item: Item }) {
   switch (item.kind) {
     case "row":
-      return <LogRow row={item.row} />;
+      return <LogRow followed={item.followed} row={item.row} />;
     case "line":
       return <MemoryBlock line={item.line} />;
     case "gap":
@@ -139,7 +139,8 @@ function Inside({ line }: { readonly line: MemoryLine }) {
       ) : message === "error" ? (
         <p className="text-xs text-destructive">It couldn't be read. Close and open it to try again.</p>
       ) : (
-        entryRows([message]).map((row) => <LogRow key={row.key} row={row} />)
+        // a summarized message, opened: history, whose output (for a tool call) is the next line
+        entryRows([message]).map((row) => <LogRow followed key={row.key} row={row} />)
       );
   } else if (opened === undefined) body = <Shimmer className="text-xs">loading…</Shimmer>;
   else {

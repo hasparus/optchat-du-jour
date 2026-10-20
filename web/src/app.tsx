@@ -19,6 +19,7 @@ import { ActivityIcon, MoonIcon, ServerIcon, SunIcon } from "lucide-react";
 import { Component, lazy, type ReactNode, Suspense, useCallback, useState, useSyncExternalStore } from "react";
 import { BackgroundWork, busyWith } from "./chat/background-work";
 import { Chat } from "./chat/chat";
+import { useArtifactList } from "./chat/use-artifacts";
 import { Subagents } from "./chat/subagents";
 import { Devices } from "./devices/devices";
 import { Memory } from "./memory/memory";
@@ -97,6 +98,9 @@ function ChangeServer() {
 
 export function App({ link, session, memory, uploader }: { link: Link; session: SessionStore; memory: MemoryStore; uploader?: Uploader }) {
   const state = useSyncExternalStore(session.subscribe, session.get);
+  // the artifacts' list (SPEC "Artifacts"), read once for the chat's cards and pane and the Memory
+  // screen's rows, again whenever a version is saved
+  const artifacts = useArtifactList(state.saved, state.status === "open");
   const devices = useApi(api.devices);
   const [tab, setTab] = useState<Tab>("chat");
   const [target, setTarget] = useState<number | null>(null);
@@ -171,6 +175,7 @@ export function App({ link, session, memory, uploader }: { link: Link; session: 
           <TabsContent className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden" forceMount value="chat">
             <Chat
               active={tab === "chat"}
+              artifacts={artifacts}
               devices={devices.data ?? []}
               link={link}
               memory={memory}
@@ -183,7 +188,7 @@ export function App({ link, session, memory, uploader }: { link: Link; session: 
             />
           </TabsContent>
           <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="memory">
-            <Memory memory={memory} onShowInChat={showInChat} session={session} state={state} />
+            <Memory artifacts={artifacts} memory={memory} onShowInChat={showInChat} session={session} state={state} />
           </TabsContent>
           <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="stats">
             <ScreenBoundary>

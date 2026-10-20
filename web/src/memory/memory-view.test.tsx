@@ -12,6 +12,7 @@ import { built, type Mem, newMem, nodes, ready } from "../../../src/tree.ts";
 import { addMessage, addNode } from "../../../src/view.ts";
 import type { Inbound } from "../lib/protocol";
 import { MEMORY, start, stubApi } from "../test/app";
+import { state } from "../test/fixture";
 
 stubApi();
 
@@ -44,6 +45,15 @@ function memory(count: number, high = 120) {
   return { feed, frames, mem, summarizeAll };
 }
 
+// the memory view's tool row's state, as said to a screen reader
+const status = async () => {
+  const transcript = await waitFor(() => {
+    const found = document.querySelector('[data-transcript="memory"] [data-slot="tool-status"]');
+    if (found === null) throw new Error("no tool row in the memory view yet");
+    return found;
+  });
+  return transcript.textContent;
+};
 const reads = (path: string) => MEMORY.reads.filter((r) => r.startsWith(path)).length;
 const blocks = () => screen.queryAllByTestId("memory-block");
 const memoryMode = async () => {
@@ -173,6 +183,49 @@ test("older lines that can't be read say why, with Try again, in the chat's Memo
   });
   await waitFor(() => {
     expect(blocks().some((b) => b.dataset.node === "0:0")).toBe(true);
+  });
+});
+
+test("a tool call the running turn just logged reads as running in Memory mode, as in the log, and as ended once the turn is over", async () => {
+  const mem = newMem({ high: 1e9, low: 5e8 }, { high: 1e9, low: 5e8 });
+  const call = 'Bash {"command":"ls"}';
+  addMessage(mem, newMsg(0, "user", "run ls"));
+  addMessage(mem, newMsg(1, "tool", call));
+  addNode(mem, newNode(0, 0, "user: run ls"));
+  addNode(mem, newNode(0, 1, `tool: ${call}`));
+  MEMORY.mem = mem;
+  const { play } = start([
+    { kind: "user", text: "run ls" },
+    { kind: "tool", text: call },
+  ]);
+  await screen.findByText("run ls");
+  play(state({ phase: "running" }));
+  fireEvent.click(screen.getByRole("button", { name: "Memory" }));
+  await waitFor(async () => {
+    expect(await status()).toBe("Running");
+  });
+  play(state({ phase: "idle" }));
+  await waitFor(async () => {
+    expect(await status()).toBe("No output");
+  });
+});
+
+test("a tool call whose output is a summary of its own reads as done, not cut short", async () => {
+  const mem = newMem({ high: 1e9, low: 5e8 }, { high: 1e9, low: 5e8 });
+  const call = 'Bash {"command":"ls"}';
+  addMessage(mem, newMsg(0, "tool", call));
+  addMessage(mem, newMsg(1, "echo", "x".repeat(600))); // past NODE: summarized, a block
+  addNode(mem, newNode(0, 0, `tool: ${call}`));
+  addNode(mem, newNode(0, 1, "echo: a long listing"));
+  MEMORY.mem = mem;
+  start([
+    { kind: "tool", text: call },
+    { kind: "echo", text: "x".repeat(600) },
+  ]);
+  await screen.findAllByText("Completed");
+  fireEvent.click(screen.getByRole("button", { name: "Memory" }));
+  await waitFor(() => {
+    expect(document.querySelector('[data-transcript="memory"] [data-slot="tool-status"]')?.textContent).toBe("Completed");
   });
 });
 

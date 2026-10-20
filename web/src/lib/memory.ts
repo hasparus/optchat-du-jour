@@ -23,6 +23,9 @@ export type Memory = {
   readonly lines: readonly (MemoryLine | null)[];
   // the first line the reader wants to see: those below it are neither read nor shown
   readonly want: number;
+  // after a re-read, the message the reader's first line held, until a line read again holds it:
+  // a batch that merged meanwhile moves lines, so the place goes by message, not by index
+  readonly anchor: number | null;
   // why the last read failed (it is tried again by itself, and on the reader's ask)
   readonly error: string | null;
   // open or closed, as the reader chose, by node (`l:i`); the rest are as defaultOpen says
@@ -32,7 +35,7 @@ export type Memory = {
   readonly messages: ReadonlyMap<number, Msg | "error">;
 };
 
-export const emptyMemory: Memory = { boot: null, choices: new Map(), error: null, lines: [], messages: new Map(), opened: new Map(), rev: null, want: 0 };
+export const emptyMemory: Memory = { anchor: null, boot: null, choices: new Map(), error: null, lines: [], messages: new Map(), opened: new Map(), rev: null, want: 0 };
 
 export const nodeKey = (line: Pick<MemoryLine, "l" | "i">) => `${line.l}:${line.i}`;
 
@@ -51,6 +54,9 @@ export function applyChange(m: Memory, c: MemoryChange): Memory | "gap" {
   if (c.rev !== m.rev + 1) return "gap";
   let { lines, want } = m;
   for (const h of c.hunks) {
+    // the whole list replaced, its lines left to be read (a change too big for a frame): read the
+    // view again, which keeps the reader's place, rather than every line from the first
+    if (h.lines === undefined && h.at === 0 && h.removed > 0 && h.removed === lines.length) return "gap";
     lines = lines.toSpliced(h.at, h.removed, ...(h.lines ?? Array.from({ length: h.added }, () => null)));
     // lines that were wholly below the reader's first one move it; new lines put right at it (an
     // append to a view the reader has whole) are shown, as is anything that replaced it
@@ -67,7 +73,21 @@ export function applyPage(m: Memory, page: MemoryPage): Memory | null {
   if (page.boot !== m.boot || page.rev !== m.rev || page.total !== m.lines.length) return null;
   const lines = [...m.lines];
   for (const [k, line] of page.lines.entries()) lines[page.from + k] = line;
-  return { ...m, lines };
+  return anchored({ ...m, lines });
+}
+
+// The reader's place after a re-read (`anchor`): the read line whose messages hold it becomes the
+// first one shown; while the line at `want` is read and starts after it, the place is higher up,
+// so a page more is wanted. Done once found, or at the view's first line.
+export function anchored(m: Memory): Memory {
+  const { anchor } = m;
+  if (anchor === null) return m;
+  const at = m.lines.findIndex((l) => l !== null && l.id <= anchor && anchor < l.id + l.n);
+  if (at !== -1) return { ...m, anchor: null, want: at };
+  const first = m.lines[m.want];
+  if (m.want === 0) return { ...m, anchor: null };
+  if (first !== null && first !== undefined && first.id > anchor) return { ...m, want: Math.max(0, m.want - MEMORY_PAGE_LINES) };
+  return m;
 }
 
 // A first page: the view's newest lines, the rest read as the reader goes up. Read again (a gap, a
@@ -75,14 +95,17 @@ export function applyPage(m: Memory, page: MemoryPage): Memory | null {
 // is read again, and what they opened stays open.
 export function firstPage(m: Memory, page: MemoryPage): Memory {
   const want = m.boot === null ? page.from : Math.max(0, Math.min(m.want, page.from, page.total));
-  return {
+  // the message the reader's first line held (the first read line from it): their place
+  const held = m.boot === null ? undefined : m.lines.slice(m.want).find((l) => l !== null);
+  return anchored({
     ...m,
+    anchor: held?.id ?? null,
     boot: page.boot,
     error: null,
     lines: Array.from({ length: page.total }, (_, k) => (k >= page.from ? (page.lines[k - page.from] ?? null) : null)),
     rev: page.rev,
     want,
-  };
+  });
 }
 
 // The reads that fill what the reader wants to see and isn't read: `before` and `limit` of each,
@@ -102,14 +125,17 @@ export function unread(m: Memory): { readonly before: number; readonly limit: nu
 // as the log's rows (a tool call and its output pair up as there), every other line as a summary
 // block, and what isn't read yet as a gap
 export type MemoryItem =
-  | { readonly kind: "row"; readonly key: string; readonly row: Row }
+  // `followed`: the row is the last of a run that a summary block follows, so a tool call there
+  // has its output in that block (its echo, summarized), not cut short
+  | { readonly kind: "row"; readonly key: string; readonly row: Row; readonly followed: boolean }
   | { readonly kind: "line"; readonly key: string; readonly line: MemoryLine }
   | { readonly kind: "gap"; readonly key: string; readonly count: number };
 export function memoryItems(lines: readonly (MemoryLine | null)[], from = 0): MemoryItem[] {
   const out: MemoryItem[] = [];
   let run: Msg[] = [];
-  const flush = () => {
-    for (const row of entryRows(run)) out.push({ key: row.key, kind: "row", row });
+  const flush = (followed = false) => {
+    const rows = entryRows(run);
+    for (const [k, row] of rows.entries()) out.push({ followed: followed && k === rows.length - 1, key: row.key, kind: "row", row });
     run = [];
   };
   let gap = 0;
@@ -126,7 +152,7 @@ export function memoryItems(lines: readonly (MemoryLine | null)[], from = 0): Me
     }
     if (line === undefined) break;
     if (line.entry === undefined) {
-      flush();
+      flush(true);
       out.push({ key: `m${nodeKey(line)}`, kind: "line", line });
     } else run.push(line.entry);
   }
@@ -169,6 +195,8 @@ export function makeMemory(link: Pick<Link, "listen" | "onStatus" | "status">, o
   let rounds = 0;
   let failures = 0; // failed reads in a row, for the next wait
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false; // nothing is read or scheduled after dispose(), a read in flight included
+  const gone = () => disposed; // read anew after an await
   const subscribers = new Set<() => void>();
   const set = (next: Memory) => {
     if (next === m) return;
@@ -176,6 +204,7 @@ export function makeMemory(link: Pick<Link, "listen" | "onStatus" | "status">, o
     for (const f of subscribers) f();
   };
   const later = (ms: number, then: () => void) => {
+    if (gone()) return;
     if (timer !== null) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
@@ -187,13 +216,14 @@ export function makeMemory(link: Pick<Link, "listen" | "onStatus" | "status">, o
   const now = () => m;
 
   const load = async (): Promise<void> => {
+    if (gone()) return;
     const round = ++rounds;
     const held: MemoryChange[] = [];
     const loading = { held, round, tag: "loading" as const };
     phase = loading;
     try {
       const page = await readView(null, MEMORY_PAGE_LINES);
-      if (phase !== loading) return; // a newer read took over
+      if (phase !== loading || gone()) return; // a newer read took over, or the store is gone
       let next = firstPage(now(), page);
       for (const c of loading.held) {
         const after = applyChange(next, c);
@@ -208,7 +238,7 @@ export function makeMemory(link: Pick<Link, "listen" | "onStatus" | "status">, o
       set(next);
       void fill();
     } catch (error) {
-      if (phase !== loading) return;
+      if (phase !== loading || gone()) return;
       set({ ...now(), error: (error instanceof Error ? error.message : String(error)) });
       later(backoff(), () => void load());
     }
@@ -218,7 +248,7 @@ export function makeMemory(link: Pick<Link, "listen" | "onStatus" | "status">, o
   // read again, one as of a newer one waits for the frames between; a failed read is tried again
   // after a wait that doubles, and at once on the reader's ask (`retry`)
   const fill = async (): Promise<void> => {
-    if (phase.tag !== "live" || phase.filling) return;
+    if (gone() || phase.tag !== "live" || phase.filling) return;
     const live = phase;
     live.filling = true;
     try {
@@ -226,7 +256,7 @@ export function makeMemory(link: Pick<Link, "listen" | "onStatus" | "status">, o
         const next = unread(now())[0];
         if (next === undefined) break;
         const page = await readView(next.before, next.limit);
-        if (phase !== live) return;
+        if (phase !== live || gone()) return;
         const kept = applyPage(now(), page);
         if (kept !== null) {
           failures = 0;
@@ -246,6 +276,8 @@ export function makeMemory(link: Pick<Link, "listen" | "onStatus" | "status">, o
         }
       }
     } catch (error) {
+      // a fill a re-read took over from leaves the re-read's own retry alone
+      if (phase !== live || gone()) return;
       set({ ...now(), error: (error instanceof Error ? error.message : String(error)) });
       later(backoff(), () => void fill());
     } finally {
@@ -367,7 +399,7 @@ export function makeMemory(link: Pick<Link, "listen" | "onStatus" | "status">, o
     // the reader asks for older lines
     earlier: () => {
       if (m.want <= 0) return;
-      set({ ...m, want: Math.max(0, m.want - MEMORY_PAGE_LINES) });
+      set({ ...m, anchor: null, want: Math.max(0, m.want - MEMORY_PAGE_LINES) });
       void fill();
     },
     // read again now, after an error
@@ -388,6 +420,7 @@ export function makeMemory(link: Pick<Link, "listen" | "onStatus" | "status">, o
     // down to its messages (`all`), or back to its two halves
     deepen: async (line: MemoryLine, all: boolean) => readOpened(line, all ? line.l : 1),
     dispose: () => {
+      disposed = true;
       unlisten();
       unstatus();
       if (timer !== null) clearTimeout(timer);

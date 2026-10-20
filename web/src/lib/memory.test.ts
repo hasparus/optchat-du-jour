@@ -43,7 +43,9 @@ function server(seed: number, marks = MARKS) {
   const listeners = new Set<(e: Inbound) => void>();
   const statuses = new Set<(s: LinkStatus) => void>();
   let status: LinkStatus = "open";
+  // frames reach the page only while its socket is open, as a real one's do
   const deliver = (e: Inbound) => {
+    if (status !== "open") return;
     for (const l of listeners) l(e);
   };
   const feed = watchMemory(
@@ -79,13 +81,17 @@ function server(seed: number, marks = MARKS) {
   };
   const reads: string[] = [];
   const o: Knobs = { at: () => feed.at(), delay: 0, failing: null };
+  const failed = (): string | null => o.failing; // read anew after an await
   const view = async (before: number | null, limit: number): Promise<MemoryPage> => {
     reads.push(`${before}:${limit}`);
-    if (o.failing !== null) throw new Error(o.failing);
+    const failingNow = failed();
+    if (failingNow !== null) throw new Error(failingNow);
     // the page is as of when the server reads it; the changes made while it is on its way come
     // over the socket before it arrives
     const page = viewPage(mem, o.at(), before ?? undefined, limit);
     await tick(o.delay);
+    const failingLater = failed(); // the network went while it was on its way
+    if (failingLater !== null) throw new Error(failingLater);
     return page;
   };
   return { deliver, feed, link, mem, message, o, random, reads, setStatus, summarize, view };
@@ -229,6 +235,149 @@ test("a read of older lines that fails says why, is tried again after a wait, an
   store.dispose();
 });
 
+test("a fill a re-read took over from fails without cancelling the re-read's retry: the store recovers", async () => {
+  const s = server(21, NEVER);
+  for (let i = 0; i < 250; i++) s.message(5);
+  const store = makeMemory(s.link, { retryMs: 30, view: s.view });
+  store.show();
+  await tick(20);
+  // an older page's read on its way, slowly
+  s.o.delay = 50;
+  store.earlier();
+  await tick(5);
+  // the network goes and the socket comes back: the re-read fails at once, then the old read does
+  s.o.failing = "offline";
+  s.setStatus("closed");
+  s.setStatus("open");
+  await tick(60);
+  // the network is back: the re-read's own retry reads the view again
+  s.o.failing = null;
+  s.o.delay = 0;
+  s.message(5);
+  await tick(400);
+  expect(store.get().error).toBeNull();
+  expect(store.get().rev).toBe(s.feed.at().rev);
+  expect(store.get().lines.slice(store.get().want)).toEqual(theirs(s).slice(store.get().want));
+  store.dispose();
+});
+
+test("dispose() leaves nothing behind: no timer pending, and a read in flight schedules nothing", async () => {
+  const realSet = globalThis.setTimeout, realClear = globalThis.clearTimeout;
+  const pending = new Set<unknown>();
+  // the store's timers, counted while it lives
+  const counted = Object.assign(
+    (f: () => void, ms?: number) => {
+      const id: unknown = realSet(() => {
+        pending.delete(id);
+        f();
+      }, ms);
+      pending.add(id);
+      return id;
+    },
+    { __promisify__: realSet.__promisify__ },
+  );
+  try {
+    // a failed read waiting for its retry
+    const a = server(22);
+    for (let i = 0; i < 5; i++) a.message(5);
+    a.o.failing = "offline";
+    const clear = (id: ReturnType<typeof setTimeout>) => {
+      pending.delete(id);
+      realClear(id);
+    };
+    Object.assign(globalThis, { clearTimeout: clear, setTimeout: counted });
+    const first = makeMemory(a.link, { retryMs: 50, view: a.view });
+    first.show();
+    await tick(10);
+    expect(first.get().error).toBe("offline");
+    expect(pending.size).toBe(1); // the retry
+    first.dispose();
+    expect(pending.size).toBe(0);
+    Object.assign(globalThis, { clearTimeout: realClear, setTimeout: realSet });
+    await tick(150);
+    expect(a.reads.length).toBe(1);
+    // a read on its way when the store is disposed, failing after
+    const b = server(23);
+    for (let i = 0; i < 5; i++) b.message(5);
+    b.o.delay = 30;
+    const second = makeMemory(b.link, { retryMs: 10, view: b.view });
+    second.show();
+    await tick(5);
+    b.o.failing = "offline";
+    second.dispose();
+    await tick(200);
+    expect(b.reads.length).toBe(1);
+  } finally {
+    Object.assign(globalThis, { clearTimeout: realClear, setTimeout: realSet });
+  }
+});
+
+test("a change that replaces the whole list with lines left to read is read again as a gap, keeping the reader's place", async () => {
+  const s = server(24, NEVER);
+  for (let i = 0; i < 250; i++) s.message(5);
+  const store = makeMemory(s.link, { view: s.view });
+  store.show();
+  await tick(20);
+  store.earlier();
+  await tick(20);
+  expect(store.get().want).toBe(50);
+  const { boot, rev } = s.feed.at();
+  // as the feed sends a change whose hunks alone pass the cap (src/memory-view.ts memoryChange)
+  s.deliver({ name: "memory", type: EventType.CUSTOM, value: { boot, hunks: [{ added: 250, at: 0, removed: 250 }], rev: rev + 1, total: 250 } });
+  await tick(30);
+  expect(s.reads.slice(2)).toEqual(["null:100", "150:100"]); // read again from the reader's place, not from line 0
+  expect(store.get().want).toBe(50);
+  store.dispose();
+});
+
+test("a batch that merged while the socket was down: the reader's place goes by message, not by index", async () => {
+  // marks a few hundred short lines reach: messages merge oldest first once past them
+  const s = server(25, { high: 4000, low: 2000 });
+  const all = () => {
+    for (let more = true; more; ) {
+      more = false;
+      for (const c of nodes(s.mem.root.length))
+        if (!built(s.mem, c) && ready(s.mem, c)) {
+          addNode(s.mem, newNode(c.l, c.i, `s${c.l}:${c.i}`));
+          more = true;
+        }
+    }
+  };
+  for (let i = 0; i < 300; i++) {
+    s.message(5);
+    all();
+  }
+  const store = makeMemory(s.link, { view: s.view });
+  store.show();
+  await tick(20);
+  for (let k = 0; k < 20 && store.get().want > 100; k++) {
+    store.earlier();
+    await tick(10);
+  }
+  const before = store.get();
+  const placeLine = before.lines[before.want];
+  if (placeLine === null || placeLine === undefined) throw new Error("no line at the reader's place");
+  const place = placeLine.id;
+  // offline: messages enough for a batch, which merges lines below the reader's place
+  s.setStatus("closed");
+  const lines = s.mem.view.length;
+  for (let k = 0; k < 400 && s.mem.view.length >= lines; k++) {
+    s.message(5);
+    all();
+  }
+  expect(s.mem.view.length).toBeLessThan(lines);
+  const k = s.mem.view.findIndex((c) => c.i * 2 ** c.l <= place && place < (c.i + 1) * 2 ** c.l);
+  expect(k).toBeLessThan(before.want); // by index, the place would have slid to newer messages
+  s.setStatus("open");
+  await tick(100);
+  const after = store.get();
+  const shown = after.lines[after.want];
+  expect(after.want).toBe(k);
+  expect(shown !== null && shown !== undefined && shown.id <= place && place < shown.id + shown.n).toBe(true);
+  expect(after.lines.slice(after.want)).toEqual(theirs(s).slice(after.want));
+  store.dispose();
+});
+
 const line = (id: number, o: Partial<MemoryLine> = {}): MemoryLine => ({ built: true, from: null, i: id, id, l: 0, n: 1, size: 5, text: `t${id}`, to: null, ...o });
 
 test("applyChange splices each hunk in order, keeps where the reader is, and refuses one out of turn or of another run", () => {
@@ -252,6 +401,10 @@ test("applyChange splices each hunk in order, keeps where the reader is, and ref
   expect(applyChange(next, { ...c, rev: 10 })).toBe("gap");
   expect(applyChange(m, { ...c, total: 9 })).toBe("gap"); // doesn't add up: read again
   expect(applyChange(m, { ...c, boot: "c" })).toBe("gap");
+  // the whole list replaced with its lines left to read: a gap; with its lines: applied
+  expect(applyChange(m, { boot: "b", hunks: [{ added: 3, at: 0, removed: 5 }], rev: 8, total: 3 })).toBe("gap");
+  const replaced = applyChange(m, { boot: "b", hunks: [{ added: 1, at: 0, lines: [merged], removed: 5 }], rev: 8, total: 1 });
+  expect(replaced === "gap" ? null : replaced.lines).toEqual([merged]);
   // a line appended to a view the reader has whole (want at its end) is shown, not hidden under it
   const whole: Memory = { ...emptyMemory, boot: "b", lines: [], rev: 1, want: 0 };
   const appended = applyChange(whole, { boot: "b", hunks: [{ added: 1, at: 0, lines: [line(0)], removed: 0 }], rev: 2, total: 1 });
@@ -298,6 +451,10 @@ test("memoryItems: a run of lines that are their own messages are the log's rows
   const tool = items[2];
   expect(tool?.kind === "row" && tool.row.kind === "tool" ? tool.row.output : null).toBe("contents");
   expect(memoryItems(lines, 6).map((x) => x.key)).toEqual(["m0:7"]);
+  // a tool call whose output is a summary block of its own: the row before the block is `followed`
+  const split = memoryItems([line(3, { entry: entry(3, "tool", 'Read {"file_path":"a"}'), kind: "tool" }), line(4, { kind: "echo" })]);
+  expect(split.map((x) => (x.kind === "row" ? [x.key, x.followed] : [x.key]))).toEqual([["e3", true], ["m0:4"]]);
+  expect(items.flatMap((x) => (x.kind === "row" && x.followed ? [x.key] : []))).toEqual([]);
 });
 
 test("runsOf: the messages under open lines, read a run at a time", () => {

@@ -17,11 +17,15 @@ export type LogRowParts = {
   readonly artifacts: readonly ArtifactInfo[];
   // an artifact's card opened, from the row of log index `i` (the Memory screen goes to the chat)
   readonly onArtifact: (name: string, v: number | null, i: number) => void;
+  // a turn runs or waits, and the newest tool row's key: only it can still be running, as in the log
+  readonly busy: boolean;
+  readonly lastTool: string | undefined;
 };
 const Parts = createContext<LogRowParts | null>(null);
 export const LogRowProvider = Parts.Provider;
 
-export function LogRow({ row }: { readonly row: Row }) {
+// `followed`: the row's tool call has its output in the summary block after it (it isn't cut short)
+export function LogRow({ row, followed = false }: { readonly row: Row; readonly followed?: boolean }) {
   const parts = useContext(Parts);
   if (parts === null) throw new Error("a log row outside LogRowProvider");
   return (
@@ -35,8 +39,8 @@ export function LogRow({ row }: { readonly row: Row }) {
       row={row}
       streaming={false}
       thought={row.kind === "talk" || row.kind === "tool" ? parts.thoughts.get(row.id) : undefined}
-      // a tool call whose output is a line of its own (a summary) is done, not cut short
-      toolState={row.kind === "tool" && row.output !== null ? toolStateOf(row, false, false) : "done"}
+      // as the log reads it (toolStateOf), but done when its output is the summary block after it
+      toolState={row.kind === "tool" ? (row.output === null && followed ? "done" : toolStateOf(row, parts.busy, row.key === parts.lastTool)) : "done"}
     />
   );
 }

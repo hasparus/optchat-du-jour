@@ -8,9 +8,9 @@ import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Button } from "@/components/ui/button";
 import { memoryItems, type MemoryStore } from "@/lib/memory";
 import type { Session, SessionStore } from "@/lib/session";
+import type { ArtifactInfo } from "@wire";
 import { useEffect, useMemo } from "react";
 import { LogRowProvider } from "../chat/log-row";
-import { useArtifactList } from "../chat/use-artifacts";
 import { MemoryError, MemoryItems, MemoryParts, useMemory } from "./memory-view";
 
 export function Memory({
@@ -18,24 +18,29 @@ export function Memory({
   session,
   state,
   onShowInChat,
+  artifacts,
 }: {
   readonly memory: MemoryStore;
   readonly session: Pick<SessionStore, "toggleThought">;
   readonly state: Session;
   readonly onShowInChat: (i: number) => void;
+  // every artifact and its versions, App's (one reader of /api/artifacts for both screens)
+  readonly artifacts: readonly ArtifactInfo[];
 }) {
   useEffect(() => memory.show(), [memory]);
   const m = useMemory(memory);
   const items = useMemo(() => memoryItems(m.lines, m.want), [m.lines, m.want]);
   const parts = useMemo(() => ({ memory, onShow: onShowInChat }), [memory, onShowInChat]);
   // a row reads what the chat's does: folds, thoughts, an artifact's card (opened in the chat)
-  const artifacts = useArtifactList(state.saved, state.status === "open");
   const { folds, thoughts } = state;
+  // a tool call can still be running only while a turn runs, and only the newest, as in the log
+  const busy = state.state !== null && state.state.phase !== "idle";
+  const lastTool = items.findLast((x) => x.kind === "row" && x.row.kind === "tool")?.key;
   const rows = useMemo(
-    () => ({ artifacts, folds, onArtifact: (_name: string, _v: number | null, i: number) => {
+    () => ({ artifacts, busy, folds, lastTool, onArtifact: (_name: string, _v: number | null, i: number) => {
         onShowInChat(i);
       }, onThought: session.toggleThought, thoughts }),
-    [artifacts, folds, session.toggleThought, thoughts, onShowInChat],
+    [artifacts, busy, folds, lastTool, session.toggleThought, thoughts, onShowInChat],
   );
   const view = state.state;
   const lines = m.rev === null ? null : m.lines.length;
