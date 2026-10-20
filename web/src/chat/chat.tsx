@@ -298,10 +298,11 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
   }, [scrollToEnd]);
   const root = useRef<HTMLDivElement>(null);
   useStickToEnd(dock, root, atEnd && !busy && target === null, toEnd);
-  // Esc stops the running turn, as Stop does (./use-stop-keys.ts)
+  // Esc stops the running turn, as Stop does (./use-stop-keys.ts): the run the user saw (E41)
+  const loop = state.state?.loop;
   const stop = useCallback(() => {
-    link.abort();
-  }, [link]);
+    if (loop !== undefined) link.abort(loop);
+  }, [link, loop]);
   useStopKeys(busy && state.status === "open" && active, stop);
 
   // one older page, prepended: true while there may be more, null when it couldn't be read

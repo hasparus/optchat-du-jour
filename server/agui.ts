@@ -3,8 +3,9 @@
 // started it. Message ids are log indexes.
 import type { AGUIEvent, Message } from "@ag-ui/core";
 import { EventType } from "@ag-ui/core";
+import { SNAPSHOT_BYTES } from "../src/config.ts";
 import type { LiveRun, SessionEvent } from "../src/session.ts";
-import type { Entry } from "../src/tree.ts";
+import { bytes, type Entry } from "../src/tree.ts";
 import { type ArtifactDraft, reasoningId, type SessionState, splitTool, toolCallId, withCut } from "../src/wire.ts";
 
 export type AgUiEvent = AGUIEvent;
@@ -58,10 +59,23 @@ export function toMessages(entries: readonly Entry[]): Message[] {
   return out;
 }
 
-export const snapshot = (entries: readonly Entry[], state: SessionState): AgUiEvent[] => [
-  { messages: toMessages(entries), type: EventType.MESSAGES_SNAPSHOT },
-  { snapshot: state, type: EventType.STATE_SNAPSHOT },
-];
+// A window of the log, entries [from, from + entries.length), as one MESSAGES_SNAPSHOT of at most
+// `cap` bytes (E42): its newest messages that fit, maybe none. `metadata` names the whole window,
+// so a client reads the entries before the frame's first from /api/messages. The messages are
+// made from the whole window, so an echo first in the frame keeps the tool call it answers.
+export const snapshotFrame = (entries: readonly Entry[], from: number, cap: number): AgUiEvent => {
+  const messages = toMessages(entries);
+  const metadata = { from, to: from + entries.length };
+  let size = bytes(JSON.stringify({ messages: [], metadata, type: EventType.MESSAGES_SNAPSHOT }));
+  let first = messages.length;
+  for (const m of messages.toReversed()) {
+    const more = bytes(JSON.stringify(m)) + (first < messages.length ? 1 : 0); // and its comma
+    if (size + more > cap) break;
+    size += more;
+    first -= 1;
+  }
+  return { messages: messages.slice(first), metadata, type: EventType.MESSAGES_SNAPSHOT };
+};
 
 // JSON Patch replacing what changed between two states (STATE_DELTA)
 const delta = (before: SessionState, after: SessionState) => {
@@ -87,8 +101,9 @@ const closing = (id: string, metadata: Readonly<Record<string, number | boolean>
   { messageId: id, metadata, type: EventType.REASONING_END },
 ];
 
-// What one connection is told. It starts with a snapshot of the log's last `window` entries and
-// the state; if a run is going on, its RUN_STARTED and the reply streamed so far follow, so a client
+// What one connection is told. It starts with a snapshot of the log's last `window` entries, as
+// many of the newest as fit in SNAPSHOT_BYTES (E42; the client reads the rest over HTTP), and the
+// state; if a run is going on, its RUN_STARTED and the reply streamed so far follow, so a client
 // that joins mid-reply has all of it. Then `translate` turns each session event into AG-UI events.
 // Every run's end is followed by a fresh MESSAGES_SNAPSHOT, so a client always resyncs to the log
 // (a reply cut off by a cancel or a crash disappears there, since nothing logged it).
@@ -98,8 +113,11 @@ export function openStream(o: {
   readonly window: number;
   readonly state: SessionState;
   readonly live: LiveRun | null;
+  readonly cap?: number; // SNAPSHOT_BYTES
 }) {
   const upTo = (n: number) => o.entries.slice(Math.max(0, n - o.window), n);
+  // the window up to entry n as a snapshot frame
+  const snapshot = (n: number) => snapshotFrame(upTo(n), Math.max(0, n - o.window), o.cap ?? SNAPSHOT_BYTES);
   let { state } = o;
   let from = o.entries.length; // the first log index this connection has not been shown
   let run: string | null = null; // the run whose RUN_STARTED it got
@@ -212,7 +230,7 @@ export function openStream(o: {
     }
   };
 
-  const first: AgUiEvent[] = [...snapshot(upTo(from), state)];
+  const first: AgUiEvent[] = [snapshot(from), { snapshot: state, type: EventType.STATE_SNAPSHOT }];
   if (o.live) {
     run = o.live.runId;
     first.push({ runId: run, threadId: o.thread, type: EventType.RUN_STARTED });
@@ -257,7 +275,7 @@ export function openStream(o: {
         const end: AgUiEvent =
           e.error === null ? { runId: e.runId, threadId: o.thread, type: EventType.RUN_FINISHED } : { message: e.error, type: EventType.RUN_ERROR };
         from = Math.max(from, e.logged);
-        return [...dropped, ...closeText(), end, { messages: toMessages(upTo(e.logged)), type: EventType.MESSAGES_SNAPSHOT }];
+        return [...dropped, ...closeText(), end, snapshot(e.logged)];
       }
       case "info":
         return [{ name: "info", type: EventType.CUSTOM, value: e.message }];

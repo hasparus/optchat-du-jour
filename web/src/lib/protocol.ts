@@ -2,7 +2,7 @@
 // the boundary, and the frames a client sends. The state they carry and the JSON of /api/* are
 // the server's own schemas (src/wire.ts, imported as @wire), not a copy.
 import { EventType } from "@ag-ui/core";
-import { ArtifactDraft, ArtifactVersion, Asset, type FollowUp } from "@wire";
+import { ArtifactDraft, ArtifactVersion, Asset, type FollowUp, Received } from "@wire";
 import { Option, Schema } from "effect";
 
 const ToolCall = Schema.Struct({
@@ -43,8 +43,13 @@ export type Message = typeof Message.Type;
 const Patch = Schema.Struct({ op: Schema.String, path: Schema.String, value: Schema.optional(Schema.Json) });
 export type Patch = typeof Patch.Type;
 
+// The log's window a MESSAGES_SNAPSHOT is the newest part of (E42): entries [from, to); the frame
+// holds those of them that fit in its bytes, from its first message's index up, and the client reads
+// the others from /api/messages. A server from before it sends none: the frame is the whole window.
+const SnapshotWindow = Schema.Struct({ from: Schema.Number, to: Schema.Number });
+
 export const Inbound = Schema.Union([
-  Schema.Struct({ type: Schema.Literal(EventType.MESSAGES_SNAPSHOT), messages: Schema.Array(Message) }),
+  Schema.Struct({ type: Schema.Literal(EventType.MESSAGES_SNAPSHOT), messages: Schema.Array(Message), metadata: Schema.optional(SnapshotWindow) }),
   Schema.Struct({ type: Schema.Literal(EventType.STATE_SNAPSHOT), snapshot: Schema.Record(Schema.String, Schema.Json) }),
   Schema.Struct({ type: Schema.Literal(EventType.STATE_DELTA), delta: Schema.Array(Patch) }),
   Schema.Struct({ type: Schema.Literal(EventType.RUN_STARTED), threadId: Schema.String, runId: Schema.String }),
@@ -103,6 +108,9 @@ export const Inbound = Schema.Union([
     name: Schema.Literal("ack"),
     value: Schema.Struct({ clientId: Schema.String, messageId: Schema.NullOr(Schema.String), error: Schema.NullOr(Schema.String) }),
   }),
+  // the server got an action this client sent, by its id (E41): done now, or a repeat it answers
+  // as it stands (a message logged, held, taken back) and doesn't do again
+  Schema.Struct({ type: Schema.Literal(EventType.CUSTOM), name: Schema.Literal("received"), value: Received }),
   // An artifact's live draft while the model writes a publish or an edit (SPEC "Artifacts")
   Schema.Struct({ type: Schema.Literal(EventType.CUSTOM), name: Schema.Literal("artifact-draft"), value: ArtifactDraft }),
   // a version of an artifact was saved
@@ -136,8 +144,7 @@ export type Forwarded = { readonly device?: string; readonly engine?: string; re
 
 // What a client sends (server/routes/ws.ts Inbound): AG-UI's RunAgentInput, whose user message
 // (with its id, which the server acks) is the one to answer, with its forwardedProps and its
-// uploaded `attachments`; an abort; a take-back; a change to the session's settings; the resume of
-// a turn waiting for a model.
+// uploaded `attachments`; or an action (below). Its id is its message's: the server answers it once.
 export const runInput = (text: string, id: string, { attachments = [], ...forwardedProps }: Forwarded & { readonly attachments?: readonly AttachmentRef[] } = {}) =>
   JSON.stringify({
     context: [],
@@ -148,17 +155,23 @@ export const runInput = (text: string, id: string, { attachments = [], ...forwar
     threadId: "web",
     tools: [],
   });
-export const ABORT = JSON.stringify({ type: "abort" });
-// Background work's Stop all (SPEC "Subagents"): the turn and every running subagent
-export const STOP_ALL = JSON.stringify({ type: "stop-all" });
-export const takeBackFrame = (clientId: string) => JSON.stringify({ clientId, type: "take-back" });
 export type Settings = { readonly followUp?: FollowUp };
-export const settingsFrame = (change: Settings) => JSON.stringify({ ...change, type: "settings" });
-export const resumeFrame = (engine: string) => JSON.stringify({ engine, type: "resume" });
 // A subagent card's action (SPEC M7a, server/routes/ws.ts): a message to it, its stop, the model of
 // its next call. What goes wrong comes back as an `info` to this client.
 export type SubagentAction =
   | { readonly type: "tell"; readonly name: string; readonly text: string }
   | { readonly type: "stop-subagent"; readonly name: string }
   | { readonly type: "subagent-model"; readonly name: string; readonly model: string };
-export const subagentFrame = (action: SubagentAction) => JSON.stringify(action);
+// Every other action: a Stop, Background work's Stop all (the turn and every running subagent), the
+// resume of a turn waiting for a model, a take-back of a held message, a change to the session's
+// settings, a card's. A Stop, a Stop all and a resume name the run of the turn loop this page saw
+// (the state's `loop`, E41), so one the link sends again after a reconnect never stops or settles
+// a later turn.
+export type Action =
+  | { readonly type: "abort" | "stop-all"; readonly loop: number }
+  | { readonly type: "resume"; readonly engine: string; readonly loop: number }
+  | { readonly type: "take-back"; readonly clientId: string }
+  | ({ readonly type: "settings" } & Settings)
+  | SubagentAction;
+// an action with the id the server answers it by (E41)
+export const actionFrame = (action: Action, id: string) => JSON.stringify({ ...action, id });

@@ -8,7 +8,7 @@ import type { Entry, Marks, Mem } from "./tree.ts";
 import { addMessage, addNode } from "./view.ts";
 
 // what our log lines may carry beyond the reference's {i, kind, text, size, date} (records.ts Msg)
-export type LogExtra = { device?: string; error?: boolean };
+export type LogExtra = { device?: string; error?: boolean; client?: string };
 
 export type Chat = {
   readonly dir: string;

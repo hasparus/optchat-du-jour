@@ -74,7 +74,7 @@ test("a turn cancelled while its engine waits to ask again: the state drops the 
       yield* r.session.input("hello");
       yield* until("the pause told", () => r.states().some((s) => s.retryPause));
       const before = r.states().length;
-      yield* r.session.cancel;
+      yield* r.session.stop();
       yield* until("idle", () => r.idleAfter(before));
       expect(r.session.state().retryPause).toBeNull();
       expect(r.states().at(-1)?.retryPause).toBeNull();

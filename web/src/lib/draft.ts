@@ -4,7 +4,7 @@
 // recall, the model its picker is on, and where the long pastes were in the messages it sent
 // (lib/paste.ts), so they show folded. All of it lives in this browser's localStorage only; every access may throw (a
 // private window, storage turned off or full), and then the page works as before, keeping nothing.
-import { Asset } from "@wire";
+import { Asset, FollowUp } from "@wire";
 import { Option, Schema } from "effect";
 
 const DRAFT = "optchat:draft";
@@ -69,11 +69,22 @@ export const rememberFolds = (folds: Folds, i: number, fold: Fold): Folds => {
 };
 
 // A message sent from here, kept until its ack says it is logged: after a reload the session store
-// finds it in the log, in the server's queue, or neither ("it may not have reached the server").
-// Kept per tab (its id in sessionStorage, which a reload or a restored tab keeps), so two tabs
-// never overwrite each other's; a list a closed tab left is dropped after a week.
-// `spans`: where its long pastes are in `text` (lib/paste.ts), none when it had none
-export const Sent = Schema.Struct({ id: Schema.String, text: Schema.String, media: Schema.Array(Asset), from: Schema.Number, engine: Schema.optional(Schema.String), spans: Schema.optional(Schema.Array(Span)) });
+// sends it again under its id, and the server answers what became of it (E41), with the device,
+// engine and follow-up it first went with. One a page from before E41 kept (it has `from`, the
+// log's length when it was sent) is only marked: it may be logged already, by a server that kept
+// no ids. Kept per tab (its id in sessionStorage, which a reload or a restored tab keeps), so two
+// tabs never overwrite each other's; a list a closed tab left is dropped after a week.
+export const Sent = Schema.Struct({
+  id: Schema.String,
+  text: Schema.String,
+  media: Schema.Array(Asset),
+  device: Schema.optional(Schema.String),
+  engine: Schema.optional(Schema.String),
+  followUp: Schema.optional(FollowUp),
+  from: Schema.optional(Schema.Number),
+  // where its long pastes are in `text` (lib/paste.ts), none when it had none
+  spans: Schema.optional(Schema.Array(Span)),
+});
 export type Sent = typeof Sent.Type;
 const Kept = Schema.Struct({ at: Schema.Number, sent: Schema.Array(Sent) });
 const WEEK = 7 * 24 * 3600 * 1000;

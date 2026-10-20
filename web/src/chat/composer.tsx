@@ -175,7 +175,7 @@ export function Composer({ link, session, state, busy, attached = false, open, d
     const settled = Date.now() - sentAt.current > ENTER_AFTER_SEND_MS;
     if (busy && open && settled && emptyEnterStops(e.nativeEvent, { empty: !content, touch })) {
       e.preventDefault();
-      link.abort();
+      if (state?.loop !== undefined) link.abort(state.loop); // the run the user saw (E41), as Stop sends
       return;
     }
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -360,7 +360,7 @@ export function Composer({ link, session, state, busy, attached = false, open, d
             <PromptInputStop
               disabled={!open}
               onClick={() => {
-                link.abort();
+                if (state?.loop !== undefined) link.abort(state.loop);
               }}
               title="Stop the turn"
             />

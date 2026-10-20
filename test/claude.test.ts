@@ -355,7 +355,7 @@ test("a cancel kills the call and logs what it never took as unanswered user mes
       yield* until("the reply", () => r.chat.mem.root.some((m) => m.kind === "talk"));
       yield* r.session.input("never mind");
       yield* until("the mid-run message on stdin", () => f.of("turn")[0]?.ins.length === 2);
-      yield* r.session.cancel;
+      yield* r.session.stop();
       yield* until("the end of the loop", () => r.session.state().phase === "idle" && r.events.some((e) => e.type === "run-finished" && e.error === "cancelled"));
       expect(r.log()).toEqual([
         ["user", "first"],
@@ -387,7 +387,7 @@ test("a cancel mid-reply ends the run, and a client sees the partial closed befo
       );
       expect(seen.flatMap((e) => (e.type === EventType.TEXT_MESSAGE_CONTENT ? [[e.messageId, e.delta]] : []))).toEqual([["1", "Hello, I was "]]);
 
-      yield* r.session.cancel;
+      yield* r.session.stop();
       yield* r.session.input("next");
       yield* r.finished(2);
       expect(r.log()).toEqual([

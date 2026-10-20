@@ -1,6 +1,7 @@
-// /api/* (SPEC "Server, WebSocket API and CLI"): read-only JSON for the web UI and the REPL. Each
-// body is encoded through its schema in src/wire.ts, the one the clients decode it with.
-import { Effect, Schema } from "effect";
+// /api/* (SPEC "Server, WebSocket API and CLI"): read-only JSON for the web UI and the REPL, and one
+// write, POST /api/messages, a message answered once by its id (E41). Each body is encoded through
+// its schema in src/wire.ts, the one the clients decode it with.
+import { Effect, Option, Schema } from "effect";
 import { type HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { claudeBinary, claudeVersion } from "../../src/claude/process.ts";
 import type { Settings } from "../../src/config.ts";
@@ -11,8 +12,9 @@ import type { Subagents } from "../../src/subagents.ts";
 import { getNode, localTime, type Mem } from "../../src/tree.ts";
 import { readUsage } from "../../src/usage.ts";
 import { PLACEHOLDER, render, viewSize } from "../../src/view.ts";
-import { Devices, MessagesPage, NodeView, ReasoningHeads, ReasoningPiece, SessionState, span, SubagentLog, Usage, View } from "../../src/wire.ts";
+import { Devices, MessagesPage, NodeView, PostMessage, ReasoningHeads, ReasoningPiece, Received, SessionState, span, SubagentLog, Usage, View } from "../../src/wire.ts";
 import { deviceStatuses, versionWarning } from "../devices.ts";
+import { type Assets, takeMessage } from "../messages.ts";
 
 const Before = Schema.Struct({ before: Schema.optional(Schema.NumberFromString), limit: Schema.optional(Schema.NumberFromString) });
 // a node's level and index: integers, and a level whose span 2^l is still a safe integer
@@ -28,6 +30,7 @@ const At = Schema.Struct({ i: Index });
 const Named = Schema.Struct({ name: Schema.String, from: Schema.optional(Index), limit: Schema.optional(Index) });
 // a subagent's entries per /api/subagent answer unless the client asks for fewer (or more)
 const SIDE_LIMIT = 100;
+const decodePost = Schema.decodeUnknownOption(Schema.fromJsonString(PostMessage));
 const badRequest = () => HttpServerResponse.empty({ status: 400 });
 const serverError = () => HttpServerResponse.empty({ status: 500 });
 
@@ -42,6 +45,7 @@ export const apiRoutes = (
     readonly device: string; // this machine
     readonly report: (message: string) => Effect.Effect<void>;
     readonly subagents?: Pick<Subagents, "log">; // SPEC M7a: a subagent and its side log
+    readonly assets: Assets; // a posted message's attachments (SPEC "Media")
   },
 ) =>
   Effect.gen(function* () {
@@ -72,6 +76,20 @@ export const apiRoutes = (
         const end = Math.min(q.before ?? mem.root.length, mem.root.length);
         const start = Math.max(0, end - (q.limit ?? 100));
         return yield* HttpServerResponse.schemaJson(MessagesPage)({ entries: mem.root.slice(start, end), total: mem.root.length }).pipe(Effect.orElseSucceed(serverError));
+      }),
+    );
+
+    // A message from outside the app (E41): iOS Shortcuts, a share extension. As /ws takes one, and
+    // answered once by its client's id: a retry is told what became of it (src/wire.ts Received)
+    // and is not taken again. A body that doesn't decode, or that has nothing to send, is a 400.
+    yield* router.add("POST", "/api/messages", (request) =>
+      Effect.gen(function* () {
+        const body = decodePost(yield* request.text.pipe(Effect.orElseSucceed(() => ""))); // a body cut short reads as none
+        if (Option.isNone(body)) return badRequest();
+        const { attachments = [], ...m } = body.value;
+        if (m.text.trim() === "" && attachments.length === 0) return badRequest();
+        const answer = yield* takeMessage(o.session, o.assets, { ...m, attachments });
+        return yield* HttpServerResponse.schemaJson(Received)(answer).pipe(Effect.orElseSucceed(serverError));
       }),
     );
 

@@ -27,7 +27,9 @@ test("a close with WIRE_STALE leaves the link outdated: no reconnect, nothing se
   link.wake(Number.POSITIVE_INFINITY);
   await settle();
   expect(server.sockets).toHaveLength(1);
-  expect(link.abort()).toBe(false);
+  const before = server.sent.length;
+  expect(link.abort(1)).toBe(false);
+  expect(server.sent.length).toBe(before);
   link.close();
 });
 

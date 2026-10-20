@@ -79,7 +79,7 @@ test("once the call is logged its input is no longer live: a client that joins g
       yield* until("the call logged", () => r.events.some((e) => e.type === "logged" && e.entry.kind === "tool"));
       expect(inputs(r.events)).toHaveLength(1);
       expect(r.session.live()?.tool).toBeNull();
-      yield* r.session.cancel;
+      yield* r.session.stop();
     }).pipe(Effect.scoped),
   );
 });
@@ -100,7 +100,7 @@ test("a call cut short by a usage limit: the run ends while the turn waits for a
       // the stop ends the run (a resume begins another), so nothing of the cut call is live
       expect(r.events.some((e) => e.type === "run-finished")).toBe(true);
       expect(r.session.live()).toBeNull();
-      yield* r.session.cancel;
+      yield* r.session.stop();
     }).pipe(Effect.scoped),
   );
 });

@@ -1,12 +1,12 @@
 // Where the long pastes are in the messages sent from here (lib/draft.ts, lib/session.ts): kept by
-// the log index the server's ack gives each message, or the entry a message whose ack was lost is
-// matched to; none for a message without any; read once per page and kept across a reload, with
-// the text's length, so an index that now names another message folds nothing of it; the newest
-// FOLDS_MAX messages only.
+// the log index the server's ack gives each message, or its answer to the message sent again after
+// the ack was lost (E41); none for a message without any; read once per page and kept across a
+// reload, with the text's length, so an index that now names another message folds nothing of it;
+// the newest FOLDS_MAX messages only.
 import { EventType } from "@ag-ui/core";
 import { expect, test } from "bun:test";
 import { lastId } from "../test/app";
-import { ack, type Entry, fakeServer, IDLE, snapshot } from "../test/fixture";
+import { ack, fakeServer, IDLE, received, snapshot } from "../test/fixture";
 import { openLink } from "./connection";
 import { FOLDS_MAX, loadFolds, rememberFolds } from "./draft";
 import { foldsOf } from "./paste";
@@ -33,18 +33,20 @@ test("a message's spans are kept under the index its ack names; one without past
   link.close();
 });
 
-test("a message whose ack was lost with its socket: its spans are kept under the entry the next snapshot shows for it", async () => {
-  const log: Entry[] = [{ kind: "user", text: "first" }];
-  const server = fakeServer(() => [snapshot(log), { snapshot: { ...IDLE, messages: log.length }, type: EventType.STATE_SNAPSHOT }]);
+test("a message whose ack was lost with its socket: sent again on the next, its spans are kept under the index the server's answer names", async () => {
+  const server = fakeServer(() => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT }]);
   const link = openLink("ws://x/ws", { retryMs: 1, socket: server.socket });
   const session = makeSession(link);
   await settle();
   session.send("see:\nPASTED", { spans: [[5, 11]] });
-  log.push({ kind: "user", text: "see:\nPASTED" }); // logged at 1; its ack never reached this page
-  server.drop();
+  const id = lastId(server.sent);
+  server.drop(); // its ack went to the socket that dropped
   await settle();
+  // sent again on the next socket (E41); the server answers that it logged it at 4 already
+  expect(lastId(server.sent)).toBe(id);
+  server.play(received(id, "logged", 4));
   expect(session.get().pending).toEqual([]);
-  expect(session.get().folds.get(1)).toEqual({ length: 11, spans: [[5, 11]] });
+  expect(session.get().folds.get(4)).toEqual({ length: 11, spans: [[5, 11]] });
   link.close();
 });
 

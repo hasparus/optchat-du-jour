@@ -20,6 +20,9 @@ export type Saw = { readonly view: readonly Coord[]; readonly folding: boolean }
 
 export type Mem = {
   readonly root: Entry[];
+  // the log index of each user entry a client sent, by the id it sent it with (E41, src/once.ts):
+  // derived from `root`, and kept as it grows (`logEntry`)
+  readonly clients: Map<string, number>;
   readonly tree: Map<string, Built>;
   // view and folding: reassigned by view.ts on every change, never edited in place; saved to
   // chat/view.json (store.ts)
@@ -40,7 +43,13 @@ export const COMPACTION_MARKS: Marks = { high: COMPACTION_HIGH, low: COMPACTION_
 
 export function newMem(marks: Marks = VIEW_MARKS, compactionMarks: Marks = COMPACTION_MARKS): Mem {
   const compaction: Saw = { folding: false, view: [] };
-  return { root: [], view: [], folding: false, tree: new Map(), listeners: new Set(), marks, compaction, compactionMarks };
+  return { root: [], clients: new Map(), view: [], folding: false, tree: new Map(), listeners: new Set(), marks, compaction, compactionMarks };
+}
+
+// an entry joins the log in memory, and its client's id the index of them
+export function logEntry(mem: Mem, entry: Entry) {
+  mem.root.push(entry);
+  if (entry.kind === "user" && entry.client !== undefined) mem.clients.set(entry.client, entry.i);
 }
 
 export const bytes = (text: string) => Buffer.byteLength(text);

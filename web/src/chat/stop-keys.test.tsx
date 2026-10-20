@@ -7,7 +7,7 @@ import { afterEach, expect, setSystemTime, test } from "bun:test";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { escapeStops, type KeyLike } from "@/lib/stop-keys";
 import { box, onTouchScreen, start, stubApi, type } from "@/test/app";
-import { state } from "@/test/fixture";
+import { actionsOf, state } from "@/test/fixture";
 import { ENTER_AFTER_SEND_MS } from "./composer";
 
 stubApi();
@@ -15,13 +15,14 @@ afterEach(() => {
   setSystemTime(); // the real clock again
 });
 
-const ABORT = '{"type":"abort"}';
-const aborts = (sent: readonly string[]) => sent.filter((f) => f === ABORT).length;
+// the aborts the app sent, each for the run of the turn loop the user saw (E41)
+const aborts = (sent: readonly string[]) => actionsOf(sent).filter((f) => f.type === "abort" && f.loop === LOOP).length;
+const LOOP = 3;
 
 const running = async () => {
   const app = start();
   await screen.findByText("what is in the repo?");
-  app.play(state({ engine: "claude-code:opus", phase: "running" }));
+  app.play(state({ engine: "claude-code:opus", loop: LOOP, phase: "running" }));
   await screen.findByRole("button", { name: "Stop" });
   return app;
 };
