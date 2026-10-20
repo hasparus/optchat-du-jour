@@ -27,9 +27,9 @@ const until = (what: string, ok: () => boolean, ms = 4000) =>
 
 const USAGE = { cacheRead: 0, cacheWrite: 0, input: 1, output: 1 };
 
-// A provider whose call pauses as askAgain does (a 30 s pause before try 2 of 4), then waits for
-// `go`: resolved true, the pause ends and the reply comes; never resolved, the turn is cancelled
-// mid-pause. `seen.paused` once the pause was told to the session.
+// A provider whose call pauses as askAgain does (a 30 s pause before try 2 of 4, its end told
+// however it ends), then waits for `go`; once that resolves, the pause ends and the reply comes.
+// `seen.paused` once the pause was told to the session.
 const pausing = (go: Deferred.Deferred<true>) => {
   const seen = { paused: false };
   const provider: Provider = {
@@ -109,14 +109,19 @@ test("the state says the turn's engine waits to ask again, for how long and befo
   );
 });
 
-test("a turn cancelled while its engine waits to ask again: the state drops the wait with the turn (E43)", async () => {
+// A provider that tells a pause and then never ends it itself: what clears the wait is the turn's end
+const stuck: Provider = {
+  auth: "api-key",
+  call: (c) => (c.onRetry ?? (() => Effect.void))({ ms: 30_000, next: 2, tries: 4 }).pipe(Effect.andThen(Effect.never)),
+  engine: "api-key",
+};
+
+test("a turn cancelled while its engine waits to ask again: the state drops the wait with the turn, whoever else forgets to (E43)", async () => {
   await Effect.runPromise(
     Effect.gen(function* () {
-      const go = Deferred.makeUnsafe<true>(); // never resolved: the pause lasts until the cancel
-      const { provider, seen } = pausing(go);
-      const r = yield* rig(provider);
+      const r = yield* rig(stuck);
       yield* r.session.input("hello");
-      yield* until("the pause told", () => seen.paused && r.states().some((s) => s.retry));
+      yield* until("the pause told", () => r.states().some((s) => s.retry));
       const before = r.states().length;
       yield* r.session.cancel;
       yield* until("idle", () => r.idleAfter(before));
