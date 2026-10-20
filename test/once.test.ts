@@ -9,6 +9,7 @@ import { Deferred, Effect, Layer, PubSub, Schema } from "effect";
 import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { serverLayer } from "../server/app.ts";
+import { STOP_ALL_LATE, stopEverything } from "../server/routes/ws.ts";
 import { openChat } from "../src/chat.ts";
 import { ACTS, parseSettings } from "../src/config.ts";
 import { makeSeen, receiptOf } from "../src/once.ts";
@@ -152,6 +153,25 @@ test("a Stop names the run of the turn loop it was for: one for a run that ended
       expect(yield* session.stop(now)).toBeNull();
       yield* until("stopped", () => session.state().phase === "idle");
       yield* Deferred.succeed(next, true);
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("Stop all names the run of the turn loop it was for: once a newer one began it does nothing at all, subagents included; for the newest, running or ended, it stops them", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const { chat, session } = yield* rig(fresh());
+      let stops = 0;
+      const subagents = { stopAll: Effect.sync(() => ((stops += 1), [])) };
+      yield* session.input("one", { clientId: "a" });
+      yield* until("idle", () => session.state().phase === "idle" && chat.mem.root.length === 1);
+      const first = session.state().loop;
+      expect(yield* stopEverything(session, subagents, first)).toBeNull(); // the turn has ended; its subagents still stop
+      expect(stops).toBe(1);
+      yield* session.input("two", { clientId: "b" });
+      yield* until("idle again", () => session.state().phase === "idle" && chat.mem.root.length === 2);
+      expect(yield* stopEverything(session, subagents, first)).toBe(STOP_ALL_LATE);
+      expect(stops).toBe(1);
     }).pipe(Effect.scoped),
   );
 });
