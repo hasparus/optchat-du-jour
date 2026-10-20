@@ -258,13 +258,12 @@ class RowBoundary extends Component<{ readonly text: string; readonly children: 
   }
 }
 
-/** Memo keeps unchanged rows above a streamed token (rows.ts chatRows).
- * `plan` follows planStates: the chat's newest ("newest", initially open), only the newest plan
- * of the active RUN_STARTED run, even across a steer ("live"), or an older turn's ("turn", closed).
- * Earlier TodoWrite rows within a turn stay plain tool lines. `sources` is turnSources' list
- * under the turn's last reply. `thought` is what the model thought before this reply or tool call
- * (SPEC "Reasoning"); a `thinking` row is that alone, until its entry comes.
- */
+// Memo keeps unchanged rows above a streamed token (rows.ts chatRows).
+// `plan` follows planStates: the chat's newest ("newest", initially open), only the newest plan
+// of the active RUN_STARTED run, even across a steer ("live"), or an older turn's ("turn", closed).
+// Earlier TodoWrite rows within a turn stay plain tool lines. `sources` is turnSources' list
+// under the turn's last reply. `thought` is what the model thought before this reply or tool call
+// (SPEC "Reasoning"); a `thinking` row is that alone, until its entry comes.
 export type ChatRowProps = {
   row: Row;
   streaming: boolean;

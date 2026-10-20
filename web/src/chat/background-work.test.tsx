@@ -30,7 +30,9 @@ const sheet = async (groups: Pick<ComponentProps<typeof BackgroundWork>, "extra"
         {...groups}
         devices={devices}
         link={link}
-        onOpenChange={() => { /** Keep the fixture sheet open. */ }}
+        onOpenChange={() => {
+          // keep the fixture sheet open
+        }}
         open
         session={makeSession(link)}
       />

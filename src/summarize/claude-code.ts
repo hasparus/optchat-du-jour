@@ -46,14 +46,13 @@ export const markedPrefix = (sent: readonly TextBlock[]): string[] | null => {
   return last === -1 ? null : sent.slice(0, last + 1).map((b) => b.text);
 };
 
-/** A compactor uses a turn's baseArgs (system prompt and master's tools, plus --mcp-config for
- * zoom/date) but its own model, effort and permission mode. No --replay-user-messages: that
- * shapes Claude's output, not the request. With `default`, `-p` and --setting-sources "", Bash,
- * writing tools and MCP tools need permission and are refused. Read, Glob, Grep and TodoWrite
- * need none and would run, so a try is killed as soon as a tool call starts streaming (`answer`).
- * DISABLE_PROMPT_CACHING=1 leaves our own marks only (D6), all with the same TTL (E6).
- * Never pooled: no warm process is started or handed to it (E18).
- */
+// A compactor uses a turn's baseArgs (system prompt and master's tools, plus --mcp-config for
+// zoom/date) but its own model, effort and permission mode. No --replay-user-messages: that
+// shapes Claude's output, not the request. With `default`, `-p` and --setting-sources "", Bash,
+// writing tools and MCP tools need permission and are refused. Read, Glob, Grep and TodoWrite
+// need none and would run, so a try is killed as soon as a tool call starts streaming (`answer`).
+// DISABLE_PROMPT_CACHING=1 leaves our own marks only (D6), all with the same TTL (E6).
+// Never pooled: no warm process is started or handed to it (E18).
 export const compactSpawn = (o: Pick<CompactorOptions, "effort" | "instructions" | "model" | "tools" | "ttl">, p: Placement): Spawn => ({
   args: [...baseArgs({ effort: o.effort, model: o.model, system: o.instructions, tools: o.tools.join(",") }), "--mcp-config", p.mcpConfig, "--permission-mode", "default"],
   cwd: p.cwd,
