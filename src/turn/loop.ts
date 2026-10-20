@@ -13,6 +13,7 @@ import { Cause, Clock, Effect, Exit, Schema } from "effect";
 import { cap } from "../cap.ts";
 import { TOOL_ROUNDS } from "../config.ts";
 import { type EngineError, isEngineError } from "../engines/errors.ts";
+import { RetryPauses } from "../engines/retry.ts";
 import type { Item, Provider } from "../providers/provider.ts";
 import type { StoreError } from "../store.ts";
 import type { ToolBox } from "../tools/box.ts";
@@ -80,6 +81,9 @@ export const toolLoop = (o: {
     const live = (delta: string) => (track.refused === null ? out.text(delta) : Effect.void);
     const thinking = (tokens: number) => (track.refused === null ? out.thinking(tokens) : Effect.void);
     const reasoning = (delta: string, fresh: boolean) => (track.refused === null ? out.reasoning(delta, fresh) : Effect.void);
+    // a request's retry pauses (E43) go to whoever shows them; the tools it calls run outside this
+    const { retryPause } = out;
+    const heard = <A, E>(request: Effect.Effect<A, E>) => (retryPause === undefined ? request : Effect.provideService(request, RetryPauses, retryPause));
     // `error`: the call failed or never ran, kept on the echo for clients (E28); the model reads the text only
     // `tool`: the tool it answers, for the log's stub of an artifact read (E31)
     const answer = (text: string, error: boolean, tool?: string) =>
@@ -124,8 +128,8 @@ export const toolLoop = (o: {
           });
         const final = round >= rounds;
         const reply = yield* o.provider
-          .call({ final, history, instructions: o.instructions, onItem: logged, onReasoning: reasoning, onText: live, onThinking: thinking, onToolInput: out.toolInput, onRetry: out.retrying, tools: box.defs })
-          .pipe(Effect.result);
+          .call({ final, history, instructions: o.instructions, onItem: logged, onReasoning: reasoning, onText: live, onThinking: thinking, onToolInput: out.toolInput, tools: box.defs })
+          .pipe(heard, Effect.result);
         // what the call cost is recorded first, whether it failed or the log refused its items
         if (reply._tag === "Success") yield* record(reply.success);
         else if (isEngineError(reply.failure) && reply.failure._tag !== "DeviceOffline" && reply.failure.spent) yield* record(reply.failure.spent);

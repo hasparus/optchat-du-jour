@@ -9,7 +9,7 @@ import { FetchHttpClient } from "effect/http";
 import { makeMessages, type MessagesAsk } from "../src/apikey/anthropic.ts";
 import { HTTP_RETRY_BASE, HTTP_RETRY_LONGEST, HTTP_TRIES, IDLE_ANTHROPIC, IDLE_OPENAI } from "../src/config.ts";
 import { type EngineError, UsageLimit } from "../src/engines/errors.ts";
-import { EngineRetry, type RetryPause, type RetryPolicy } from "../src/engines/retry.ts";
+import { EngineRetry, type RetryPause, RetryPauses, type RetryPolicy } from "../src/engines/retry.ts";
 import { type Ask, makeResponses } from "../src/openai/responses.ts";
 import { fakeHttp, sse, type Step } from "./fake-http.ts";
 
@@ -139,27 +139,18 @@ test("Anthropic: a stream quiet after an artifact's input went out as a live dra
   expect(server.bodies).toHaveLength(2);
 });
 
-test("Anthropic: an Edit's input reaches clients as it streams (E45): a quiet try after it is not sent again", async () => {
-  const pieces: string[] = [];
-  const onToolInput = { delta: (_call: { readonly id: string; readonly name: string }, piece: string) => Effect.sync(() => void pieces.push(piece)), end: () => Effect.void };
-  fresh({ after: "hang", chunks: toolUse("Edit") }, whole("never"));
-  const edited = await run(messages(ask({ onToolInput })));
-  expect(edited._tag).toBe("Failure");
-  expect(pieces).toEqual(['{"name":"Plan"']);
-  expect(server.bodies).toHaveLength(1);
-});
-
-// what onRetry heard, each pause as [ms, next, tries], an end as null
+// what RetryPauses heard, each pause as [ms, next, tries], an end as null; `listening` runs a call with it
 const pauses = () => {
   const heard: ([number, number, number] | null)[] = [];
-  const onRetry = (p: RetryPause | null) => Effect.sync(() => void heard.push(p && [p.ms, p.next, p.tries]));
-  return { heard, onRetry };
+  const listen = (p: RetryPause | null) => Effect.sync(() => void heard.push(p && [p.ms, p.next, p.tries]));
+  const listening = <A>(call: Effect.Effect<A, EngineError>) => Effect.provideService(call, RetryPauses, listen);
+  return { heard, listening };
 };
 
 test("each pause before a request is sent again is told as it starts and as it ends (E43): a retry-after as asked, else the doubling pause", async () => {
   const a = pauses();
   fresh(apiError(529, "overloaded_error", "busy", { "retry-after-ms": "40" }), apiError(500, "api_error"), whole("hello"));
-  const out = await run(messages(ask({ onRetry: a.onRetry })));
+  const out = await run(a.listening(messages(ask())));
   expect(out._tag).toBe("Success");
   expect(a.heard[0]).toEqual([40, 2, 4]);
   expect(a.heard[1]).toBeNull();
@@ -171,13 +162,13 @@ test("each pause before a request is sent again is told as it starts and as it e
   // a failure that goes to the chain at once has no pause to tell
   const b = pauses();
   fresh(apiError(400, "invalid_request_error"));
-  await run(messages(ask({ onRetry: b.onRetry })));
+  await run(b.listening(messages(ask())));
   expect(b.heard).toEqual([]);
 
   // Responses too
   const c = pauses();
   fresh(openAiError(503, "unavailable"), done("hello"));
-  const plan = await run(respond({ ...askOpenAi, onRetry: c.onRetry }));
+  const plan = await run(c.listening(respond(askOpenAi)));
   expect(plan._tag === "Success" && plan.success.text).toBe("hello");
   expect(c.heard.map((h) => h?.slice(1) ?? null)).toEqual([[2, 4], null]);
 });

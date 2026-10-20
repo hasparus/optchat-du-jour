@@ -240,8 +240,8 @@ export const makeSession = (o: {
     // phone whose clock is off still counts right.
     const clock = yield* Clock.Clock;
     let since: number | null = null, sincePhase: Phase | null = null;
-    // the running turn's engine waits until `until` (this clock) before try `next` of `tries` (E43)
-    let paused: { readonly until: number; readonly next: number; readonly tries: number } | null = null;
+    // the running turn's retry pause (E43): until `until` (this clock), before try `next` of `tries`
+    let retryPause: { readonly until: number; readonly next: number; readonly tries: number } | null = null;
     const state = (): SessionState => {
       const told: SessionState = {
         budget: chat.mem.marks.high,
@@ -266,7 +266,7 @@ export const makeSession = (o: {
       const withAgents = o.subagents ? { ...told, subagents: o.subagents.list() } : told;
       const withWake = fused() ? { ...withAgents, wakePaused: woken } : withAgents;
       const now = clock.currentTimeMillisUnsafe();
-      const withRetry = { ...withWake, retry: paused && { ms: Math.max(0, paused.until - now), next: paused.next, tries: paused.tries } };
+      const withRetry = { ...withWake, retryPause: retryPause && { ms: Math.max(0, retryPause.until - now), next: retryPause.next, tries: retryPause.tries } };
       return since === null ? withRetry : { ...withRetry, elapsed: Math.max(0, now - since) };
     };
     const stamp = Effect.sync(() => {
@@ -321,7 +321,9 @@ export const makeSession = (o: {
       chat.log(kind, text, extraOf(on, error)).pipe(
         Effect.tap(() =>
           Effect.sync(() => {
-            if (current) current.reply = null; // the streamed text is logged now, or was left behind
+            if (!current) return;
+            current.reply = null; // the streamed text is logged now, or was left behind
+            if (kind === "tool") current.tool = null; // a call's input that streamed is the entry now (E45)
           }),
         ),
         Effect.uninterruptible,
@@ -492,7 +494,7 @@ export const makeSession = (o: {
           Effect.andThen(
             Effect.suspend(() => {
               current = null;
-              paused = null;
+              retryPause = null;
               return publish({ error, logged: chat.mem.root.length, runId, type: "run-finished" });
             }),
           ),
@@ -579,7 +581,10 @@ export const makeSession = (o: {
       Effect.gen(function* () {
         engine = null;
         if (current?.reply) yield* publish({ runId, type: "reply-dropped" });
-        if (current) current.reply = null;
+        if (current) {
+          current.reply = null;
+          current.tool = null; // a call cut short: its entry never comes
+        }
         yield* dropThought(runId);
         yield* giveBack(on);
         const done = chat.mem.root.length - since;
@@ -715,10 +720,10 @@ export const makeSession = (o: {
             delta: (call, piece) => (liveTool(call.name) ? liveInput(call, piece) : Effect.suspend(() => current?.drafts.delta(call, piece) ?? Effect.void)),
             end: (id) => Effect.suspend(() => current?.drafts.end(id) ?? Effect.void),
           },
-          // our HTTP engines' pause before they ask again: the state says so while it lasts (E43)
-          retrying: (pause) =>
+          // our HTTP engines' retry pause: the state says so while it lasts (E43)
+          retryPause: (pause) =>
             Effect.suspend(() => {
-              paused = pause && { next: pause.next, tries: pause.tries, until: clock.currentTimeMillisUnsafe() + pause.ms };
+              retryPause = pause && { next: pause.next, tries: pause.tries, until: clock.currentTimeMillisUnsafe() + pause.ms };
               return tell;
             }),
         };

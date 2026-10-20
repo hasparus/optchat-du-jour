@@ -57,3 +57,28 @@ test("an Edit's input is told piece by piece at the index its entry is expected 
     }).pipe(Effect.scoped),
   );
 });
+
+// streams an Edit, then its call is logged, then the request waits for ever
+const logging: Provider = {
+  auth: "api-key",
+  call: (c) =>
+    Effect.gen(function* () {
+      yield* c.onToolInput?.delta(call, EDIT) ?? Effect.void;
+      yield* c.onItem?.({ id: call.id, input: EDIT, name: call.name, type: "call" }) ?? Effect.void;
+      return yield* Effect.never;
+    }),
+  engine: "api-key",
+};
+
+test("once the call is logged its input is no longer live: a client that joins gets the entry, not the input again (E45)", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const r = yield* rig(logging);
+      yield* r.session.input("fix it");
+      yield* until("the call logged", () => r.events.some((e) => e.type === "logged" && e.entry.kind === "tool"));
+      expect(inputs(r.events)).toHaveLength(1);
+      expect(r.session.live()?.tool).toBeNull();
+      yield* r.session.cancel;
+    }).pipe(Effect.scoped),
+  );
+});

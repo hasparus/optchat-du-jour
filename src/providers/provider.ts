@@ -4,7 +4,6 @@
 // and ./api-key.ts.
 import type { Effect, Schema } from "effect";
 import type { EngineError, Spent, Tagged } from "../engines/errors.ts";
-import type { OnRetry } from "../engines/retry.ts";
 import type { ToolInputHooks } from "../engines/tool-input.ts";
 import type { Part } from "../media/part.ts";
 import type { ToolDef } from "../tools/files.ts";
@@ -46,7 +45,6 @@ export type Call<E extends Tagged> = {
   readonly onToolInput?: ToolInputHooks | undefined;
   readonly onSettledUsage?: (spent: Spent) => Effect.Effect<void>;
   readonly onStart?: Effect.Effect<void>; // the response started: its first stream event (src/engines/inflight.ts)
-  readonly onRetry?: OnRetry | undefined; // a pause before the request is sent again (E43): the running turn's status
 };
 
 // A failure that still cost something carries it as `spent`, priced on an API key.

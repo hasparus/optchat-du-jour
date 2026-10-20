@@ -6,6 +6,8 @@ import { Schema } from "effect";
 import { Kind, Msg } from "./records.ts";
 
 export { Kind, Msg } from "./records.ts";
+// a tool call's input read as far as it has streamed: the web's file diffs read it as the server's drafts do
+export { readPartial } from "./partial-json.ts";
 
 // ---------------------------------------------------------------------------------------------
 // The wire's version (E44): a web page sends it as /ws?wire=N, and a server whose own differs closes
@@ -206,11 +208,11 @@ export const SessionState = Schema.Struct({
   // the subagents (SPEC M7a): every running one, then the most recent others, newest first.
   // Optional: a server from before them sends none, and a client from before them ignores it
   subagents: Schema.optional(Schema.Array(SubagentInfo)),
-  // The running turn's engine waits before it asks again (E35, E43): for `ms` more as of when this
-  // state was made (a client counts down from when it got it, as with `elapsed`), before try `next`
-  // of `tries`; null when it doesn't wait (a delta replaces keys and never removes one, so the end
-  // of a wait is a null). Optional, so either side from before it still decodes.
-  retry: Schema.optional(Schema.NullOr(Schema.Struct({ ms: Schema.Number, next: Schema.Number, tries: Schema.Number }))),
+  // The running turn's retry pause (E35, E43): its engine waits `ms` more as of when this state was
+  // made (a client counts down from when it got it, as with `elapsed`), before try `next` of
+  // `tries`; null when it doesn't wait (a delta replaces keys and never removes one, so the end of a
+  // pause is a null). Optional, so either side from before it still decodes.
+  retryPause: Schema.optional(Schema.NullOr(Schema.Struct({ ms: Schema.Number, next: Schema.Number, tries: Schema.Number }))),
 });
 export type SessionState = typeof SessionState.Type;
 

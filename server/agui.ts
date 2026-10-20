@@ -194,7 +194,6 @@ export function openStream(o: {
         const { args, name } = splitTool(entry.text);
         const call = toolCallId(entry.i);
         tool = openCall(tool, entry);
-        input = null; // its input streamed already, if it did: the entry is the call whole
         return [
           ...closeText(),
           { parentMessageId: id, toolCallId: call, toolCallName: name, type: EventType.TOOL_CALL_START },

@@ -7,7 +7,7 @@
 // as `earlier`, and on `mid` the messages the engine before never took, then any new ones.
 import type { Effect } from "effect";
 import type { EngineError } from "../engines/errors.ts";
-import type { OnRetry } from "../engines/retry.ts";
+import type { RetryPause } from "../engines/retry.ts";
 import type { ToolInputHooks } from "../engines/tool-input.ts";
 import type { Part } from "../media/part.ts";
 import type { Kind } from "../records.ts";
@@ -68,10 +68,10 @@ export type TurnEvents = {
   // an artifact's live draft needs (SPEC "Artifacts"): an engine that streams no tool input never
   // calls it, and a caller that shows no drafts (a subagent) leaves it out.
   readonly toolInput?: ToolInputHooks;
-  // Our own HTTP engines pause before they send a request again (E35): the pause as it starts,
-  // null once it ends, so clients can say "busy, asking again in N s" (E43). Claude Code retries
-  // on its own and says nothing; a caller that shows no status (a subagent) leaves it out.
-  readonly retrying?: OnRetry;
+  // Our own HTTP engines' retry pause (E35, E43): as it starts, then null once it ends, so clients
+  // can say "busy, asking again in N s". Claude Code retries on its own and says nothing; a caller
+  // that shows no status (a subagent) leaves it out.
+  readonly retryPause?: (pause: RetryPause | null) => Effect.Effect<void>;
 };
 
 export type TurnEngine = {
