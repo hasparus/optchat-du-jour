@@ -19,7 +19,7 @@ import { HttpClient, HttpClientRequest } from "effect/http";
 import { IDLE_OPENAI } from "../config.ts";
 import { addSpent, type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
 import { admitRequest } from "../engines/request-admission.ts";
-import { askAgain, bytes, errorBody, httpFailure, post as send, type Shown, shownToolInput, type Wire } from "../engines/retry.ts";
+import { askAgain, bytes, errorBody, httpFailure, type OnRetry, post as send, type Shown, shownToolInput, type Wire } from "../engines/retry.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
 import type { ToolInputHooks } from "../engines/tool-input.ts";
 import { isPicture, type Part } from "../media/part.ts";
@@ -63,6 +63,7 @@ export type Ask<E extends Tagged = never> = {
   readonly onToolInput?: ToolInputHooks | undefined; // a function call's arguments as they stream
   readonly onSettledUsage?: (spent: Spent) => Effect.Effect<void>;
   readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
+  readonly onRetry?: OnRetry | undefined; // a pause before the request is sent again (E43)
 };
 export type Reply = { readonly text: string; readonly usage: Usage; readonly model: string; readonly output: readonly Out[] };
 export type Respond = <E extends Tagged = never>(ask: Ask<E>) => Effect.Effect<Reply, EngineError | E>;
@@ -439,6 +440,7 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
         return yield* askAgain({
           merge: (reply: Reply, before) => ({ ...reply, usage: addSpent(before, { model: reply.model, usage: reply.usage }).usage }),
           once: attempt,
+          onRetry: ask.onRetry,
         });
       });
     return respond;

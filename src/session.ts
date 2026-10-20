@@ -22,7 +22,7 @@ import { makePieces, noReasoning, type Pieces, type Reasoning } from "./reasonin
 import { BLIND, type Mid, type TurnEngine, type TurnEvents } from "./turn/engine.ts";
 import type { UsageRecord } from "./usage.ts";
 import { allBuilt, render, settle, unbuilt, viewSize } from "./view.ts";
-import { type ArtifactVersion, type Asset, canonicalRef, engineLabel, type FollowUp, MAX_ATTACHMENTS, markerOf, NOT_DESCRIBED, type Phase, type SessionState, type SubagentInfo, withMarkers } from "./wire.ts";
+import { type ArtifactVersion, type Asset, canonicalRef, engineLabel, type FollowUp, liveTool, MAX_ATTACHMENTS, markerOf, NOT_DESCRIBED, type Phase, type SessionState, type SubagentInfo, withMarkers } from "./wire.ts";
 
 // the state every client is shown (STATE_SNAPSHOT, STATE_DELTA, /api/state): src/wire.ts
 export type { FollowUp, Phase, SessionState } from "./wire.ts";
@@ -67,6 +67,10 @@ export type SessionEvent =
   | { readonly type: "subagent-started"; readonly runId: string; readonly name: string; readonly task: string }
   | { readonly type: "subagent-finished"; readonly runId: string; readonly name: string; readonly report: string }
   | { readonly type: "subagent-error"; readonly runId: string; readonly name: string; readonly message: string; readonly code: "failed" | "stopped" }
+  // A file tool's input as it streams (E45, src/wire.ts liveTool): `delta`, the next piece of the
+  // JSON of call `call` (Claude Code's id), whose tool entry is expected at log index `at`; `offset`,
+  // where the delta starts in that input so far
+  | { readonly type: "tool-input"; readonly runId: string; readonly at: number; readonly call: string; readonly name: string; readonly delta: string; readonly offset: number }
   // An artifact's live draft while a publish or an edit streams (SPEC "Artifacts"), and a version
   // saved (told by the tools, src/artifacts/tools.ts)
   | { readonly type: "artifact-draft"; readonly draft: DraftOut }
@@ -132,7 +136,11 @@ export type LiveRun = {
   readonly reasoning: { readonly at: number; readonly text: string } | null;
   // the artifacts' drafts streaming in now (SPEC "Artifacts")
   readonly drafts: readonly DraftNow[];
+  // the file tool call whose input streams in now (E45), and its input so far
+  readonly tool: LiveInput | null;
 };
+
+export type LiveInput = { readonly at: number; readonly call: string; readonly name: string; readonly args: string };
 
 // "/on macbook ..." picks the device for that turn; the text stays as typed
 export const deviceOf = (text: string, devices: readonly string[]) => {
@@ -232,6 +240,8 @@ export const makeSession = (o: {
     // phone whose clock is off still counts right.
     const clock = yield* Clock.Clock;
     let since: number | null = null, sincePhase: Phase | null = null;
+    // the running turn's engine waits until `until` (this clock) before try `next` of `tries` (E43)
+    let paused: { readonly until: number; readonly next: number; readonly tries: number } | null = null;
     const state = (): SessionState => {
       const told: SessionState = {
         budget: chat.mem.marks.high,
@@ -255,7 +265,9 @@ export const makeSession = (o: {
       };
       const withAgents = o.subagents ? { ...told, subagents: o.subagents.list() } : told;
       const withWake = fused() ? { ...withAgents, wakePaused: woken } : withAgents;
-      return since === null ? withWake : { ...withWake, elapsed: Math.max(0, clock.currentTimeMillisUnsafe() - since) };
+      const now = clock.currentTimeMillisUnsafe();
+      const withRetry = { ...withWake, retry: paused && { ms: Math.max(0, paused.until - now), next: paused.next, tries: paused.tries } };
+      return since === null ? withRetry : { ...withRetry, elapsed: Math.max(0, now - since) };
     };
     const stamp = Effect.sync(() => {
       if (phase === sincePhase) return;
@@ -287,9 +299,16 @@ export const makeSession = (o: {
     // the run whose RUN_STARTED went out, the text it is streaming at log index `at`, and its
     // thinking (src/reasoning.ts makePieces: a run's own, so its budget starts with it)
     // and the artifacts' drafts it is streaming (src/artifacts/draft.ts)
-    let current: { runId: string; reply: { at: number; text: string } | null; pieces: Pieces; drafts: ReturnType<typeof makeDrafts> } | null = null;
+    // and the file tool call whose input is streaming (E45)
+    let current: { runId: string; reply: { at: number; text: string } | null; pieces: Pieces; drafts: ReturnType<typeof makeDrafts>; tool: LiveInput | null } | null = null;
     const live = (): LiveRun | null =>
-      current && { drafts: current.drafts.now(), reasoning: current.pieces.live(), reply: current.reply && { ...current.reply }, runId: current.runId };
+      current && {
+        drafts: current.drafts.now(),
+        reasoning: current.pieces.live(),
+        reply: current.reply && { ...current.reply },
+        runId: current.runId,
+        tool: current.tool && { ...current.tool },
+      };
     const sideFile = o.reasoning ?? noReasoning;
 
     const ack = (m: Incoming, at: number | null, error: string | null) =>
@@ -410,6 +429,20 @@ export const makeSession = (o: {
         return publish({ at, delta, offset, runId, type: "text" });
       });
 
+    // A file tool's input as it streams (E45): buffered for clients that join mid-call, each delta
+    // with its place in it; the call's tool entry is expected next in the log. Should an entry be
+    // logged meanwhile (the reply before the call), the input so far goes out again under the new index.
+    const liveInput = (call: { readonly id: string; readonly name: string }, delta: string) =>
+      Effect.suspend(() => {
+        if (!current) return Effect.void;
+        const at = chat.mem.root.length;
+        const was = current.tool?.call === call.id ? current.tool : { args: "", at, call: call.id, name: call.name };
+        const moved = was.at !== at;
+        current.tool = { ...was, args: was.args + delta, at };
+        const out = moved ? { delta: current.tool.args, offset: 0 } : { delta, offset: was.args.length };
+        return publish({ ...out, at, call: call.id, name: call.name, runId: current.runId, type: "tool-input" });
+      });
+
     // Thinking as it streams (SPEC "Reasoning"): the run's pieces (src/reasoning.ts) say what of it
     // goes out, under the caps; once the reply or tool call it came before is logged, its piece is
     // kept in the side file under that index, then clients are told. A write that fails is the side
@@ -441,7 +474,7 @@ export const makeSession = (o: {
           scope,
           send: (draft) => publish({ draft, type: "artifact-draft" }),
         });
-        current = { drafts, pieces: makePieces(), reply: null, runId };
+        current = { drafts, pieces: makePieces(), reply: null, runId, tool: null };
         return publish({ runId, type: "run-started" });
       }).pipe(Effect.uninterruptible);
 
@@ -459,6 +492,7 @@ export const makeSession = (o: {
           Effect.andThen(
             Effect.suspend(() => {
               current = null;
+              paused = null;
               return publish({ error, logged: chat.mem.root.length, runId, type: "run-finished" });
             }),
           ),
@@ -675,11 +709,18 @@ export const makeSession = (o: {
               );
             }),
           usage: (record) => o.logUsage(record).pipe(Effect.andThen(publish({ record, type: "usage" }))),
-          // an artifact call's input as it streams: its live draft (SPEC "Artifacts")
+          // an artifact call's input as it streams: its live draft (SPEC "Artifacts"); a file
+          // tool's: clients draw it as it comes (E45)
           toolInput: {
-            delta: (call, piece) => Effect.suspend(() => current?.drafts.delta(call, piece) ?? Effect.void),
+            delta: (call, piece) => (liveTool(call.name) ? liveInput(call, piece) : Effect.suspend(() => current?.drafts.delta(call, piece) ?? Effect.void)),
             end: (id) => Effect.suspend(() => current?.drafts.end(id) ?? Effect.void),
           },
+          // our HTTP engines' pause before they ask again: the state says so while it lasts (E43)
+          retrying: (pause) =>
+            Effect.suspend(() => {
+              paused = pause && { next: pause.next, tries: pause.tries, until: clock.currentTimeMillisUnsafe() + pause.ms };
+              return tell;
+            }),
         };
         yield* beginRun(runId);
         yield* tell;

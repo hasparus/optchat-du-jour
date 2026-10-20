@@ -149,6 +149,23 @@ export function openStream(o: {
     return [{ messageId: id, type: EventType.TEXT_MESSAGE_END }];
   };
 
+  // A piece of a file tool's input as it streams (E45), for the call whose entry is expected at log
+  // index `at`, starting `offset` characters into it: TOOL_CALL_START opens the call, as the logged
+  // entry's will again, and TOOL_CALL_ARGS carries what this connection has not had yet
+  let input: { call: string; at: number; sent: number } | null = null;
+  const toolInput = (e: { readonly at: number; readonly call: string; readonly name: string; readonly offset: number; readonly delta: string }): AgUiEvent[] => {
+    const out: AgUiEvent[] = [];
+    const id = toolCallId(e.at);
+    if (input?.call !== e.call || input.at !== e.at) {
+      out.push(...closeText(), { parentMessageId: String(e.at), toolCallId: id, toolCallName: e.name, type: EventType.TOOL_CALL_START });
+      input = { at: e.at, call: e.call, sent: e.offset };
+    }
+    const fresh = e.delta.slice(Math.max(0, input.sent - e.offset));
+    input.sent = Math.max(input.sent, e.offset + e.delta.length);
+    if (fresh !== "") out.push({ delta: fresh, toolCallId: id, type: EventType.TOOL_CALL_ARGS });
+    return out;
+  };
+
   // a piece of the reply at log index `at`, starting `offset` characters into it; what this
   // connection has already had (a seeded prefix) is not sent again
   const reply = (at: number, offset: number, delta: string): AgUiEvent[] => {
@@ -177,6 +194,7 @@ export function openStream(o: {
         const { args, name } = splitTool(entry.text);
         const call = toolCallId(entry.i);
         tool = openCall(tool, entry);
+        input = null; // its input streamed already, if it did: the entry is the call whole
         return [
           ...closeText(),
           { parentMessageId: id, toolCallId: call, toolCallName: name, type: EventType.TOOL_CALL_START },
@@ -201,6 +219,8 @@ export function openStream(o: {
     first.push({ runId: run, threadId: o.thread, type: EventType.RUN_STARTED });
     if (o.live.reasoning && o.live.reasoning.at >= from) first.push(...thinking(o.live.reasoning.at, 0, o.live.reasoning.text));
     if (o.live.reply && o.live.reply.at >= from) first.push(...reply(o.live.reply.at, 0, o.live.reply.text));
+    // a file tool's input so far (E45)
+    if (o.live.tool && o.live.tool.at >= from) first.push(...toolInput({ ...o.live.tool, delta: o.live.tool.args, offset: 0 }));
     // an artifact's draft so far, whole (SPEC "Artifacts")
     for (const d of o.live.drafts) first.push(artifactDraft({ closed: d.closed, delta: d.html, id: d.id, name: d.name, offset: 0, replace: true, runId: o.live.runId, tool: d.tool }));
   }
@@ -211,6 +231,8 @@ export function openStream(o: {
         return logged(e.entry);
       case "text":
         return reply(e.at, e.offset, e.delta);
+      case "tool-input":
+        return toolInput(e);
       // the status line's "thinking…", from its size, whether or not its text comes too
       case "thinking":
         return [{ name: "thinking", type: EventType.CUSTOM, value: { tokens: e.tokens } }];
@@ -231,6 +253,7 @@ export function openStream(o: {
       case "run-finished": {
         run = null;
         tool = null;
+        input = null;
         const dropped = dropOpen(); // the session drops it first; a connection that missed that closes it here
         const end: AgUiEvent =
           e.error === null ? { runId: e.runId, threadId: o.thread, type: EventType.RUN_FINISHED } : { message: e.error, type: EventType.RUN_ERROR };

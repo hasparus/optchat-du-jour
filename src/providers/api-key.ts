@@ -58,6 +58,7 @@ export const apiKeyProvider = (o: ApiKeyOptions): Provider => {
           onReasoning: c.onReasoning,
           onThinking: c.onThinking,
           onToolInput: c.onToolInput,
+          onRetry: c.onRetry,
           system: c.instructions,
           toolChoice: c.final ? "none" : "auto",
           tools: c.tools,

@@ -16,7 +16,7 @@
 import { Context, Duration, Effect, Random, Result, Stream } from "effect";
 import { type HttpClient, HttpClientError, type HttpClientRequest } from "effect/http";
 import { HTTP_RETRY_BASE, HTTP_RETRY_LONGEST, HTTP_TRIES } from "../config.ts";
-import { draftTool } from "../wire.ts";
+import { draftTool, liveTool } from "../wire.ts";
 import type { ToolInputHooks } from "./tool-input.ts";
 import { addSpent, type EngineError, isEngineError, ModelError, passing, settled, type Spent, type Tagged } from "./errors.ts";
 
@@ -100,24 +100,31 @@ export const bytes = <E extends { readonly message: string }>(res: Answer<E>, w:
 // (a hook that sends text, thinking or an item on)
 export type Shown = <A extends readonly unknown[], R>(f: ((...args: A) => R) | undefined) => ((...args: A) => R) | undefined;
 
-// A tool call's streaming input under `shown`: an artifact's that goes out as a live draft shows as
-// much as text does; any other's (a Read's, a Grep's) goes nowhere a client sees, so a try that
-// streamed only that may still be sent again. Its end shows nothing new: a draft's close follows
-// a delta that showed already.
+// A tool call's streaming input under `shown`: an artifact's that goes out as a live draft, or a
+// file tool's that clients draw as it comes (E45), shows as much as text does; any other's (a
+// Read's, a Grep's) goes nowhere a client sees, so a try that streamed only that may still be sent
+// again. Its end shows nothing new: a draft's close follows a delta that showed already.
 export const shownToolInput = (shown: Shown, hooks: ToolInputHooks | undefined): ToolInputHooks | undefined => {
   const drafted = shown(hooks?.delta);
   if (hooks === undefined || drafted === undefined) return undefined;
   const { delta } = hooks;
-  return { delta: (call, piece) => (draftTool(call.name) === null ? delta(call, piece) : drafted(call, piece)), end: hooks.end };
+  return { delta: (call, piece) => (draftTool(call.name) === null && !liveTool(call.name) ? delta(call, piece) : drafted(call, piece)), end: hooks.end };
 };
+
+// A pause before the next try (E43): `ms` long, before try `next` of `tries`. `onRetry` hears it
+// as it starts, then null as it ends (the next try starts) or is cut short, so the running turn's
+// clients can say "busy, asking again in N s" while it lasts.
+export type RetryPause = { readonly ms: number; readonly next: number; readonly tries: number };
+export type OnRetry = (pause: RetryPause | null) => Effect.Effect<void>;
 
 // The request (`once`, one try, its hooks wrapped by `shown`) until it succeeds, fails with what
 // won't pass, has shown something, or has had its tries; then that failure is the call's, no
 // longer marked as one that may pass. What earlier tries cost is merged into the reply (`merge`)
-// or added to the failure, on every way out.
+// or added to the failure, on every way out. Each pause between tries is told to `onRetry`.
 export const askAgain = <A, E extends Tagged>(o: {
   readonly once: (shown: Shown) => Effect.Effect<A, E>;
   readonly merge: (reply: A, before: Spent) => A;
+  readonly onRetry?: OnRetry | undefined;
 }): Effect.Effect<A, E | EngineError> =>
   Effect.gen(function* () {
     const policy = yield* EngineRetry;
@@ -142,6 +149,7 @@ export const askAgain = <A, E extends Tagged>(o: {
       const pause = e.retryAfter ?? base * 2 ** (k - 1) * (0.8 + 0.4 * (yield* Random.next));
       if (pause > longest) return yield* Effect.fail(settled(e, before));
       if (e.spent !== undefined) before = before === undefined ? e.spent : addSpent(before, e.spent);
-      yield* Effect.sleep(Duration.millis(pause));
+      const told = o.onRetry ?? (() => Effect.void);
+      yield* told({ ms: Math.round(pause), next: k + 1, tries: policy.tries }).pipe(Effect.andThen(Effect.sleep(Duration.millis(pause))), Effect.ensuring(told(null)));
     }
   });

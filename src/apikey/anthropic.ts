@@ -14,7 +14,7 @@ import { HttpClient, HttpClientRequest } from "effect/http";
 import { IDLE_ANTHROPIC } from "../config.ts";
 import { addSpent, type EngineError, ModelError, rebuild, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
 import { admitRequest } from "../engines/request-admission.ts";
-import { askAgain, bytes, errorBody, httpFailure, post, shownToolInput, type Wire } from "../engines/retry.ts";
+import { askAgain, bytes, errorBody, httpFailure, type OnRetry, post, shownToolInput, type Wire } from "../engines/retry.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
 import type { ToolInputHooks } from "../engines/tool-input.ts";
 import { isPicture } from "../media/part.ts";
@@ -47,6 +47,7 @@ export type MessagesAsk<E extends Tagged = never> = {
   readonly onItem?: (item: Item) => Effect.Effect<void, E>; // each block as it completes, in order
   readonly onSettledUsage?: (spent: Spent, writes?: Writes) => Effect.Effect<void>;
   readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
+  readonly onRetry?: OnRetry | undefined; // a pause before the request is sent again (E43)
 };
 // `writes` splits the cache writes by TTL when the API says how; `stop` is the API's stop_reason
 export type MessagesReply = {
@@ -391,6 +392,7 @@ export const makeMessages = (o: { readonly base: string; readonly key: Effect.Ef
         return yield* askAgain({
           // what failed tries cost is this reply's too; their cache writes aren't split by TTL
           merge: (reply: MessagesReply, before) => ({ ...reply, usage: addSpent(before, { model: reply.model, usage: reply.usage }).usage, writes: undefined }),
+          onRetry: ask.onRetry,
           once: (shown) =>
             Effect.gen(function* () {
               yield* admitRequest();

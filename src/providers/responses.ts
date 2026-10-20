@@ -67,6 +67,7 @@ export const responsesProvider = (o: {
         onReasoning: c.onReasoning,
         onThinking: c.onThinking,
         onToolInput: c.onToolInput,
+        onRetry: c.onRetry,
         toolChoice: c.final ? "none" : "auto",
         tools: c.tools.length === 0 ? undefined : c.tools, // a compactor's call has none
       });

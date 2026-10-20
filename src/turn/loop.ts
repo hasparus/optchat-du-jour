@@ -124,7 +124,7 @@ export const toolLoop = (o: {
           });
         const final = round >= rounds;
         const reply = yield* o.provider
-          .call({ final, history, instructions: o.instructions, onItem: logged, onReasoning: reasoning, onText: live, onThinking: thinking, onToolInput: out.toolInput, tools: box.defs })
+          .call({ final, history, instructions: o.instructions, onItem: logged, onReasoning: reasoning, onText: live, onThinking: thinking, onToolInput: out.toolInput, onRetry: out.retrying, tools: box.defs })
           .pipe(Effect.result);
         // what the call cost is recorded first, whether it failed or the log refused its items
         if (reply._tag === "Success") yield* record(reply.success);

@@ -8,7 +8,7 @@ import type { Session } from "../../src/session.ts";
 import type { Subagents } from "../../src/subagents.ts";
 import type { Entry } from "../../src/tree.ts";
 import { HEARTBEAT } from "../../src/config.ts";
-import { type Asset, FollowUp, shortSha } from "../../src/wire.ts";
+import { type Asset, FollowUp, shortSha, WIRE, WIRE_STALE } from "../../src/wire.ts";
 import { type AgUiEvent, openStream } from "../agui.ts";
 
 // What a client sends: AG-UI's RunAgentInput (its user messages not seen before are the ones to
@@ -88,6 +88,13 @@ export const unseen = (entries: readonly Entry[]) => {
     });
 };
 
+// A page from another build than this server's (E44): its /ws?wire=N differs from WIRE. One that
+// sends none (the REPL, a page from before the check) is served as ever: it couldn't read the close.
+export const staleWire = (url: string) => {
+  const wire = new URL(url, "http://x").searchParams.get("wire");
+  return wire !== null && wire !== String(WIRE);
+};
+
 // The sheet's Stop all: reports hushed first, so the stopped runs' reports, and any other until the
 // user's next message, wake no turn (E39); then the turn, then every subagent
 export const stopEverything = (session: Pick<Session, "hush" | "cancel">, subagents: Pick<Subagents, "stopAll"> | undefined) =>
@@ -110,6 +117,11 @@ export const wsRoute = (
     Effect.gen(function* () {
       const socket = yield* request.upgrade;
       const write = yield* socket.writer;
+      // a stale page is told so with a typed close, and reloads instead of reconnecting (E44)
+      if (staleWire(request.url)) {
+        yield* write.write(new Socket.CloseEvent(WIRE_STALE, "reload: this server runs another build of OptChat"));
+        return HttpServerResponse.empty();
+      }
       const send = (events: readonly AgUiEvent[]) => Effect.forEach(events, (e) => write.write(JSON.stringify(e)), { discard: true });
       const live = yield* PubSub.subscribe(o.session.events); // before the snapshot, so nothing falls between
       const { beat, first, translate } = openStream({ entries: o.entries, live: o.session.live(), state: o.session.state(), thread: o.thread, window: o.window });
