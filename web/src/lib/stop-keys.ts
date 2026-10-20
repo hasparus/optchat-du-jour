@@ -39,3 +39,7 @@ export const escapeStops = (e: KeyLike): boolean => e.key === "Escape" && !e.shi
 // keyboard: the composer's send is Stop then
 export const emptyEnterStops = (e: KeyLike, o: { readonly empty: boolean; readonly touch: boolean }): boolean =>
   e.key === "Enter" && o.empty && !o.touch && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && !owned(e);
+
+// An Enter this soon after the one that sent is that keypress again, not a Stop: a double press is
+// a few hundred ms apart, and a second wanted to stop the turn the message joined is no sooner
+export const ENTER_AFTER_SEND_MS = 1000;

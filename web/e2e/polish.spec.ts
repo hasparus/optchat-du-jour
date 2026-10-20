@@ -4,6 +4,7 @@
 // its input streams (E45) and a Write a closed new file; a page from another build is told to
 // reload instead of reconnecting (E44). 360 px wide, like the other specs.
 import type { Page } from "@playwright/test";
+import { ENTER_AFTER_SEND_MS } from "../src/lib/stop-keys";
 import { EDIT_INPUT, expect, open, REPLY, send, test, WRITE_INPUT } from "./fixture";
 
 const box = (page: Page) => page.getByLabel("Message");
@@ -22,8 +23,11 @@ test("Esc stops a running turn, and so does Enter in an empty composer; Esc in a
   await expect(page.getByText("cancelled").first()).toBeVisible();
   await expect(page.getByText(REPLY)).toHaveCount(0);
 
+  const sentAt = Date.now();
   await running(page, "stop me with Enter");
   await expect(box(page)).toHaveValue("");
+  // past the guard against a double Enter: one this soon after the Enter that sent would stop nothing
+  await page.waitForTimeout(Math.max(0, sentAt + ENTER_AFTER_SEND_MS + 250 - Date.now()));
   await box(page).press("Enter");
   await expect(page.getByTestId("status")).toBeHidden();
   await expect(page.getByText("cancelled")).toHaveCount(2);

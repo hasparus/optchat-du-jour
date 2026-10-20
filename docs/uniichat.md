@@ -71,7 +71,7 @@ Also planned, from the same reports:
 | --- | --- |
 | A cache-replay test | Our version of `cache.test.ts`: fake Anthropic and Responses caches, gaps up to 2 h, api-key and claude-code layouts and the compactor engines. It turns the cost model into numbers and settles E6 and E26 |
 | The REPL's own silence watchdog | Only the web link watches for the heartbeat so far |
-| The other large frames on `/ws` | Paged snapshots (E42) left these whole: the reply so far and an artifact's draft (up to 512 KB) for a client that joins mid-run, and a state whose held messages are long. Cut into pieces under `SNAPSHOT_BYTES` the same way |
+| The other large frames on `/ws` | Paged snapshots (E42) left these whole: the reply so far, an artifact's draft (up to 512 KB) and a file tool's input so far (E45) for a client that joins mid-run, and a state whose held messages are long. Cut into pieces under `SNAPSHOT_BYTES` the same way |
 | The REPL's own resends | The REPL's messages are answered once (E41), but it forgets them when its socket drops and sends no id with its cancels and settings. It could keep and resend them as the web link does |
 | Rebuilding clipped nodes | Find the `clipped: true` lines and ask again, for instance after a model change |
 | Size retries without the previous reply | A bake-off arm first, against our same-conversation retries |

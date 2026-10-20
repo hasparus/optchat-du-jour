@@ -28,7 +28,7 @@ import type { Uploader } from "@/lib/attach";
 import type { Link } from "@/lib/connection";
 import { loadDraft, loadHistory, remember, saveDraft } from "@/lib/draft";
 import { expand, folds, insert, nextId, type Paste, present, removeToken, tokenOf } from "@/lib/paste";
-import { emptyEnterStops } from "@/lib/stop-keys";
+import { emptyEnterStops, ENTER_AFTER_SEND_MS } from "@/lib/stop-keys";
 import type { Restored, SessionStore } from "@/lib/session";
 import { cn } from "@/lib/utils";
 import type { Device, FollowUp, SessionState } from "@wire";
@@ -40,10 +40,6 @@ import { CompactSelect, FollowUps, ModelPicker } from "./pickers";
 import { useAttachments } from "./use-attachments";
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
-
-// An Enter this soon after the one that sent is that keypress again, not a Stop: a double press is
-// a few hundred ms apart, and a second wanted to stop the turn the message joined is no sooner
-export const ENTER_AFTER_SEND_MS = 1000;
 
 export type ComposerProps = {
   readonly link: Link;

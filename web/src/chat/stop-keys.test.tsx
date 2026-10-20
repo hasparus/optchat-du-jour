@@ -5,10 +5,9 @@
 // that sent; and Enter with something typed still sends.
 import { afterEach, expect, setSystemTime, test } from "bun:test";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { escapeStops, type KeyLike } from "@/lib/stop-keys";
+import { ENTER_AFTER_SEND_MS, escapeStops, type KeyLike } from "@/lib/stop-keys";
 import { box, onTouchScreen, start, stubApi, type } from "@/test/app";
 import { actionsOf, state } from "@/test/fixture";
-import { ENTER_AFTER_SEND_MS } from "./composer";
 
 stubApi();
 afterEach(() => {

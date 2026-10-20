@@ -12,6 +12,7 @@ import { FOLDS_MAX, loadFolds, rememberFolds } from "./draft";
 import { foldsOf } from "./paste";
 import { makeSession } from "./session";
 
+const greeting = () => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT } as const];
 const settle = async () => {
   await Bun.sleep(20);
 };
@@ -47,6 +48,22 @@ test("a message whose ack was lost with its socket: sent again on the next, its 
   server.play(received(id, "logged", 4));
   expect(session.get().pending).toEqual([]);
   expect(session.get().folds.get(4)).toEqual({ length: 11, spans: [[5, 11]] });
+  link.close();
+});
+
+test("a message sent before a reload keeps its spans: the new page reads them back with the message, and keeps them from the server's answer", async () => {
+  const before = fakeServer(greeting);
+  const page = openLink("ws://x/ws", { retryMs: 1, socket: before.socket });
+  makeSession(page).send("see:\nPASTED", { spans: [[5, 11]] });
+  await settle();
+  const id = lastId(before.sent);
+  page.close(); // reloaded before any answer came
+  const after = fakeServer(greeting);
+  const link = openLink("ws://x/ws", { retryMs: 1, socket: after.socket });
+  const session = makeSession(link); // from the same storage
+  await settle();
+  after.play(received(id, "logged", 6));
+  expect(session.get().folds.get(6)).toEqual({ length: 11, spans: [[5, 11]] });
   link.close();
 });
 
