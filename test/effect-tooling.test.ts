@@ -133,6 +133,16 @@ test("pinned schema supports selective export permissions without severity overr
   }
 });
 
+// HttpClient.make and HttpClientResponse.fromWeb are allowed for the cache replay's fake vendors
+// only (agent-patterns/effect-diagnostics.md); the allowlist is project-wide, so the app's own
+// code is held to it here: a use under src/, server/, cli/ or device/ needs its own review
+test("the fake vendors' unstable HTTP exports stay out of the app", () => {
+  const app = ["src", "server", "cli", "device"].flatMap((dir) => [...new Bun.Glob(`${dir}/**/*.{ts,tsx}`).scanSync({ cwd: root })]);
+  expect(app.length).toBeGreaterThan(50);
+  const uses = app.filter((file) => /\bHttpClient\.make\b|\bHttpClientResponse\.fromWeb\b|\bfromWeb\b/.test(readFileSync(path.join(root, file), "utf8")));
+  expect(uses).toEqual([]);
+});
+
 test("canonical build scripts select JS TS5 and preserve standalone vendor scripts", () => {
   const Scripts = Schema.Struct({ scripts: Schema.Record(Schema.String, Schema.String) });
   const { scripts } = readJson("package.json", Scripts);

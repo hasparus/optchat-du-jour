@@ -1,14 +1,14 @@
 // Single flight on every block prefix, with TTLs (E50; docs/optchat.md §3.3, after UniiChat's
 // AskAI.keys and AskAI.wait). Real api-key compactor calls against a fake vendor whose prompt
-// cache works as §3.3 says Anthropic's does: an entry only at a marked block, found from a mark by
-// looking back at most LOOKBACK blocks, there once the response begins (message_start, onStart),
-// kept five minutes from its last read. The fake counts the requests and the blocks each one
-// writes to the cache. Time is the TestClock's.
+// cache is test/fake-cache.ts, the cache replay's: an entry only at a marked block, found from a
+// mark by looking back at most LOOKBACK blocks, there once the response begins (message_start,
+// onStart), kept five minutes from the start of its last read. The fake counts the requests and
+// the blocks each one writes to the cache. Time is the TestClock's.
 import { expect, test } from "bun:test";
 import { Duration, Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
 import type { Job } from "../src/compactor.ts";
-import { LOOKBACK, MASTER_TOOLS } from "../src/config.ts";
+import { MASTER_TOOLS } from "../src/config.ts";
 import { ModelError } from "../src/engines/errors.ts";
 import { type Gate, makeGate, type Prefix } from "../src/engines/inflight.ts";
 import { isPicture } from "../src/media/part.ts";
@@ -16,8 +16,8 @@ import type { Provider } from "../src/providers/provider.ts";
 import { newMsg } from "../src/store.ts";
 import { apiKeyCompactor } from "../src/summarize/api-key.ts";
 import { blocks, claudePrefix } from "../src/summarize/claude-code.ts";
+import { type CacheBlock, makeVendorCache } from "./fake-cache.ts";
 
-const TTL = Duration.toMillis(Duration.minutes(5));
 const RESPONSE = Duration.toMillis(Duration.seconds(1)); // from a request to its first response event
 
 // One request as the vendor saw it: when it came, how many blocks it wrote to the cache, and when
@@ -27,7 +27,7 @@ type Seen = { readonly at: number; readonly wrote: number; done: number | null }
 // `hangs`: the requests (by their number, from 0) whose response never begins; `fails`: those that
 // fail before it begins; `answer`: how long an answer takes after its response begins
 const vendor = (o: { readonly hangs?: readonly number[]; readonly fails?: readonly number[]; readonly answer?: number } = {}) => {
-  const entries = new Map<string, number>(); // a marked prefix, by its blocks, and until when it is kept
+  const cache = makeVendorCache(); // test/fake-cache.ts: an entry at a mark, the lookback, the TTL
   const seen: Seen[] = [];
   const now = Effect.clockWith((clock) => Effect.sync(() => clock.currentTimeMillisUnsafe()));
   const provider: Provider = {
@@ -37,7 +37,6 @@ const vendor = (o: { readonly hangs?: readonly number[]; readonly fails?: readon
         const first = c.history[0];
         const parts = first?.type === "user" ? first.parts.flatMap((p) => (isPicture(p) ? [] : [p])) : [];
         const mark = first?.type === "user" ? (first.mark ?? -1) : -1;
-        const key = (k: number) => parts.slice(0, k + 1).join("\u0000");
         const sent = yield* now;
         const n = seen.length;
         if (o.fails?.includes(n)) {
@@ -46,16 +45,14 @@ const vendor = (o: { readonly hangs?: readonly number[]; readonly fails?: readon
           yield* Effect.sleep(RESPONSE);
           return yield* new ModelError({ message: "overloaded before the response began" });
         }
-        // the longest entry on one of its block boundaries within the lookback; a read keeps it longer
-        let hit = mark;
-        while (hit >= Math.max(0, mark - LOOKBACK) && (entries.get(key(hit)) ?? 0) <= sent) hit--;
-        if (hit < Math.max(0, mark - LOOKBACK)) hit = -1;
-        if (hit >= 0) entries.set(key(hit), sent + TTL);
-        const request: Seen = { at: sent, done: null, wrote: mark - hit };
+        // each part a block, the mark where the provider puts it; no least size, five minutes
+        const blocks = parts.map((key, k): CacheBlock => ({ key, mark: k === mark ? "5m" : null, run: null, tier: "message", tokens: 1 }));
+        const look = cache.look({ blocks, front: "", least: 0, model: "fake", vendor: "anthropic" }, sent);
+        const request: Seen = { at: sent, done: null, wrote: look.use.blocksWritten };
         seen.push(request);
         if (o.hangs?.includes(n)) return yield* Effect.never;
         yield* Effect.sleep(RESPONSE);
-        if (mark >= 0) entries.set(key(mark), sent + RESPONSE + TTL); // written once the response begins
+        look.commit(); // written once the response begins
         yield* c.onStart ?? Effect.void;
         yield* Effect.sleep(o.answer ?? 0);
         request.done = yield* now;
