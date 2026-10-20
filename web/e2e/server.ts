@@ -4,13 +4,15 @@
 // in to in a secrets store of its own (no model, no key, no network). The master's chain is Claude
 // Opus, then GPT-6.1 Sol on the plan, to pick between. Every Claude turn runs a tool, then streams
 // its reply slowly enough for a second page to watch it and for a cancel to land; every plan turn
-// answers SOL_REPLY. e2e/fixture.ts starts one per test:
+// answers SOL_REPLY. A turn whose message says HELD holds its reply after the first words until
+// the test opens the gate HELD_GATE (e2e/replies.ts). e2e/fixture.ts starts one per test:
 //   E2E_PORT  the port; unset or 0, the server picks a free one itself, just before it binds. Either
 //             way it writes the port to $E2E_HOME/port once it is listening, so the file means this
 //             server holds the port (e2e/fixture.ts reads it, and starts again on another port when
 //             the bind found it taken). The port can't be left to the OS (`port: 0`): the
 //             Host guard, the MCP URL of the local claude and the device routes all need it up front.
-//   E2E_HOME  the data dir (a restart keeps it); a fresh one when unset
+//   E2E_HOME  the data dir (a restart keeps it); a fresh one when unset. Its gates/ holds the gates
+//             a test has opened (e2e/fixture.ts `release`)
 //   E2E_QUICK_SUMMARIES=1  summaries without a `claude` call each, for a test that seeds a long log
 //   E2E_SPENT=1  every Claude turn ends on a usage limit
 //   E2E_TOOL_ERROR=1  every Claude turn's tool fails: Claude Code's is_error on its result (E28)
@@ -53,6 +55,8 @@ import {
   FETCHED,
   FIXER_REPORT,
   FIXER_TASK,
+  HELD,
+  HELD_GATE,
   hostile as hostilePage,
   LANDING,
   LANDING_EDIT,
@@ -87,6 +91,14 @@ const reply = [
   ...words.flatMap((w) => [delta(w), { sleep: 600 }]),
   { emit: { message: { content: [{ text: words.join(""), type: "text" }], role: "assistant" }, type: "assistant" } },
   { result: { text: words.join("") } },
+];
+// HELD's reply: the tool call and the first words, then the rest once the test opens the gate
+const held = [
+  ...reply.slice(0, 2),
+  ...words.slice(0, 2).map(delta),
+  { gate: `${home}/gates/${HELD_GATE}` },
+  ...words.slice(2).map(delta),
+  ...reply.slice(-2),
 ];
 const todos = { result: "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress." };
 const patterns = [
@@ -159,7 +171,7 @@ const turnsOf = () => {
   if (Bun.env.E2E_SUBAGENTS) return { "*": [reply], "with subagents": [spawns] };
   if (demo !== null) return { "*": [[{ text: WOKEN }]], "on a branch": [isolated] };
   if (Bun.env.E2E_ARTIFACTS === "ui") return { "*": [publishes], "long weekend": [edits] };
-  return Bun.env.E2E_ARTIFACTS === "hostile" ? [[hostile]] : [[turn]];
+  return Bun.env.E2E_ARTIFACTS === "hostile" ? [[hostile]] : { "*": [turn], [HELD]: [held] };
 };
 const turns = turnsOf();
 const compact = Bun.env.E2E_MEMORY ? { compact: [[{ sleep: MEMORY_WAIT }, { text: MEMORY_SUMMARY }]] } : {};
