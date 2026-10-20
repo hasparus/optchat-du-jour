@@ -499,7 +499,11 @@ Memory screen, both drawn from one store.
   under Trace's indented rule (7 px in, 12 px of padding, 16 px from `sm`), 8 px apart: its halves as
   blocks or rows, or at level 0 one 12 px muted line, "The model reads:" and the summary in ink,
   over the message as the log shows it. Under the halves, small ghost pills: "All N messages" (from
-  level 2), "Show 100 more of N", "Show in the log".
+  level 2) and back, "Back to its two halves", "Show 100 more of N", "Show in the log".
+- **Names:** a block's button is named by its head (`12+8 · 8 messages · when`); its summary
+  describes it, so a screen reader doesn't read 512 bytes as a name.
+- **A read that failed:** in place of the lines it would have read, "The memory couldn't be read:
+  why" in red with a "Try again" pill (`role="alert"`), never under the shimmer.
 - No colour of its own: a summary is grey structure around ink text, and state is the shimmer.
 
 ### Navigation

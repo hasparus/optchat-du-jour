@@ -242,8 +242,8 @@ export async function attach(page: Page, file: { readonly name: string; readonly
 }
 
 export async function send(page: Page, text: string) {
-  await page.getByLabel("Message").fill(text);
-  await page.getByLabel("Message").press("Enter");
+  await page.getByLabel("Message", { exact: true }).fill(text);
+  await page.getByLabel("Message", { exact: true }).press("Enter");
 }
 
 // A message sent from `page` has had its turn: it is in the log (its bubble shows), then the status

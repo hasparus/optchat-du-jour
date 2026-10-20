@@ -18,12 +18,12 @@ stubApi();
 // A chat of `count` long messages (each past NODE: summarized, not its own line), every node
 // summarized as it becomes ready but the last message's, and marks so small that batches merge
 // the view into a few high lines; the feed's frames, kept to play
-function memory(count: number) {
-  const mem: Mem = newMem({ high: 120, low: 60 }, { high: 60, low: 30 });
+function memory(count: number, high = 120) {
+  const mem: Mem = newMem({ high, low: high / 2 }, { high: high / 2, low: high / 4 });
   const frames: Inbound[] = [];
   const feed = watchMemory(mem, (e) => {
     if (e.type === "memory") frames.push({ name: "memory", type: EventType.CUSTOM, value: e.change });
-  }, { start: 500 });
+  });
   const summarizeAll = (but: number | null) => {
     for (let more = true; more; ) {
       more = false;
@@ -39,11 +39,12 @@ function memory(count: number) {
     summarizeAll(i === count - 1 ? i : null);
   }
   MEMORY.mem = mem;
-  MEMORY.rev = feed.rev;
+  MEMORY.at = feed.at;
   frames.length = 0; // a page read now is as of all of these
   return { feed, frames, mem, summarizeAll };
 }
 
+const reads = (path: string) => MEMORY.reads.filter((r) => r.startsWith(path)).length;
 const blocks = () => screen.queryAllByTestId("memory-block");
 const memoryMode = async () => {
   fireEvent.click(screen.getByRole("button", { name: "Memory" }));
@@ -83,6 +84,17 @@ test("the chat's Memory mode shows the view's summaries, and a summary opens in 
       return first;
     });
   }
+  // straight down to its messages, and back to its two halves
+  const topNow = () => blocks().find((b) => b.dataset.node === node);
+  fireEvent.click(within(topNow() ?? document.body).getByRole("button", { name: `All ${2 ** level} messages` }));
+  await waitFor(() => {
+    expect(within(topNow() ?? document.body).queryAllByTestId("memory-block").filter((b) => b.dataset.level === "0").length).toBeGreaterThanOrEqual(2 ** level - 1);
+  });
+  fireEvent.click(within(topNow() ?? document.body).getByRole("button", { name: "Back to its two halves" }));
+  await waitFor(() => {
+    const inner = within(topNow() ?? document.body).queryAllByTestId("memory-block");
+    expect(inner.map((b) => Number(b.dataset.level)).filter((l) => l === level - 1).length).toBe(2);
+  });
   await screen.findByText(/^message 0 w+$/);
   expect(screen.getAllByText("The model reads:").length).toBeGreaterThan(0);
   // back to the log: the same rows as before
@@ -126,6 +138,42 @@ test("a line waiting for its summary fills in live, when the frame that says it 
   });
   expect(blocks().at(-1)?.textContent).toContain("Tool call");
   s.feed.close();
+});
+
+test("a view of 80 summarized messages, open as said, reads them in one read of the log, not one each", async () => {
+  // marks no view of these reaches: a level-0 line per message, each said and summarized, open by default
+  const { mem } = memory(80, 1e9);
+  start();
+  await screen.findByText("what is in the repo?");
+  const level0 = mem.view.filter((c) => c.l === 0).length;
+  expect(level0).toBe(80);
+  await memoryMode();
+  await waitFor(() => {
+    expect(screen.queryAllByText(/^message \d+ w+$/).length).toBe(level0);
+  });
+  expect(MEMORY.reads.filter((r) => r.startsWith("/api/memory/view"))).toEqual(["/api/memory/view?limit=100"]);
+  expect(reads("/api/messages")).toBe(1);
+});
+
+test("older lines that can't be read say why, with Try again, in the chat's Memory mode; Try again reads them", async () => {
+  memory(150, 1e9); // a line per message: older than a page
+  start();
+  await screen.findByText("what is in the repo?");
+  await memoryMode();
+  MEMORY.failing = true;
+  fireEvent.click(await screen.findByRole("button", { name: "50 older lines" }));
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("The memory couldn't be read");
+  expect(within(alert).getByRole("button", { name: "Try again" })).toBeDefined();
+  expect(screen.queryAllByTestId("memory-gap")).toEqual([]); // not under the shimmer
+  MEMORY.failing = false;
+  fireEvent.click(within(alert).getByRole("button", { name: "Try again" }));
+  await waitFor(() => {
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+  await waitFor(() => {
+    expect(blocks().some((b) => b.dataset.node === "0:0")).toBe(true);
+  });
 });
 
 test("the Memory screen draws the same live blocks, with how full the view is, and shows a block's messages in the log", async () => {

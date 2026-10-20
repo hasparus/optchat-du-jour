@@ -14,14 +14,17 @@ import { watchMemory } from "../server/memory-feed.ts";
 import { memoryRoutes } from "../server/routes/memory.ts";
 import { NODE } from "../src/config.ts";
 import { mount } from "../src/http.ts";
-import { childrenPage, memoryChange, memoryLine, viewHunks, viewPage } from "../src/memory-view.ts";
+import { childrenPage, type Counted, memoryChange, memoryLine, viewHunks, viewLine, viewPage } from "../src/memory-view.ts";
 import type { SessionEvent } from "../src/session-events.ts";
 import { newMsg, newNode } from "../src/store.ts";
-import { built, type Coord, type Marks, type Mem, newMem, nodes, ready } from "../src/tree.ts";
-import { addMessage, addNode } from "../src/view.ts";
+import { built, type Coord, localTime, type Marks, type Mem, newMem, nodes, ready } from "../src/tree.ts";
+import { addMessage, addNode, PLACEHOLDER } from "../src/view.ts";
 import { type MemoryChange, MemoryChildren, type MemoryLine, MemoryPage, type SessionState } from "../src/wire.ts";
 import { freePort } from "./ports.ts";
 
+const ignore = () => {
+  // a feed whose frames go nowhere
+};
 const MARKS: Marks = { high: 6000, low: 3000 };
 const COMPACTION: Marks = { high: 3000, low: 1500 };
 
@@ -56,8 +59,8 @@ function chat(seed: number) {
 
 // A client: the lines it holds (null: told of, not read yet), the frames it got, and what it does
 // with them, as web/src/lib/memory.ts does: each hunk spliced in order, then what it lacks read
-function client(mem: Mem, start: { rev: number }) {
-  const first = viewPage(mem, start.rev, undefined, 100_000);
+function client(mem: Mem, start: Counted) {
+  const first = viewPage(mem, start, undefined, 100_000);
   let { rev } = first;
   let lines: (MemoryLine | null)[] = [...first.lines];
   const apply = (c: MemoryChange) => {
@@ -70,7 +73,7 @@ function client(mem: Mem, start: { rev: number }) {
     expect(lines.length).toBe(c.total);
   };
   const fill = () => {
-    const page = viewPage(mem, rev, undefined, 100_000);
+    const page = viewPage(mem, { boot: first.boot, rev }, undefined, 100_000);
     lines = lines.map((l, k) => l ?? page.lines[k] ?? null);
   };
   return { apply, fill, lines: () => lines };
@@ -82,8 +85,8 @@ test("a client that applies every frame in order holds the view as the server do
     const frames: MemoryChange[] = [];
     const feed = watchMemory(c.mem, (e) => {
       if (e.type === "memory") frames.push(e.change);
-    }, { cap: 1500, start: 0 });
-    const reader = client(c.mem, { rev: feed.rev() });
+    }, { cap: 1500 });
+    const reader = client(c.mem, feed.at());
     let merged = false, inline = 0, bare = 0;
     for (let step = 0; step < 400; step++) {
       const before = c.mem.view.length;
@@ -98,7 +101,7 @@ test("a client that applies every frame in order holds the view as the server do
       if (step % 7 === 0) reader.fill();
     }
     reader.fill();
-    expect([...reader.lines()]).toEqual([...viewPage(c.mem, feed.rev(), undefined, 100_000).lines]);
+    expect([...reader.lines()]).toEqual([...viewPage(c.mem, feed.at(), undefined, 100_000).lines]);
     expect(merged).toBe(true); // batches did merge lines
     expect(inline).toBeGreaterThan(0);
     expect(bare).toBeGreaterThan(0); // and some changes were too big for a 1.5 KB frame
@@ -112,7 +115,7 @@ test("no frame is over its cap, and a hunk carries its lines whole or not at all
     const frames: MemoryChange[] = [];
     const feed = watchMemory(c.mem, (e) => {
       if (e.type === "memory") frames.push(e.change);
-    }, { cap, start: 0 });
+    }, { cap });
     for (let step = 0; step < 300; step++) {
       if (c.random() < 0.4) c.message();
       else c.summarize();
@@ -126,16 +129,19 @@ test("no frame is over its cap, and a hunk carries its lines whole or not at all
   }
 });
 
-test("a message's line goes out with it, numbered from the feed's start, a short one with the message itself", () => {
+test("a message's line goes out with it, numbered from 1 in the run, a short one with the message itself", () => {
   const mem = newMem(MARKS, COMPACTION);
   const out: SessionEvent[] = [];
   const feed = watchMemory(mem, (e) => {
     out.push(e);
-  }, { start: 10 });
+  }, { boot: "b1" });
   addMessage(mem, newMsg(0, "user", "hello there"));
   addMessage(mem, newMsg(1, "talk", `a long reply ${"y".repeat(800)}`));
-  expect(out.map((e) => (e.type === "memory" ? e.change.rev : -1))).toEqual([11, 12]);
-  expect(feed.rev()).toBe(12);
+  expect(out.map((e) => (e.type === "memory" ? `${e.change.boot}:${e.change.rev}` : ""))).toEqual(["b1:1", "b1:2"]);
+  expect(feed.at()).toEqual({ boot: "b1", rev: 2 });
+  // another run is another boot, by default a random one
+  const other = watchMemory(newMem(MARKS, COMPACTION), ignore);
+  expect(other.at().boot).not.toBe(watchMemory(newMem(MARKS, COMPACTION), ignore).at().boot);
   const [first, second] = out;
   if (first?.type !== "memory" || second?.type !== "memory") throw new Error("no change");
   expect(first.change.hunks[0]?.lines?.[0]?.entry).toMatchObject({ i: 0, kind: "user", text: "hello there" });
@@ -152,12 +158,12 @@ test("a summary written into an unbuilt line replaces that line, with its text",
   const out: MemoryChange[] = [];
   const feed = watchMemory(mem, (e) => {
     if (e.type === "memory") out.push(e.change);
-  }, { start: 0 });
+  }, { boot: "b" });
   addMessage(mem, newMsg(0, "user", "hello there"));
   addMessage(mem, newMsg(1, "talk", `a long reply ${"y".repeat(800)}`));
   out.length = 0;
   addNode(mem, newNode(0, 1, "talk: a short summary"));
-  expect(out).toEqual([{ hunks: [{ added: 1, at: 1, lines: [memoryLine(mem, { i: 1, l: 0 })], removed: 1 }], rev: 3, total: 2 }]);
+  expect(out).toEqual([{ boot: "b", hunks: [{ added: 1, at: 1, lines: [memoryLine(mem, { i: 1, l: 0 })], removed: 1 }], rev: 3, total: 2 }]);
   expect(out[0]?.hunks[0]?.lines?.[0]).toMatchObject({ built: true, size: 21, text: "talk: a short summary" });
   // the merge of 0 and 1 is no line of the view: nothing to tell
   addNode(mem, newNode(0, 0, "user: hello there"));
@@ -188,7 +194,17 @@ test("a level-0 line carries its message when the message is its own summary, an
 });
 
 const c = (l: number, i: number): Coord => ({ i, l });
+const pick = ({ built: b, i, id, l, n, size }: MemoryLine) => ({ built: b, i, id, l, n, size });
 const isBuilt = () => true;
+
+test("/api/view's line is the memory view's, in local time and with the placeholder until summarized", () => {
+  const mem = newMem(MARKS, COMPACTION);
+  addMessage(mem, newMsg(0, "talk", "z".repeat(NODE)));
+  addMessage(mem, newMsg(1, "user", "short"));
+  expect(viewLine(mem, { i: 0, l: 0 })).toEqual({ ...pick(memoryLine(mem, { i: 0, l: 0 })), from: localTime(mem.root[0]?.date ?? ""), text: PLACEHOLDER, to: localTime(mem.root[0]?.date ?? "") });
+  addNode(mem, newNode(0, 0, "talk: zz"));
+  expect(viewLine(mem, { i: 0, l: 0 })).toMatchObject({ built: true, size: 8, text: "talk: zz" });
+});
 
 test("viewHunks: an append, a merge and a fill, each where it happened", () => {
   const before = [c(1, 0), c(0, 2), c(0, 3), c(0, 4)];
@@ -209,7 +225,7 @@ test("viewHunks: an append, a merge and a fill, each where it happened", () => {
 test("memoryChange moves each hunk to where it applies after the ones before it", () => {
   const mem = newMem(MARKS, COMPACTION);
   for (let i = 0; i < 6; i++) addMessage(mem, newMsg(i, "user", `m${i}`));
-  const change = memoryChange(mem, 5, [
+  const change = memoryChange(mem, { boot: "b", rev: 5 }, [
     { added: [{ i: 0, l: 1 }], at: 0, removed: 2 },
     { added: [{ i: 1, l: 1 }], at: 2, removed: 2 },
   ]);
@@ -219,13 +235,27 @@ test("memoryChange moves each hunk to where it applies after the ones before it"
   ]);
 });
 
+test("a change whose hunks alone don't fit is one hunk that replaces the whole list, under the cap", () => {
+  const mem = newMem({ high: 1e9, low: 5e8 }, { high: 1e9, low: 5e8 });
+  for (let i = 0; i < 200; i++) addMessage(mem, newMsg(i, "user", `m${i}`));
+  // 100 one-line fills, far apart: more hunks than 600 bytes can name
+  const hunks = Array.from({ length: 100 }, (_, k) => ({ added: [{ i: 2 * k, l: 0 }], at: 2 * k, removed: 1 }));
+  const change = memoryChange(mem, { boot: "b", rev: 7 }, hunks, 600);
+  expect(change).toEqual({ boot: "b", hunks: [{ added: 200, at: 0, removed: 200 }], rev: 7, total: 200 });
+  expect(Buffer.byteLength(JSON.stringify({ name: "memory", type: "CUSTOM", value: change }))).toBeLessThanOrEqual(600);
+  // the old list's length is what the hunks took and gave: a merge of 4 into 2 and a line appended
+  const merged = memoryChange(mem, { boot: "b", rev: 8 }, [...hunks.slice(0, 99), { added: [{ i: 0, l: 1 }], at: 0, removed: 3 }], 600);
+  expect(merged.hunks).toEqual([{ added: 200, at: 0, removed: 202 }]);
+});
+
 test("pages of the view, and a node opened a level or more down, a page at a time", () => {
   const mem = newMem(MARKS, COMPACTION);
   for (let i = 0; i < 8; i++) addMessage(mem, newMsg(i, "user", `m${i}`));
-  expect(viewPage(mem, 3)).toMatchObject({ from: 0, rev: 3, total: 8 });
-  expect(viewPage(mem, 3, 6, 2)).toMatchObject({ from: 4, total: 8 });
-  expect(viewPage(mem, 3, 6, 2).lines.map((l) => l.id)).toEqual([4, 5]);
-  expect(viewPage(mem, 3, 99, 3).lines.map((l) => l.id)).toEqual([5, 6, 7]);
+  const at = { boot: "b", rev: 3 };
+  expect(viewPage(mem, at)).toMatchObject({ boot: "b", from: 0, rev: 3, total: 8 });
+  expect(viewPage(mem, at, 6, 2)).toMatchObject({ from: 4, total: 8 });
+  expect(viewPage(mem, at, 6, 2).lines.map((l) => l.id)).toEqual([4, 5]);
+  expect(viewPage(mem, at, 99, 3).lines.map((l) => l.id)).toEqual([5, 6, 7]);
   const halves = childrenPage(mem, { i: 0, l: 3 }, 1);
   expect(halves?.lines.map(({ i, l, n }) => ({ i, l, n }))).toEqual([
     { i: 0, l: 2, n: 4 },
@@ -239,9 +269,9 @@ test("pages of the view, and a node opened a level or more down, a page at a tim
 });
 
 // the routes alone, served in this process on a port of their own
-function routes(mem: Mem, rev = () => 9) {
+function routes(mem: Mem, at = () => ({ boot: "b9", rev: 9 })) {
   const port = freePort();
-  const served = HttpRouter.serve(mount((router) => memoryRoutes(router, { mem, rev }))).pipe(
+  const served = HttpRouter.serve(mount((router) => memoryRoutes(router, { at, mem }))).pipe(
     Layer.provide(BunHttpServer.layer({ hostname: "127.0.0.1", port })),
     Layer.provide(BunServices.layer),
   );
@@ -274,7 +304,7 @@ test("GET /api/memory/view and /api/memory/children: pages as the schemas have t
   const { dispose, json, status } = routes(mem);
   try {
     const page = Schema.decodeUnknownSync(MemoryPage)(await json("/api/memory/view?before=4&limit=2"));
-    expect(page).toMatchObject({ from: 2, rev: 9, total: 8 });
+    expect(page).toMatchObject({ boot: "b9", from: 2, rev: 9, total: 8 });
     expect(page.lines.map((l) => l.entry?.text)).toEqual(["m2", "m3"]);
     const tail = Schema.decodeUnknownSync(MemoryPage)(await json("/api/memory/view"));
     expect(tail.lines.map((l) => l.id)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
@@ -287,7 +317,7 @@ test("GET /api/memory/view and /api/memory/children: pages as the schemas have t
       [2, 0],
       [2, 1],
     ]);
-    for (const bad of ["/api/memory/view?limit=0", "/api/memory/view?limit=501", "/api/memory/view?before=-1", "/api/memory/view?before=x", "/api/memory/children?l=1", "/api/memory/children?l=1&i=0&depth=2", "/api/memory/children?l=0&i=0", "/api/memory/children?l=53&i=0", "/api/memory/children?l=1&i=0.5"])
+    for (const bad of ["/api/memory/view?limit=0", "/api/memory/view?limit=501", "/api/memory/view?before=-1", "/api/memory/view?before=x", "/api/memory/children?l=1", "/api/memory/children?l=1&i=0&depth=2", "/api/memory/children?l=0&i=0", "/api/memory/children?l=53&i=0", "/api/memory/children?l=1&i=0.5", "/api/memory/children?l=2&i=0&from=-1", "/api/memory/children?l=2&i=0&limit=501"])
       expect([bad, await status(bad)]).toEqual([bad, 400]);
     expect(await status("/api/memory/children?l=3&i=1")).toBe(404);
     expect(await status("/api/memory/children?l=4&i=0")).toBe(404);
@@ -300,6 +330,6 @@ const STATE: SessionState = { budget: 128_000, device: "mini", down: [], effort:
 
 test("a change goes to a connection as a CUSTOM `memory` frame, as the feed made it", () => {
   const { translate } = openStream({ entries: [], live: null, state: STATE, thread: "mini", window: 10 });
-  const change: MemoryChange = { hunks: [{ added: 1, at: 0, removed: 0 }], rev: 4, total: 1 };
+  const change: MemoryChange = { boot: "b", hunks: [{ added: 1, at: 0, removed: 0 }], rev: 4, total: 1 };
   expect(translate({ change, type: "memory" })).toEqual([{ name: "memory", type: EventType.CUSTOM, value: change }]);
 });

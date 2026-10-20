@@ -4,14 +4,15 @@
 // with, to fill what a change left out, and on opening a summary.
 import { Effect, Schema } from "effect";
 import { type HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
-import { childrenPage, MAX_PAGE_LINES, viewPage } from "../../src/memory-view.ts";
+import { childrenPage, type Counted, viewPage } from "../../src/memory-view.ts";
 import type { Mem } from "../../src/tree.ts";
-import { MemoryChildren, MemoryPage } from "../../src/wire.ts";
+import { MEMORY_MAX_LINES, MemoryChildren, MemoryPage } from "../../src/wire.ts";
 
 const Count = Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
-const Limit = Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ maximum: MAX_PAGE_LINES, minimum: 1 }));
+const Limit = Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ maximum: MEMORY_MAX_LINES, minimum: 1 }));
 const ViewQuery = Schema.Struct({ before: Schema.optional(Count), limit: Schema.optional(Limit) });
-// a node's level and index, as /api/node takes them, how deep to open it, and which of its descendants
+// a node's level and index (a level whose span 2^l is still a safe integer), how deep to open it,
+// and which of its descendants
 const ChildrenQuery = Schema.Struct({
   i: Count,
   l: Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ maximum: 52, minimum: 0 })),
@@ -22,7 +23,7 @@ const ChildrenQuery = Schema.Struct({
 const badRequest = () => HttpServerResponse.empty({ status: 400 });
 const serverError = () => HttpServerResponse.empty({ status: 500 });
 
-export const memoryRoutes = (router: HttpRouter.HttpRouter, o: { readonly mem: Mem; readonly rev: () => number }) =>
+export const memoryRoutes = (router: HttpRouter.HttpRouter, o: { readonly mem: Mem; readonly at: () => Counted }) =>
   Effect.gen(function* () {
     // the view's lines before `before` (all: the newest), `limit` at most (100 unless asked, 500 at most)
     yield* router.add("GET", "/api/memory/view", () =>
@@ -30,7 +31,7 @@ export const memoryRoutes = (router: HttpRouter.HttpRouter, o: { readonly mem: M
         const query = yield* HttpServerRequest.schemaSearchParams(ViewQuery).pipe(Effect.result);
         if (query._tag === "Failure") return badRequest();
         const { before, limit } = query.success;
-        return yield* HttpServerResponse.schemaJson(MemoryPage)(viewPage(o.mem, o.rev(), before, limit)).pipe(Effect.orElseSucceed(serverError));
+        return yield* HttpServerResponse.schemaJson(MemoryPage)(viewPage(o.mem, o.at(), before, limit)).pipe(Effect.orElseSucceed(serverError));
       }),
     );
     // Node (l, i) opened `depth` levels down (1 unless asked: its two halves), its descendants from

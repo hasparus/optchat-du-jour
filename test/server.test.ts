@@ -8,7 +8,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { type Inbound, parseInbound } from "../cli/repl.ts";
 import { OUT_OF_DATE } from "../server/routes/ws.ts";
-import { ReasoningHeads, ReasoningPiece } from "../src/wire.ts";
+import { MemoryPage, ReasoningHeads, ReasoningPiece } from "../src/wire.ts";
 
 const ROOT = `${import.meta.dir}/../`;
 const FAKE = `${ROOT}test/fake-claude.ts`;
@@ -309,17 +309,20 @@ test("a client that resends the whole history has only its new messages answered
   ]);
 }, 20_000);
 
-test("/api/node takes a level and an index that are non-negative integers, and knows which nodes exist", async () => {
+test("/api/memory: the view's lines as of the feed's change, and a node's halves; a level and an index that are non-negative integers, and nodes the log reaches", async () => {
   const status = async (query: string) => {
-    const response = await fetch(`${base}/api/node?${query}`);
+    const response = await fetch(`${base}/api/memory/children?${query}`);
     return response.status;
   };
-  for (const bad of ["l=-1&i=0", "l=0&i=1.5", "l=NaN&i=0", "l=0&i=-1", "l=1000&i=0", "l=0", "l=x&i=0"]) expect([bad, await status(bad)]).toEqual([bad, 400]);
-  expect(await status("l=0&i=0")).toBe(200);
-  expect(await status("l=0&i=999")).toBe(404);
+  for (const bad of ["l=-1&i=0", "l=1&i=1.5", "l=NaN&i=0", "l=1&i=-1", "l=1000&i=0", "l=1", "l=x&i=0", "l=0&i=0"]) expect([bad, await status(bad)]).toEqual([bad, 400]);
+  expect(await status("l=1&i=0")).toBe(200);
+  expect(await status("l=1&i=999")).toBe(404);
   expect(await status("l=52&i=1")).toBe(404);
-  const node = await fetch(`${base}/api/node?l=1&i=0`).then(async (r) => r.json());
-  expect(node).toMatchObject({ children: [{ i: 0, l: 0 }, { i: 1, l: 0 }], i: 0, id: 0, l: 1, n: 2 });
+  const halves = await fetch(`${base}/api/memory/children?l=1&i=0`).then(async (r) => r.json());
+  expect(halves).toMatchObject({ depth: 1, i: 0, l: 1, lines: [{ i: 0, l: 0 }, { i: 1, l: 0 }], total: 2 });
+  const page = Schema.decodeUnknownSync(MemoryPage)(await fetch(`${base}/api/memory/view`).then(async (r) => r.json()));
+  expect(page.from).toBe(0);
+  expect(page.boot.length).toBeGreaterThan(0);
 });
 
 // each follow-up behavior a STATE_DELTA sets

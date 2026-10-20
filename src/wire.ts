@@ -425,36 +425,27 @@ export const MemoryLine = Schema.Struct({
   entry: Schema.optional(Msg),
 });
 export type MemoryLine = typeof MemoryLine.Type;
+// the lines a /api/memory read holds unless the client asks for fewer, and the most it may ask for
+export const MEMORY_PAGE_LINES = 100;
+export const MEMORY_MAX_LINES = 500;
 // GET /api/memory/view?before&limit: the view's lines [from, from + lines.length) of `total`, as of
-// change `rev` (the CUSTOM `memory` frames count up from it)
-export const MemoryPage = Schema.Struct({ rev: Schema.Number, total: Schema.Number, from: Schema.Number, lines: Schema.Array(MemoryLine) });
+// change `rev` of the server's run `boot` (a random id: the CUSTOM `memory` frames count up from
+// `rev` within one run, and a client takes another `boot` for a gap)
+export const MemoryPage = Schema.Struct({ boot: Schema.String, rev: Schema.Number, total: Schema.Number, from: Schema.Number, lines: Schema.Array(MemoryLine) });
 export type MemoryPage = typeof MemoryPage.Type;
 // GET /api/memory/children?l&i&depth&from&limit: node (l, i) opened `depth` levels down, its 2^depth
 // descendants (`total`), lines [from, from + lines.length) of them, oldest first
 export const MemoryChildren = Schema.Struct({ l: Schema.Number, i: Schema.Number, depth: Schema.Number, total: Schema.Number, from: Schema.Number, lines: Schema.Array(MemoryLine) });
 export type MemoryChildren = typeof MemoryChildren.Type;
-// CUSTOM `memory` (E47): the view's lines changed, as change `rev`, one more than the one before it.
-// Each hunk, in order, replaces `removed` lines from index `at` of the list as the hunks before it
-// left it with `added` new ones: `lines` when the frame had room for them (MEMORY_BYTES), else
-// read from /api/memory/view. `total`: the view's lines after it.
+// CUSTOM `memory` (E47): the view's lines changed, as change `rev` of run `boot`, one more than the
+// one before it. Each hunk, in order, replaces `removed` lines from index `at` of the list as the
+// hunks before it left it with `added` new ones: `lines` when the frame had room for them
+// (MEMORY_BYTES), else read from /api/memory/view. `total`: the view's lines after it.
 export const MemoryHunk = Schema.Struct({ at: Schema.Number, removed: Schema.Number, added: Schema.Number, lines: Schema.optional(Schema.Array(MemoryLine)) });
 export type MemoryHunk = typeof MemoryHunk.Type;
-export const MemoryChange = Schema.Struct({ rev: Schema.Number, total: Schema.Number, hunks: Schema.Array(MemoryHunk) });
+export const MemoryChange = Schema.Struct({ boot: Schema.String, rev: Schema.Number, total: Schema.Number, hunks: Schema.Array(MemoryHunk) });
 export type MemoryChange = typeof MemoryChange.Type;
 
-// /api/node: a message (level 0), or a node and its two children
-export const NodeView = Schema.Union([
-  Schema.Struct({ l: Schema.Literal(0), i: Schema.Number, id: Schema.Number, n: Schema.Number, kind: Kind, text: Schema.String, date: Schema.String }),
-  Schema.Struct({
-    l: Schema.Number,
-    i: Schema.Number,
-    id: Schema.Number,
-    n: Schema.Number,
-    text: Schema.NullOr(Schema.String),
-    children: Schema.Array(Schema.Struct({ built: Schema.Boolean, l: Schema.Number, i: Schema.Number, text: Schema.NullOr(Schema.String) })),
-  }),
-]);
-export type NodeView = typeof NodeView.Type;
 
 // /api/devices: each configured device; `local`, the server's own machine; `refused`, a runner that
 // is up but answered 403 (its callers or the server's node name are misconfigured)

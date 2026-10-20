@@ -5,23 +5,18 @@ import { Effect, Option, Schema } from "effect";
 import { type HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { claudeBinary, claudeVersion } from "../../src/claude/process.ts";
 import type { Settings } from "../../src/config.ts";
-import { openNode } from "../../src/mcp.ts";
+import { viewLine } from "../../src/memory-view.ts";
 import type { Reasoning } from "../../src/reasoning.ts";
 import type { Session } from "../../src/session.ts";
 import type { Subagents } from "../../src/subagents.ts";
-import { getNode, localTime, type Mem } from "../../src/tree.ts";
+import type { Mem } from "../../src/tree.ts";
 import { readUsage } from "../../src/usage.ts";
-import { PLACEHOLDER, render, viewSize } from "../../src/view.ts";
-import { Devices, MessagesPage, NodeView, PostMessage, ReasoningHeads, ReasoningPiece, Received, SessionState, span, SubagentLog, Usage, View } from "../../src/wire.ts";
+import { render, viewSize } from "../../src/view.ts";
+import { Devices, MessagesPage, PostMessage, ReasoningHeads, ReasoningPiece, Received, SessionState, SubagentLog, Usage, View } from "../../src/wire.ts";
 import { deviceStatuses, versionWarning } from "../devices.ts";
 import { type Assets, takeMessage } from "../messages.ts";
 
 const Before = Schema.Struct({ before: Schema.optional(Schema.NumberFromString), limit: Schema.optional(Schema.NumberFromString) });
-// a node's level and index: integers, and a level whose span 2^l is still a safe integer
-const NodeAt = Schema.Struct({
-  i: Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
-  l: Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ maximum: 52, minimum: 0 })),
-});
 const Index = Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
 // a range of log indexes, at most MAX_RANGE wide (a page of the chat is far less)
 const Range = Schema.Struct({ from: Index, to: Index });
@@ -117,57 +112,14 @@ export const apiRoutes = (
       }),
     );
 
-    // what the model sees: each view line with its range, dates and size (SPEC "Web UI", Memory)
+    // what the model sees, as the REPL's `view` prints it: each view line with its range, dates
+    // and size (src/memory-view.ts viewLine, the memory view's line), and the view rendered
     yield* router.add(
       "GET",
       "/api/view",
       Effect.suspend(() =>
-        HttpServerResponse.schemaJson(View)({
-          budget: mem.marks.high,
-          lines: mem.view.map((c) => {
-            const node = getNode(mem, c);
-            const { n, id } = span(c);
-            const from = mem.root[id], to = mem.root[id + n - 1];
-            return {
-              built: node !== undefined,
-              from: from ? localTime(from.date) : null,
-              id,
-              l: c.l,
-              i: c.i,
-              n,
-              size: node?.size ?? null,
-              text: node?.text ?? PLACEHOLDER,
-              to: to ? localTime(to.date) : null,
-            };
-          }),
-          size: viewSize(mem),
-          text: render(mem),
-        }),
+        HttpServerResponse.schemaJson(View)({ budget: mem.marks.high, lines: mem.view.map((c) => viewLine(mem, c)), size: viewSize(mem), text: render(mem) }),
       ).pipe(Effect.orElseSucceed(serverError)),
-    );
-
-    // one node and its two children, down to the message (the memory browser's zoom, as mcp.ts opens it)
-    yield* router.add("GET", "/api/node", () =>
-      Effect.gen(function* () {
-        const at = yield* HttpServerRequest.schemaSearchParams(NodeAt).pipe(Effect.result);
-        if (at._tag === "Failure") return badRequest();
-        const { i, l } = at.success;
-        const { id, n } = span({ i, l });
-        const found = openNode(mem, id, n);
-        if (!found) return HttpServerResponse.empty({ status: 404 });
-        const node: NodeView =
-          "message" in found
-            ? { date: localTime(found.message.date), i, id, kind: found.message.kind, l: 0, n, text: found.message.text }
-            : {
-                children: found.halves.map((h) => ({ built: h.node !== undefined, i: h.at.i, l: h.at.l, text: h.node?.text ?? null })),
-                i,
-                id,
-                l,
-                n,
-                text: found.node?.text ?? null,
-              };
-        return yield* HttpServerResponse.schemaJson(NodeView)(node).pipe(Effect.orElseSucceed(serverError));
-      }),
     );
 
     yield* router.add(

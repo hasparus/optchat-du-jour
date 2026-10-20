@@ -9,14 +9,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import type { Uploader } from "@/lib/attach";
 import type { Link, LinkStatus } from "@/lib/connection";
-import { makeMemory, type MemoryStore } from "@/lib/memory";
+import type { MemoryStore } from "@/lib/memory";
 import type { SessionStore } from "@/lib/session";
 import { syncThemeColor } from "@/lib/theme";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 import { nativeShell } from "@/lib/shell";
 import { ActivityIcon, MoonIcon, ServerIcon, SunIcon } from "lucide-react";
-import { Component, lazy, type ReactNode, Suspense, useCallback, useMemo, useState, useSyncExternalStore } from "react";
+import { Component, lazy, type ReactNode, Suspense, useCallback, useState, useSyncExternalStore } from "react";
 import { BackgroundWork, busyWith } from "./chat/background-work";
 import { Chat } from "./chat/chat";
 import { Subagents } from "./chat/subagents";
@@ -95,10 +95,8 @@ function ChangeServer() {
   );
 }
 
-export function App({ link, session, memory: given, uploader }: { link: Link; session: SessionStore; memory?: MemoryStore; uploader?: Uploader }) {
+export function App({ link, session, memory, uploader }: { link: Link; session: SessionStore; memory: MemoryStore; uploader?: Uploader }) {
   const state = useSyncExternalStore(session.subscribe, session.get);
-  // the memory view, kept live once shown (lib/memory.ts): the page's own, or one made here
-  const memory = useMemo(() => given ?? makeMemory(link), [given, link]);
   const devices = useApi(api.devices);
   const [tab, setTab] = useState<Tab>("chat");
   const [target, setTarget] = useState<number | null>(null);
@@ -185,7 +183,7 @@ export function App({ link, session, memory: given, uploader }: { link: Link; se
             />
           </TabsContent>
           <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="memory">
-            <Memory memory={memory} onShowInChat={showInChat} state={state.state} />
+            <Memory memory={memory} onShowInChat={showInChat} session={session} state={state} />
           </TabsContent>
           <TabsContent className="min-h-0 flex-1 overflow-y-auto" value="stats">
             <ScreenBoundary>

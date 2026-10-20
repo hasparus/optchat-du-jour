@@ -46,9 +46,14 @@ import { ChatRow, ReplyActions } from "./row";
 import { Outdated, RetryCountdown } from "./turn-status";
 import { useStopKeys } from "./use-stop-keys";
 import { useStickToEnd } from "./use-stick-to-end";
-import { memoryItems, type MemoryStore } from "@/lib/memory";
-import { MemoryItems, MemoryParts, useMemory } from "../memory/memory-view";
+import type { MemoryStore } from "@/lib/memory";
+import { MemoryTranscript } from "../memory/memory-transcript";
+import { LogRowProvider } from "./log-row";
 import { TranscriptToggle, useTranscript } from "./memory-mode";
+
+// the transcript's content, the log's and the memory's alike: one column, the dock's height clear
+// below the last row (--dock-h, set by useStickToEnd), 48 px above the first for the toggle
+const CONTENT = "mx-auto w-full max-w-184 gap-0 px-4 pt-12 pb-[calc(var(--dock-h,9rem)+1.5rem)] sm:px-6";
 
 // The preview pane is only fetched when an artifact is first opened (its draft preview and export
 // with it), so the chat's first paint doesn't wait for it
@@ -229,10 +234,18 @@ export type ChatProps = {
   // the chat is the tab shown: only then does Esc stop the turn
   readonly active: boolean;
   readonly uploader?: Uploader; // tests replace PUT /api/assets
-  readonly memory: MemoryStore; // the memory view (E46), for the transcript's Memory mode
+  readonly memory: MemoryStore; // the memory view (E46): the transcript's Memory mode draws it
 };
 
 export function Chat({ link, session, state, devices, target: asked, onTargetShown, onWork, active, uploader, memory }: ChatProps) {
+  // The transcript (./memory-mode.tsx): the log, or the memory view (../memory/memory-transcript.tsx).
+  // A message to show (from the Memory screen, or a block's "Show in the log") shows in the log.
+  const [mode, setMode] = useTranscript();
+  const [shownHere, setShownHere] = useState<number | null>(null);
+  const target = asked ?? shownHere;
+  useEffect(() => {
+    if (target !== null && mode === "memory") setMode("log");
+  }, [target, mode, setMode]);
   const [loading, setLoading] = useState(false);
   // the artifacts (SPEC "Artifacts"): their list, read again when a version is saved; the one the
   // pane shows (v null: its latest), beside the chat on a wide screen, in a sheet on a phone
@@ -281,22 +294,8 @@ export function Chat({ link, session, state, devices, target: asked, onTargetSho
   const rows = useMemo(() => chatRows(items, settled, draft, thinkingAt), [items, settled, draft, thinkingAt]);
   // the row the live thought shows above, given to it as is (rows.ts thoughtHolder)
   const holder = useMemo(() => (thinkingAt === null ? undefined : thoughtHolder(rows, thinkingAt)?.key), [rows, thinkingAt]);
-  // The transcript (./memory-mode.tsx): the log, or the memory view, whose lines cover the log up to
-  // its last message; what comes after (the reply streaming in) is the log's rows. A message to
-  // show (from the Memory screen, or a block's "Show in the log") shows in the log.
-  const [mode, setMode] = useTranscript();
-  const [shownHere, setShownHere] = useState<number | null>(null);
-  const target = asked ?? shownHere;
-  const memoryOn = mode === "memory" && target === null;
-  useEffect(() => (memoryOn ? memory.show() : undefined), [memoryOn, memory]);
-  const m = useMemory(memory);
-  const memItems = useMemo(() => (memoryOn ? memoryItems(m.lines, m.want) : []), [memoryOn, m.lines, m.want]);
-  const lastLine = m.lines.at(-1);
-  const viewEnd = lastLine ? lastLine.id + lastLine.n : (state.state?.messages ?? 0);
-  const shownRows = useMemo(() => (memoryOn ? rows.filter((r) => r.id >= viewEnd) : rows), [memoryOn, rows, viewEnd]);
-  const placed = placeMarkers(state.markers, shownRows);
   const draftKey = draft ? `e${draft.i}` : null;
-  const first = memoryOn ? m.want : (rows[0]?.id ?? 0);
+  const first = rows[0]?.id ?? 0;
   const busy = state.state !== null && state.state.phase !== "idle";
   const waiting = queued(state);
   // the tray on the composer's top edge shows that the server was updated, a turn waiting for a
@@ -324,10 +323,6 @@ export function Chat({ link, session, state, devices, target: asked, onTargetSho
 
   // one older page, prepended: true while there may be more, null when it couldn't be read
   const loadOlder = useCallback(async () => {
-    if (memoryOn) {
-      memory.earlier();
-      return false;
-    }
     if (loading || first <= 0) return false;
     setLoading(true);
     try {
@@ -337,7 +332,7 @@ export function Chat({ link, session, state, devices, target: asked, onTargetSho
     } finally {
       setLoading(false);
     }
-  }, [first, loading, session, memoryOn, memory]);
+  }, [first, loading, session]);
 
   // the top in view: the page before it
   useEffect(() => {
@@ -350,11 +345,11 @@ export function Chat({ link, session, state, devices, target: asked, onTargetSho
     return () => {
       io.disconnect();
     };
-  }, [loadOlder]);
+  }, [loadOlder, mode]);
 
   // "show in chat": load pages until the message is among the rows, then scroll to it
   useEffect(() => {
-    if (target === null || loading) return;
+    if (target === null || loading || mode !== "log") return;
     if (rows.length > 0 && first > target) {
       void loadOlder().then((more) => {
         if (more === null) onTargetShown(); // offline: give up rather than retry for ever
@@ -364,9 +359,8 @@ export function Chat({ link, session, state, devices, target: asked, onTargetSho
     const row = rowFor(rows, target);
     if (row) scrollToMessage(row.key, { align: "start" });
     setShownHere(null);
-    if (mode === "memory") setMode("log");
     onTargetShown();
-  }, [target, rows, first, loading, loadOlder, scrollToMessage, onTargetShown, mode, setMode]);
+  }, [target, rows, first, loading, loadOlder, scrollToMessage, onTargetShown, mode]);
 
   const lastTool = rows.findLast((r) => r.kind === "tool")?.key;
   // a plan is live only in the run that goes on now: from the user entry RUN_STARTED named
@@ -377,23 +371,59 @@ export function Chat({ link, session, state, devices, target: asked, onTargetSho
   const sources = useMemo(() => turnSources(rows), [rows]);
   const picked = device ?? state.state?.device ?? devices.find((d) => d.local)?.name ?? null;
 
-  // a log row inside the memory view: as the log draws it, settled (no run's plan, nothing streaming)
-  const renderRow = useCallback(
-    (row: Row) => (
-      <ChatRow
-        fold={row.kind === "user" ? state.folds.get(row.id) : undefined}
-        made={madeBy(row, artifacts)}
-        onArtifact={openArtifact}
-        onThought={session.toggleThought}
-        row={row}
-        streaming={false}
-        thought={row.kind === "talk" || row.kind === "tool" ? thoughts.get(row.id) : undefined}
-        toolState={row.kind === "tool" && row.output !== null ? toolStateOf(row, false, false) : "done"}
-      />
-    ),
-    [state.folds, artifacts, openArtifact, session.toggleThought, thoughts],
+  // The log's rows with the status markers between them, and an artifact the model is still writing
+  // after the running turn's rows until its call is in the log (SPEC "Artifacts"): the whole log,
+  // or in Memory mode what comes after the view's last message
+  const renderRows = (shown: readonly Row[], above = true) => {
+    const placed = placeMarkers(state.markers, shown);
+    return (
+      <>
+        {above &&
+          placed.above.map((m) => (
+            <StatusRow key={`k${m.key}`} marker={m} />
+          ))}
+        {shown.map((row, k) => (
+          <Fragment key={row.key}>
+            <MessageScrollerItem data-kind={row.kind} data-log-index={row.id} messageId={row.key} scrollAnchor={row.kind === "user"}>
+              <ChatRow
+                plan={plans.get(row.key)}
+                row={row}
+                sources={sources.get(row.key)}
+                streaming={row.key === draftKey}
+                onThought={session.toggleThought}
+                thought={row.key === holder ? live : row.kind === "talk" || row.kind === "tool" ? thoughts.get(row.id) : undefined}
+                toolState={row.kind === "tool" ? toolStateOf(row, busy, row.key === lastTool) : "done"}
+                made={madeBy(row, artifacts)}
+                onArtifact={openArtifact}
+                fold={row.kind === "user" ? state.folds.get(row.id) : undefined}
+              />
+            </MessageScrollerItem>
+            {placed.after.get(k)?.map((m) => (
+              <StatusRow key={`k${m.key}`} marker={m} />
+            ))}
+          </Fragment>
+        ))}
+        {drafting.map((d) => (
+          <div className="py-1" data-testid="artifact-drafting" key={`draft-${d.id}`}>
+            <ArtifactCard
+              detail={draftDetail(d)}
+              live
+              name={d.name ?? "New artifact"}
+              onOpen={() => {
+                if (d.name !== null) openArtifact(d.name, null);
+              }}
+              testId="artifact-draft-card"
+            />
+          </div>
+        ))}
+      </>
+    );
+  };
+  // what a log row inside the memory view reads (./log-row.tsx)
+  const logRowParts = useMemo(
+    () => ({ artifacts, folds: state.folds, onArtifact: openArtifact, onThought: session.toggleThought, thoughts }),
+    [artifacts, state.folds, openArtifact, session.toggleThought, thoughts],
   );
-  const memoryParts = useMemo(() => ({ memory, onShow: setShownHere, renderRow }), [memory, renderRow]);
 
   const paneView =
     pane === null ? null : (
@@ -428,84 +458,45 @@ export function Chat({ link, session, state, devices, target: asked, onTargetSho
           {/* focus and scroll-into-view stop short of the floating dock (WCAG 2.4.11: a focused control
               is never hidden under it) */}
           <MessageScrollerViewport aria-label="Chat" className="relative scroll-pb-(--dock-h)" preserveScrollOnPrepend>
-            <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-px" ref={top} />
-            {first > 0 && (
-              <div className="flex justify-center pt-4">
-                <button
-                  className="min-h-8 rounded-full px-3 text-xs text-muted-foreground hairline transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60 pointer-coarse:min-h-10"
-                  disabled={loading}
-                  onClick={() => void loadOlder()}
-                  type="button"
-                >
-                  {loading ? <Shimmer>loading…</Shimmer> : "earlier messages"}
-                </button>
-              </div>
-            )}
-            {empty && <EmptyChat />}
-            {/* the dock floats over the transcript's end; the content keeps its height clear below
-                the last row (--dock-h, set by useStickToEnd) */}
-            <ReplyActions>
-              <MessageScrollerContent className="mx-auto w-full max-w-184 gap-0 px-4 pt-12 pb-[calc(var(--dock-h,9rem)+1.5rem)] sm:px-6" data-region="chat-content">
-                {!memoryOn &&
-                  placed.above.map((x) => (
-                    <StatusRow key={`k${x.key}`} marker={x} />
-                  ))}
-                {memoryOn && m.rev === null && <Shimmer className="self-center text-xs">{m.error === null ? "reading the memory…" : `The memory couldn't be read: ${m.error}`}</Shimmer>}
-                {memoryOn && (
-                  <MemoryParts value={memoryParts}>
-                    {memItems.map((item) => (
-                      <MessageScrollerItem
-                        data-kind={item.kind === "row" ? item.row.kind : "memory"}
-                        data-log-index={item.kind === "row" ? item.row.id : item.kind === "line" ? item.line.id : undefined}
-                        key={item.key}
-                        messageId={item.key}
-                        scrollAnchor={item.kind === "row" && item.row.kind === "user"}
-                      >
-                        <MemoryItems items={[item]} />
-                      </MessageScrollerItem>
-                    ))}
-                  </MemoryParts>
-                )}
-                {shownRows.map((row, k) => (
-                  <Fragment key={row.key}>
-                    <MessageScrollerItem data-kind={row.kind} data-log-index={row.id} messageId={row.key} scrollAnchor={row.kind === "user"}>
-                      <ChatRow
-                        plan={plans.get(row.key)}
-                        row={row}
-                        sources={sources.get(row.key)}
-                        streaming={row.key === draftKey}
-                        onThought={session.toggleThought}
-                        thought={row.key === holder ? live : row.kind === "talk" || row.kind === "tool" ? thoughts.get(row.id) : undefined}
-                        toolState={row.kind === "tool" ? toolStateOf(row, busy, row.key === lastTool) : "done"}
-                        made={madeBy(row, artifacts)}
-                        onArtifact={openArtifact}
-                        fold={row.kind === "user" ? state.folds.get(row.id) : undefined}
-                      />
-                    </MessageScrollerItem>
-                    {placed.after.get(k)?.map((x) => (
-                      <StatusRow key={`k${x.key}`} marker={x} />
-                    ))}
-                  </Fragment>
-                ))}
-                {/* an artifact the model is still writing, after the running turn's rows until its
-                    call is in the log (SPEC "Artifacts") */}
-                {drafting.map((d) => (
-                  <div className="py-1" data-testid="artifact-drafting" key={`draft-${d.id}`}>
-                    <ArtifactCard
-                      detail={draftDetail(d)}
-                      live
-                      name={d.name ?? "New artifact"}
-                      onOpen={() => {
-                        if (d.name !== null) openArtifact(d.name, null);
-                      }}
-                      testId="artifact-draft-card"
-                    />
+            {mode === "memory" ? (
+              <ReplyActions>
+                <LogRowProvider value={logRowParts}>
+                  <MemoryTranscript
+                    contentClassName={CONTENT}
+                    memory={memory}
+                    onShow={setShownHere}
+                    renderRows={(after) => renderRows(after, false)}
+                    rows={rows}
+                  />
+                </LogRowProvider>
+              </ReplyActions>
+            ) : (
+              <>
+                <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-px" ref={top} />
+                {first > 0 && (
+                  <div className="flex justify-center pt-4">
+                    <button
+                      className="min-h-8 rounded-full px-3 text-xs text-muted-foreground hairline transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60 pointer-coarse:min-h-10"
+                      disabled={loading}
+                      onClick={() => void loadOlder()}
+                      type="button"
+                    >
+                      {loading ? <Shimmer>loading…</Shimmer> : "earlier messages"}
+                    </button>
                   </div>
-                ))}
-              </MessageScrollerContent>
-            </ReplyActions>
+                )}
+                {empty && <EmptyChat />}
+                {/* the dock floats over the transcript's end; the content keeps its height clear below
+                    the last row (--dock-h, set by useStickToEnd) */}
+                <ReplyActions>
+                  <MessageScrollerContent className={CONTENT} data-region="chat-content">
+                    {renderRows(rows)}
+                  </MessageScrollerContent>
+                </ReplyActions>
+              </>
+            )}
           </MessageScrollerViewport>
-          <TranscriptToggle mode={memoryOn ? "memory" : "log"} onMode={setMode} />
+          <TranscriptToggle mode={mode} onMode={setMode} />
           <MessageScrollerButton className="size-9 rounded-full border-0 bg-raised text-foreground shadow-float hover:bg-raised hover:text-foreground data-[direction=end]:bottom-[calc(var(--dock-h,9rem)+0.75rem)]" />
         </MessageScroller>
 

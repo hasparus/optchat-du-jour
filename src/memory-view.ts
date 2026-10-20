@@ -4,8 +4,9 @@
 // looked, as hunks small enough for one frame. Pure: the server's feed (server/memory-feed.ts)
 // keeps the count of changes and sends them, the routes (server/routes/memory.ts) answer the reads.
 import { MEMORY_BYTES, NODE } from "./config.ts";
-import { built, bytes, type Coord, end, getNode, type Mem, msgText } from "./tree.ts";
-import { type MemoryChange, type MemoryChildren, type MemoryHunk, type MemoryLine, type MemoryPage, span } from "./wire.ts";
+import { built, bytes, type Coord, end, getNode, localTime, type Mem, msgText } from "./tree.ts";
+import { MEMORY_PAGE_LINES, type MemoryChange, type MemoryChildren, type MemoryHunk, type MemoryLine, type MemoryPage, span, type ViewLine } from "./wire.ts";
+import { PLACEHOLDER } from "./view.ts";
 
 // Node c as a line: its summary and its span, and at level 0 its message's kind and, when the
 // message is its own summary (it fits in NODE: a free node), the message. Optional keys are left
@@ -78,18 +79,42 @@ export function viewHunks(before: readonly Coord[], wasBuilt: readonly boolean[]
   return out;
 }
 
+// A line of /api/view (the REPL's `view`): the same line, its dates in local time and the
+// placeholder for a summary not written yet
+export function viewLine(mem: Mem, c: Coord): ViewLine {
+  const line = memoryLine(mem, c);
+  return {
+    built: line.built,
+    from: line.from === null ? null : localTime(line.from),
+    i: line.i,
+    id: line.id,
+    l: line.l,
+    n: line.n,
+    size: line.size,
+    text: line.text ?? PLACEHOLDER,
+    to: line.to === null ? null : localTime(line.to),
+  };
+}
+
 const frameBytes = (value: MemoryChange) => bytes(JSON.stringify({ name: "memory", type: "CUSTOM", value }));
 
+// Where the changes are counted: the server's run (`boot`, a random id) and its last change
+export type Counted = { readonly boot: string; readonly rev: number };
+
 // Change `rev` as one frame of at most `cap` bytes: the hunks moved to where each applies after
-// the ones before it, each with its new lines while they fit, the rest with their count only
-export function memoryChange(mem: Mem, rev: number, hunks: readonly Hunk[], cap: number = MEMORY_BYTES): MemoryChange {
+// the ones before it, each with its new lines while they fit, the rest with their count only. Hunks
+// so many that their counts alone don't fit are one hunk instead, the whole list replaced, which
+// a client reads again: the frame's size is bounded whatever the change.
+export function memoryChange(mem: Mem, at: Counted, hunks: readonly Hunk[], cap: number = MEMORY_BYTES): MemoryChange {
   let shift = 0;
   const bare: MemoryHunk[] = hunks.map((h) => {
-    const at = h.at + shift;
+    const where = h.at + shift;
     shift += h.added.length - h.removed;
-    return { added: h.added.length, at, removed: h.removed };
+    return { added: h.added.length, at: where, removed: h.removed };
   });
-  const change: MemoryChange = { hunks: bare, rev, total: mem.view.length };
+  const total = mem.view.length;
+  const change: MemoryChange = { boot: at.boot, hunks: bare, rev: at.rev, total };
+  if (frameBytes(change) > cap) return { ...change, hunks: [{ added: total, at: 0, removed: total - shift }] };
   let room = cap - frameBytes(change);
   const hunksWithLines = bare.map((h, k) => {
     const lines = (hunks[k]?.added ?? []).map((c) => memoryLine(mem, c));
@@ -102,26 +127,23 @@ export function memoryChange(mem: Mem, rev: number, hunks: readonly Hunk[], cap:
   return { ...change, hunks: hunksWithLines };
 }
 
-// the lines a page holds unless the client asks for fewer, and the most it may ask for
-export const PAGE_LINES = 100;
-export const MAX_PAGE_LINES = 500;
-
-// The view's lines before index `before` (all of them: the newest), `limit` at most, as of change `rev`
-export function viewPage(mem: Mem, rev: number, before: number = mem.view.length, limit: number = PAGE_LINES): MemoryPage {
+// The view's lines before index `before` (all of them: the newest), `limit` at most, as of change
+// `at` (the route bounds `limit`)
+export function viewPage(mem: Mem, at: Counted, before: number = mem.view.length, limit: number = MEMORY_PAGE_LINES): MemoryPage {
   const to = Math.min(before, mem.view.length);
-  const from = Math.max(0, to - Math.min(limit, MAX_PAGE_LINES));
-  return { from, lines: mem.view.slice(from, to).map((c) => memoryLine(mem, c)), rev, total: mem.view.length };
+  const from = Math.max(0, to - limit);
+  return { boot: at.boot, from, lines: mem.view.slice(from, to).map((c) => memoryLine(mem, c)), rev: at.rev, total: mem.view.length };
 }
 
 // Node c opened `depth` levels down: its 2^depth descendants from the `from`-th, `limit` at most.
 // Null when there is no such node yet (it runs past the log) or it is not that deep.
-export function childrenPage(mem: Mem, c: Coord, depth: number, from = 0, limit: number = PAGE_LINES): MemoryChildren | null {
+export function childrenPage(mem: Mem, c: Coord, depth: number, from = 0, limit: number = MEMORY_PAGE_LINES): MemoryChildren | null {
   if (depth < 1 || depth > c.l || end(c) > mem.root.length) return null;
   const total = 2 ** depth;
   const l = c.l - depth;
   const first = c.i * total;
   const lines: MemoryLine[] = [];
-  for (let k = from; k < Math.min(total, from + Math.min(limit, MAX_PAGE_LINES)); k++) lines.push(memoryLine(mem, { i: first + k, l }));
+  for (let k = from; k < Math.min(total, from + limit); k++) lines.push(memoryLine(mem, { i: first + k, l }));
   return { depth, from, i: c.i, l: c.l, lines, total };
 }
 

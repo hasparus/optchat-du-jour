@@ -2,19 +2,20 @@
 // process: the frames are server/memory-feed.ts's, as the link decodes them; /api/memory/view is
 // src/memory-view.ts's viewPage. Whatever batches and summaries come, and changes that come while the
 // first page is read, the store ends with the view's lines as the server has them; a change it can't
-// follow on from, or a socket that dropped, reads the view again.
+// follow on from, another run, or a socket that came back reads the view again and keeps the
+// reader's place; a read that fails says so and is tried again.
 import { EventType } from "@ag-ui/core";
 import { expect, test } from "bun:test";
 import { Option } from "effect";
 import { watchMemory } from "../../../server/memory-feed.ts";
 import { NODE } from "../../../src/config.ts";
-import { viewPage } from "../../../src/memory-view.ts";
+import { type Counted, viewPage } from "../../../src/memory-view.ts";
 import { newMsg, newNode } from "../../../src/store.ts";
 import { built, type Mem, newMem, nodes, ready } from "../../../src/tree.ts";
 import { addMessage, addNode } from "../../../src/view.ts";
 import type { MemoryChange, MemoryLine, MemoryPage } from "@wire";
 import type { LinkStatus } from "./connection";
-import { applyChange, applyPage, emptyMemory, makeMemory, type Memory, memoryItems, unread } from "./memory";
+import { applyChange, applyPage, emptyMemory, firstPage, makeMemory, type Memory, memoryItems, runsOf, unread } from "./memory";
 import { type Inbound, parseFrame } from "./protocol";
 
 const tick = async (ms = 5) =>
@@ -30,21 +31,27 @@ function rng(seed: number) {
   };
 }
 
-// the server: a memory with small marks, and its feed's frames as they would cross the socket
-function server(seed: number) {
+const NEVER = { high: 1e9, low: 5e8 }; // marks no view reaches: a line per message
+
+// the server: a memory, its feed's frames as they would cross the socket, and /api/memory/view
+const MARKS = { high: 5000, low: 2500 };
+// what a test turns on the fake server: which change pages are as of, how late they come, a failure
+type Knobs = { at: () => Counted; delay: number; failing: string | null };
+function server(seed: number, marks = MARKS) {
   const random = rng(seed);
-  const mem = newMem({ high: 5000, low: 2500 }, { high: 2500, low: 1250 });
+  const mem: Mem = newMem(marks, { high: marks.high / 2, low: marks.low / 2 });
   const listeners = new Set<(e: Inbound) => void>();
   const statuses = new Set<(s: LinkStatus) => void>();
   let status: LinkStatus = "open";
+  const deliver = (e: Inbound) => {
+    for (const l of listeners) l(e);
+  };
   const feed = watchMemory(
     mem,
     (e) => {
-      if (e.type !== "memory") return;
-      const frame = Option.getOrThrow(parseFrame(JSON.stringify({ name: "memory", type: EventType.CUSTOM, value: e.change })));
-      for (const l of listeners) l(frame);
+      if (e.type === "memory") deliver(Option.getOrThrow(parseFrame(JSON.stringify({ name: "memory", type: EventType.CUSTOM, value: e.change }))));
     },
-    { cap: 2048, start: 100 },
+    { cap: 2048 },
   );
   const link = {
     listen: (l: (e: Inbound) => void) => {
@@ -61,9 +68,9 @@ function server(seed: number) {
     status = s;
     for (const l of statuses) l(s);
   };
-  const message = () => {
+  const message = (size = random() < 0.5 ? 30 : 700) => {
     const i = mem.root.length;
-    addMessage(mem, newMsg(i, (["user", "talk", "tool", "echo"] as const)[i % 4] ?? "user", `${i} ${"x".repeat(random() < 0.5 ? 30 : 700)}`));
+    addMessage(mem, newMsg(i, (["user", "talk", "tool", "echo"] as const)[i % 4] ?? "user", `${i} ${"x".repeat(size)}`));
   };
   const summarize = () => {
     const open = [...nodes(mem.root.length)].filter((c) => !built(mem, c) && ready(mem, c));
@@ -71,22 +78,20 @@ function server(seed: number) {
     if (c !== undefined) addNode(mem, newNode(c.l, c.i, `${c.l}:${c.i} ${"s".repeat(Math.floor(random() * (NODE - 20)))}`));
   };
   const reads: string[] = [];
-  let delay = 0;
+  const o: Knobs = { at: () => feed.at(), delay: 0, failing: null };
   const view = async (before: number | null, limit: number): Promise<MemoryPage> => {
     reads.push(`${before}:${limit}`);
+    if (o.failing !== null) throw new Error(o.failing);
     // the page is as of when the server reads it; the changes made while it is on its way come
     // over the socket before it arrives
-    const page = viewPage(mem, feed.rev(), before ?? undefined, limit);
-    await tick(delay);
+    const page = viewPage(mem, o.at(), before ?? undefined, limit);
+    await tick(o.delay);
     return page;
   };
-  const deliver = (e: Inbound) => {
-    for (const l of listeners) l(e);
-  };
-  return { deliver, feed, link, mem, message, random, reads, setDelay: (ms: number) => (delay = ms), setStatus, summarize, view };
+  return { deliver, feed, link, mem, message, o, random, reads, setStatus, summarize, view };
 }
 
-const theirs = (mem: Mem, rev: number) => viewPage(mem, rev, undefined, 100_000).lines;
+const theirs = (s: { mem: Mem; feed: { at: () => Counted } }) => viewPage(s.mem, s.feed.at(), undefined, 100_000).lines;
 
 test("the store follows the server's view through batches and late summaries, reading only what frames left out", async () => {
   for (const seed of [3, 11, 2024]) {
@@ -106,8 +111,8 @@ test("the store follows the server's view through batches and late summaries, re
       await tick(10);
     }
     await tick(30);
-    expect(store.get().rev).toBe(s.feed.rev());
-    expect(store.get().lines).toEqual(theirs(s.mem, s.feed.rev()));
+    expect(store.get().rev).toBe(s.feed.at().rev);
+    expect(store.get().lines).toEqual(theirs(s));
     store.dispose();
   }
 });
@@ -115,82 +120,122 @@ test("the store follows the server's view through batches and late summaries, re
 test("changes that come while the first page is read are applied after it, those it holds already skipped", async () => {
   const s = server(5);
   for (let k = 0; k < 20; k++) s.message();
-  s.setDelay(30);
+  s.o.delay = 30;
   const store = makeMemory(s.link, { view: s.view });
   store.show();
-  // while the read is on its way: the page is read after these, so it holds some and not others
+  // while the read is on its way: the page is as of before these
   for (let k = 0; k < 6; k++) s.message();
   await tick(60);
   for (let k = 0; k < 4; k++) s.summarize();
-  s.setDelay(0);
+  s.o.delay = 0;
   await tick(40);
-  expect(store.get().rev).toBe(s.feed.rev());
-  expect(store.get().lines.slice(store.get().want)).toEqual(theirs(s.mem, s.feed.rev()).slice(store.get().want));
+  expect(store.get().rev).toBe(s.feed.at().rev);
+  expect(store.get().lines.slice(store.get().want)).toEqual(theirs(s).slice(store.get().want));
   expect(s.reads.length).toBe(1); // nothing read twice
   store.dispose();
 });
 
-test("a change that doesn't follow on, or a socket that came back, reads the view again", async () => {
+test("a frame held during the first read that skips a change reads the view again, and ends as the server's", async () => {
+  const s = server(6);
+  for (let k = 0; k < 10; k++) s.message();
+  s.o.delay = 30;
+  const store = makeMemory(s.link, { view: s.view });
+  store.show();
+  await tick(1);
+  // held while the page is on its way: the next change, then one that skips a number
+  const at = s.feed.at();
+  s.deliver({ name: "memory", type: EventType.CUSTOM, value: { boot: at.boot, hunks: [], rev: at.rev + 2, total: s.mem.view.length } });
+  await tick(50);
+  s.o.delay = 0;
+  await tick(50);
+  expect(s.reads).toEqual(["null:100", "null:100"]);
+  expect(store.get().lines).toEqual(theirs(s));
+  store.dispose();
+});
+
+test("a change that doesn't follow on, another run's, or a socket that came back reads the view again", async () => {
   const s = server(9);
   for (let k = 0; k < 10; k++) s.message();
   const store = makeMemory(s.link, { view: s.view });
   store.show();
   await tick(20);
   expect(s.reads).toEqual(["null:100"]);
-  // a frame from far ahead (the server restarted, or one was lost): read again
-  const rev = store.get().rev ?? 0;
-  s.deliver({ name: "memory", type: EventType.CUSTOM, value: { hunks: [], rev: rev + 5, total: 10 } });
+  const { boot, rev } = s.feed.at();
+  // a frame from far ahead (one was lost): read again
+  s.deliver({ name: "memory", type: EventType.CUSTOM, value: { boot, hunks: [], rev: rev + 5, total: 10 } });
   await tick(20);
-  expect(s.reads).toEqual(["null:100", "null:100"]);
-  expect(store.get().rev).toBe(rev);
+  expect(s.reads.length).toBe(2);
+  // the next number, of another run (the server restarted and counts from 0 again): read again
+  s.deliver({ name: "memory", type: EventType.CUSTOM, value: { boot: "another", hunks: [], rev: rev + 1, total: 10 } });
+  await tick(20);
+  expect(s.reads.length).toBe(3);
+  expect(store.get().boot).toBe(boot);
   // the socket dropped and came back: changes may have been missed while it was down
   s.message();
   s.setStatus("closed");
   s.setStatus("open");
   await tick(20);
-  expect(s.reads).toEqual(["null:100", "null:100", "null:100"]);
-  expect(store.get().lines).toEqual(theirs(s.mem, s.feed.rev()));
+  expect(s.reads.length).toBe(4);
+  expect(store.get().lines).toEqual(theirs(s));
   store.dispose();
 });
 
-const ignore = () => {
-  // nothing goes over a socket in this test: the store reads pages only
-};
-
-test("a view longer than a page: the newest lines first, older ones a page at a time as the reader goes up", async () => {
-  const s = server(13);
-  const mem = newMem({ high: 1e9, low: 5e8 }, { high: 1e9, low: 5e8 }); // never merges: a line per message
-  const feed = watchMemory(mem, ignore, { start: 0 });
-  for (let i = 0; i < 250; i++) addMessage(mem, newMsg(i, "user", `m${i}`));
-  const reads: string[] = [];
-  const store = makeMemory(s.link, {
-    view: async (before, limit) => {
-      reads.push(`${before}:${limit}`);
-      return viewPage(mem, feed.rev(), before ?? undefined, limit);
-    },
-  });
+test("a view longer than a page: the newest lines first, older ones a page at a time as the reader goes up; a reconnect keeps the reader's place", async () => {
+  const s = server(13, NEVER);
+  for (let i = 0; i < 350; i++) s.message(5);
+  const store = makeMemory(s.link, { view: s.view });
   store.show();
   await tick(20);
-  expect(store.get().want).toBe(150);
-  expect(store.get().lines.slice(0, 150).every((l) => l === null)).toBe(true);
+  expect(store.get().want).toBe(250);
+  expect(store.get().lines.slice(0, 250).every((l) => l === null)).toBe(true);
+  store.earlier();
+  await tick(20);
   store.earlier();
   await tick(20);
   expect(store.get().want).toBe(50);
+  expect(s.reads).toEqual(["null:100", "250:100", "150:100"]);
+  // back from the background: the view is read again, as far up as the reader had gone
+  s.setStatus("closed");
+  s.setStatus("open");
+  await tick(30);
+  expect(store.get().want).toBe(50);
+  expect(store.get().lines.slice(50)).toEqual(theirs(s).slice(50));
+  expect(s.reads.slice(3)).toEqual(["null:100", "250:200"]);
   store.earlier();
   await tick(20);
   expect(store.get().want).toBe(0);
-  expect(reads).toEqual(["null:100", "150:100", "50:50"]);
-  expect(store.get().lines).toEqual(theirs(mem, feed.rev()));
+  expect(store.get().lines).toEqual(theirs(s));
   store.dispose();
-  feed.close();
+});
+
+test("a read of older lines that fails says why, is tried again after a wait, and at once on the reader's ask", async () => {
+  const s = server(17, NEVER);
+  for (let i = 0; i < 150; i++) s.message(5);
+  const store = makeMemory(s.link, { retryMs: 40, view: s.view });
+  store.show();
+  await tick(20);
+  s.o.failing = "offline";
+  store.earlier();
+  await tick(10);
+  expect(store.get().error).toBe("offline");
+  const failed = s.reads.length;
+  await tick(60); // the wait: tried again by itself, and failed again
+  expect(s.reads.length).toBeGreaterThan(failed);
+  s.o.failing = null;
+  store.retry();
+  await tick(20);
+  expect(store.get().error).toBeNull();
+  expect(store.get().lines).toEqual(theirs(s));
+  store.dispose();
 });
 
 const line = (id: number, o: Partial<MemoryLine> = {}): MemoryLine => ({ built: true, from: null, i: id, id, l: 0, n: 1, size: 5, text: `t${id}`, to: null, ...o });
 
-test("applyChange splices each hunk in order, keeps where the reader is, and refuses one out of turn", () => {
-  const m: Memory = { ...emptyMemory, lines: [line(0), line(1), line(2), line(3), null], rev: 7, want: 2 };
+test("applyChange splices each hunk in order, keeps where the reader is, and refuses one out of turn or of another run", () => {
+  const m: Memory = { ...emptyMemory, boot: "b", lines: [line(0), line(1), line(2), line(3), null], rev: 7, want: 2 };
   const merged = { built: true, from: null, i: 0, id: 0, l: 1, n: 2, size: 9, text: "pair", to: null };
   const c: MemoryChange = {
+    boot: "b",
     hunks: [
       { added: 1, at: 0, lines: [merged], removed: 2 },
       { added: 1, at: 3, removed: 0 },
@@ -206,11 +251,28 @@ test("applyChange splices each hunk in order, keeps where the reader is, and ref
   expect(applyChange(next, c)).toBe(next); // had it already
   expect(applyChange(next, { ...c, rev: 10 })).toBe("gap");
   expect(applyChange(m, { ...c, total: 9 })).toBe("gap"); // doesn't add up: read again
-  // a page as of another change is not kept
-  expect(applyPage(next, { from: 3, lines: [line(9)], rev: 7, total: 5 })).toBeNull();
-  expect(applyPage(next, { from: 3, lines: [line(9)], rev: 8, total: 5 })?.lines[3]).toEqual(line(9));
+  expect(applyChange(m, { ...c, boot: "c" })).toBe("gap");
+  // a line appended to a view the reader has whole (want at its end) is shown, not hidden under it
+  const whole: Memory = { ...emptyMemory, boot: "b", lines: [], rev: 1, want: 0 };
+  const appended = applyChange(whole, { boot: "b", hunks: [{ added: 1, at: 0, lines: [line(0)], removed: 0 }], rev: 2, total: 1 });
+  expect(appended === "gap" ? null : appended.want).toBe(0);
+  // a page as of another change, another run or another length is not kept
+  const page = { boot: "b", from: 3, lines: [line(9)], rev: 8, total: 5 };
+  expect(applyPage(next, { ...page, rev: 7 })).toBeNull();
+  expect(applyPage(next, { ...page, boot: "c" })).toBeNull();
+  expect(applyPage(next, { ...page, total: 6 })).toBeNull();
+  expect(applyPage(next, page)?.lines[3]).toEqual(line(9));
   expect(unread(next)).toEqual([{ before: 5, limit: 2 }]);
   expect(unread({ ...next, want: 4 })).toEqual([{ before: 5, limit: 1 }]);
+});
+
+test("firstPage: a first read shows its page; a read again keeps the reader's place, clamped to the view", () => {
+  const page: MemoryPage = { boot: "b", from: 300, lines: [line(300)], rev: 1, total: 301 };
+  expect(firstPage(emptyMemory, page).want).toBe(300);
+  const read = { ...emptyMemory, boot: "a", want: 40 };
+  expect(firstPage(read, page).want).toBe(40);
+  expect(firstPage({ ...read, want: 999 }, page).want).toBe(300);
+  expect(firstPage({ ...read, want: 40 }, { ...page, from: 0, lines: [], total: 20 }).want).toBe(0);
 });
 
 const entry = (i: number, kind: "user" | "tool" | "echo" | "talk", text: string) => ({ date: "2026-10-05T10:00:00Z", i, kind, text });
@@ -236,4 +298,13 @@ test("memoryItems: a run of lines that are their own messages are the log's rows
   const tool = items[2];
   expect(tool?.kind === "row" && tool.row.kind === "tool" ? tool.row.output : null).toBe("contents");
   expect(memoryItems(lines, 6).map((x) => x.key)).toEqual(["m0:7"]);
+});
+
+test("runsOf: the messages under open lines, read a run at a time", () => {
+  expect(runsOf([5, 3, 4, 9, 10, 4, 20])).toEqual([
+    { count: 3, first: 3 },
+    { count: 2, first: 9 },
+    { count: 1, first: 20 },
+  ]);
+  expect(runsOf(Array.from({ length: 250 }, (_, k) => k), 100).map((r) => r.count)).toEqual([100, 100, 50]);
 });

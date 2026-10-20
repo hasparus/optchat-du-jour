@@ -9,9 +9,10 @@ import { App } from "../app";
 import type { Uploader } from "../lib/attach";
 import { openLink } from "../lib/connection";
 import type { Inbound } from "../lib/protocol";
+import { makeMemory } from "../lib/memory";
 import { makeSession } from "../lib/session";
 import { type Entry, fakeServer, IDLE, parseSent, snapshot } from "./fixture";
-import { childrenPage, viewPage } from "../../../src/memory-view.ts";
+import { childrenPage, type Counted, viewPage } from "../../../src/memory-view.ts";
 import type { Mem } from "../../../src/tree.ts";
 
 export const LOG: Entry[] = [
@@ -33,12 +34,16 @@ export const thoughtReads: number[] = [];
 
 // The memory /api/memory/* reads from in a test that sets one (the server's own, in this process),
 // the change it is as of, and the paths read, to tell a live update from a read
-type MemoryServer = { mem: Mem | null; rev: () => number; reads: string[] };
-export const MEMORY: MemoryServer = { mem: null, reads: [], rev: () => 0 };
+// `failing`: reads of older view lines (with a `before`) answer 503, as a server gone offline
+type MemoryServer = { mem: Mem | null; at: () => Counted; reads: string[]; failing: boolean };
+export const MEMORY: MemoryServer = { at: () => ({ boot: "b", rev: 0 }), failing: false, mem: null, reads: [] };
 const memoryApi = (url: URL, mem: Mem) => {
   const n = (k: string) => (url.searchParams.has(k) ? Number(url.searchParams.get(k)) : undefined);
   MEMORY.reads.push(`${url.pathname}${url.search}`);
-  if (url.pathname === "/api/memory/view") return Response.json(viewPage(mem, MEMORY.rev(), n("before"), n("limit")));
+  if (url.pathname === "/api/memory/view") {
+    if (MEMORY.failing && url.searchParams.has("before")) return new Response(null, { status: 503 });
+    return Response.json(viewPage(mem, MEMORY.at(), n("before"), n("limit")));
+  }
   if (url.pathname === "/api/memory/children") {
     const page = childrenPage(mem, { i: n("i") ?? 0, l: n("l") ?? 0 }, n("depth") ?? 1, n("from"), n("limit"));
     return page === null ? new Response(null, { status: 404 }) : Response.json(page);
@@ -46,6 +51,9 @@ const memoryApi = (url: URL, mem: Mem) => {
   const before = n("before") ?? mem.root.length;
   return Response.json({ entries: mem.root.slice(Math.max(0, before - (n("limit") ?? 100)), before), total: mem.root.length });
 };
+
+// the memory stores start() made, disposed after each test
+const made: { readonly dispose: () => void }[] = [];
 
 // /api for each test: the devices, the page before message 100 of a long log, and THOUGHTS
 export function stubApi() {
@@ -78,9 +86,11 @@ export function stubApi() {
     globalThis.fetch = realFetch;
     THOUGHTS.clear();
     thoughtReads.length = 0;
+    for (const store of made.splice(0)) store.dispose();
     MEMORY.mem = null;
     MEMORY.reads = [];
-    MEMORY.rev = () => 0;
+    MEMORY.failing = false;
+    MEMORY.at = () => ({ boot: "b", rev: 0 });
     try {
       localStorage.removeItem("transcript");
     } catch {
@@ -97,7 +107,9 @@ export function start(log: readonly Entry[] = LOG, from = 0, uploader?: Uploader
   const server = fakeServer(greeting);
   const link = openLink("ws://127.0.0.1:7700/ws", { retryMs: 1, socket: server.socket });
   const session = makeSession(link);
-  render(<App link={link} session={session} uploader={uploader} />);
+  const memory = makeMemory(link, { retryMs: 20 });
+  made.push(memory); // disposed after the test: a store left behind would read the next test's server
+  render(<App link={link} memory={memory} session={session} uploader={uploader} />);
   const play = (...events: Inbound[]) => {
     act(() => {
       server.play(...events);

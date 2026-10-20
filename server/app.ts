@@ -203,7 +203,7 @@ export const routes = (o: ServerOptions) =>
       yield* mcpRoutes(router, { agents: subagents.tools, artifacts: artifactTools.tools, attached: media.zoomContent, callerOf: subagents.callerOf, mem: chat.mem, secret });
       yield* artifactRoutes(router, { artifacts });
       yield* assetRoutes(router, { media, settings: mediaConfig });
-      yield* memoryRoutes(router, { mem: chat.mem, rev: memory.rev });
+      yield* memoryRoutes(router, { at: memory.at, mem: chat.mem });
       yield* apiRoutes(router, { assets: { find: media.find }, device: o.device, mem: chat.mem, reasoning, report, session, settings, subagents, usagePath });
       yield* webRoute(router, o.web);
       return { artifacts, chat, session, subagents };
