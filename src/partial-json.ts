@@ -40,7 +40,7 @@ export function stringAt(raw: string, pos: number): StringRead {
     if (e === "u") {
       if (at + 6 > raw.length) break;
       const hex = raw.slice(at + 2, at + 6);
-      text += HEX4.test(hex) ? String.fromCodePoint(Number.parseInt(hex, 16)) : "�";
+      text += HEX4.test(hex) ? String.fromCodePoint(Number.parseInt(hex, 16)) : "\uFFFD";
       at += 6;
       continue;
     }
