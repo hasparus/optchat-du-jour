@@ -562,6 +562,8 @@ describe("session", () => {
     const why = "nothing to send: image ffffffffffff is not on the server";
     server.play({ name: "received", type: EventType.CUSTOM, value: { error: why, id, messageId: null, outcome: "refused" } });
     expect(waiting(session)).toEqual([` (not sent: ${why})`]);
+    // kept once, as why: the row's text is made from it, not stored beside it
+    expect(session.get().pending.map((p) => [p.error, p.refused])).toEqual([[null, why]]);
     expect(session.get().markers).toEqual([]); // said on its row, not as a stray marker
     server.drop();
     await tick(20);
@@ -572,6 +574,7 @@ describe("session", () => {
     await tick();
     expect(messageIds(again)).toEqual([]);
     expect(waiting(reloaded)).toEqual([` (not sent: ${why})`]);
+    expect(reloaded.get().pending.map((p) => [p.error, p.refused])).toEqual([[null, why]]);
     reloaded.dispose();
     const [q] = queued(session.get());
     if (!q) throw new Error("nothing queued");
