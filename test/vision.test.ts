@@ -482,7 +482,7 @@ test("a cancel while a caption is awaited loses nothing: the message is logged, 
       const a = image(1);
       yield* r.session.input("look", { clientId: "c1", media: [a] });
       yield* until("the caption asked for", () => f.waiting.has(a.sha));
-      yield* Effect.forkChild(r.session.cancel);
+      yield* Effect.forkChild(r.session.stop());
       f.describe(a, "late"); // the cancel's own wait ends with it
       yield* until("the run's end", () => r.log().length === 1);
       expect(r.log()).toEqual([["user", `look\n[image ${shortSha(a.sha)} 1568x1176 195KB: late]`]]);

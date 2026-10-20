@@ -167,7 +167,7 @@ export function BackgroundWork({
               data-testid="stop-all"
               disabled={s.status !== "open"}
               onClick={() => {
-                link.stopAll(state?.loop);
+                if (state?.loop !== undefined) link.stopAll(state.loop);
               }}
               size="sm"
               title={s.status === "open" ? "Stop the turn and every running subagent" : "Not connected to the server"}
@@ -189,7 +189,7 @@ export function BackgroundWork({
                       aria-label="Stop the turn"
                       className="shrink-0 rounded-full bg-soft text-foreground hover:bg-soft-strong"
                       onClick={() => {
-                        link.abort(state.loop);
+                        if (state.loop !== undefined) link.abort(state.loop);
                       }}
                       size="icon-sm"
                       title="Stop the turn"

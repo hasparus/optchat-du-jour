@@ -193,10 +193,10 @@ test("on a touch screen, a turn stopped on a usage limit: every client shows why
     fireEvent.change(screen.getByLabelText("Model"), { target: { value: "claude-code:opus" } });
     expect(server.sent).toHaveLength(before);
     fireEvent.click(within(alert).getByRole("button", { name: "Continue with GPT-6.1 Sol (ChatGPT plan)" }));
-    expect(frames(server.sent).at(-1)).toEqual({ engine: "openai-plan:gpt-6.1-sol", type: "resume" });
+    expect(frames(server.sent).at(-1)).toEqual({ engine: "openai-plan:gpt-6.1-sol", loop: 1, type: "resume" });
     expect(within(screen.getByTestId("model-picker")).getByText("GPT-6.1 Sol")).toBeTruthy();
     fireEvent.click(within(alert).getByRole("button", { name: "Try Claude Opus (Claude Code) again" }));
-    expect(frames(server.sent).at(-1)).toEqual({ engine: "claude-code:opus", type: "resume" });
+    expect(frames(server.sent).at(-1)).toEqual({ engine: "claude-code:opus", loop: 1, type: "resume" });
   }));
 
 test("with a mouse, one model at two efforts reads apart: the trigger shows the picked one's effort beside its name, and each item its own", async () => {

@@ -5,7 +5,7 @@
 // device stops it until a client resumes it on an engine (E4). Every client sees the same events.
 // Priming runs only while idle, and a turn never waits for it (E17, SPEC "Turn and priming").
 import { Cause, Clock, Deferred, type Duration, Effect, Exit, Fiber, FiberSet, Option, PubSub, Queue, type Scope } from "effect";
-import { type DraftNow, type DraftOut, makeDrafts } from "./artifacts/draft.ts";
+import { makeDrafts } from "./artifacts/draft.ts";
 import { loggedText } from "./artifacts/tools.ts";
 import type { Choices } from "./choices.ts";
 import { ACTS, PRIME_IDLE, WAIT_RETRY } from "./config.ts";
@@ -17,68 +17,25 @@ import type { Entry } from "./tree.ts";
 import { giveBack as returned, handOver, held, type Incoming, nextTurn, offered, steerIn as joining, takeBack as takenFrom, type Where } from "./inbox.ts";
 import { makeMaster, type Master } from "./master.ts";
 import { makeSeen, type Receipt, receiptOf } from "./once.ts";
+import type { LiveRun, SessionEvent } from "./session-events.ts";
 import { type Look, pictureBudget } from "./media/budget.ts";
 import type { Part } from "./media/part.ts";
 import { makePieces, noReasoning, type Pieces, type Reasoning } from "./reasoning.ts";
 import { BLIND, type Mid, type TurnEngine, type TurnEvents } from "./turn/engine.ts";
 import type { UsageRecord } from "./usage.ts";
 import { allBuilt, render, settle, unbuilt, viewSize } from "./view.ts";
-import { type ArtifactVersion, type Asset, canonicalRef, engineLabel, type FollowUp, MAX_ATTACHMENTS, markerOf, NOT_DESCRIBED, type Phase, type SessionState, type SubagentInfo, withMarkers } from "./wire.ts";
+import { type Asset, canonicalRef, engineLabel, type FollowUp, MAX_ATTACHMENTS, markerOf, NOT_DESCRIBED, type Phase, type SessionState, type SubagentInfo, withMarkers } from "./wire.ts";
 
 // the state every client is shown (STATE_SNAPSHOT, STATE_DELTA, /api/state): src/wire.ts
 export type { FollowUp, Phase, SessionState } from "./wire.ts";
 
-export type SessionEvent =
-  | { readonly type: "logged"; readonly entry: Entry; readonly runId: string | null }
-  // `at`: the log index the reply's talk entry will get, taken when the delta is published;
-  // `offset`: where the delta starts in that reply's text so far
-  | { readonly type: "text"; readonly delta: string; readonly runId: string; readonly at: number; readonly offset: number }
-  | { readonly type: "thinking"; readonly tokens: number; readonly runId: string }
-  // Thinking as it streams (SPEC "Reasoning"): `at` is the log index of the entry it is expected
-  // to come before, taken when the piece began; `offset`, where the delta starts in it
-  | { readonly type: "reasoning"; readonly delta: string; readonly runId: string; readonly at: number; readonly offset: number }
-  // the piece streamed at `at` is kept before entry `i` (normally `at`), after `ms`; `cut` characters
-  // past the caps were left out (never streamed)
-  | { readonly type: "reasoning-kept"; readonly runId: string; readonly at: number; readonly i: number; readonly ms: number; readonly cut: number }
-  // the piece streamed at `at` came before no reply or tool call (the turn stopped): it is not kept
-  | { readonly type: "reasoning-dropped"; readonly runId: string; readonly at: number }
-  // the reply streaming in was dropped unlogged (a usage limit stopped it): the next one streams anew
-  | { readonly type: "reply-dropped"; readonly runId: string }
-  | { readonly type: "run-started"; readonly runId: string }
-  // every run-started gets exactly one, also after a cancel; `logged`: the log's length by then
-  | { readonly type: "run-finished"; readonly runId: string; readonly error: string | null; readonly logged: number }
-  | { readonly type: "info"; readonly message: string }
-  // a client's message (`clientId`, its AG-UI id) became log entry `at`, or could not be logged:
-  // `error`. A message the log refused stays in the inbox, and is acked again when it is logged.
-  | { readonly type: "ack"; readonly clientId: string; readonly at: number | null; readonly error: string | null }
-  // A client asked for a held message back (`clientId`, its sender's id for it): it left the inbox
-  // and is `message` again, never logged; or it could not be taken back (`error`: a turn has it,
-  // or the server holds no such message).
-  | {
-      readonly type: "taken-back";
-      readonly clientId: string;
-      readonly message: { readonly text: string; readonly media: readonly Asset[] } | null;
-      readonly error: string | null;
-    }
-  | { readonly type: "usage"; readonly record: UsageRecord }
-  | { readonly type: "state"; readonly state: SessionState }
-  // A subagent's run began (spawned, or started again by a tell), ended with its final reply, or
-  // ended without one: failed or stopped (`code`). AG-UI's SUBAGENT_* events (SPEC M7a); `runId`
-  // is "<name>+<n>", its n-th run
-  | { readonly type: "subagent-started"; readonly runId: string; readonly name: string; readonly task: string }
-  | { readonly type: "subagent-finished"; readonly runId: string; readonly name: string; readonly report: string }
-  | { readonly type: "subagent-error"; readonly runId: string; readonly name: string; readonly message: string; readonly code: "failed" | "stopped" }
-  // An artifact's live draft while a publish or an edit streams (SPEC "Artifacts"), and a version
-  // saved (told by the tools, src/artifacts/tools.ts)
-  | { readonly type: "artifact-draft"; readonly draft: DraftOut }
-  | { readonly type: "artifact"; readonly name: string; readonly version: ArtifactVersion };
+// what the session tells every client, and what a client joining mid-run is shown
+export type { LiveRun, SessionEvent } from "./session-events.ts";
 
 export type Session = {
   // a message from a client: it starts a turn, or joins the running one (InputOptions say how).
   // One whose `clientId` the session has seen is answered and not taken again (E41, src/once.ts)
   readonly input: (text: string, o?: InputOptions) => Effect.Effect<Receipt>;
-  // what a client id names, when the session has seen it: what `input` would answer, without the message
-  readonly receipt: (clientId: string) => Receipt | null;
   // a client wants a held message back: a "taken-back" event says whether it got it
   readonly takeBack: (clientId: string) => Effect.Effect<void>;
   // the session's settings, shared by every client: what a mid-run message does
@@ -88,12 +45,14 @@ export type Session = {
   // in that run of the turn loop (the state's `loop`, E41): one a client sent again after a
   // reconnect never settles a later stop
   readonly resume: (engine: string, loop?: number) => Effect.Effect<void>;
-  // the user's cancel: the wait or the turn stops; nothing sent is lost
-  readonly cancel: Effect.Effect<void>;
-  // A client's Stop, for the run of the turn loop it saw (the state's `loop`, E41), or for whatever
-  // runs (none named: a client from before it). One that finds that loop over stops nothing, and
-  // says why: a Stop sent again after a reconnect never cancels a later turn.
+  // A client's Stop: the wait or the turn stops, and nothing sent is lost. It names the run of the
+  // turn loop it saw (the state's `loop`, E41), or none (the REPL, a client from before it): then
+  // whatever runs. One that finds that run over stops nothing, and says why: a Stop sent again after
+  // a reconnect or a restart never cancels a later turn.
   readonly stop: (loop?: number) => Effect.Effect<string | null>;
+  // whether `loop` is the newest run of the turn loop, running or ended (none named: yes), so an
+  // action the user took on the state they saw is not applied to a later one (Stop all)
+  readonly newestLoop: (loop?: number) => boolean;
   readonly events: PubSub.PubSub<SessionEvent>;
   readonly state: () => SessionState;
   // a client connected: a message usually follows, so prime the view (SPEC "Turn and priming")
@@ -133,15 +92,8 @@ export type InputOptions = {
   readonly followUp?: FollowUp;
   readonly clientId?: string;
   readonly media?: readonly Asset[];
-};
-
-export type LiveRun = {
-  readonly runId: string;
-  readonly reply: { readonly at: number; readonly text: string } | null;
-  // the thinking streaming in now, before the entry at `at` (SPEC "Reasoning")
-  readonly reasoning: { readonly at: number; readonly text: string } | null;
-  // the artifacts' drafts streaming in now (SPEC "Artifacts")
-  readonly drafts: readonly DraftNow[];
+  // what is to be said of attachments it named that the store doesn't hold: said once it is taken
+  readonly leftOut?: readonly string[];
 };
 
 // "/on macbook ..." picks the device for that turn; the text stays as typed
@@ -223,7 +175,9 @@ export const makeSession = (o: {
     // a turn a usage limit or an offline device stopped: its engine and why, and what a resume settles
     let stalled: { readonly ref: string; readonly why: string; readonly resume: Deferred.Deferred<string> } | null = null;
     let running = false; // the turn loop is on: set before its fiber starts, cleared as it ends
-    let loops = 0; // how many times it has started: the state's `loop`, which a Stop names (E41)
+    // the run of the turn loop, which a Stop names (E41): counted from this boot's clock, so a Stop
+    // a client sends again after a restart never names a run of the new server's
+    let loops = Date.now();
     let loop: Fiber.Fiber<void> | null = null; // that fiber, for a cancel
     // the loop stopped on an error (the log refused, or a defect), why, and the last message in by
     // then: those wait for a newer message instead of starting the loop again at once
@@ -377,9 +331,12 @@ export const makeSession = (o: {
         if (m.described) return Deferred.await(m.described);
         const done = Deferred.makeUnsafe<readonly string[]>();
         m.described = done;
+        // Uninterruptible, so `done` is settled whoever stops: a fiber interrupted before it starts
+        // (the scope closing, as the server stops) would never run, and every await of it hang. A
+        // caption waits at most media.captionWait.
         return Effect.forEach(m.media, (a) => o.media.caption(a), { concurrency: "unbounded" }).pipe(
           Effect.flatMap((said) => Deferred.succeed(done, said)),
-          Effect.forkIn(scope),
+          Effect.forkIn(scope, { uninterruptible: true }),
           Effect.andThen(Deferred.await(done)),
         );
       });
@@ -803,26 +760,28 @@ export const makeSession = (o: {
       // until the loop says what it waits for: never "idle" while it is on, unless all it has to do
       // is log reports, which is no turn
       if (turnsDue()) phase = "running";
+      // The fiber starts uninterruptible and the turn alone is interruptible: a Stop that comes
+      // before the fiber has run (an unstarted fiber interrupted never runs, so neither would
+      // `stopped` nor `afterLoop`) is taken where the turn begins, and the loop still ends.
       return turn.pipe(
+        Effect.interruptible,
         Effect.onExit((exit) => (Exit.isFailure(exit) ? stopped(exit.cause) : Effect.void)),
         Effect.ensuring(afterLoop),
         Effect.ignoreCause,
-        Effect.forkIn(scope),
+        Effect.forkIn(scope, { uninterruptible: true }),
         Effect.tap((fiber) => Effect.sync(() => (loop = fiber))),
         Effect.asVoid,
       );
     });
-
-    const receipt = (clientId: string) => receiptOf(clientId, { inbox, log: chat.mem.root, taken });
 
     // A message is held; while a call accepts mid-run messages it joins that call if it steers
     // (`steerIn`), else it waits for the next turn, which the loop starts when the call ends.
     // A message for no engine, or for one the chain doesn't have (said), is for the chain's first.
     // One whose client id the session has seen is answered with what became of it, and nothing
     // more: looked up and taken in one step, so two copies sent at once are one message (E41).
-    const input = (text: string, { clientId, device: on, engine: asked, followUp: how, media: attached = [] }: InputOptions = {}) =>
+    const input = (text: string, { clientId, device: on, engine: asked, followUp: how, leftOut = [], media: attached = [] }: InputOptions = {}) =>
       Effect.gen(function* () {
-        const seen = clientId === undefined ? null : receipt(clientId);
+        const seen = clientId === undefined ? null : receiptOf(clientId, { inbox, logged: chat.mem.clients, taken });
         if (seen !== null) return seen;
         const media = attached.slice(0, MAX_ATTACHMENTS);
         const fresh: Receipt = { type: "new" };
@@ -832,6 +791,7 @@ export const makeSession = (o: {
         const sentFor = on && o.devices.includes(on) ? on : deviceOf(text, o.devices);
         const steer = (how ?? followUp) === "steer";
         inbox.push({ clientId: clientId ?? null, described: null, device: sentFor, engine: named?.ref ?? head, media, seq: ++seq, state: "held", steer, text });
+        for (const said of leftOut) yield* info(said);
         if (attached.length > media.length) yield* info(`at most ${MAX_ATTACHMENTS} attachments per message: ${attached.length - media.length} left out`);
         if (asked !== undefined && !named) yield* info(`${asked} is not an engine of the master's chain: the message is for ${master.label(head)}`);
         parked = null; // a newer message: the ones parked after an error go with it
@@ -871,11 +831,12 @@ export const makeSession = (o: {
         const e = engineOf(ref);
         if (!e) return info(`${ref} is not an engine of the master's chain (${o.engines.map((x) => x.ref).join(", ")})`);
         const late = info(`not resumed on ${master.label(e.ref)}: no turn waits for a model (another client may have resumed it)`);
-        if (stalled === null || (loop !== undefined && loop !== loops)) return late;
+        if (stalled === null || !newestLoop(loop)) return late;
         return Deferred.succeed(stalled.resume, e.ref).pipe(Effect.flatMap((first) => (first ? Effect.void : late)));
       });
 
     const cancel = Effect.suspend(() => (loop ? Fiber.interrupt(loop) : Effect.void));
+    const newestLoop = (which?: number) => which === undefined || which === loops;
     const stop = (which?: number) =>
       Effect.suspend(() => (which === undefined || (running && which === loops) ? cancel.pipe(Effect.as(null)) : Effect.succeed("not stopped: the turn it was for has ended")));
     const primeSoon = Effect.asVoid(primeNow);
@@ -909,7 +870,7 @@ export const makeSession = (o: {
     const turnNow = () => (engine === null || sentView === null ? null : { on: device, ref: engine, view: sentView });
     const lastView = () => sentView;
 
-    return { cancel, configure, events, hush, input, lastView, live, primeSoon, receipt, report, resume, state, stop, takeBack, turnNow };
+    return { configure, events, hush, input, lastView, live, newestLoop, primeSoon, report, resume, state, stop, takeBack, turnNow };
   });
 
 // What a log line carries after the reference's keys (src/chat.ts): where its turn ran, on an echo

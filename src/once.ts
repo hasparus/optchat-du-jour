@@ -5,7 +5,6 @@
 // `client` keys, the ids taken back), so a message is never logged twice, also after a restart; for
 // any other action, the newest ACTS ids in memory.
 import type { Incoming } from "./inbox.ts";
-import type { Entry } from "./tree.ts";
 import type { Received } from "./wire.ts";
 
 // What a message's id names. `new`: never seen, taken now. A repeat: still `held` in the inbox,
@@ -37,15 +36,12 @@ export const makeSeen = (max: number) => {
 export type Seen = ReturnType<typeof makeSeen>;
 
 // A message id the session has seen, or null. The inbox comes first: a message leaves it only once
-// it is in the log, so one being logged now is in one or the other. The log is read from its newest
-// entry down, all of it: the ids live there, not in memory. A new message reads it whole, once
-// (test/once.test.ts holds that under 5 ms against 100,000 entries).
-export const receiptOf = (id: string, o: { readonly inbox: readonly Incoming[]; readonly log: readonly Entry[]; readonly taken: Seen }): Receipt | null => {
+// it is in the log, so one being logged now is in one or the other. `logged` is the log's own index
+// of its `client` keys (src/tree.ts Mem.clients), rebuilt from the log at every load.
+export const receiptOf = (id: string, o: { readonly inbox: readonly Incoming[]; readonly logged: ReadonlyMap<string, number>; readonly taken: Seen }): Receipt | null => {
   if (o.inbox.some((m) => m.clientId === id)) return { type: "held" };
-  for (let k = o.log.length - 1; k >= 0; k--) {
-    const e = o.log[k];
-    if (e?.client === id && e.kind === "user") return { at: e.i, type: "logged" };
-  }
+  const at = o.logged.get(id);
+  if (at !== undefined) return { at, type: "logged" };
   return o.taken.has(id) ? { type: "taken-back" } : null;
 };
 

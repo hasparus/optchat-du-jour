@@ -21,21 +21,21 @@ export type Link = {
   // once (sent again with an id the link still keeps, it goes out once); `attachments` were uploaded
   // first (PUT /api/assets); the rest is its forwardedProps (protocol.ts).
   readonly send: (text: string, id: string, o?: Forwarded & { readonly attachments?: readonly AttachmentRef[] }) => void;
-  // The user's cancel of the run of the turn loop this page saw (the state's `loop`). Like every
-  // action below but the setting, made only while the link is open: what the user sees then is what
-  // they act on; once made it is kept, and sent again if its socket drops first. False when the
-  // link was down.
-  readonly abort: (loop: number | undefined) => boolean;
+  // The user's cancel of the run of the turn loop this page saw (the state's `loop`; a page with no
+  // state to name one sends none). Like every action below but the setting, made only while the
+  // link is open: what the user sees then is what they act on; once made it is kept, and sent again
+  // if its socket drops first. False when the link was down.
+  readonly abort: (loop: number) => boolean;
   // a held message back, by the id it was sent with
   readonly takeBack: (clientId: string) => boolean;
   // the follow-up setting; made while the link is down, it goes out on the next open
   readonly configure: (change: Pick<Settings, "followUp">) => void;
   // a turn waiting for a model goes on, on this engine
-  readonly resume: (engine: string, loop: number | undefined) => boolean;
+  readonly resume: (engine: string, loop: number) => boolean;
   // a subagent card's tell, stop or model (SPEC M7a)
   readonly subagent: (action: SubagentAction) => boolean;
   // Background work's Stop all: the turn and every running subagent
-  readonly stopAll: (loop: number | undefined) => boolean;
+  readonly stopAll: (loop: number) => boolean;
   readonly listen: (listener: (event: Inbound) => void) => () => void;
   readonly onStatus: (listener: (status: LinkStatus) => void) => () => void;
   readonly status: () => LinkStatus;

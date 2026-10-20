@@ -6,7 +6,7 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, rea
 import { createServer, type Server, connect } from "node:net";
 import { dirname, resolve } from "node:path";
 import { type Kind, Msg, Node } from "./records.ts";
-import { bytes, dayOf, type Entry, label, type Marks, type Mem, msgText, newMem, type Saw, setNode } from "./tree.ts";
+import { bytes, dayOf, type Entry, label, logEntry, type Marks, type Mem, msgText, newMem, type Saw, setNode } from "./tree.ts";
 import { type Found, restore } from "./view.ts";
 
 export class StoreError extends Data.TaggedError("StoreError")<{ readonly message: string }> {}
@@ -210,7 +210,7 @@ export const loadChat = (
         const what = logged.i < expected ? `message ${logged.i} is logged twice` : `message ${expected} is missing`;
         return yield* new StoreError({ message: `${dir}/chat/main: ${what}` });
       }
-      mem.root.push({ ...logged, size: bytes(msgText(logged)) });
+      logEntry(mem, { ...logged, size: bytes(msgText(logged)) });
     }
     for (const n of recs) setNode(mem, n);
     // a reader that wants the records only (an exporter, a check) skips the view

@@ -197,8 +197,9 @@ export const SessionState = Schema.Struct({
   // the subagents (SPEC M7a): every running one, then the most recent others, newest first.
   // Optional: a server from before them sends none, and a client from before them ignores it
   subagents: Schema.optional(Schema.Array(SubagentInfo)),
-  // How many times the turn loop has started (E41): a Stop or a resume names the run of it the user
-  // saw, so one sent again after a reconnect never stops or settles a later one. Optional, as above
+  // The turn loop's newest run (E41), counted up from this boot's clock as it starts again: a Stop,
+  // a Stop all or a resume names the run the user saw, so one sent again after a reconnect or a
+  // restart never stops or settles a later one. Optional, as above
   loop: Schema.optional(Schema.Number),
 });
 export type SessionState = typeof SessionState.Type;
@@ -219,10 +220,11 @@ export type PostMessage = typeof PostMessage.Type;
 // The server's answer to a client action by its id (E41): /ws's CUSTOM `received`, to the client
 // that sent it, and POST /api/messages's body. `taken`: seen for the first time, and done. A repeat
 // is done again by nothing: a message is still `held` for a turn, `logged` as entry `messageId`, or
-// `taken-back` by a client (src/once.ts Receipt); any other action was `done` already.
+// `taken-back` by a client (src/once.ts Receipt); any other action was `done` already. `refused`: a
+// frame the server couldn't read (a newer client's action, a malformed one), dropped undone.
 export const Received = Schema.Struct({
   id: Schema.String,
-  outcome: Schema.Literals(["taken", "done", "held", "logged", "taken-back"]),
+  outcome: Schema.Literals(["taken", "done", "held", "logged", "taken-back", "refused"]),
   messageId: Schema.NullOr(Schema.String),
 });
 export type Received = typeof Received.Type;

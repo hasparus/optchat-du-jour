@@ -83,11 +83,17 @@ export const historyOf = (entries: readonly Entry[]) => (m: InboundMessage) => {
   return entry?.kind === "user" && entry.text === textOf(m) ? entry : null;
 };
 
-// The sheet's Stop all: reports hushed first, so the stopped runs' reports, and any other until the
-// user's next message, wake no turn (E39); then the turn (of `loop`, when named), then every
-// subagent. What it couldn't stop is said.
-export const stopEverything = (session: Pick<Session, "hush" | "stop">, subagents: Pick<Subagents, "stopAll"> | undefined, loop?: number) =>
-  session.hush.pipe(Effect.andThen(session.stop(loop)), Effect.tap(() => subagents?.stopAll ?? Effect.void));
+// The sheet's Stop all, on the state the user saw: its `loop` must still be the turn loop's newest
+// run, running or ended (E41), else it does nothing at all, and says so. Then reports are hushed
+// first, so the stopped runs' reports, and any other until the user's next message, wake no turn
+// (E39); then the turn, if it runs; then every subagent.
+export const STOP_ALL_LATE = "not stopped: a turn began after the one Stop all was for";
+export const stopEverything = (session: Pick<Session, "hush" | "newestLoop" | "stop">, subagents: Pick<Subagents, "stopAll"> | undefined, loop?: number) =>
+  Effect.suspend(() =>
+    session.newestLoop(loop)
+      ? session.hush.pipe(Effect.andThen(session.stop(loop)), Effect.andThen(subagents?.stopAll ?? Effect.void), Effect.as(null))
+      : Effect.succeed(STOP_ALL_LATE),
+  );
 
 export const wsRoute = (
   router: HttpRouter.HttpRouter,
@@ -135,7 +141,7 @@ export const wsRoute = (
           agents === undefined
             ? Effect.succeed("there are no subagents on this server")
             : m.type === "tell"
-              ? agents.tell(m.name, m.text)
+              ? agents.tell(m.name, m.text, m.id)
               : m.type === "stop-subagent"
                 ? agents.stop(m.name)
                 : agents.pick(m.name, m.model);
@@ -176,9 +182,9 @@ export const wsRoute = (
         if (!done.add(m.id)) return answer({ id: m.id, messageId: null, outcome: "done" });
         return act(m).pipe(Effect.andThen(answer({ id: m.id, messageId: null, outcome: "taken" })));
       };
-      // a frame that doesn't decode is dropped, and answered when it has an id, so its client
-      // doesn't send it again on every socket
-      const unread = (frame: string) => Option.match(decodeId(frame), { onNone: () => Effect.void, onSome: ({ id }) => answer({ id, messageId: null, outcome: "done" }) });
+      // a frame that doesn't decode is dropped undone, and answered `refused` when it has an id, so
+      // its client stops sending it, and can say so
+      const unread = (frame: string) => Option.match(decodeId(frame), { onNone: () => Effect.void, onSome: ({ id }) => answer({ id, messageId: null, outcome: "refused" }) });
       const pull = yield* Socket.readerString(socket);
       yield* pull.pipe(
         Effect.flatMap((frames) => Effect.forEach(frames, (frame) => Option.match(decodeInbound(frame), { onNone: () => unread(frame), onSome: handle }))),

@@ -8,7 +8,7 @@ import { EventType } from "@ag-ui/core";
 import { Schema, Struct } from "effect";
 import type { SocketLike } from "@/lib/connection";
 import type { Inbound } from "@/lib/protocol";
-import type { SessionState } from "@wire";
+import type { Received, SessionState } from "@wire";
 
 type Listener = (event: { readonly data: string }) => void;
 
@@ -31,6 +31,7 @@ export const IDLE: SessionState = {
   waiting: 0,
   compactions: [],
   elapsed: 0,
+  loop: 1,
 };
 
 // `error`: an echo the log flags as failed (E28)
@@ -111,7 +112,7 @@ export const idsOf = (frame: string) => {
   return f.messages ? f.messages.flatMap((m) => (m.role === "user" ? [m.id] : [])) : f.id === undefined ? [] : [f.id];
 };
 // the server got action `id`: `taken` the first time
-export const received = (id: string, outcome: "taken" | "done" | "held" | "logged" | "taken-back" = "taken", at: number | null = null): Inbound => ({
+export const received = (id: string, outcome: Received["outcome"] = "taken", at: number | null = null): Inbound => ({
   name: "received",
   type: EventType.CUSTOM,
   value: { id, messageId: at === null ? null : String(at), outcome },

@@ -5,7 +5,7 @@
 // POST /api/messages, with no model (the stub claude refuses every turn; the messages are logged
 // before it is asked).
 import { afterAll, expect, test } from "bun:test";
-import { Deferred, Effect, Layer, Schema } from "effect";
+import { Deferred, Effect, Layer, PubSub, Schema } from "effect";
 import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { serverLayer } from "../server/app.ts";
@@ -14,6 +14,8 @@ import { ACTS, parseSettings } from "../src/config.ts";
 import { makeSeen, receiptOf } from "../src/once.ts";
 import { DEFAULT_ENDPOINTS } from "../src/openai/endpoints.ts";
 import { makeSession, noMedia } from "../src/session.ts";
+import { UsageLimit } from "../src/engines/errors.ts";
+import { logEntry, newMem } from "../src/tree.ts";
 import { newMsg } from "../src/store.ts";
 import type { TurnEngine } from "../src/turn/engine.ts";
 import { MessagesPage, Received } from "../src/wire.ts";
@@ -48,30 +50,36 @@ test("the seen ids are bounded: past the bound the oldest is forgotten, and an i
   expect(seen.add("a")).toBe(true); // forgotten: new again
 });
 
-test("a message id names what the session holds: held in the inbox, logged at its index, taken back; the log is read whole", () => {
-  const log = Array.from({ length: 100_000 }, (_, i) => newMsg(i, i % 2 === 0 ? "user" : "talk", `m${i}`));
-  log[3] = { ...newMsg(3, "user", "early"), client: "early" };
-  log[99_998] = { ...newMsg(99_998, "user", "late"), client: "late" };
-  log[5] = { ...newMsg(5, "talk", "not a message"), client: "talk" }; // only a user entry is a client's message
+test("a message id names what the session holds: held in the inbox, logged at its index (the log's own index of its ids), taken back", () => {
+  const mem = newMem();
+  for (let i = 0; i < 1000; i++) logEntry(mem, i === 3 ? { ...newMsg(3, "user", "early"), client: "early" } : i === 998 ? { ...newMsg(998, "user", "late"), client: "late" } : newMsg(i, "talk", `m${i}`));
+  logEntry(mem, { ...newMsg(1000, "talk", "not a message"), client: "talk" }); // only a user entry is a client's message
+  expect([...mem.clients]).toEqual([
+    ["early", 3],
+    ["late", 998],
+  ]);
   const taken = makeSeen(ACTS);
   taken.add("gone");
   const inbox = [{ clientId: "waiting", described: null, device: null, engine: "x", media: [], seq: 1, state: "held" as const, steer: true, text: "w" }];
-  const of = (id: string) => receiptOf(id, { inbox, log, taken });
-  expect(["waiting", "early", "late", "gone", "talk", "never"].map(of)).toEqual([{ type: "held" }, { at: 3, type: "logged" }, { at: 99_998, type: "logged" }, { type: "taken-back" }, null, null]);
-  // what a message costs to look up, against a log this long: the newest entry first, so a resend of
-  // a recent one is found at once, and a new one (no match) reads it all
-  const started = performance.now();
-  for (let k = 0; k < 100; k++) of(`new ${k}`);
-  expect((performance.now() - started) / 100).toBeLessThan(5); // ms per new message, generously
+  const of = (id: string) => receiptOf(id, { inbox, logged: mem.clients, taken });
+  expect(["waiting", "early", "late", "gone", "talk", "never"].map(of)).toEqual([{ type: "held" }, { at: 3, type: "logged" }, { at: 998, type: "logged" }, { type: "taken-back" }, null, null]);
 });
 
-// a session over a chat in `dir` whose turns wait on `gate` (none: they end at once)
-const rig = (dir: string, gate?: Deferred.Deferred<true>) =>
+// a session over a chat in `dir` whose turns wait on `gate` (none: they end at once), or run as
+// `run` says; what it tells its clients is kept
+const rig = (dir: string, gate?: Deferred.Deferred<true>, run?: TurnEngine["run"]) =>
   Effect.gen(function* () {
     const chat = yield* openChat(dir, { summarize: (job) => Effect.succeed(`summary ${job.l}.${job.i}`) });
-    const engine: TurnEngine = { ref: "fake:x", run: () => (gate ? Deferred.await(gate) : Effect.void), vision: false, warm: () => Effect.void };
+    const engine: TurnEngine = { ref: "fake:x", run: run ?? (() => (gate ? Deferred.await(gate) : Effect.void)), vision: false, warm: () => Effect.void };
     const session = yield* makeSession({ chat, commit: Effect.succeed(null), defaultDevice: "mini", devices: ["mini"], engines: [engine], idle: "1 hour", logUsage: () => Effect.void, media: noMedia });
-    return { chat, session };
+    const infos: string[] = [];
+    const sub = yield* PubSub.subscribe(session.events);
+    yield* PubSub.take(sub).pipe(
+      Effect.tap((e) => Effect.sync(() => (e.type === "info" ? infos.push(e.message) : 0))),
+      Effect.forever,
+      Effect.forkScoped,
+    );
+    return { chat, infos, session };
   });
 
 test("a message sent again is answered and never taken twice: while held, once logged, once taken back, and after a restart", async () => {
@@ -118,33 +126,106 @@ test("a message sent again is answered and never taken twice: while held, once l
   );
 });
 
-test("a Stop or a resume names the run of the turn loop it was for: one for a run that ended does nothing, and says so", async () => {
+test("a Stop names the run of the turn loop it was for: one for a run that ended does nothing while a later one runs, and says so", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      // each turn waits for its own gate
+      const gate = yield* Deferred.make<true>();
+      const next = yield* Deferred.make<true>();
+      let turns = 0;
+      const { chat, session } = yield* rig(fresh(), undefined, () => Deferred.await(turns++ === 0 ? gate : next));
+      expect(yield* session.stop(session.state().loop)).toBe("not stopped: the turn it was for has ended"); // nothing ever ran
+      yield* session.input("one", { clientId: "a" });
+      yield* until("the first turn", () => session.state().phase === "running" && chat.mem.root.length === 1);
+      const first = session.state().loop ?? -1;
+      expect(first).toBeGreaterThan(0);
+      yield* Deferred.succeed(gate, true);
+      yield* until("idle", () => session.state().phase === "idle");
+      // the user pressed Stop on the first turn; it arrives after a reconnect, as the next one runs
+      yield* session.input("two", { clientId: "b" });
+      yield* until("the next turn", () => session.state().phase === "running" && chat.mem.root.length === 2);
+      const now = session.state().loop;
+      expect(now).toBe(first + 1);
+      expect(yield* session.stop(first)).toBe("not stopped: the turn it was for has ended");
+      yield* Effect.sleep("30 millis");
+      expect(session.state().phase).toBe("running");
+      expect(yield* session.stop(now)).toBeNull();
+      yield* until("stopped", () => session.state().phase === "idle");
+      yield* Deferred.succeed(next, true);
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("a resume names the run of the turn loop whose stop it settles: one for an earlier run is not resumed, and says so", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const { chat, infos, session } = yield* rig(fresh(), undefined, () => Effect.fail(new UsageLimit({ message: "spent" })));
+      yield* session.input("one", { clientId: "a" });
+      yield* until("stopped for a model", () => session.state().phase === "needs-model");
+      const stale = (session.state().loop ?? 0) - 1;
+      yield* session.resume("fake:x", stale);
+      yield* until("said", () => infos.some((i) => i.startsWith("not resumed")));
+      expect(session.state().phase).toBe("needs-model");
+      yield* session.resume("fake:x", session.state().loop);
+      yield* until("tried again", () => infos.some((i) => i.includes("tried again")));
+      expect(chat.mem.root).toHaveLength(1);
+      yield* session.stop();
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("a Stop resent after a restart never names a run of the new server's loop", async () => {
+  const dir = fresh();
+  const before = await Effect.runPromise(
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<true>();
+      const { chat, session } = yield* rig(dir, gate);
+      yield* session.input("one", { clientId: "a" });
+      yield* until("its turn", () => session.state().phase === "running" && chat.mem.root.length === 1);
+      return session.state().loop;
+    }).pipe(Effect.scoped),
+  );
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<true>();
+      const { chat, session } = yield* rig(dir, gate);
+      yield* session.input("after the restart", { clientId: "b" });
+      yield* until("its turn", () => session.state().phase === "running" && chat.mem.root.length === 2);
+      expect(session.state().loop).not.toBe(before);
+      expect(yield* session.stop(before)).toBe("not stopped: the turn it was for has ended");
+      expect(session.state().phase).toBe("running");
+    }).pipe(Effect.scoped),
+  );
+});
+
+test("a Stop that comes before the loop's fiber has started still ends the loop", async () => {
   await Effect.runPromise(
     Effect.gen(function* () {
       const gate = yield* Deferred.make<true>();
       const { session } = yield* rig(fresh(), gate);
-      expect(yield* session.stop(0)).toBe("not stopped: the turn it was for has ended"); // nothing ever ran
       yield* session.input("one", { clientId: "a" });
-      yield* until("the first loop", () => session.state().phase === "running");
-      const first = session.state().loop ?? -1;
-      expect(first).toBe(1);
-      yield* Deferred.succeed(gate, true);
+      expect(yield* session.stop(session.state().loop)).toBeNull(); // no yield since the fork
       yield* until("idle", () => session.state().phase === "idle");
-      // the user pressed Stop on the first turn; it arrives after a reconnect, as another runs
-      const again = yield* Deferred.make<true>();
-      const second = yield* rig(fresh(), again);
-      yield* second.session.input("one", { clientId: "a" });
-      yield* until("its turn", () => second.session.state().phase === "running" && second.chat.mem.root.length === 1);
-      yield* second.session.input("two", { clientId: "b" });
-      expect(yield* session.stop(first)).toBe("not stopped: the turn it was for has ended");
-      // on the session whose loop it names, while that runs, it stops it
-      const now = second.session.state().loop;
-      expect(yield* second.session.stop((now ?? 0) + 1)).toBe("not stopped: the turn it was for has ended");
-      expect(second.session.state().phase).toBe("running");
-      expect(yield* second.session.stop(now)).toBeNull();
-      yield* until("stopped", () => second.session.state().phase === "idle");
     }).pipe(Effect.scoped),
   );
+});
+
+test("the session closes while a turn runs and a message is held: the held one is logged, and nothing hangs", async () => {
+  const dir = fresh();
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<true>();
+      const { chat, session } = yield* rig(dir, gate);
+      yield* session.input("one", { clientId: "a" });
+      yield* until("its turn", () => session.state().phase === "running" && chat.mem.root.length === 1);
+      yield* session.input("two", { clientId: "b", followUp: "queue" });
+    }).pipe(Effect.scoped, Effect.timeout("3 seconds")),
+  );
+  const reopened = await Effect.runPromise(Effect.scoped(openChat(dir, { summarize: () => Effect.succeed("s") })));
+  expect(reopened.mem.root.map((e) => [e.text, e.client])).toEqual([
+    ["one", "a"],
+    ["two", "b"],
+  ]);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -254,6 +335,7 @@ test("over /ws any other action is done once by its id, whichever socket sends i
     // a frame that doesn't decode is answered by its id, so its client stops sending it
     a.ws.send(JSON.stringify({ id: "odd-1", type: "from-the-future" }));
     await a.wait(() => a.received().some((r) => r.id === "odd-1"));
+    expect(a.received().find((r) => r.id === "odd-1")?.outcome).toBe("refused"); // dropped undone, and said so
     a.ws.close();
     b.ws.close();
   });

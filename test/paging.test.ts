@@ -88,3 +88,11 @@ test("the opening and the run-end snapshots of a window of 200 entries of 20 KB 
   expect(end.messages).toEqual([]); // the newest alone is past the cap: the client reads it over HTTP
   expect(end.metadata).toEqual({ from: 2, to: 202 });
 });
+
+test("a window of 200 short messages, 600 bytes of text each, is one frame whole: no page to read", () => {
+  const log = Array.from({ length: 200 }, (_, i) => newMsg(i, i % 2 === 0 ? "user" : "talk", "x".repeat(600)));
+  const [opening] = openStream({ entries: log, live: null, state: { ...STATE, messages: 200 }, thread: "mini", window: 200 }).first;
+  if (opening?.type !== EventType.MESSAGES_SNAPSHOT) throw new Error("not a snapshot");
+  expect(opening.messages).toHaveLength(200);
+  expect(bytes(opening)).toBeLessThanOrEqual(SNAPSHOT_BYTES);
+});

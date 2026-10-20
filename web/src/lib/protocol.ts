@@ -168,8 +168,8 @@ export type SubagentAction =
 // (the state's `loop`, E41), so one the link sends again after a reconnect never stops or settles
 // a later turn.
 export type Action =
-  | { readonly type: "abort" | "stop-all"; readonly loop: number | undefined }
-  | { readonly type: "resume"; readonly engine: string; readonly loop: number | undefined }
+  | { readonly type: "abort" | "stop-all"; readonly loop: number }
+  | { readonly type: "resume"; readonly engine: string; readonly loop: number }
   | { readonly type: "take-back"; readonly clientId: string }
   | ({ readonly type: "settings" } & Settings)
   | SubagentAction;

@@ -44,7 +44,7 @@ export const HEARTBEAT = "5 seconds";
 // entries; a client reads the rest from /api/messages (E42). A frame can't be cut into, by the
 // heartbeat or anything else, so this bounds how long one keeps a link busy: 128 KiB is about 10 s
 // (SILENT) at 100 kbit/s, and a slower link has the client's growing window. A window of 200
-// entries averaging under ~650 bytes still fits whole, and then no page is read.
+// entries of 600 bytes each still fits whole, and then no page is read (test/paging.test.ts).
 export const SNAPSHOT_BYTES = 128 * 1024;
 // The ids of client actions other than messages the server remembers answering (E41), the newest
 // first; a message's id is the session's to remember (src/once.ts).

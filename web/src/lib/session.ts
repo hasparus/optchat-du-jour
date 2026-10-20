@@ -233,7 +233,11 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
   const received = (r: Received) => {
     const index = r.messageId === null ? null : logIndex(r.messageId);
     if (r.outcome === "logged" && index !== null) acked(r.id, null, index);
-    else if (r.outcome === "taken-back") set({ pending: s.pending.filter((p) => p.id !== r.id) });
+    else if (r.outcome === "taken-back") {
+      // its `taken-back` went to a socket that dropped: what this page asked for comes back to the composer
+      const p = s.pending.find((x) => x.id === r.id);
+      if (p !== undefined) takenBack(r.id, null, p.text, p.media);
+    } else if (r.outcome === "refused") mark("the server couldn't read something this page sent, and didn't do it: reload the page", "error");
   };
   // A connection's first state (E41): a message of ours the server doesn't hold, and no ack has
   // answered, goes out again under its id. The server answers what became of it (logged, taken
@@ -390,7 +394,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
 
   const unlisten = link.listen(event);
   const unstatus = link.onStatus((status) => {
-    set(status === "open" ? { asking: [], status } : { drafts: noDrafts, run: null, status, thinking: false, thoughts: dropLive(s.thoughts) });
+    set(status === "open" ? { status } : { drafts: noDrafts, run: null, status, thinking: false, thoughts: dropLive(s.thoughts) });
   });
 
   return {
@@ -426,7 +430,8 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
     // later would settle whatever turn waits after the reconnect, which the user never chose);
     // said when it wasn't sent.
     resume: (engine: string) => {
-      if (link.resume(engine, s.state?.loop)) return true;
+      const loop = s.state?.loop;
+      if (loop !== undefined && link.resume(engine, loop)) return true;
       mark("not connected: the resume was not sent", "error");
       return false;
     },

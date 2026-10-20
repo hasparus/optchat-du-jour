@@ -91,7 +91,9 @@ export type Subagents = {
   // who holds this /mcp key: a subagent, by its name; null for a key no subagent was given
   readonly callerOf: (key: string) => Caller | null;
   // the user's actions from a card: null when done, else why not
-  readonly tell: (name: string, text: string) => Effect.Effect<string | null>;
+  // A tell with its client's `id` (E41) is told once: one held for its run, or in its side log, is
+  // answered and not sent again
+  readonly tell: (name: string, text: string, id?: string) => Effect.Effect<string | null>;
   readonly stop: (name: string) => Effect.Effect<string | null>;
   // the user's Stop all: every running subagent, stopped; their names
   readonly stopAll: Effect.Effect<readonly string[]>;
@@ -196,10 +198,10 @@ export const makeSubagents = (o: {
       return a.entries;
     };
     // one entry of its side log: written and synced before anything else knows it
-    const append = (a: Agent, kind: Entry["kind"], text: string, error = false) =>
+    // `error` and `client` after the reference's keys, each only when set, as the main log's (E28, E41)
+    const append = (a: Agent, kind: Entry["kind"], text: string, extra: { readonly error?: true; readonly client?: string } = {}) =>
       Effect.suspend(() => {
-        const base = newMsg(a.count, kind, text);
-        const entry: Entry = error ? { ...base, error: true } : base;
+        const entry: Entry = { ...newMsg(a.count, kind, text), ...extra };
         return Effect.try({
           catch: (e) => new StoreError({ message: `cannot log ${a.name}'s entry ${entry.i}: ${e instanceof Error ? e.message : String(e)}` }),
           try: () => {
@@ -375,7 +377,7 @@ export const makeSubagents = (o: {
       }).pipe(Effect.uninterruptible);
 
     // a message it was sent, in its side log now; a report from its own subagent is delivered then
-    const logTell = (a: Agent, t: Tell) => append(a, "user", t.text).pipe(Effect.andThen(t.report === undefined ? Effect.void : delivered(t.report.child, t.report.run)));
+    const logTell = (a: Agent, t: Tell) => append(a, "user", t.text, t.client === undefined ? {} : { client: t.client }).pipe(Effect.andThen(t.report === undefined ? Effect.void : delivered(t.report.child, t.report.run)));
 
     const run = (a: Agent): Effect.Effect<void, EngineError | StoreError> =>
       Effect.gen(function* () {
@@ -398,7 +400,7 @@ export const makeSubagents = (o: {
           const out: TurnEvents = {
             info: (message) => info(`[${a.name}] ${message}`),
             // its side log keeps the artifact tools' stubs too (E31): zoom("Name") answers from it
-            log: (kind, body, flags) => append(a, kind, loggedText(kind, body, flags?.tool), kind === "echo" && flags?.error === true),
+            log: (kind, body, flags) => append(a, kind, loggedText(kind, body, flags?.tool), kind === "echo" && flags?.error === true ? { error: true } : {}),
             reasoning: () => Effect.void,
             text: () => Effect.void,
             thinking: () => Effect.void,
@@ -560,14 +562,17 @@ export const makeSubagents = (o: {
     // sender knows at once and says it in its own report, which reaches the chat; a held one would
     // wait unseen in a run that may never come, and arrive stale if it did.
     // `sender`: the user from a card, the master's turn, or a subagent, which the message's label names
-    const send = (name: string, text: string, sender: "user" | Caller) =>
+    const send = (name: string, text: string, sender: "user" | Caller, client?: string) =>
       Effect.gen(function* () {
         const a = find(name);
         if (!a) return Result.fail(`no subagent called ${name}${agents.size === 0 ? "" : ` (there are ${[...agents.values()].map((x) => x.name).join(", ")})`}`);
         if (text.trim() === "") return Result.fail("the message is empty");
+        // the same tell again (E41): held for its run, or in its side log already
+        if (client !== undefined && (a.tells.some((t) => t.client === client) || entriesOf(a).some((e) => e.client === client))) return Result.succeed(`${a.name} has it already.`);
         const from = sender === "user" ? "the user" : sender === "master" ? "OptChat" : sender.agent;
         if (sender !== "user" && sender !== "master" && userStopped(a)) return Result.fail(`the user stopped ${a.name}, and a subagent's message doesn't start it again. Say it in your final reply instead, which your report carries`);
-        const t: Tell = { seq: ++seq, state: "held", text: `[from ${from}] ${text}` };
+        const told: Tell = { seq: ++seq, state: "held", text: `[from ${from}] ${text}` };
+        const t: Tell = client === undefined ? told : { ...told, client };
         if (a.state === "running") {
           a.tells.push(t);
           if (a.offerTo) {
@@ -633,7 +638,7 @@ export const makeSubagents = (o: {
 
     // ---- the user's, from a card ----
 
-    const tell = (name: string, text: string) => send(name, text, "user").pipe(Effect.map((r) => (Result.isSuccess(r) ? null : `tell ${name}: ${r.failure}`)));
+    const tell = (name: string, text: string, id?: string) => send(name, text, "user", id).pipe(Effect.map((r) => (Result.isSuccess(r) ? null : `tell ${name}: ${r.failure}`)));
 
     const stop = (name: string) =>
       Effect.gen(function* () {

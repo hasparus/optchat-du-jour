@@ -441,7 +441,7 @@ test("a cancel right after a taken message was written does not log it again", a
       yield* until("the run", () => r.events.some((e) => e.type === "run-started"));
       yield* r.session.input("steer", { clientId: "c2" });
       yield* until("the write", () => written.yes);
-      yield* r.session.cancel;
+      yield* r.session.stop();
       yield* until("idle", r.idle);
       expect(r.log()).toEqual([
         ["user", "go"],
@@ -797,7 +797,7 @@ test("queue across a stop: the queued message stays held, is not handed to the r
       yield* r.session.input("again", { clientId: "c3" });
       yield* until("the second stop", () => r.session.state().phase === "needs-model");
       yield* r.session.input("held", { clientId: "c4" });
-      yield* r.session.cancel;
+      yield* r.session.stop();
       yield* until("idle again", () => r.session.state().phase === "idle");
       expect(r.log().slice(5)).toEqual([
         ["user", "again"],
@@ -1349,7 +1349,7 @@ test("a cancel during a tool call: the not-run echo is logged under the run, bef
       yield* r.session.input("go", { clientId: "c1" });
       yield* until("the tool call", () => running.now);
       yield* r.session.input("later", { clientId: "c2" });
-      yield* r.session.cancel;
+      yield* r.session.stop();
       yield* until("idle", r.idle);
       const order = r.events.flatMap((e) => (e.type === "logged" ? [`${e.entry.kind}: ${e.entry.text} (${e.runId ?? "no run"})`] : e.type === "run-finished" ? [`end: ${e.error}`] : []));
       expect(order).toEqual(["user: go (no run)", "tool: Glob {} (0)", "echo: not run: cancelled (0)", "end: cancelled", "user: later (no run)"]);
@@ -1394,7 +1394,7 @@ test("an engine marked down is not primed: a cancel while waiting for a model le
       yield* until("the first priming", () => primed === 1);
       yield* r.session.input("go", { clientId: "c1" });
       yield* until("the stop", () => r.session.state().phase === "needs-model");
-      yield* r.session.cancel;
+      yield* r.session.stop();
       yield* until("idle", r.idle);
       yield* r.session.primeSoon;
       yield* Effect.sleep("50 millis");

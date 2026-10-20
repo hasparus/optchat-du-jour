@@ -529,7 +529,7 @@ describe("session", () => {
     expect(waiting(session)).toEqual(["held there", `from an older page (${UNSENT})`]);
   });
 
-  test("a take-back asked for and not answered is forgotten on a reconnect, so it can be asked again", async () => {
+  test("a take-back asked for and not answered is still asked for after a reconnect: the link sends it again, and its answer is awaited", async () => {
     const held = [{ clientId: "q1", engine: "claude-code:opus", queued: true, text: "for later" }];
     const server = fakeServer(() => [snapshot([]), { snapshot: { ...IDLE, pending: held, phase: "running" }, type: EventType.STATE_SNAPSHOT }]);
     const link = openLink("ws://x/ws", { retryMs: 1, socket: server.socket });
@@ -541,7 +541,14 @@ describe("session", () => {
     expect(session.get().asking).toEqual(["q1"]);
     server.drop(); // the answer goes to the old socket
     await tick(20);
-    expect(session.get().asking).toEqual([]);
+    expect(session.get().asking).toEqual(["q1"]);
+    expect(actionsOf(server.sent).filter((f) => f.type === "take-back")).toHaveLength(2); // sent again, under its id
+  });
+
+  test("an action the server couldn't read is dropped and said, not sent again", async () => {
+    const { server, session } = await setup();
+    server.play(received("lost-1", "refused"));
+    expect(session.get().markers.map((m) => [m.tone, m.text])).toEqual([["error", "the server couldn't read something this page sent, and didn't do it: reload the page"]]);
   });
 
   test("a message sent here waits in the queue until the server's ack for its id, also mid-run", async () => {
