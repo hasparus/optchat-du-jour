@@ -40,7 +40,7 @@ test("the plan: nothing to merge, a fast-forward, a merge commit, or kept and wh
   const b = "optchat/x";
   expect(plan(facts({ ahead: 0, busy: "a merge", on: null }), b)).toEqual({ do: "remove", outcome: "nothing" });
   expect(plan(facts({ ff: true, tree: null }), b)).toEqual({ do: "advance", outcome: "fast-forward" });
-  expect(plan(facts(), b)).toEqual({ do: "advance", outcome: "merged" });
+  expect(plan(facts(), b)).toEqual({ do: "advance", outcome: "merged", tree: "abc" });
   expect(plan(facts({ tree: { conflicts: ["a.txt"] } }), b)).toEqual({ conflicts: ["a.txt"], do: "keep", outcome: "conflict", why: "optchat/x conflicts with main in a.txt" });
   // only into the branch it was made from, never while something else is in progress, never on no branch
   expect(plan(facts({ on: "release" }), b)).toMatchObject({ do: "keep", outcome: "not-merged", why: "the folder is on release now, not main, which optchat/x was made from, so it was not merged" });
@@ -117,20 +117,21 @@ test("gitignored files keep the worktree after a merge, and the report says how 
   expect(await run(finishWorktree(w, "Notes"))).toMatchObject({ ignored: 1, outcome: "nothing" });
 });
 
+// what an install, a build and a cache leave in a worktree, every piece of it gitignored
+const litter = (path: string) => {
+  for (const d of ["node_modules/left-pad", "pkg/__pycache__", "web/dist", ".cache"]) mkdirSync(`${path}/${d}`, { recursive: true });
+  writeFileSync(`${path}/node_modules/left-pad/index.js`, "x\n");
+  writeFileSync(`${path}/pkg/__pycache__/m.cpython-313.pyc`, "x\n");
+  writeFileSync(`${path}/pkg/m.pyc`, "x\n");
+  writeFileSync(`${path}/.DS_Store`, "x\n");
+  writeFileSync(`${path}/web/dist/app.js`, "x\n");
+  writeFileSync(`${path}/.cache/blob`, "x\n");
+};
 test("disposable ignored files (dependencies, caches, build output, subagents.disposable) don't keep the worktree; any other does", async () => {
   const { folder, root, top } = repo();
   writeFileSync(`${folder}/.gitignore`, "node_modules/\n__pycache__/\n*.pyc\n.DS_Store\ndist/\n.cache/\nnotes/\n");
   git(folder, "add", "-A");
   git(folder, "commit", "-qm", "ignores");
-  const litter = (path: string) => {
-    for (const d of ["node_modules/left-pad", "pkg/__pycache__", "web/dist", ".cache"]) mkdirSync(`${path}/${d}`, { recursive: true });
-    writeFileSync(`${path}/node_modules/left-pad/index.js`, "x\n");
-    writeFileSync(`${path}/pkg/__pycache__/m.cpython-313.pyc`, "x\n");
-    writeFileSync(`${path}/pkg/m.pyc`, "x\n");
-    writeFileSync(`${path}/.DS_Store`, "x\n");
-    writeFileSync(`${path}/web/dist/app.js`, "x\n");
-    writeFileSync(`${path}/.cache/blob`, "x\n");
-  };
   const extra = disposable([".cache"]);
   const w = await run(addWorktree(root, folder, "Builder", [top]));
   litter(w.path);
@@ -173,7 +174,7 @@ test("add, finish and discard are never interrupted halfway: an interrupt as eac
   const { folder, root, top } = repo();
   const trees = localWorktrees(root, [top]);
   // forked and interrupted at once: started, so the interrupt lands inside the step, not before it
-  const interrupted = <A, E>(e: Effect.Effect<A, E>) =>
+  const interrupted = async <A, E>(e: Effect.Effect<A, E>) =>
     run(
       Effect.gen(function* () {
         const fiber = yield* Effect.forkChild(e, { startImmediately: true });

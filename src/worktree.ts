@@ -13,7 +13,7 @@
 // runner runs the same code for its own folders (device/runner.ts, POST /worktree); the server's
 // own device runs it in-process. Which of these happens is `plan`, a pure function of the facts
 // gathered first.
-import { Data, Effect, Semaphore } from "effect";
+import { Data, Effect, Result, Semaphore } from "effect";
 import { existsSync, mkdirSync } from "node:fs";
 import { type GitFailed, must as gitMust, run, said } from "./git.ts";
 import { realInside } from "./paths.ts";
@@ -56,7 +56,7 @@ export const addWorktree = (root: string, folder: string, name: string, folders:
     const top = yield* git(folder, ["rev-parse", "--show-toplevel"]);
     if (top.code !== 0) return yield* new WorktreeError({ message: `${folder} is not in a git repository, so it can't be isolated: spawn without isolate to work there directly` });
     const repo = top.out.trim();
-    if (realInside(repo, folders) === null) return yield* new WorktreeError({ message: `${folder} is inside the repository ${repo}, which is outside this device's folders, so it can't be isolated` });
+    if (Result.isFailure(realInside(repo, folders))) return yield* new WorktreeError({ message: `${folder} is inside the repository ${repo}, which is outside this device's folders, so it can't be isolated` });
     const base = yield* git(repo, ["rev-parse", "--verify", "-q", "HEAD"]);
     if (base.code !== 0) return yield* new WorktreeError({ message: `${repo} has no commit yet, so there is nothing to branch from: commit first, or spawn without isolate` });
     const on = yield* git(repo, ["symbolic-ref", "--short", "-q", "HEAD"]);
@@ -89,7 +89,9 @@ export type Facts = {
 
 export type Plan =
   | { readonly do: "remove"; readonly outcome: "nothing" }
-  | { readonly do: "advance"; readonly outcome: "fast-forward" | "merged" }
+  | { readonly do: "advance"; readonly outcome: "fast-forward" }
+  // the merge commit's tree: merge-tree's clean result
+  | { readonly do: "advance"; readonly outcome: "merged"; readonly tree: string }
   | { readonly do: "keep"; readonly outcome: "conflict" | "not-merged"; readonly why: string; readonly conflicts?: readonly string[] };
 
 // What to do with a finished worktree, `branch` naming it in the reasons
@@ -103,7 +105,7 @@ export const plan = (f: Facts, branch: string): Plan => {
   if (f.tree === null) return { do: "keep", outcome: "not-merged", why: `git could not tell whether ${branch} merges into ${f.on}` };
   if ("conflicts" in f.tree) return { conflicts: f.tree.conflicts, do: "keep", outcome: "conflict", why: `${branch} conflicts with ${f.on} in ${f.tree.conflicts.join(", ") || "some files"}` };
   if ("failed" in f.tree) return { do: "keep", outcome: "not-merged", why: `git could not merge ${branch} into ${f.on} off the working tree (${f.tree.failed})` };
-  return { do: "advance", outcome: "merged" };
+  return { do: "advance", outcome: "merged", tree: f.tree.clean };
 };
 
 // what is in progress in the folder's repository, by the files git keeps for it; null: nothing
@@ -193,10 +195,7 @@ export const finishWorktree = (w: Isolation, name: string, isDisposable = dispos
     if (p.do === "keep") return merge(p.outcome, `${p.why}; ${kept}`, p.conflicts === undefined ? {} : { conflicts: p.conflicts });
     if (p.do === "remove") return yield* done("nothing", `${w.branch} has nothing the folder lacks`);
     // the merge commit, made off the working tree, with the folder's HEAD and the branch as parents
-    const target =
-      p.outcome === "fast-forward" || tree === null || !("clean" in tree)
-        ? tip
-        : yield* must(w.repo, ["commit-tree", tree.clean, "-p", head, "-p", tip, "-m", `Merge ${w.branch} (subagent ${name})`], "user");
+    const target = p.outcome === "fast-forward" ? tip : yield* must(w.repo, ["commit-tree", p.tree, "-p", head, "-p", tip, "-m", `Merge ${w.branch} (subagent ${name})`], "user");
     // the one write to the folder: a compare-and-swap that refuses if HEAD moved since `head`
     const moved = yield* git(w.repo, ["merge", "--ff-only", "-q", target]);
     if (moved.code !== 0) return merge("not-merged", `git did not move ${into ?? "the folder"} to ${p.outcome === "merged" ? "the merge commit" : w.branch} (${said(moved)}); ${kept}`);

@@ -4,14 +4,15 @@
 // browser. No model, no network beyond 127.0.0.1.
 import { BunServices } from "@effect/platform-bun";
 import { afterAll, expect, test } from "bun:test";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Result } from "effect";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename } from "node:path";
 import { deviceLayer } from "../device/runner.ts";
 import { remoteTool } from "../src/claude/remote.ts";
+import { realInside } from "../src/paths.ts";
 import { toolBox } from "../src/tools/box.ts";
-import { makeFileTools } from "../src/tools/files.ts";
+import { confine, makeFileTools } from "../src/tools/files.ts";
 import { newMem } from "../src/tree.ts";
 import { freePort } from "./ports.ts";
 
@@ -64,6 +65,25 @@ test("Read, Glob and Grep stay inside the folders through .., symlinks and absol
   expect(await Effect.runPromise(box.run("Read", "{not json"))).toEqual({ error: true, text: "Error: the input of Read is not JSON" });
   expect(await Effect.runPromise(box.run("zoom", '{"id":5,"n":1}'))).toMatchObject({ error: false });
   expect(await Effect.runPromise(box.run("Read", JSON.stringify({ file_path: "src/a.txt" })))).toEqual({ error: false, text: "     1\talpha\n     2\tbeta" });
+});
+
+test("one rule for a path on this machine: realInside (a spawn's folder, a repository to isolate) and confine (the tools, the runner's cwd) agree", async () => {
+  const root = tmp();
+  const inside = `${root}/in`, outside = `${root}/out`;
+  mkdirSync(`${inside}/sub`, { recursive: true });
+  mkdirSync(outside);
+  symlinkSync(outside, `${inside}/escape`);
+  const cases = [`${inside}/sub`, `${inside}/sub/../..`, `${inside}/escape`, `${inside}/missing`, "in/sub", outside];
+  const viaConfine = await Promise.all(cases.map(async (path) => Effect.runPromise(Effect.result(confine(path, [inside])))));
+  expect(cases.map((path) => realInside(path, [inside]))).toEqual(viaConfine.map((r) => (Result.isSuccess(r) ? Result.succeed(r.success) : Result.fail(r.failure.message))));
+  expect(cases.map((path) => realInside(path, [inside]))).toEqual([
+    Result.succeed(`${inside}/sub`),
+    Result.fail(`${inside}/sub/../.. is outside this device's folders`),
+    Result.fail(`${inside}/escape is outside this device's folders`),
+    Result.fail(`${inside}/missing does not exist on this device`),
+    Result.fail("in/sub is not an absolute path"),
+    Result.fail(`${outside} is outside this device's folders`),
+  ]);
 });
 
 test("a Grep pattern that backtracks without end times out, and the server stays responsive meanwhile", async () => {

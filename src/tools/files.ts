@@ -3,27 +3,20 @@
 // no shell. Every path is resolved first (`~`, `..`, symlinks) and must land in one of the
 // folders, as the device runner checks a spawn's cwd (SPEC "Multi-machine"). The device runner
 // serves these on POST /tool; the server's own device runs the same code in-process.
-import { Data, Duration, Effect, FileSystem, Option, Schema } from "effect";
+import { Data, Duration, Effect, FileSystem, Option, Result, Schema } from "effect";
 import { isAbsolute, resolve } from "node:path";
-import { expandHome, within } from "../paths.ts";
+import { expandHome, realInside } from "../paths.ts";
 import { headOf } from "../text.ts";
 import { type GrepJob, binary } from "./grep-search.ts";
 
 export class Outside extends Data.TaggedError("Outside")<{ readonly message: string }> {}
 
 
-// `path`'s real path when it is one of `folders` or inside one
+// `path`'s real path when it is one of `folders` or inside one (src/paths.ts realInside)
 export const confine = (path: string, folders: readonly string[]) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const expanded = expandHome(path);
-    if (!isAbsolute(expanded)) return yield* new Outside({ message: `${path} is not an absolute path` });
-    const real = yield* fs.realPath(expanded).pipe(Effect.mapError(() => new Outside({ message: `${path} does not exist on this device` })));
-    for (const folder of folders) {
-      const root = yield* fs.realPath(expandHome(folder)).pipe(Effect.option);
-      if (Option.isSome(root) && within(real, root.value)) return real;
-    }
-    return yield* new Outside({ message: `${path} is outside this device's folders` });
+  Effect.suspend(() => {
+    const placed = realInside(path, folders);
+    return Result.isSuccess(placed) ? Effect.succeed(placed.success) : Effect.fail(new Outside({ message: placed.failure }));
   });
 
 const READ_LINES = 2000; // lines per Read unless `limit` says otherwise
@@ -151,10 +144,7 @@ export const makeFileTools = (folders: readonly string[], o: { readonly timeout?
     const fs = yield* FileSystem.FileSystem;
     const home = expandHome(folders[0] ?? "~");
     const inside = (path: string) =>
-      confine(isAbsolute(expandHome(path)) ? path : resolve(home, path), folders).pipe(
-        Effect.provideService(FileSystem.FileSystem, fs),
-        Effect.mapError((e) => new Refused({ message: e.message })),
-      );
+      confine(isAbsolute(expandHome(path)) ? path : resolve(home, path), folders).pipe(Effect.mapError((e) => new Refused({ message: e.message })));
     // a file the glob found, still inside once symlinks are resolved; None when not
     const stillInside = (path: string) => inside(path).pipe(Effect.option);
 

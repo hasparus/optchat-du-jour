@@ -79,7 +79,7 @@ export const makePlacements = (o: {
       if (device === o.device) {
         if (!posix.isAbsolute(expandHome(path))) return Result.fail(`${path} is not an absolute path`);
         const real = realInside(path, allowed);
-        return real === null ? Result.fail(`${path} is outside ${device}'s folders (${d.folders.join(", ")}), or doesn't exist there`) : Result.succeed(real);
+        return Result.isFailure(real) ? Result.fail(`${path} is outside ${device}'s folders (${d.folders.join(", ")}), or doesn't exist there`) : real;
       }
       const written = posix.normalize(path);
       if (!posix.isAbsolute(written) && written !== "~" && !written.startsWith("~/")) return Result.fail(`${path} is not an absolute path`);
