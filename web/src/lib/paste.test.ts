@@ -1,6 +1,7 @@
 // Long pastes, folded (lib/paste.ts): which ones fold, their tokens, the text sent (exactly what was
 // pasted, where it was pasted), and the parts a sent message folds into.
 import { expect, test } from "bun:test";
+import { reportHead } from "@wire";
 import { expand, FOLD_BYTES, FOLD_LINES, foldParts, folds, insert, lineCount, nextId, present, removeToken, sizeOf, tokenOf } from "./paste";
 
 const lines = (n: number) => Array.from({ length: n }, (_, k) => `line ${k + 1}`).join("\n");
@@ -60,6 +61,8 @@ test("a message from this browser folds its pasted blocks only; any other folds 
   // a subagent's report, however long, never folds; a bracket that names no subagent does
   expect(foldParts(`[scout] ${block}`, null)).toEqual([{ kind: "plain", text: `[scout] ${block}` }]);
   expect(foldParts(`[not a name] ${block}`, null)[0]?.kind).toBe("long");
+  // the head the server writes a report with is the one this reads
+  expect(foldParts(`${reportHead("notes-2")}${block}`, null)[0]?.kind).toBe("plain");
   // spans past the text, or overlapping, are not this text's
   expect(foldParts("short", [[0, 99]])).toEqual([{ kind: "plain", text: "short" }]);
   expect(foldParts(text, [[at, at + block.length], [at + 1, at + 5]]).filter((p) => p.kind === "pasted")).toHaveLength(1);

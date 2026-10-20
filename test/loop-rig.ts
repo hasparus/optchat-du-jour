@@ -6,6 +6,7 @@ import { Effect, PubSub } from "effect";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
+import type { Summarize } from "../src/compactor.ts";
 import type { Provider } from "../src/providers/provider.ts";
 import { makeSession, noMedia, type SessionEvent } from "../src/session.ts";
 import { toolLoop } from "../src/turn/loop.ts";
@@ -26,11 +27,12 @@ export const until = (what: string, ok: () => boolean, ms = 4000) =>
 
 export const USAGE = { cacheRead: 0, cacheWrite: 0, input: 1, output: 1 };
 
-export const rig = (provider: Provider) =>
+// `summarize`: the compactor's call, a fixed line unless a test says
+export const rig = (provider: Provider, summarize: Summarize = (job) => Effect.succeed(`summary ${job.l}.${job.i}`)) =>
   Effect.gen(function* () {
     const dir = mkdtempSync(`${tmpdir()}/oc-`);
     dirs.push(dir);
-    const chat = yield* openChat(dir, { summarize: (job) => Effect.succeed(`summary ${job.l}.${job.i}`) });
+    const chat = yield* openChat(dir, { summarize });
     const engine = toolLoop({ instructions: "MASTER", provider, ref: "api-key:x", toolsFor: () => ({ defs: [], run: () => Effect.die(new Error("no tools here")) }), vision: false });
     const session = yield* makeSession({
       chat,

@@ -72,6 +72,8 @@ export type Session = {
 };
 
 const MAX_MARKERS = 100;
+// where a message of ours has its long pastes, once it is logged (./draft.ts Fold)
+const foldOf = (p: Pending) => ({ length: p.text.length, spans: p.spans ?? [] });
 const MAX_ACKED = 1000; // log indexes of acked messages remembered
 // what a message sent on a connection that dropped is marked with when the server shows no sign of it
 export const UNSENT = "it may not have reached the server: send it again";
@@ -237,7 +239,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
     const p = s.pending[at];
     if (p === undefined) return; // another client's message
     if (index === null) set({ pending: s.pending.toSpliced(at, 1, { ...p, error: error ?? "not logged" }) });
-    else set({ folds: rememberFolds(s.folds, index, p.spans ?? []), pending: s.pending.toSpliced(at, 1) });
+    else set({ folds: rememberFolds(s.folds, index, foldOf(p)), pending: s.pending.toSpliced(at, 1) });
   };
   // A held message left the server's inbox for a client's composer, or could not: ours is no longer
   // pending either way it went to a composer, and the page that asked gets it back.
@@ -263,7 +265,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
     const p = s.pending[at];
     if (p === undefined) return;
     claim(i);
-    set({ folds: rememberFolds(s.folds, i, p.spans ?? []), pending: s.pending.toSpliced(at, 1) });
+    set({ folds: rememberFolds(s.folds, i, foldOf(p)), pending: s.pending.toSpliced(at, 1) });
   };
   // After a reconnect: a message sent on a connection that dropped, which the log doesn't hold and
   // the server doesn't hold either (its id is not among the state's pending), may have been lost

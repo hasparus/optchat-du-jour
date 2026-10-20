@@ -1,8 +1,8 @@
 // JSON as a model writes it: a tool call's input, read while it streams. Pure readers, shared by
 // the server's artifact drafts (src/artifacts/draft.ts) and the web's file diffs
-// (web/src/lib/diff.ts, through src/wire.ts), so the two read a cut text alike. A string is decoded
-// as far as its escapes are whole; a `\u` without four hex digits is U+FFFD, as JSON.parse would
-// refuse it and a draft shouldn't stop on it.
+// (web/src/lib/diff.ts, as @shared/partial-json), so the two read a cut text alike. A string is
+// decoded as far as its escapes are whole; a `\u` without four hex digits is U+FFFD, as
+// JSON.parse would refuse it and a draft shouldn't stop on it.
 import type { Schema } from "effect";
 
 const ESCAPES = new Map([

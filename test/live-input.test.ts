@@ -6,6 +6,7 @@ import { expect, test } from "bun:test";
 import { Deferred, Effect } from "effect";
 import type { Provider } from "../src/providers/provider.ts";
 import type { SessionEvent } from "../src/session.ts";
+import { UsageLimit } from "../src/engines/errors.ts";
 import { rig, until, USAGE } from "./loop-rig.ts";
 
 const EDIT = JSON.stringify({ file_path: "src/a.ts", old_string: "a\nb\n", new_string: "a\nc\n" });
@@ -78,6 +79,27 @@ test("once the call is logged its input is no longer live: a client that joins g
       yield* until("the call logged", () => r.events.some((e) => e.type === "logged" && e.entry.kind === "tool"));
       expect(inputs(r.events)).toHaveLength(1);
       expect(r.session.live()?.tool).toBeNull();
+      yield* r.session.cancel;
+    }).pipe(Effect.scoped),
+  );
+});
+
+// streams half an Edit, then its plan runs out: the turn stops and waits for a resume
+const spent: Provider = {
+  auth: "api-key",
+  call: (c) => (c.onToolInput?.delta(call, EDIT.slice(0, 30)) ?? Effect.void).pipe(Effect.andThen(Effect.fail(new UsageLimit({ message: "spent" })))),
+  engine: "api-key",
+};
+
+test("a call cut short by a usage limit: the run ends while the turn waits for a resume, and its input with it (E45)", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const r = yield* rig(spent);
+      yield* r.session.input("fix it");
+      yield* until("the stop", () => r.session.state().phase === "needs-model" && inputs(r.events).length === 1);
+      // the stop ends the run (a resume begins another), so nothing of the cut call is live
+      expect(r.events.some((e) => e.type === "run-finished")).toBe(true);
+      expect(r.session.live()).toBeNull();
       yield* r.session.cancel;
     }).pipe(Effect.scoped),
   );

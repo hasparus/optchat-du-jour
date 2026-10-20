@@ -7,7 +7,7 @@
 import { Deferred, Effect, Queue, type Scope } from "effect";
 import { headOf } from "../text.ts";
 import type { Entry } from "../tree.ts";
-import type { Merge } from "../wire.ts";
+import { type Merge, reportHead } from "../wire.ts";
 import { type Agent, type Pending, REPORT_MAX, type SubagentHost, type Tell, took, userStopped } from "./agent.ts";
 
 // the line a report ends with for an isolated run: how its branch went back
@@ -16,7 +16,7 @@ const mergeLine = (m: Merge) => `\n[${m.detail}${m.files > 0 ? `; ${m.files} fil
 // What its reader gets when a run ends: its final reply, or why there is none, and for an isolated
 // run how its branch went back (as its run ends: `ended` is when; `entries` its side log)
 export const reportOf = (a: Agent, ended: number, entries: readonly Entry[]) => {
-  const head = `[${a.name}] `;
+  const head = reportHead(a.name);
   const ran = took(ended - a.started);
   const more = `zoom("${a.name}") reads its log (${a.count} entries)`;
   const keptNote = a.worktree === null ? "" : ` Its worktree ${a.worktree.path} (branch ${a.worktree.branch}) is kept: tell("${a.name}", …) goes on there.`;

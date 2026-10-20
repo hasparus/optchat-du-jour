@@ -420,7 +420,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
                         toolState={row.kind === "tool" ? toolStateOf(row, busy, row.key === lastTool) : "done"}
                         made={madeBy(row, artifacts)}
                         onArtifact={openArtifact}
-                        folds={row.kind === "user" ? (state.folds.get(row.id) ?? null) : undefined}
+                        fold={row.kind === "user" ? state.folds.get(row.id) : undefined}
                       />
                     </MessageScrollerItem>
                     {placed.after.get(k)?.map((m) => (

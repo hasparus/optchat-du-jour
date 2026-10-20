@@ -82,3 +82,36 @@ test("a turn cancelled while its engine waits to ask again: the state drops the 
     }).pipe(Effect.scoped),
   );
 });
+
+// A reply logged in many long items, so its request starts compactor jobs as it logs them
+const wordy: Provider = {
+  auth: "api-key",
+  call: (c) =>
+    Effect.gen(function* () {
+      for (let k = 0; k < 40; k++) yield* c.onItem?.({ text: `reply part ${k} `.repeat(400), type: "text" }) ?? Effect.void;
+      return { items: [], model: "m", usage: USAGE };
+    }),
+  engine: "api-key",
+};
+
+test("a compactor job started while the turn's request logs is no part of the turn: its retry pause never shows as the turn's (E43)", async () => {
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const told = { jobs: 0 };
+      // each job pauses as a compactor engine's askAgain would on a 429, and keeps waiting
+      const pausing = () =>
+        Effect.gen(function* () {
+          const listen = yield* RetryPauses;
+          told.jobs++;
+          yield* listen({ ms: 60_000, next: 2, tries: 4 });
+          return yield* Effect.never;
+        });
+      const r = yield* rig(wordy, pausing);
+      yield* r.session.input("go");
+      yield* until("jobs that paused", () => told.jobs > 0 && r.events.some((e) => e.type === "run-finished"));
+      yield* until("idle", () => r.idleAfter(0));
+      expect(r.states().every((s) => s.retryPause === null)).toBe(true);
+      expect(r.session.state().retryPause).toBeNull();
+    }).pipe(Effect.scoped),
+  );
+});

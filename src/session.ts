@@ -581,10 +581,7 @@ export const makeSession = (o: {
       Effect.gen(function* () {
         engine = null;
         if (current?.reply) yield* publish({ runId, type: "reply-dropped" });
-        if (current) {
-          current.reply = null;
-          current.tool = null; // a call cut short: its entry never comes
-        }
+        if (current) current.reply = null;
         yield* dropThought(runId);
         yield* giveBack(on);
         const done = chat.mem.root.length - since;

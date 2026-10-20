@@ -1,10 +1,11 @@
 // What a file tool's call changes (SPEC "Web UI", Chat; docs/uniichat.md, small client items):
 // Claude Code's Edit and MultiEdit as a line diff of each old_string to its new_string, its Write as
 // the new file's lines. The input may still be streaming (E45): it is read as far as it goes
-// (src/partial-json.ts readPartial, as the server reads an artifact's draft), a string cut short as
+// (src/partial-json.ts, the reader of the server's artifact drafts), a string cut short as
 // what it has so far, so the diff grows as the model writes. Pure: the tool row draws it
 // (chat/tool-diff.tsx), and its raw input stays one tap away.
-import { liveTool, readPartial } from "@wire";
+import { readPartial } from "@shared/partial-json";
+import { liveTool } from "@wire";
 import { Option, Schema } from "effect";
 import { linesOf } from "./lines";
 

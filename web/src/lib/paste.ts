@@ -4,7 +4,8 @@
 // the message sent has the block where its token was, so the model reads exactly what was pasted.
 // In the chat the block shows folded under the same summary. Pure: the composer keeps the pastes
 // (with the draft, lib/draft.ts) and the user message draws the folds (chat/pasted.tsx).
-import { kb, SUBAGENT_NAME } from "@wire";
+import { kb, REPORT_PREFIX } from "@wire";
+import type { Fold } from "./draft";
 import { linesOf } from "./lines";
 
 // Past 40 lines a paste is a document rather than a sentence: more than a laptop screen of the
@@ -65,18 +66,18 @@ export const expand = (text: string, pastes: readonly Paste[]) => {
   return { spans, text: out + text.slice(from) };
 };
 
-// A subagent's report, as the server logs one (src/subagents/reports.ts): "[Name] " and the rest.
-// It never folds: it is the subagent's own answer, kept short (REPORT_MAX), not a paste.
-const REPORT = new RegExp(`^\\[${SUBAGENT_NAME.source.slice(1, -1)}\\] `);
+// The spans this browser kept for a message, when they are for this text: a kept length that differs
+// names another message under the same log index (the server's log was started afresh), and is none
+export const foldsOf = (fold: Fold | undefined, text: string): readonly Span[] | null => (fold !== undefined && fold.length === text.length ? fold.spans : null);
 
 // A message's text in parts: plain, a pasted block, or a long text folded whole. `spans`: where its
 // pasted blocks are, for a message sent from this browser (none: it had none, and nothing of it
 // folds); null for any other (another client's, one older than what this browser keeps, one posted
 // to /api/messages), which folds whole when it is as long as a paste that folds, unless it is a
-// subagent's report.
+// subagent's report (the subagent's own answer, kept short by REPORT_MAX, not a paste).
 export type Part = { readonly kind: "plain" | "pasted" | "long"; readonly text: string };
 export const foldParts = (text: string, spans: readonly Span[] | null): Part[] => {
-  if (spans === null) return [{ kind: folds(text) && !REPORT.test(text) ? "long" : "plain", text }];
+  if (spans === null) return [{ kind: folds(text) && !REPORT_PREFIX.test(text) ? "long" : "plain", text }];
   const known = spans.filter(([s, e]) => s >= 0 && e <= text.length && s < e).toSorted((a, b) => a[0] - b[0]);
   const parts: Part[] = [];
   let at = 0;

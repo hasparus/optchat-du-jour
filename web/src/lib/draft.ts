@@ -53,15 +53,19 @@ export const saveDraft = (d: Draft) => {
 // Where the pasted blocks are in the messages sent from here (lib/paste.ts expand), by the log index
 // the server's ack gave each, for the chat to fold just those; none for a message with none, which
 // then never folds. The newest FOLDS_MAX messages, oldest first.
-const Folds = Schema.Array(Schema.Struct({ i: Schema.Number, spans: Schema.Array(Span) }));
-export type Folds = ReadonlyMap<number, readonly (readonly [number, number])[]>;
-export const loadFolds = (): Folds => new Map((load(FOLDS, Folds) ?? []).map((f) => [f.i, f.spans]));
+// Each with the length of the message's text, so a log index that now names another message (the
+// server's log was started afresh) folds nothing of it (lib/paste.ts foldsOf).
+const Fold = Schema.Struct({ length: Schema.Number, spans: Schema.Array(Span) });
+export type Fold = typeof Fold.Type;
+const Folds = Schema.Array(Schema.Struct({ i: Schema.Number, fold: Fold }));
+export type Folds = ReadonlyMap<number, Fold>;
+export const loadFolds = (): Folds => new Map((load(FOLDS, Folds) ?? []).map((f) => [f.i, f.fold]));
 // the message logged at `i` had these pasted blocks: the folds as they are now
-export const rememberFolds = (folds: Folds, i: number, spans: readonly (readonly [number, number])[]): Folds => {
-  const kept = [...folds].filter(([at]) => at !== i).map(([at, s]) => ({ i: at, spans: s }));
-  const next = [...kept, { i, spans }].slice(-FOLDS_MAX);
+export const rememberFolds = (folds: Folds, i: number, fold: Fold): Folds => {
+  const kept = [...folds].filter(([at]) => at !== i).map(([at, f]) => ({ fold: f, i: at }));
+  const next = [...kept, { fold, i }].slice(-FOLDS_MAX);
   write(FOLDS, JSON.stringify(next));
-  return new Map(next.map((f) => [f.i, f.spans]));
+  return new Map(next.map((f) => [f.i, f.fold]));
 };
 
 // A message sent from here, kept until its ack says it is logged: after a reload the session store

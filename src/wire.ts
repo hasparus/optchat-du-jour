@@ -6,8 +6,6 @@ import { Schema } from "effect";
 import { Kind, Msg } from "./records.ts";
 
 export { Kind, Msg } from "./records.ts";
-// a tool call's input read as far as it has streamed: the web's file diffs read it as the server's drafts do
-export { readPartial } from "./partial-json.ts";
 
 // ---------------------------------------------------------------------------------------------
 // The wire's version (E44): a web page sends it as /ws?wire=N, and a server whose own differs closes
@@ -269,6 +267,10 @@ export const draftTool = (name: string): "publish_artifact" | "edit_artifact" | 
 // diff or a new file before the call is whole (E45). Claude Code's names; our tool loop has none.
 export const LIVE_TOOLS = ["Edit", "MultiEdit", "Write"] as const;
 export const liveTool = (name: string): boolean => LIVE_TOOLS.some((t) => t === name);
+// A subagent's report as the chat logs it (src/subagents/reports.ts): "[Name] " and then the rest.
+// The web never folds one (web/src/lib/paste.ts), so both read the head from here.
+export const reportHead = (name: string) => `[${name}] `;
+export const REPORT_PREFIX = /^\[[A-Za-z][A-Za-z0-9_-]{0,31}\] /;
 // A subagent's name (SPEC M7a), and an artifact's: a letter, then up to 31 letters, digits, "-" or
 // "_": a folder name on every system and never a path, and one that can't end a report's "[Name] "
 // early. Any other string is no name.
