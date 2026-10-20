@@ -30,17 +30,19 @@ async function run(argv: string[], extra: Record<string, string> = {}) {
 
 const Rec = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json));
 
-// every record of a stream, `drop` keys left out, in the order written (day files by name)
-const records = (dir: string, stream: string, drop: readonly string[] = []) => {
+// a stream's lines as written, in the order written (day files by name)
+const lines = (dir: string, stream: string) => {
   const folder = [dir, "chat", stream].join("/");
   return readdirSync(folder)
     .toSorted()
-    .flatMap((name) => readFileSync(`${folder}/${name}`, "utf8").split(/\n/).filter((line) => line !== ""))
-    .map((line) => {
-      const fields = Object.entries(Schema.decodeUnknownSync(Rec)(line)).filter(([k]) => !drop.includes(k));
-      return JSON.stringify(Object.fromEntries(fields));
-    });
+    .flatMap((name) => readFileSync(`${folder}/${name}`, "utf8").split(/\n/).filter((line) => line !== ""));
 };
+// every record of a stream, `drop` keys left out
+const records = (dir: string, stream: string, drop: readonly string[] = []) =>
+  lines(dir, stream).map((line) => {
+    const fields = Object.entries(Schema.decodeUnknownSync(Rec)(line)).filter(([k]) => !drop.includes(k));
+    return JSON.stringify(Object.fromEntries(fields));
+  });
 
 const check = (what: string, a: readonly string[] | string, b: readonly string[] | string) => {
   const [x, y] = [JSON.stringify(a), JSON.stringify(b)];
@@ -84,8 +86,11 @@ const replay = async (mode: "caught-up" | "lag") => {
   const [o, r] = await Promise.all([run(["bun", `${here}drive-ours.ts`, ours, ...args]), run(["bun", `${here}drive-reference.ts`, theirs, ...args], { REF: ref })]);
   console.log(`${mode}: replayed in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
   const [mine, refs] = [report(o.out), report(r.out)];
-  const log = records(ours, "main", ["date"]);
-  check(`${mode}: log (dates aside)`, log, records(theirs, "main", ["date"]));
+  // ours with the keys it adds after the reference's (drive-ours.ts) left out: byte for byte the rest
+  const log = records(ours, "main", ["date", "device", "client"]);
+  check(`${mode}: log (dates aside, and our own keys)`, log, records(theirs, "main", ["date"]));
+  const users = lines(ours, "main").filter((r) => r.includes('"kind":"user"'));
+  ok(`${mode}: our user lines carry their client ids after the reference's keys`, users.length > 0 && users.every((r) => /"date":"[^"]+","device":"mini","client":"client-\d+"\}$/.test(r)));
   // The tree: every node, whatever order it was built in. The fake compactor's line depends on
   // the node and its source only, so the two trees are the same set of records.
   const tree = (dir: string) => records(dir, "tree").toSorted();

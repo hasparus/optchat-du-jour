@@ -5,7 +5,7 @@ import { Effect } from "effect";
 import { BLOCK, NODE } from "./config.ts";
 import * as K from "./kernel.ts";
 import type { Node } from "./records.ts";
-import { built, bytes, type Coord, dayOf, end, type Entry, getNode, label, type Mem, nodes, type Saw, setNode } from "./tree.ts";
+import { built, bytes, type Coord, dayOf, end, type Entry, getNode, label, logEntry, type Mem, nodes, type Saw, setNode } from "./tree.ts";
 
 // What a line shows until its summary exists (docs/optchat.md §3, §6). Only people read it: no
 // compaction sees it (compactionContext), and a turn waits until no view line shows it.
@@ -44,7 +44,7 @@ const arrive = (mem: Mem, i: number, at: Saw) => K.append(mem, { folding: at.fol
 export function addMessage(mem: Mem, msg: Entry) {
   const next = mem.root.length;
   if (msg.i !== next) throw new Error(`addMessage: the next id is ${next}, ${msg.i} is out of turn`);
-  mem.root.push(msg);
+  logEntry(mem, msg);
   const after = arrive(mem, msg.i, mem);
   changed(mem, after, follow(mem, msg.i, mem.view, after, mem.compaction));
 }

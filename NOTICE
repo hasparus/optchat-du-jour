@@ -47,3 +47,9 @@ What was taken, and from which commit, is tracked in docs/uniichat.md:
 - A subagent's report starting a turn of the master (Agent.ts): SPEC E39.
 - Subagents going on from their logs after a restart (Agent.ts):
   SPEC E40.
+- Each client act kept by the client until answered and sent again on
+  the next socket, and done once by the server however often it comes
+  (View.ts, Server.ts Chat.apply): SPEC E41.
+- No one frame holding the whole history a client lacks: UniiChat sends
+  each message or summary in a frame of its own (Server.ts Chat.teach);
+  ours pages the snapshot by bytes: SPEC E42.

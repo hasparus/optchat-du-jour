@@ -276,7 +276,7 @@ export function Composer({ link, session, state, busy, attached = false, open, d
             <PromptInputStop
               disabled={!open}
               onClick={() => {
-                link.abort();
+                if (state?.loop !== undefined) link.abort(state.loop);
               }}
               title="Stop the turn"
             />

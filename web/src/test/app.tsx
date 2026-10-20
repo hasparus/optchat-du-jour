@@ -84,7 +84,7 @@ export function start(log: readonly Entry[] = LOG, from = 0, uploader?: Uploader
   };
 }
 
-export const frames = (sent: readonly string[]) => sent.map((f) => parseSent(f));
+export { actionsOf as frames } from "./fixture";
 export const box = () => screen.getByLabelText<HTMLTextAreaElement>("Message");
 export const type = (text: string) => {
   fireEvent.change(box(), { target: { value: text } });

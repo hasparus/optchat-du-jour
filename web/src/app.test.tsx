@@ -7,7 +7,7 @@ import { useAttachments } from "./chat/use-attachments";
 import type { Uploader } from "./lib/attach";
 import { sentKey } from "./lib/draft";
 import { box, frames, LOG, lastId, onTouchScreen, sentTexts, start, stubApi, type } from "./test/app";
-import { ack, type Entry, parseSent, said, snapshot, state } from "./test/fixture";
+import { ack, type Entry, parseSent, received, said, snapshot, state } from "./test/fixture";
 import type { Asset } from "@wire";
 import { Schema } from "effect";
 
@@ -120,12 +120,12 @@ test("sending: the message goes out with the picked device and waits in the queu
   const queue = await screen.findByTestId("queue");
   expect(within(queue).getByText("and now?")).toBeTruthy();
 
-  play(state({ phase: "running" }), ack(lastId(server.sent), 4), ...said(4, "user", "and now?"));
+  play(state({ loop: 7, phase: "running" }), ack(lastId(server.sent), 4), ...said(4, "user", "and now?"));
   await waitFor(() => {
     expect(screen.queryByTestId("queue")).toBeNull();
   });
   fireEvent.click(screen.getByRole("button", { name: "Stop" }));
-  expect(server.sent.at(-1)).toBe('{"type":"abort"}');
+  expect(frames(server.sent).at(-1)).toEqual({ loop: 7, type: "abort" }); // the run of the turn loop it was for (E41)
 });
 
 test("a message the log refused stays in the queue, marked not logged with the error", async () => {
@@ -387,6 +387,7 @@ test("Background work: the running turn (engine, device, time, Stop), held messa
       pending: [{ clientId: null, engine: "claude-code:opus", queued: true, text: "and the cron output too" }],
       phase: "running",
       elapsed: 65_000,
+      loop: 3,
     }),
   );
   // the status line opens it too
@@ -400,7 +401,7 @@ test("Background work: the running turn (engine, device, time, Stop), held messa
   ]);
   expect(within(sheet).getByTestId("work-held").textContent).toBe("and the cron output tooMessage · queued for Opus");
   fireEvent.click(within(turn).getByRole("button", { name: "Stop the turn" }));
-  expect(server.sent.at(-1)).toBe('{"type":"abort"}');
+  expect(frames(server.sent).at(-1)).toEqual({ loop: 3, type: "abort" });
 });
 
 // a finger lifted from an element
@@ -629,28 +630,37 @@ test("a message sent before a reload that never reached the server is marked, an
   expect(screen.queryByTestId("queue")).toBeNull();
 });
 
-test("one sent before a reload that is older than the loaded window is looked for in the log below it: found, it is done; missing, it is offered to send again; another tab's list is not this one's", async () => {
+test("one sent before a reload goes out again under its id once connected, as it first went; the server's answer settles it; another tab's list is not this one's", async () => {
   localStorage.setItem(
     sentKey,
     JSON.stringify({
       at: Date.now(),
       sent: [
-        { from: 4, id: "old-1", media: [], text: "long ago" },
-        { from: 90, id: "old-2", media: [], text: "older message 99" },
+        { engine: "openai-plan:gpt-6.1-sol", id: "kept-1", media: [], text: "long ago" },
+        { device: "macbook", followUp: "queue", id: "kept-2", media: [], text: "never arrived" },
       ],
     }),
   );
-  localStorage.setItem("optchat:sent:another-tab", JSON.stringify({ at: Date.now(), sent: [{ from: 100, id: "theirs", media: [], text: "the other tab's" }] }));
-  start(LOG, 100); // the window starts at 100: entries 4 and 90 are below it; /api/messages has 98 and 99
+  localStorage.setItem("optchat:sent:another-tab", JSON.stringify({ at: Date.now(), sent: [{ id: "theirs", media: [], text: "the other tab's" }] }));
+  const { play, server } = start();
+  server.mode.receipts = "drop"; // answered by the test below
   await screen.findByText("what is in the repo?");
-  const item = await screen.findByTestId("queue-item");
+  // neither is in the server's queue: both go out again, under their ids, with what they went with
   await waitFor(() => {
-    expect(within(item).getByTestId("queue-error").textContent).toContain("send it again");
+    expect(frames(server.sent).map((f) => [f.messages?.at(-1)?.id, f.forwardedProps])).toEqual([
+      ["kept-1", { engine: "openai-plan:gpt-6.1-sol" }],
+      ["kept-2", { device: "macbook", followUp: "queue" }],
+    ]);
   });
-  expect(screen.getAllByTestId("queue-item")).toHaveLength(1);
-  expect(item.textContent).toContain("long ago");
-  expect(localStorage.getItem(sentKey)).not.toContain("older message 99");
+  // the server logged the first long ago (its ack went to a page that is gone): it says so now
+  play(received("kept-1", "logged", 4), received("kept-2"));
+  await waitFor(() => {
+    expect(screen.getAllByTestId("queue-item").map((q) => q.textContent.includes("never arrived"))).toEqual([true]);
+  });
+  expect(screen.queryByTestId("queue-error")).toBeNull();
+  expect(localStorage.getItem(sentKey)).not.toContain("long ago");
   expect(localStorage.getItem("optchat:sent:another-tab")).toContain("the other tab's");
+  expect(frames(server.sent).some((f) => f.messages?.at(-1)?.id === "theirs")).toBe(false);
 });
 
 test("queue: a held message shows as queued with its attachments; take-back asks the server and puts it back into the composer", async () => {

@@ -81,18 +81,21 @@ const heldItem = (log: Log, fresh: Item): Item => {
   return held !== undefined && sameItem(held, fresh) ? held : fresh;
 };
 
-// A snapshot is the log's last window: it replaces everything from its first index up, and the
-// draft (a reconnect or the end of a run; what was streaming is in the log now, or never will be).
-// Older pages below it stay, except entries only live events told of: those are read again. With
-// `trim` (the reader is at the newest end, so the oldest are out of sight), only the newest
-// MAX_HELD are kept; a reader scrolled up keeps what they are reading until they come back down.
-function applySnapshot(log: Log, messages: readonly Message[], trim: boolean): Log {
+// A snapshot is the newest part of the log's last window: it replaces everything from its first
+// index up, and the draft (a reconnect or the end of a run; what was streaming is in the log now,
+// or never will be). Older pages below it stay, except entries only live events told of: those are
+// read again (the session store reads the rest of the window, E42). `end`: where the window ends,
+// which a frame its newest entry didn't fit in starts at; none (a server from before E42), an
+// empty frame is an empty log. With `trim` (the reader is at the newest end, so the oldest are out
+// of sight), only the newest MAX_HELD are kept; a reader scrolled up keeps what they are reading
+// until they come back down.
+function applySnapshot(log: Log, messages: readonly Message[], trim: boolean, end: number | undefined): Log {
   const fresh = messages.flatMap((m) => fromMessage(m) ?? []);
-  const base = fresh[0]?.i ?? 0;
+  const base = fresh[0]?.i ?? end ?? 0;
   const items = new Map<number, Item>();
-  if (fresh.length > 0) for (const [i, item] of log.items) if (i < base && !item.live) items.set(i, item);
+  if (fresh.length > 0 || end !== undefined) for (const [i, item] of log.items) if (i < base && !item.live) items.set(i, item);
   for (const item of fresh) items.set(item.i, heldItem(log, item));
-  const next = { base, draft: null, items, newest: fresh.at(-1)?.i ?? -1 };
+  const next = { base, draft: null, items, newest: fresh.at(-1)?.i ?? Math.max(-1, ...items.keys()) };
   return trim ? trimHeld(next) : next;
 }
 
@@ -124,7 +127,7 @@ export const draftItem = (d: Draft): Item =>
 export function applyEvent(log: Log, e: Inbound, o: { readonly trim?: boolean } = {}): Log {
   switch (e.type) {
     case EventType.MESSAGES_SNAPSHOT:
-      return applySnapshot(log, e.messages, o.trim ?? true);
+      return applySnapshot(log, e.messages, o.trim ?? true, e.metadata?.to);
     case EventType.TEXT_MESSAGE_START: {
       const i = logIndex(e.messageId);
       if (i === null) return log;

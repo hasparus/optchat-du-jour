@@ -79,7 +79,9 @@ const decodeEntry = Schema.decodeUnknownOption(Schema.fromJsonString(Msg));
 // A message sent to a subagent: held for its next call, or offered to the running one. A report
 // from a subagent it spawned names that child and its run (`report`): once in its side log, the
 // child's report is delivered.
-export type Tell = { readonly seq: number; readonly text: string; state: "held" | "offered"; readonly report?: { readonly child: string; readonly run: number } };
+// `client`: the id of the card's tell it is (E41), written on its side-log line, so the same tell
+// sent again, after a restart too, is answered and not told twice
+export type Tell = { readonly seq: number; readonly text: string; state: "held" | "offered"; readonly report?: { readonly child: string; readonly run: number }; readonly client?: string };
 
 export type Agent = {
   readonly name: string;

@@ -482,6 +482,37 @@ test("a restart finds a run it cut short: it goes on from its side log, and its 
   );
 });
 
+// how many lines of a side log are the user's "once more"
+const told = (entries: readonly { readonly text: string }[] | undefined) => (entries ?? []).filter((e) => e.text === "[from the user] once more").length;
+
+test("a card's tell with an id is told once: sent again, while it runs, once it is logged, and after a restart, it is answered and not told twice (E41)", async () => {
+  const dir = mkdtempSync(`${tmpdir()}/oc-sub-`);
+  dirs.push(dir);
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const r = yield* rig({ dir, master: (call) => Effect.asVoid(call("spawn", { name: "echo", task: "look" })), scope });
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("done", () => r.stateOf("echo")?.state === "done");
+      expect(yield* r.subagents.tell("echo", "once more", "t-1")).toBeNull();
+      expect(yield* r.subagents.tell("echo", "once more", "t-1")).toBeNull(); // held for its run, or logged: not again
+      yield* until("done again", () => r.stateOf("echo")?.state === "done" && r.calls.length === 2);
+      expect(yield* r.subagents.tell("echo", "once more", "t-1")).toBeNull();
+      yield* Effect.sleep("50 millis");
+      expect(r.calls).toHaveLength(2);
+      expect(told(r.subagents.log("echo")?.entries)).toBe(1);
+    }),
+  );
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const r = yield* rig({ dir, scope });
+      expect(yield* r.subagents.tell("echo", "once more", "t-1")).toBeNull(); // its side log has it
+      yield* Effect.sleep("50 millis");
+      expect(r.calls).toEqual([]);
+      expect(told(r.subagents.log("echo")?.entries)).toBe(1);
+    }),
+  );
+});
+
 test("a restart past subagents.max goes on with as many as fit; the others are stopped and reported", async () => {
   const dir = mkdtempSync(`${tmpdir()}/oc-sub-`);
   dirs.push(dir);

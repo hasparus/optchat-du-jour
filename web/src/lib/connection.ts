@@ -5,33 +5,37 @@
 // is opened afresh (after UniiChat's link, docs/uniichat.md). TanStack AI's webSocket() adapter opens its
 // socket only when this client sends, and gives up when it closes, so a phone that only watches
 // would never see a turn the laptop started (SPEC M2 open question).
+// Every message and action goes out with an id and is kept until the server says it got it (E41,
+// CUSTOM `received`); what is kept goes out again, in the order it was made, on every socket that
+// opens, and the server answers a repeat without doing it again. So nothing the user did is lost
+// with a socket that drops, nor done twice (after UniiChat's link, docs/uniichat.md).
+import { EventType } from "@ag-ui/core";
 import { Option } from "effect";
-import { ABORT, STOP_ALL, type AttachmentRef, type Forwarded, type Inbound, parseFrame, resumeFrame, runInput, type Settings, settingsFrame, type SubagentAction, subagentFrame, takeBackFrame } from "./protocol.ts";
+import { type Action, actionFrame, type AttachmentRef, type Forwarded, type Inbound, parseFrame, runInput, type Settings, type SubagentAction } from "./protocol.ts";
 
 export type LinkStatus = "connecting" | "open" | "closed";
 
 export type Link = {
   // a message: it starts a turn, or joins the running one. Sent while the link is down, it goes out
-  // on the next open: what the user wrote isn't lost. `id` names the message in the server's ack;
-  // `attachments` were uploaded first (PUT /api/assets); the rest is its forwardedProps (protocol.ts).
+  // on the next open: what the user wrote isn't lost. `id` names it to the server, which answers it
+  // once (sent again with an id the link still keeps, it goes out once); `attachments` were uploaded
+  // first (PUT /api/assets); the rest is its forwardedProps (protocol.ts).
   readonly send: (text: string, id: string, o?: Forwarded & { readonly attachments?: readonly AttachmentRef[] }) => void;
-  // the user's cancel, for whichever turn runs. Only while the link is open: kept for later, it
-  // would cancel whatever turn runs after the reconnect. False when it wasn't sent.
-  readonly abort: () => boolean;
-  // a held message back, by the id it was sent with; like a cancel, only while the link is open
+  // The user's cancel of the run of the turn loop this page saw (the state's `loop`; a page with no
+  // state to name one sends none). Like every action below but the setting, made only while the
+  // link is open: what the user sees then is what they act on; once made it is kept, and sent again
+  // if its socket drops first. False when the link was down.
+  readonly abort: (loop: number) => boolean;
+  // a held message back, by the id it was sent with
   readonly takeBack: (clientId: string) => boolean;
-  // the follow-up setting; sent while the link is down, it goes out on the next open
+  // the follow-up setting; made while the link is down, it goes out on the next open
   readonly configure: (change: Pick<Settings, "followUp">) => void;
-  // a turn waiting for a model goes on, on this engine: like a cancel, only while the link is open
-  // (kept for later, it would settle whatever turn waits after the reconnect). False when it wasn't sent.
-  readonly resume: (engine: string) => boolean;
-  // a subagent card's tell, stop or model (SPEC M7a): like a cancel, only while the link is open
-  // (kept for later, a stop would end whatever runs under that name after the reconnect). False
-  // when it wasn't sent.
+  // a turn waiting for a model goes on, on this engine
+  readonly resume: (engine: string, loop: number) => boolean;
+  // a subagent card's tell, stop or model (SPEC M7a)
   readonly subagent: (action: SubagentAction) => boolean;
-  // Background work's Stop all: the turn and every running subagent; like a cancel, only while the
-  // link is open. False when it wasn't sent.
-  readonly stopAll: () => boolean;
+  // Background work's Stop all: the turn and every running subagent
+  readonly stopAll: (loop: number) => boolean;
   readonly listen: (listener: (event: Inbound) => void) => () => void;
   readonly onStatus: (listener: (status: LinkStatus) => void) => () => void;
   readonly status: () => LinkStatus;
@@ -78,7 +82,8 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
   const silentMs = options.silentMs ?? SILENT_MS;
   const listeners = new Set<(event: Inbound) => void>();
   const statusListeners = new Set<(status: LinkStatus) => void>();
-  const outbox: string[] = []; // messages sent while disconnected: delivered on the next open
+  // what the server hasn't said it got yet (E41), in the order it was made: sent on every open
+  const unacked: { readonly id: string; readonly frame: string }[] = [];
   let socket: SocketLike | null = null;
   let status: LinkStatus = "connecting";
   let retry = firstRetry;
@@ -93,9 +98,17 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
     for (const l of statusListeners) l(next);
   };
 
-  const deliver = (frame: string) => {
+  const deliver = (id: string, frame: string) => {
+    if (unacked.some((a) => a.id === id)) return; // kept already: it goes out on each open
+    unacked.push({ id, frame });
     if (socket && status === "open") socket.send(frame);
-    else outbox.push(frame);
+  };
+  // an action made only while the link is open (Link.abort)
+  const now = (action: Action) => {
+    if (!socket || status !== "open") return false;
+    const id = crypto.randomUUID();
+    deliver(id, actionFrame(action, id));
+    return true;
   };
 
   // A socket that has said nothing for its window is let go. One that had delivered a frame is
@@ -142,7 +155,7 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
       if (ws !== socket) return;
       setStatus("open");
       arm(); // open now: the window a first frame may take
-      for (const frame of outbox.splice(0)) ws.send(frame);
+      for (const { frame } of unacked) ws.send(frame);
     });
     ws.addEventListener("message", (message) => {
       if (ws !== socket) return;
@@ -159,7 +172,12 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
         console.warn("optchat: dropped a frame it can't read", message.data.slice(0, 200));
         return;
       }
-      for (const l of listeners) l(event.value);
+      const e = event.value;
+      if (e.type === EventType.CUSTOM && e.name === "received") {
+        const at = unacked.findIndex((a) => a.id === e.value.id);
+        if (at !== -1) unacked.splice(at, 1);
+      }
+      for (const l of listeners) l(e);
     });
     ws.addEventListener("close", () => {
       if (ws !== socket) return;
@@ -175,11 +193,7 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
   connect();
 
   return {
-    abort: () => {
-      if (!socket || status !== "open") return false;
-      socket.send(ABORT);
-      return true;
-    },
+    abort: (loop) => now({ loop, type: "abort" }),
     close: () => {
       closed = true;
       clearTimeout(timer);
@@ -199,15 +213,12 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
       };
     },
     send: (text, id, o) => {
-      deliver(runInput(text, id, o));
+      deliver(id, runInput(text, id, o));
     },
-    takeBack: (clientId) => {
-      if (!socket || status !== "open") return false;
-      socket.send(takeBackFrame(clientId));
-      return true;
-    },
+    takeBack: (clientId) => now({ clientId, type: "take-back" }),
     configure: (change) => {
-      deliver(settingsFrame(change));
+      const id = crypto.randomUUID();
+      deliver(id, actionFrame({ ...change, type: "settings" }, id));
     },
     wake: (awayMs) => {
       if (closed) return;
@@ -228,22 +239,10 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
       retry = firstRetry;
       connect();
     },
-    resume: (engine) => {
-      if (!socket || status !== "open") return false;
-      socket.send(resumeFrame(engine));
-      return true;
-    },
+    resume: (engine, loop) => now({ engine, loop, type: "resume" }),
     status: () => status,
-    stopAll: () => {
-      if (!socket || status !== "open") return false;
-      socket.send(STOP_ALL);
-      return true;
-    },
-    subagent: (action) => {
-      if (!socket || status !== "open") return false;
-      socket.send(subagentFrame(action));
-      return true;
-    },
+    stopAll: (loop) => now({ loop, type: "stop-all" }),
+    subagent: (action) => now(action),
   };
 }
 

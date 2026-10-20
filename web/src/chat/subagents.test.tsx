@@ -7,7 +7,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { openLink } from "@/lib/connection";
 import { makeSession } from "@/lib/session";
-import { fakeServer, IDLE, parseSent, snapshot, state } from "@/test/fixture";
+import { actionsOf, fakeServer, IDLE, snapshot, state } from "@/test/fixture";
 import type { Msg, SubagentInfo } from "@wire";
 import { BackgroundWork, busyWith } from "./background-work";
 import { diffstat, mergeText } from "@/components/ai-elements/subagent";
@@ -79,7 +79,7 @@ const NOTES: SubagentInfo = {
 };
 
 const sheet = (subagents: readonly SubagentInfo[]) => {
-  const server = fakeServer(() => [snapshot([]), { snapshot: { ...IDLE, subagents }, type: EventType.STATE_SNAPSHOT }]);
+  const server = fakeServer(() => [snapshot([]), { snapshot: { ...IDLE, loop: 5, subagents }, type: EventType.STATE_SNAPSHOT }]);
   const link = openLink("ws://x/ws", { socket: server.socket });
   links.push(link);
   const session = makeSession(link);
@@ -126,7 +126,7 @@ test("a card per subagent: running first with Stop, its time, model, task and st
   const box = within(scout).getByLabelText("Tell scout");
   fireEvent.change(box, { target: { value: "look in ~/demo/old too" } });
   fireEvent.click(within(scout).getByRole("button", { name: "Send to scout" }));
-  const frames = server.sent.map((f) => parseSent(f));
+  const frames = actionsOf(server.sent);
   expect(frames).toContainEqual({ name: "scout", type: "stop-subagent" });
   expect(frames).toContainEqual({ name: "scout", text: "look in ~/demo/old too", type: "tell" });
   // the done one: closed, its title, and once opened its report and its refused Bash
@@ -169,7 +169,7 @@ test("a model picked on a card goes to the server for that subagent's next call"
   const item = await screen.findByRole("menuitemradio", { name: /Sol/ });
   fireEvent.click(item);
   await waitFor(() => {
-    expect(server.sent.map((f) => parseSent(f))).toContainEqual({ model: "openai-plan:gpt-6.1-sol", name: "scout", type: "subagent-model" });
+    expect(actionsOf(server.sent)).toContainEqual({ model: "openai-plan:gpt-6.1-sol", name: "scout", type: "subagent-model" });
   });
 });
 
@@ -336,7 +336,7 @@ test("Stop all, while a subagent runs, sends one frame for the turn and every su
   expect(stop.getAttribute("aria-label")).toBe("Stop all: 1 subagent");
   fireEvent.click(stop);
   await waitFor(() => {
-    expect(server.sent.map((f) => parseSent(f))).toContainEqual({ type: "stop-all" });
+    expect(actionsOf(server.sent)).toContainEqual({ loop: 5, type: "stop-all" }); // the run of the turn loop it saw (E41)
   });
 });
 

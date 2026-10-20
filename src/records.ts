@@ -11,9 +11,12 @@ const Index = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 // `size` is written but never trusted: the loader recomputes it from the text. `device` says
 // where the turn that logged the entry ran (E7); `error`, on an echo only, that the tool reported
 // it failed (E28: Claude Code's `is_error`, or our own tool loop's), written only when true, so a
-// line without it reads as before. Both are for clients: no model is shown either, and readers that
-// don't know them ignore them.
+// line without it reads as before. `client`, on a user entry a client sent, is the id it sent it
+// with (E41): a client that sends it again is answered, and it is not logged twice, also after a
+// restart. All three are for clients: no model is shown any, and readers that don't know them
+// ignore them.
 export const Msg = Schema.Struct({
+  client: Schema.optional(Schema.String),
   date: Schema.String,
   device: Schema.optional(Schema.String),
   error: Schema.optional(Schema.Boolean),

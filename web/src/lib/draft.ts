@@ -3,7 +3,7 @@
 // the messages sent from here that no ack has answered yet, this client's sent texts for Up to
 // recall, and the model its picker is on. All of it lives in this browser's localStorage only; every access may throw (a
 // private window, storage turned off or full), and then the page works as before, keeping nothing.
-import { Asset } from "@wire";
+import { Asset, FollowUp } from "@wire";
 import { Option, Schema } from "effect";
 
 const DRAFT = "optchat:draft";
@@ -42,10 +42,20 @@ export const saveDraft = (d: Draft) => {
 };
 
 // A message sent from here, kept until its ack says it is logged: after a reload the session store
-// finds it in the log, in the server's queue, or neither ("it may not have reached the server").
-// Kept per tab (its id in sessionStorage, which a reload or a restored tab keeps), so two tabs
-// never overwrite each other's; a list a closed tab left is dropped after a week.
-export const Sent = Schema.Struct({ id: Schema.String, text: Schema.String, media: Schema.Array(Asset), from: Schema.Number, engine: Schema.optional(Schema.String) });
+// sends it again under its id, and the server answers what became of it (E41), with the device,
+// engine and follow-up it first went with. One a page from before E41 kept (it has `from`, the
+// log's length when it was sent) is only marked: it may be logged already, by a server that kept
+// no ids. Kept per tab (its id in sessionStorage, which a reload or a restored tab keeps), so two
+// tabs never overwrite each other's; a list a closed tab left is dropped after a week.
+export const Sent = Schema.Struct({
+  id: Schema.String,
+  text: Schema.String,
+  media: Schema.Array(Asset),
+  device: Schema.optional(Schema.String),
+  engine: Schema.optional(Schema.String),
+  followUp: Schema.optional(FollowUp),
+  from: Schema.optional(Schema.Number),
+});
 export type Sent = typeof Sent.Type;
 const Kept = Schema.Struct({ at: Schema.Number, sent: Schema.Array(Sent) });
 const WEEK = 7 * 24 * 3600 * 1000;
