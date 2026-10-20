@@ -183,7 +183,7 @@ test("a spent Claude plan stops the turn until the user resumes it on openai-pla
         const turn = readFileSync(`${home}/fake.jsonl`, "utf8").split("\n").flatMap((l) => Option.toArray(decodeStart(l))).find((s) => s.role === "turn"); // any device's: all carry the same --system-prompt
         const argv = turn?.argv ?? [];
         expect(first?.instructions).toBe(argv[argv.indexOf("--system-prompt") + 1] ?? "");
-        expect(first?.tools.map((t) => t.name)).toEqual(["Read", "Glob", "Grep", "zoom", "date", "spawn", "tell"]);
+        expect(first?.tools.map((t) => t.name)).toEqual(["Read", "Glob", "Grep", "zoom", "date", "spawn", "tell", "publish_artifact", "edit_artifact", "read_artifact"]);
         const opening = first?.input[0]?.content ?? "";
         expect(Schema.is(Schema.String)(opening) ? [opening] : opening.map((p) => p.text)).toEqual(["<chat>\n</chat>", "what does my note say?"]);
         expect(second?.input.map((i) => i.type ?? i.role)).toEqual(["user", "assistant", "function_call", "function_call_output"]);

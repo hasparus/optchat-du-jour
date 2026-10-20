@@ -298,7 +298,7 @@ test("a failed call waits for the next message, not for a timer", async () => {
   );
 });
 
-test("a failed call rests before a logged entry tries it again; a message coming to the session, or a waiting turn, tries it at once (E31)", async () => {
+test("a failed call rests before a logged entry tries it again; a message coming to the session, or a waiting turn, tries it at once (E33)", async () => {
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
@@ -328,7 +328,7 @@ test("a failed call rests before a logged entry tries it again; a message coming
   );
 });
 
-test("with a rest, a failed call is tried again by itself once it has rested, not left until the next message; every rest while it keeps failing (E31)", async () => {
+test("with a rest, a failed call is tried again by itself once it has rested, not left until the next message; every rest while it keeps failing (E33)", async () => {
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
@@ -356,7 +356,7 @@ test("with a rest, a failed call is tried again by itself once it has rested, no
   );
 });
 
-test("REFUSALS answers with no line make a node its source, clipped; any other failure is only tried again (E31)", async () => {
+test("REFUSALS answers with no line make a node its source, clipped; any other failure is only tried again (E33)", async () => {
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
@@ -391,7 +391,7 @@ test("REFUSALS answers with no line make a node its source, clipped; any other f
   );
 });
 
-test("an empty answer with no line before it is a refusal, for the pump to count, unless the reply was cut short (E31)", async () => {
+test("an empty answer with no line before it is a refusal, for the pump to count, unless the reply was cut short (E33)", async () => {
   const job: Job = { ctx: [], i: 0, l: 0, msg: newMsg(0, "echo", "x") };
   const error = await Effect.runPromise(
     Effect.flip(sizeRetries({ ask: () => Effect.succeed({ model: null, text: " \n", usage: { cacheRead: 0, cacheWrite: 0, input: 1, output: 1 } }), auth: "api-key", effort: undefined, engine: "api-key", failoverFrom: null, job, log: () => Effect.void })),

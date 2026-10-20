@@ -124,7 +124,7 @@ export function cut(text: string, limit = NODE): string {
   return raw.subarray(0, end).toString("utf8");
 }
 
-// A node the model would not summarize (E31, after UniiChat's rule): its source cut to fit, as a
+// A node the model would not summarize (E33, after UniiChat's rule): its source cut to fit, as a
 // free node is its source whole. A message's is "kind: text" cut at NODE bytes; a merge's is each
 // half cut at just under half of NODE, a line apart, so the second half is never dropped whole.
 export function clippedText(mem: Mem, c: Coord): string {

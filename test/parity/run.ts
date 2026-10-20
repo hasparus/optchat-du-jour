@@ -90,7 +90,7 @@ const replay = async (mode: "caught-up" | "lag") => {
   // the node and its source only, so the two trees are the same set of records.
   const tree = (dir: string) => records(dir, "tree").toSorted();
   check(`${mode}: the tree records, as a set`, tree(ours), tree(theirs));
-  // The reference never clips a node; ours clips one the model refused REFUSALS times (E31). The
+  // The reference never clips a node; ours clips one the model refused REFUSALS times (E33). The
   // fixture's failures are outages, never refusals, so no node of ours may be clipped: the set
   // above would differ by the `clipped` key, and this says why.
   ok(`${mode}: no node of ours is clipped (the fixture never refuses)`, !tree(ours).some((r) => r.includes('"clipped"')));

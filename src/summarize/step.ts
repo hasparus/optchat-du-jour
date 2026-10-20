@@ -108,7 +108,7 @@ export const sizeRetries = (o: {
       const line = answer.text.trim();
       // An empty answer ends the call: a line tried before it still stands, the shortest of them.
       // With none, a reply that ended as it meant to gave no line, which counts as a refusal
-      // (E31); one cut short (its token limit, the context window) is a limit, which never does.
+      // (E33); one cut short (its token limit, the context window) is a limit, which never does.
       if (!line && tries.length > 0) return shortest(tries);
       if (!line && answer.cut !== undefined) return yield* new ModelError({ message: `the compactor's reply stopped short with no line: ${answer.cut}` });
       if (!line) return yield* new Refusal({ message: "the compactor answered with an empty line" });

@@ -1204,10 +1204,10 @@ test("a turn waiting for a summary whose call keeps failing goes on once a retry
   );
 });
 
-// E31: a message the model always refuses to summarize, or always answers with an empty line,
+// E33: a message the model always refuses to summarize, or always answers with an empty line,
 // would leave its node unbuilt for ever, and every later turn waits for it (the start rule). After
 // REFUSALS such answers the node is its source, clipped, and says so on its tree line.
-test("a compactor that always refuses, or always answers an empty line, doesn't block the chat: the node becomes its source, clipped (E31)", async () => {
+test("a compactor that always refuses, or always answers an empty line, doesn't block the chat: the node becomes its source, clipped (E33)", async () => {
   const answers: readonly (readonly [string, Effect.Effect<string, NoLine>])[] = [
     ["refuses", Effect.fail(new NoLine({ message: "the model would not answer this message" }))],
     ["answers nothing", Effect.succeed("")],

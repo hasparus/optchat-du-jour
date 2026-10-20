@@ -164,9 +164,9 @@ const clean = (env: Readonly<Record<string, string>>) => {
   expect(env.CLAUDE_CODE_PROMPT_CACHE_TTL).toBe("1h"); // the spawn's own
 };
 
-// E32: a key or cloud setting in the server's or a device's own environment would make claude bill
+// E34: a key or cloud setting in the server's or a device's own environment would make claude bill
 // it instead of the Max login. Every claude starts through spawnProcess, here or on a device.
-test("a claude started here or on a device never inherits a provider key, a cloud account or a model override (E32)", async () => {
+test("a claude started here or on a device never inherits a provider key, a cloud account or a model override (E34)", async () => {
   const folder = tmp();
   const before = { ...process.env };
   expect(BILLING.filter((k) => !STRIPPED_ENV.has(k))).toEqual([]);

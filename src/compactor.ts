@@ -3,7 +3,7 @@
 // are unbuilt, a merge once both its halves are built. Nodes ready to build wait in queues, kept as
 // messages arrive and nodes are built, never found by scanning the tree (§7 mistake 13): the
 // unbuilt messages in order, whose first AHEAD are the ones that may start, and the ready merges
-// level by level. A failed call is tried again at the next message, once it has rested (E31); a
+// level by level. A failed call is tried again at the next message, once it has rested (E33); a
 // node the model refused, or gave no line for, REFUSALS times is built from its source, clipped.
 import { Cause, Clock, Console, Data, Duration, Effect, Exit, Option, PubSub, Semaphore } from "effect";
 import { AHEAD, JOBS, REFUSALS } from "./config.ts";
@@ -21,7 +21,7 @@ export type Job = { readonly l: number; readonly i: number; readonly ctx: readon
 export class CompactError extends Data.TaggedError("CompactError")<{ readonly message: string }> {}
 // The model answered and gave no line: it refused, or its reply ended as it meant to with nothing
 // in it. That is its input's doing, so asking again mostly fails alike: REFUSALS of them clip the
-// node (E31). A CompactError (a limit, the network, a reply cut short, a crash) says nothing about
+// node (E33). A CompactError (a limit, the network, a reply cut short, a crash) says nothing about
 // the input and is only tried again.
 export class NoLine extends Data.TaggedError("NoLine")<{ readonly message: string }> {}
 export type Summarize = (job: Job) => Effect.Effect<string, CompactError | NoLine>;
@@ -104,7 +104,7 @@ export type PumpOptions = {
   readonly jobs?: number | undefined;
   readonly ahead?: number | undefined; // AHEAD
   readonly report?: ((message: string) => Effect.Effect<void>) | undefined;
-  // How long a failed call rests before a logged entry may try it again (E31): a turn logs its
+  // How long a failed call rests before a logged entry may try it again (E33): a turn logs its
   // replies, tool calls and results back to back, and each would otherwise ask a vendor that is
   // down again at once. None by default, as docs/optchat.md §4 has it; the server rests WAIT_RETRY.
   readonly rest?: Duration.Input | undefined;
@@ -124,7 +124,7 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
     const leaves = new Line<number>();
     const merges: (Line<Coord> | undefined)[] = [];
     // `queued` and `running` keep each node's level, for `activity`; `failed`, each failed node and
-    // when it failed; `refused`, how many of its calls the model answered with no line (E31)
+    // when it failed; `refused`, how many of its calls the model answered with no line (E33)
     const queued = new Map<string, number>(), running = new Map<string, number>(), told = new Set<string>();
     const failed = new Map<string, { readonly c: Coord; readonly at: number }>(), refused = new Map<string, number>();
     // node c failed: it waits for the next message, rested
@@ -133,7 +133,7 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
     };
     // While anything has failed, and failed calls rest (`rest`), one fiber tries them again as each
     // has rested, so a node that failed near the end of a turn isn't left until the next message,
-    // and the idle view can be primed (E17, E31). The cadence is `rest`, never a hot loop; with no
+    // and the idle view can be primed (E17, E33). The cadence is `rest`, never a hot loop; with no
     // rest (as docs/optchat.md §4 has it) a failed call waits for the next message.
     let waking = false;
     const wake: Effect.Effect<void> = Effect.suspend(() => {
@@ -210,7 +210,7 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
     // typed error, a throw, a defect, the call coming back interrupted) is one failure of c,
     // reported the first time c fails; c then waits for the next message. Built or not, c leaves
     // `running`, and the pump starts what it may. A node the model gave no line for REFUSALS times
-    // is not asked again: its job commits its source, clipped, marked as such (E31).
+    // is not asked again: its job commits its source, clipped, marked as such (E33).
     const job = (c: Coord, call: Exit.Exit<Job>) => {
       const name = label(c);
       const clip = (refused.get(name) ?? 0) >= refusals;

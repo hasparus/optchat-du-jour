@@ -1,4 +1,4 @@
-// Our own HTTP engines ask a request again when it failed on the vendor's side (E33, after
+// Our own HTTP engines ask a request again when it failed on the vendor's side (E35, after
 // UniiChat's Agent.step; docs/uniichat.md), against a raw fake HTTP server (test/fake-http.ts):
 // overloads, server errors and dropped connections are sent again, `retry-after` and
 // `x-should-retry` are heeded, a limit that is no hiccup goes to the chain at once, a stream that

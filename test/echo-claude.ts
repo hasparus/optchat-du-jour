@@ -4,7 +4,7 @@
 // what it heard, its pid and its cwd. It exits when stdin closes, except after the message
 // "stubborn": then it ignores SIGTERM and stdin, so only SIGKILL ends it. "exit 3" makes it write
 // "bye" to stderr and exit with code 3; "die" makes it SIGKILL itself; "env" answers with the
-// provider and cache settings in its environment, PATH and HOME, as JSON (E32). `--version` prints
+// provider and cache settings in its environment, PATH and HOME, as JSON (E34). `--version` prints
 // FAKE_CLAUDE_VERSION.
 import { Option, Schema } from "effect";
 

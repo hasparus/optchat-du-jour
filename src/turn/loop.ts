@@ -81,7 +81,9 @@ export const toolLoop = (o: {
     const thinking = (tokens: number) => (track.refused === null ? out.thinking(tokens) : Effect.void);
     const reasoning = (delta: string, fresh: boolean) => (track.refused === null ? out.reasoning(delta, fresh) : Effect.void);
     // `error`: the call failed or never ran, kept on the echo for clients (E28); the model reads the text only
-    const answer = (text: string, error: boolean) => out.log("echo", text, { error }).pipe(Effect.tap(() => Effect.sync(() => void track.open--)));
+    // `tool`: the tool it answers, for the log's stub of an artifact read (E31)
+    const answer = (text: string, error: boolean, tool?: string) =>
+      out.log("echo", text, tool === undefined ? { error } : { error, tool }).pipe(Effect.tap(() => Effect.sync(() => void track.open--)));
     // A turn that ends early (the provider failed, a cancel) leaves no tool entry without its echo,
     // as the last round does not either: each open call is answered `not run: <why>` as this call
     // unwinds, so on a cancel those echoes are the run's last entries, logged before the session
@@ -122,7 +124,7 @@ export const toolLoop = (o: {
           });
         const final = round >= rounds;
         const reply = yield* o.provider
-          .call({ final, history, instructions: o.instructions, onItem: logged, onReasoning: reasoning, onText: live, onThinking: thinking, tools: box.defs })
+          .call({ final, history, instructions: o.instructions, onItem: logged, onReasoning: reasoning, onText: live, onThinking: thinking, onToolInput: out.toolInput, tools: box.defs })
           .pipe(Effect.result);
         // what the call cost is recorded first, whether it failed or the log refused its items
         if (reply._tag === "Success") yield* record(reply.success);
@@ -143,7 +145,7 @@ export const toolLoop = (o: {
         for (const call of calls) {
           const result = yield* box.run(call.name, call.input);
           const output = cap(result.text);
-          yield* answer(output, result.error);
+          yield* answer(output, result.error, call.name);
           history.push({ id: call.id, output, type: "result" });
         }
       }

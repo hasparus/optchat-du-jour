@@ -19,8 +19,9 @@ import { HttpClient, HttpClientRequest } from "effect/http";
 import { IDLE_OPENAI } from "../config.ts";
 import { addSpent, type EngineError, isEngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit, withSpent } from "../engines/errors.ts";
 import { admitRequest } from "../engines/request-admission.ts";
-import { askAgain, bytes, type Carry, errorBody, httpFailure, post as send, type Shown, type Wire } from "../engines/retry.ts";
+import { askAgain, bytes, type Carry, errorBody, httpFailure, post as send, type Shown, shownToolInput, type Wire } from "../engines/retry.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
+import type { ToolInputHooks } from "../engines/tool-input.ts";
 import { isPicture, type Part } from "../media/part.ts";
 import { wireJson } from "../text.ts";
 import type { Tokens as Usage } from "../usage.ts";
@@ -59,6 +60,7 @@ export type Ask<E extends Tagged = never> = {
   // start of each item's part. Only clients see it (SPEC "Reasoning"); the item goes back as it came
   readonly onReasoning?: (delta: string, fresh: boolean) => Effect.Effect<void>;
   readonly onOut?: (out: Out) => Effect.Effect<void, E>; // each item of `output` as it completes
+  readonly onToolInput?: ToolInputHooks | undefined; // a function call's arguments as they stream
   readonly onSettledUsage?: (spent: Spent) => Effect.Effect<void>;
   readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
 };
@@ -187,13 +189,13 @@ const decodeErrorBody = Schema.decodeUnknownOption(Schema.fromJsonString(ErrorBo
 
 // a spent or rate-limited plan, or a plan this user may not share: the chain moves on (E4)
 const LIMIT = /usage_limit|rate_limit|insufficient_quota|not_eligible|quota/;
-// what a failed stream may say that asking again can cure (E33): the server's own failure, a rate
+// what a failed stream may say that asking again can cure (E35): the server's own failure, a rate
 // limit; and what is no hiccup whatever the status says: the plan's cap, a key out of quota
 const PASSING = /^(server_error|rate_limit_exceeded|internal_error|timeout)$/;
 const CAPPED = /usage_limit|insufficient_quota|not_eligible|quota/;
 
 // `label` names the engine in the message: openai-plan, or api-key for a key's calls
-// `status` null: a failure told in the stream, which may pass (E33) when its code says so; an
+// `status` null: a failure told in the stream, which may pass (E35) when its code says so; an
 // HTTP error's chance to pass is the status's and its headers' (src/engines/retry.ts httpFailure)
 export const classify = (status: number | null, code: string | null | undefined, message: string | undefined, label = "openai-plan", spent?: Spent): EngineError => {
   const text = `${label}: ${[status, code, message].filter((x) => x !== null && x !== undefined && x !== "").join(" ")}`;
@@ -227,11 +229,16 @@ type Read = {
   readonly spent: Spent | undefined;
 };
 
-type Hooks<E extends Tagged> = Pick<Ask<E>, "onSettledUsage" | "onOut" | "onReasoning" | "onStart" | "onText" | "onThinking">;
+type Hooks<E extends Tagged> = Pick<Ask<E>, "onSettledUsage" | "onOut" | "onReasoning" | "onStart" | "onText" | "onThinking" | "onToolInput">;
+// a function call begins (its item's id, its call id and name), its arguments stream, they end
+const addedItem = json(Schema.Struct({ item: Schema.Struct({ type: Schema.String, id: Schema.optional(Schema.String), call_id: Schema.optional(Schema.String), name: Schema.optional(Schema.String) }) }));
+const argumentsDelta = json(Schema.Struct({ item_id: Schema.String, delta: Schema.String }));
+const argumentsDone = json(Schema.Struct({ item_id: Schema.String }));
 
-const onEvent =
-  <E extends Tagged>(o: { readonly model: string; readonly label: string; readonly reported: (spent: Spent | undefined) => void } & Hooks<E>) =>
-  (r: Read, data: string): Effect.Effect<Read, E | EngineError | Schema.SchemaError> => {
+const onEvent = <E extends Tagged>(o: { readonly model: string; readonly label: string; readonly reported: (spent: Spent | undefined) => void } & Hooks<E>) => {
+  // the function calls whose arguments stream, by their item's id (only with onToolInput)
+  const calls = new Map<string, { readonly id: string; readonly name: string }>();
+  return (r: Read, data: string): Effect.Effect<Read, E | EngineError | Schema.SchemaError> => {
     // an item of `output` is whole: it goes out now, so what follows it streams after it
     const out = (item: Out) => Effect.as(o.onOut ? o.onOut(item) : Effect.void, { ...r, output: [...r.output, item] });
     return Effect.gen(function* () {
@@ -252,6 +259,27 @@ const onEvent =
           if (o.onReasoning && d.delta !== "") yield* o.onReasoning(d.delta, part !== r.part);
           if (o.onThinking) yield* o.onThinking(Math.ceil(reasoning / 4));
           return { ...r, part, reasoning, told: r.told || d.delta !== "" };
+        }
+        case "response.output_item.added": {
+          if (!o.onToolInput) return r;
+          const { item } = yield* addedItem(data);
+          if (item.type === "function_call" && item.id !== undefined) calls.set(item.id, { id: item.call_id ?? item.id, name: item.name ?? "" });
+          return r;
+        }
+        case "response.function_call_arguments.delta": {
+          if (!o.onToolInput) return r;
+          const d = yield* argumentsDelta(data);
+          const call = calls.get(d.item_id);
+          if (call !== undefined) yield* o.onToolInput.delta(call, d.delta);
+          return r;
+        }
+        case "response.function_call_arguments.done": {
+          if (!o.onToolInput) return r;
+          const d = yield* argumentsDone(data);
+          const call = calls.get(d.item_id);
+          calls.delete(d.item_id);
+          if (call !== undefined) yield* o.onToolInput.end(call.id);
+          return r;
         }
         case "response.refusal.delta":
           return { ...r, refusal: r.refusal + (yield* delta(data)).delta };
@@ -300,6 +328,7 @@ const onEvent =
     }).pipe(Effect.catchCause((cause) => Effect.failCause(Cause.map(cause, (e: E | EngineError | Schema.SchemaError): E | EngineError =>
       e instanceof Schema.SchemaError ? new ModelError({ message: `${o.label}: invalid response event or usage counters` }) : e))));
   };
+};
 
 // A stream counts only when it ends in response.completed, and ends there: whatever follows (a
 // `data: [DONE]` line, say) is never read. One that starts well can still fail.
@@ -312,7 +341,7 @@ export const readStream = <E extends Tagged = never>(stream: Stream.Stream<Uint8
     return Effect.gen(function* () {
       const r = yield* sseFold(label, stream, init, onEvent({ ...o, label, model, reported }), (state) => state.done !== null, o.onStart);
       if (r.refusal) return yield* new Refusal({ message: `${label} refused: ${r.refusal.slice(0, 300)}`, spent: r.spent });
-      // cut off on the way: it may pass (E33)
+      // cut off on the way: it may pass (E35)
       if (r.done === null) return yield* new ModelError({ message: `${label}: the stream ended without response.completed`, transient: true });
       return r.done;
     }).pipe(Effect.onExit(() => known && o.onSettledUsage ? o.onSettledUsage(known) : Effect.void));
@@ -327,7 +356,7 @@ export type Bearer = {
 
 // The Responses API at `api` (…/v1) with `bearer`: the plan's tokens or an API key (SPEC "Engines").
 // `report` hears, once per model, that a model refused the breakpoints and is sent none.
-// A request that fails on the API's side before anything of it went out is sent again (E33,
+// A request that fails on the API's side before anything of it went out is sent again (E35,
 // src/engines/retry.ts); a stream with no bytes for `idle` (IDLE_OPENAI) is dead.
 export const makeResponses = (o: { readonly api: string; readonly label: string; readonly bearer: Bearer; readonly report?: (message: string) => Effect.Effect<void>; readonly idle?: Duration.Input }) =>
   Effect.gen(function* () {
@@ -377,6 +406,7 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
           onStart: ask.onStart,
           onText: shown(ask.onText),
           onThinking: shown(ask.onThinking),
+          onToolInput: shownToolInput(shown, ask.onToolInput),
         });
       });
 

@@ -13,6 +13,7 @@ import { useHighlightedCode } from "@/hooks/use-highlighted-code";
 import { TOOL_STATE_LABELS, toolName, type ToolState } from "@/lib/rows";
 import { cn } from "@/lib/utils";
 import {
+  AppWindowIcon,
   BotIcon,
   CalendarIcon,
   FileTextIcon,
@@ -59,6 +60,9 @@ const ICONS = new Map<string, LucideIcon>(Object.entries({
   WebSearch: GlobeIcon,
   Write: PencilLineIcon,
   date: CalendarIcon,
+  edit_artifact: AppWindowIcon,
+  publish_artifact: AppWindowIcon,
+  read_artifact: AppWindowIcon,
   zoom: ScanSearchIcon,
 }));
 const toolIcon = (name: string): LucideIcon => ICONS.get(toolName(name)) ?? WrenchIcon;

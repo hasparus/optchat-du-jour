@@ -105,7 +105,7 @@ export const claudeVersion = (binary: string) =>
     Effect.orElseSucceed(() => null),
   );
 
-// What a `claude` must never inherit (E32): with one of these set, Claude Code bills that API key
+// What a `claude` must never inherit (E34): with one of these set, Claude Code bills that API key
 // or cloud account instead of the Max login (keys, tokens, Bedrock, Vertex, Foundry and their
 // settings), sends the login's requests to another host (the base URLs), or reads a ref's model as
 // another (the default-model overrides: our refs name the model, and turns, priming and compactor
@@ -178,7 +178,7 @@ export const spawnProcess = Effect.fnUntraced(function* (binary: string, o: Spaw
       ChildProcess.make(binary, [...o.args], {
         cwd: o.cwd,
         env: childEnv(process.env, o.env),
-        extendEnv: false, // childEnv has this process's environment already, minus what bills elsewhere (E32)
+        extendEnv: false, // childEnv has this process's environment already, minus what bills elsewhere (E34)
         forceKillAfter: killGrace,
         killSignal: "SIGTERM",
         stdin: { encoding: "utf8", stream: Stream.fromQueue(stdin).pipe(Stream.encodeText) },

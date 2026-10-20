@@ -5,6 +5,7 @@
 import { Effect } from "effect";
 import { type HttpRouter, type HttpServerRequest, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
+import { type ArtifactTools, noArtifacts } from "../../src/artifacts/tools.ts";
 import { forbidden } from "../../src/http.ts";
 import { type AgentTools, answerMcp, type Attached, noAgents } from "../../src/mcp.ts";
 import type { Mem } from "../../src/tree.ts";
@@ -18,6 +19,8 @@ export const mcpRoutes = (
     // the subagents' key and tools (SPEC M7a); none: only the master's key is let in
     readonly subagentSecret?: string;
     readonly agents?: (caller: "master" | "subagent") => AgentTools;
+    // the artifact tools as each caller may use them (SPEC "Artifacts"); none: they refuse
+    readonly artifacts?: (caller: "master" | "subagent") => ArtifactTools;
   },
 ) => {
   // whose key the URL carries: the master's, a subagent's, or none we know
@@ -27,12 +30,13 @@ export const mcpRoutes = (
     return o.subagentSecret !== undefined && key === o.subagentSecret ? ("subagent" as const) : null;
   };
   const toolsOf = (caller: "master" | "subagent") => o.agents?.(caller) ?? noAgents;
+  const artifactsOf = (caller: "master" | "subagent") => o.artifacts?.(caller) ?? noArtifacts;
   return Effect.gen(function* () {
     yield* router.add("POST", "/mcp", (request) =>
       Effect.gen(function* () {
         const caller = callerOf(request);
         if (caller === null) return forbidden;
-        const reply = yield* answerMcp(o.mem, yield* request.text, o.attached, toolsOf(caller));
+        const reply = yield* answerMcp(o.mem, yield* request.text, o.attached, toolsOf(caller), artifactsOf(caller));
         return reply.body === null
           ? HttpServerResponse.empty({ status: reply.status })
           : HttpServerResponse.text(reply.body, { contentType: "application/json", status: reply.status });
@@ -45,6 +49,7 @@ export const mcpRoutes = (
         const caller = callerOf(request);
         if (caller === null) return forbidden;
         const tools = toolsOf(caller);
+        const artifacts = artifactsOf(caller);
         const socket = yield* request.upgrade;
         const write = yield* socket.writer;
         const pull = yield* Socket.readerString(socket);
@@ -53,7 +58,7 @@ export const mcpRoutes = (
             Effect.forEach(
               frames,
               (frame) =>
-                answerMcp(o.mem, frame, o.attached, tools).pipe(Effect.flatMap((reply) => (reply.body === null ? Effect.void : write.write(reply.body)))),
+                answerMcp(o.mem, frame, o.attached, tools, artifacts).pipe(Effect.flatMap((reply) => (reply.body === null ? Effect.void : write.write(reply.body)))),
               { discard: true },
             ),
           ),

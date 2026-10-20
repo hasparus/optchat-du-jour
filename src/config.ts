@@ -27,7 +27,7 @@ export const TRIES = 5;
 // comes to try it again then, and a fixed pause never delays the turn by more than itself
 export const WAIT_RETRY = "10 seconds";
 // A node whose call the model refused, or answered with an empty line, this many times is built
-// from its source clipped to NODE bytes, marked so it can be rebuilt (E31). A refusal is the
+// from its source clipped to NODE bytes, marked so it can be rebuilt (E33). A refusal is the
 // input's doing, so asking again mostly fails alike (UniiChat clips at the first); one more try,
 // WAIT_RETRY later, lets a flaky safeguard pass, and holds a waiting turn back by that much at most.
 export const REFUSALS = 2;
@@ -36,7 +36,7 @@ export const REFUSALS = 2;
 // opens another. A half-open TCP connection or a laptop on a new Wi-Fi otherwise looks open for
 // minutes. SILENT lives with the client (web/src/lib/connection.ts), which can't import this file.
 export const HEARTBEAT = "5 seconds";
-// Our own HTTP engines (api-key, openai-plan; E33): one request that fails on the vendor's side (a
+// Our own HTTP engines (api-key, openai-plan; E35): one request that fails on the vendor's side (a
 // 408, 409, 429, 5xx or 529, a dropped connection, a stream gone quiet) is sent again up to this
 // many tries in all, after a doubling pause from HTTP_RETRY_BASE with jitter, or the server's
 // `retry-after`, before the failure reaches the failover chain. A `retry-after` longer than
@@ -295,6 +295,9 @@ export const Settings = Schema.Struct({
   // (chat/reasoning/, never the log, the tree or a request; off: it is only streamed live), and
   // `commit` lets persist commit that file with the rest of the data dir. Both default to true.
   reasoning: Schema.optional(Schema.Struct({ keep: Schema.optional(Schema.Boolean), commit: Schema.optional(Schema.Boolean) })),
+  // The artifacts the master publishes (SPEC "Artifacts"): `commit` lets persist commit their
+  // folder (streams/<device>/artifacts/) with the rest of the data dir. Defaults to true.
+  artifacts: Schema.optional(Schema.Struct({ commit: Schema.optional(Schema.Boolean) })),
   // Sign in with ChatGPT endpoints (src/openai/endpoints.ts): each key left out, or the whole field, decodes to its default
   openai: Endpoints.pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
 }).check(Schema.makeFilter((s) => {
@@ -377,4 +380,6 @@ export const mediaSettings = (settings: Settings) => {
 export type MediaSettings = ReturnType<typeof mediaSettings>;
 
 // the reasoning settings with their defaults filled in (SPEC "Reasoning")
+// the artifact settings with their defaults filled in (SPEC "Artifacts")
+export const artifactSettings = (settings: Settings) => ({ commit: settings.artifacts?.commit ?? true });
 export const reasoningSettings = (settings: Settings) => ({ commit: settings.reasoning?.commit ?? true, keep: settings.reasoning?.keep ?? true });

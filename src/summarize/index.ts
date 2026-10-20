@@ -17,7 +17,7 @@ export const makeSummarize = (o: CompactorNeeds) =>
 
     const changes = yield* PubSub.unbounded<readonly Down[]>();
     const watch = watchChain(o.report, "compacting", Effect.suspend(() => PubSub.publish(changes, watch.down())).pipe(Effect.asVoid));
-    // a refusal (or an empty line, step.ts) is the model's answer to this input: E31 counts them
+    // a refusal (or an empty line, step.ts) is the model's answer to this input: E33 counts them
     const summarize: Summarize = (job) =>
       failover(
         chainFor(o.settings, job.l).flatMap(({ ref }) => {

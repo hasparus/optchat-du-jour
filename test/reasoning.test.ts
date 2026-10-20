@@ -299,7 +299,7 @@ const think = (at: number, offset: number, delta: string): SessionEvent => ({ at
 const kinds = (es: readonly AGUIEvent[]) => es.filter((e) => e.type.startsWith("REASONING")).map((e) => e.type);
 
 test("live thinking is an AG-UI reasoning message: a client that joins mid-thought gets it so far, then the rest without a repeat, then where it was kept", () => {
-  const c = connect({ reasoning: { at: 1, text: "Let me th" }, reply: null, runId: "0" });
+  const c = connect({ drafts: [], reasoning: { at: 1, text: "Let me th" }, reply: null, runId: "0" });
   c.feed(think(1, 4, "me th"), think(1, 9, "ink."), { at: 1, cut: 0, i: 1, ms: 1200, runId: "0", type: "reasoning-kept" });
   expect(kinds(c.out)).toEqual([EventType.REASONING_START, EventType.REASONING_MESSAGE_START, EventType.REASONING_MESSAGE_CONTENT, EventType.REASONING_MESSAGE_CONTENT, EventType.REASONING_MESSAGE_END, EventType.REASONING_END]);
   const text = c.out.flatMap((e) => (e.type === EventType.REASONING_MESSAGE_CONTENT ? [e.delta] : [])).join("");
@@ -309,7 +309,7 @@ test("live thinking is an AG-UI reasoning message: a client that joins mid-thoug
 });
 
 test("a piece kept with nothing streamed opens and closes at once, with its cut; one dropped, or left open at the run's end, ends without an entry", () => {
-  const c = connect({ reasoning: null, reply: null, runId: "0" });
+  const c = connect({ drafts: [], reasoning: null, reply: null, runId: "0" });
   c.feed({ at: 1, cut: 500, i: 1, ms: 30, runId: "0", type: "reasoning-kept" });
   expect(kinds(c.out)).toEqual([EventType.REASONING_START, EventType.REASONING_MESSAGE_START, EventType.REASONING_MESSAGE_END, EventType.REASONING_END]);
   expect(c.out.at(-1)).toMatchObject({ metadata: { cut: 500, i: 1, ms: 30 } });

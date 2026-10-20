@@ -48,14 +48,16 @@ beforeAll(async () => {
       // never answers
       idler: [{ hang: true }],
     },
-    turn: [
-      [{ mcp: { input: { name: "scout", task: "Find when the trip is." }, name: "spawn" } }, { text: "scout is on it" }],
-      [
+    // keyed by a word of each message, not by the order claude processes start in (warm ones start
+    // ahead of their turn, E18)
+    turn: {
+      "ask a subagent": [{ mcp: { input: { name: "scout", task: "Find when the trip is." }, name: "spawn" } }, { text: "scout is on it" }],
+      "two more": [
         { mcp: { input: { model: "claude-code:opus@low", name: "sleeper", task: "Wait for word." }, name: "spawn" } },
         { mcp: { input: { name: "idler", task: "Idle." }, name: "spawn" } },
         { text: "two more running" },
       ],
-    ],
+    },
   };
   writeFileSync(env.FAKE_CLAUDE_SCRIPT, JSON.stringify(script));
   const settings = {
@@ -187,7 +189,7 @@ test("the master spawns a read-only subagent over /mcp; its report reaches the c
   const scout = startOf("scout");
   expect(scout).toBeDefined();
   expect(flag(scout?.argv ?? [], "--permission-mode")).toBe("default");
-  expect(flag(scout?.argv ?? [], "--allowedTools")).toBe("Read,Glob,Grep,mcp__optchat__zoom,mcp__optchat__date");
+  expect(flag(scout?.argv ?? [], "--allowedTools")).toBe("Read,Glob,Grep,mcp__optchat__zoom,mcp__optchat__date,mcp__optchat__read_artifact");
   expect(flag(scout?.argv ?? [], "--tools")).toBe(flag(master?.argv ?? [], "--tools"));
   expect(flag(scout?.argv ?? [], "--system-prompt")).toBe(flag(master?.argv ?? [], "--system-prompt"));
   expect(flag(scout?.argv ?? [], "--effort")).toBe("high");

@@ -1,4 +1,31 @@
 optchat-du-jour
+Copyright 2026 Piotr Monwid-Olechnowicz
+
+This product includes software derived from fx0 (https://github.com/vercel-labs/fx0),
+Copyright Vercel, Inc., licensed under the Apache License, Version 2.0. Its license is in
+third_party/fx0/LICENSE. The files taken from it, each modified, name their fx0 source in their
+first lines ("Apache-2.0, © Vercel, modified"):
+
+  src/artifacts/html.ts            lib/design-artifact.ts (its tags now read by Bun's HTMLRewriter,
+                                   not fx0's tokenizer; CSS, ping and declarative shadow roots added)
+  src/artifacts/bootstrap.ts       lib/design-artifact.ts (the bootstrap's WebRTC removal and
+                                   heartbeat, as typed functions)
+  src/artifacts/draft.ts           lib/gateway-session.ts (htmlFieldExtractor), lib/design-draft.ts
+  src/artifacts/tools.ts           lib/tools.ts
+  src/artifacts/store.ts           lib/agent.ts (editDesign, as applyEdits)
+  src/artifacts/styles.ts          lib/design-md.ts
+  server/routes/artifacts.ts       app/api/artifact-frame/route.ts, app/api/artifact/route.ts
+  web/src/lib/draft-preview.ts     lib/draft-preview.ts, components/preview-pane.tsx (renderable)
+  web/src/lib/artifacts.ts         lib/design-draft.ts (applyDesignDraft)
+  web/src/chat/artifact-pane.tsx   components/preview-pane.tsx, components/design-export.tsx
+  prompts/system.txt (Artifacts)   lib/agent.ts (the design-mode instructions)
+  test/artifacts.test.ts           tests/core.test.mjs, tests/design-draft.test.mjs
+  test/artifacts-server.test.ts    tests/route-security.test.mjs
+  web/src/lib/artifacts.test.ts    tests/design-draft.test.mjs
+
+This product includes prompts/design-md/*.md, from VoltAgent/awesome-design-md
+(https://github.com/VoltAgent/awesome-design-md) at 13be5c0, as fx0 ships them, unmodified,
+Copyright (c) 2026 VoltAgent, licensed under the MIT License (prompts/design-md/LICENSE).
 
 This product ports ideas, not code, from UniiChat
 (https://github.com/VictorTaelin/uniichat), Copyright 2026 Higher Order
@@ -7,11 +34,11 @@ reimplemented in this codebase's own style; no source or text was copied.
 What was taken, and from which commit, is tracked in docs/uniichat.md:
 
 - A summary the model refuses, or leaves empty, becomes its source,
-  clipped (Memory.ts, Memory.build): SPEC E31.
+  clipped (Memory.ts, Memory.build): SPEC E33.
 - Provider keys kept out of the processes the agent runs (Config.ts):
-  SPEC E32.
+  SPEC E34.
 - A WebSocket heartbeat, and a client that drops a silent socket
   (Server.ts, View.ts): SPEC "Protocol".
 - A failed model request asked again on `retry-after` and
   `x-should-retry`, and a stream with no bytes for a while cut, with
-  UniiChat's idle times (Agent.ts, Anthropic.ts, OpenAI.ts): SPEC E33.
+  UniiChat's idle times (Agent.ts, Anthropic.ts, OpenAI.ts): SPEC E35.

@@ -8,6 +8,7 @@ import { type Asset, type Kind, logIndex, type ReasoningHead, type ReasoningPiec
 import { EventType } from "@ag-ui/core";
 import { Option, Schema } from "effect";
 import { api } from "./api.ts";
+import { applyDraft, type Drafts, noDrafts, savedOver } from "./artifacts.ts";
 import { refOf } from "./attach.ts";
 import type { Link, LinkStatus } from "./connection.ts";
 import { loadSent, saveSent } from "./draft.ts";
@@ -59,6 +60,10 @@ export type Session = {
   // once resumed), null between turns, after the run ends or stops for a model, and while the link
   // is down (a page that reconnects mid-turn is told again)
   readonly run: number | null;
+  // the artifacts' live drafts of the running turn, by tool call (SPEC "Artifacts"), and how many
+  // versions were saved since this page opened, so what lists them reads the list again
+  readonly drafts: Drafts;
+  readonly saved: number;
 };
 
 const MAX_MARKERS = 100;
@@ -69,7 +74,21 @@ const PAGE = 100; // older entries per page
 const MAX_FILL = 500; // a wider hole under the window is dropped, not fetched
 const PROBE = 500; // entries per /api/messages page when looking for messages sent before a reload
 
-const initial: Session = { asking: [], log: emptyLog, markers: [], pending: [], restored: null, run: null, state: null, stateAt: 0, status: "connecting", thinking: false, thoughts: noThoughts };
+const initial: Session = {
+  asking: [],
+  drafts: noDrafts,
+  log: emptyLog,
+  markers: [],
+  pending: [],
+  restored: null,
+  run: null,
+  saved: 0,
+  state: null,
+  stateAt: 0,
+  status: "connecting",
+  thinking: false,
+  thoughts: noThoughts,
+};
 
 // a run id's first log index: "12" and "12+1" (a resumed run) both started at 12
 export const runStart = (runId: string): number | null => {
@@ -386,10 +405,10 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
         if (s.thinking && s.log.draft?.kind !== "user") set({ thinking: false });
         return;
       case EventType.RUN_FINISHED:
-        set({ run: null, thinking: false, thoughts: dropLive(s.thoughts) });
+        set({ drafts: noDrafts, run: null, thinking: false, thoughts: dropLive(s.thoughts) });
         return;
       case EventType.RUN_ERROR:
-        set({ run: null, thinking: false, thoughts: dropLive(s.thoughts) });
+        set({ drafts: noDrafts, run: null, thinking: false, thoughts: dropLive(s.thoughts) });
         // a turn that stopped for a model says why in its own prompt, not here as well
         if (s.state?.phase !== "needs-model") mark(e.message, "error");
         return;
@@ -398,6 +417,8 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
         else if (e.name === "thinking") set({ thinking: true });
         else if (e.name === "ack") acked(e.value.clientId, e.value.error, e.value.messageId === null ? null : logIndex(e.value.messageId));
         else if (e.name === "taken-back") takenBack(e.value.clientId, e.value.error, e.value.text, e.value.media);
+        else if (e.name === "artifact-draft") set({ drafts: applyDraft(s.drafts, e.value) });
+        else if (e.name === "artifact") set({ drafts: savedOver(s.drafts, e.value.name), saved: s.saved + 1 });
         return;
       case EventType.RUN_STARTED:
         set({ run: runStart(e.runId) });
@@ -421,7 +442,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
   const unlisten = link.listen(event);
   const unstatus = link.onStatus((status) => {
     if (status === "open") conns++;
-    set(status === "open" ? { asking: [], status } : { run: null, status, thinking: false, thoughts: dropLive(s.thoughts) });
+    set(status === "open" ? { asking: [], status } : { drafts: noDrafts, run: null, status, thinking: false, thoughts: dropLive(s.thoughts) });
   });
 
   return {

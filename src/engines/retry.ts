@@ -1,5 +1,5 @@
 // One request of our own HTTP engines (api-key, openai-plan) sent again when it failed on the
-// vendor's side (E33), after UniiChat's Agent.step (docs/uniichat.md). Whether a failure will pass
+// vendor's side (E35), after UniiChat's Agent.step (docs/uniichat.md). Whether a failure will pass
 // is decided where it is classified, and carried on the error (`transient`, `retryAfter`,
 // ./errors.ts): a 408, 409, 429 or 5xx (529 too) unless the server says `x-should-retry: false`,
 // any status it says `x-should-retry: true` for, a connection that broke, an overload or server
@@ -16,6 +16,7 @@
 import { Context, Duration, Effect, Random, Result, Stream } from "effect";
 import { type HttpClient, HttpClientError, type HttpClientRequest } from "effect/http";
 import { HTTP_RETRY_BASE, HTTP_RETRY_LONGEST, HTTP_TRIES } from "../config.ts";
+import type { ToolInputHooks } from "./tool-input.ts";
 import { addSpent, type EngineError, isEngineError, ModelError, passing, type Spent, type Tagged, withSpent } from "./errors.ts";
 
 export type RetryPolicy = {
@@ -97,6 +98,13 @@ export const bytes = <E extends { readonly message: string }>(res: Answer<E>, w:
 // what a try is handed: `f`, telling askAgain that this try showed something whenever it is called
 // (a hook that sends text, thinking or an item on)
 export type Shown = <A extends readonly unknown[], R>(f: ((...args: A) => R) | undefined) => ((...args: A) => R) | undefined;
+
+// a tool call's streaming input (an artifact's live draft) under `shown`: a delta that went out
+// shows as much as text does
+export const shownToolInput = (shown: Shown, hooks: ToolInputHooks | undefined): ToolInputHooks | undefined => {
+  const delta = shown(hooks?.delta), end = shown(hooks?.end);
+  return delta && end ? { delta, end } : undefined;
+};
 
 // What earlier tries cost, kept across two askAgain of one call (openai-plan's, around a token
 // renewed after a 401): the second one starts from it.

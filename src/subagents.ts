@@ -28,6 +28,7 @@
 // since. Messages sent while a call runs are offered to it; what it never took starts the next call.
 import { Cause, Clock, Deferred, Effect, Exit, Fiber, Option, PubSub, Queue, Result, Schema, type Scope } from "effect";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { loggedText } from "./artifacts/tools.ts";
 import { type Effort, entryLabel, isEffort, type Ref, runEffort } from "./config.ts";
 import type { EngineError } from "./engines/errors.ts";
 import { type AgentTools, SUBAGENT_NAME } from "./mcp.ts";
@@ -455,7 +456,8 @@ export const makeSubagents = (o: {
           const asMid = (t: Tell): Mid => ({ media: [], seq: t.seq, text: t.text });
           const out: TurnEvents = {
             info: (message) => info(`[${a.name}] ${message}`),
-            log: (kind, body, flags) => append(a, kind, body, kind === "echo" && flags?.error === true),
+            // its side log keeps the artifact tools' stubs too (E31): zoom("Name") answers from it
+            log: (kind, body, flags) => append(a, kind, loggedText(kind, body, flags?.tool), kind === "echo" && flags?.error === true),
             reasoning: () => Effect.void,
             text: () => Effect.void,
             thinking: () => Effect.void,

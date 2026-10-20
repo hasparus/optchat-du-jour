@@ -19,7 +19,7 @@ const io = <A>(what: string, f: () => A) =>
   });
 
 // Records carry their keys in the order the reference writes them, so both write the same
-// bytes: {i, kind, text, size, date} and {l, i, text, size}. A clipped node (E31) adds
+// bytes: {i, kind, text, size, date} and {l, i, text, size}. A clipped node (E33) adds
 // `clipped: true` after them, and only then.
 export function newMsg(i: number, kind: Kind, text: string, at: Date = new Date()): Entry {
   const size = bytes(msgText({ text, kind }));

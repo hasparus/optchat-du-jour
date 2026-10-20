@@ -302,7 +302,7 @@ test("a call on the last request is answered in the log as not run; a refused re
   expect(compactor.records.map((r) => [r.role, r.dollars])).toEqual([["compact", (100 * 4 + 500 * 0.2 + 3000 * 8 + 50 * 20) / 1_000_000]]);
 });
 
-// E31: thinking that spends the whole token budget, or a merge's context that fills the window,
+// E33: thinking that spends the whole token budget, or a merge's context that fills the window,
 // ends with no text: a limit, never counted toward clipping the node
 test("a compactor reply cut short with no text is a model error, not a refusal", async () => {
   for (const stop of ["max_tokens", "model_context_window_exceeded"]) {

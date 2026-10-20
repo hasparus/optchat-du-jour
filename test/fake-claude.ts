@@ -23,7 +23,10 @@
 // FAKE_CLAUDE_SCRIPT: a JSON file {turn?, prime?, compact?, caption?, subagent?}. `subagent` may
 // instead be an object by the subagent's name, {scout: call, …}: a subagent's call is then picked by
 // the name its opening message gives it (`You are the subagent "scout"`), not by the order processes
-// started in, which two subagents spawned at once can't be relied on for. Each role holds a list of calls: the
+// started in, which two subagents spawned at once can't be relied on for. `turn` may likewise be an
+// object by a word of the new message, {"weekend": call, "*": call}: the first key the opening's
+// last text block contains, else "*" (warm processes start ahead, so the order processes started in
+// is not the order of the turns). Each role holds a list of calls: the
 // k-th process of that role plays call k, and the last call repeats. A call is a list of replies,
 // reply k answering the k-th message the call starts work on (the last reply repeats); a call
 // may also be written as one reply, a plain list of actions. Actions:
@@ -33,10 +36,13 @@
 //   {thinking: N}                 a thinking delta of ~N tokens and an empty thinking block
 //   {thought: "...", streamed?}   a thought with its text: thinking deltas carrying it (unless
 //                                 streamed is false), then the thinking block holding it whole
-//   {tool: {name, input}}         a tool_use block: its content_block_start, then the assistant block
-//                                 (and the refusal, when the permission mode refuses it)
-//   {mcp: {name, input}}          a call of the MCP server optchat's tool `name` (zoom, date, spawn,
-//                                 tell): its tool_use block as mcp__optchat__<name>, then, unless
+//   {tool: {name, input}, pace?}  a tool_use block: its content_block_start, its input as
+//                                 input_json_delta pieces of 64 characters (`pace` ms apart when
+//                                 given), its content_block_stop, then the assistant block (and the
+//                                 refusal, when the permission mode refuses it)
+//   {mcp: {name, input}, pace?}   a call of the MCP server optchat's tool `name` (zoom, date, spawn,
+//                                 tell, the artifact tools): its tool_use block as
+//                                 mcp__optchat__<name>, streamed as a tool's is, then, unless
 //                                 the permission mode refuses it, a real POST to the URL its
 //                                 --mcp-config names (ws:// read as http://), whose answer is the
 //                                 tool_result
@@ -83,8 +89,8 @@ const Action = Schema.Union([
   Schema.Struct({ synthetic: Schema.String }),
   Schema.Struct({ thinking: Schema.Number }),
   Schema.Struct({ thought: Schema.String, streamed: Schema.optional(Schema.Boolean) }),
-  Schema.Struct({ tool: Schema.Struct({ input: Schema.Json, name: Schema.String }) }),
-  Schema.Struct({ mcp: Schema.Struct({ input: Schema.Json, name: Schema.String }) }),
+  Schema.Struct({ tool: Schema.Struct({ input: Schema.Json, name: Schema.String }), pace: Schema.optional(Schema.Number) }),
+  Schema.Struct({ mcp: Schema.Struct({ input: Schema.Json, name: Schema.String }), pace: Schema.optional(Schema.Number) }),
   Schema.Struct({ toolResult: Schema.String, is_error: Schema.optional(Schema.Json) }),
   Schema.Struct({ waitInput: Schema.Literal(true) }),
   Schema.Struct({ take: Schema.Literal(true) }),
@@ -111,7 +117,7 @@ const Script = Schema.Struct({
   compact: Schema.optional(Schema.Array(Call)),
   prime: Schema.optional(Schema.Array(Call)),
   subagent: Schema.optional(Schema.Union([Schema.Array(Call), Schema.Record(Schema.String, Call)])),
-  turn: Schema.optional(Schema.Array(Call)),
+  turn: Schema.optional(Schema.Union([Schema.Array(Call), Schema.Record(Schema.String, Call)])),
 });
 const Input = Schema.fromJsonString(Schema.Struct({ message: Schema.optional(Schema.Struct({ content: Schema.optional(Schema.Json) })) }));
 const McpConfig = Schema.fromJsonString(
@@ -187,13 +193,20 @@ const overWs = servers.filter(([, c]) => c.type === "ws").map(([name]) => name);
 const isReply = Schema.is(Reply);
 const repliesOf = (call: typeof Call.Type): readonly Reply[] => (isReply(call) ? [call] : call);
 const scripted = script[role] ?? [];
-// by name (subagents only): picked once the opening says who this is
+// by name: a subagent's picked once the opening says who this is; a turn's by the first key its
+// opening's last text block (the new message, after the view) contains, else the key "*"
 const ByName = Schema.Record(Schema.String, Call);
 const byName = !Array.isArray(scripted) && Schema.is(ByName)(scripted) ? scripted : null;
 const isCalls = Schema.is(Schema.Array(Call));
 const calls: readonly (typeof Call.Type)[] = isCalls(scripted) ? scripted : [];
 let replies: readonly Reply[] = repliesOf(calls[Math.min(callIndex, calls.length - 1)] ?? DEFAULTS[role]);
 const nameIn = (content: Json) => /You are the subagent \\?"([^"\\]+)\\?"/.exec(JSON.stringify(content))?.[1];
+const decodeBlocks = Schema.decodeUnknownOption(Schema.Array(Schema.Struct({ text: Schema.optional(Schema.String) })));
+const keyIn = (content: Json, keys: readonly string[]) => {
+  const blocks = decodeBlocks(content);
+  const said = blocks._tag === "Some" ? (blocks.value.at(-1)?.text ?? "") : "";
+  return keys.find((key) => key !== "*" && said.includes(key)) ?? "*";
+};
 const replyFor = (k: number): Reply => replies[Math.min(k, replies.length - 1)] ?? DEFAULTS[role];
 
 const quit = (code: number) => {
@@ -287,6 +300,13 @@ async function play(reply: Reply): Promise<boolean> {
       const name = "tool" in a ? a.tool.name : `mcp__optchat__${a.mcp.name}`;
       const input = "tool" in a ? a.tool.input : a.mcp.input;
       emit({ event: { content_block: { id: "toolu_1", input: {}, name, type: "tool_use" }, index: 0, type: "content_block_start" }, type: "stream_event" });
+      // its input as Claude Code streams it with --include-partial-messages: input_json_delta
+      // pieces, `pace` ms apart when the script says, then the block's stop
+      for (const piece of JSON.stringify(input).match(/[\s\S]{1,64}/gu) ?? []) {
+        if (a.pace !== undefined) await Bun.sleep(a.pace);
+        emit({ event: { delta: { partial_json: piece, type: "input_json_delta" }, index: 0, type: "content_block_delta" }, type: "stream_event" });
+      }
+      emit({ event: { index: 0, type: "content_block_stop" }, type: "stream_event" });
       emit({ message: { content: [{ id: "toolu_1", input, name, type: "tool_use" }], model, role: "assistant" }, type: "assistant" });
       refused = !permitted(name);
       if (refused) {
@@ -345,7 +365,7 @@ for (let k = 0; ; k++) {
   await unused();
   const content = inbox[used++] ?? null;
   if (k === 0 && byName) {
-    const own = byName[nameIn(content) ?? ""];
+    const own = byName[role === "turn" ? keyIn(content, Object.keys(byName)) : (nameIn(content) ?? "")];
     replies = own === undefined ? [DEFAULTS[role]] : repliesOf(own);
   }
   if (!initSent) {
