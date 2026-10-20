@@ -149,6 +149,33 @@ test("login surfaces a store it can't read instead of registering afresh", async
   expect(error._tag).toBe("BadCredentials");
 });
 
+test("single flight on the plan: a response that fails after response.created is not booked as written, so the next writer still holds the others (E50)", async () => {
+  const secrets = memorySecrets();
+  const e = await signedIn(secrets);
+  // three whole blocks of context: a marked prefix every call below shares
+  const ctx = Array.from({ length: 11 }, (_, k) => `${k}+1|user: line ${k}`);
+  const job = (i: number): Job => ({ ctx, i, l: 0, msg: newMsg(i, "user", "squeeze me") });
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const compact = openAiPlanCompactor({ ...compactorBase, effort: "medium", gate: makeGate(), log: () => Effect.void, model: "gpt-6-luna", plan: yield* OpenAiPlan });
+      // response.created, then response.failed: the input was never read into the cache
+      fake.state.script = [{ failed: "subscription_sharing_usage_limit_exceeded" }];
+      yield* Effect.flip(compact(job(11), null));
+      // the next writer's response is held before it begins: a call on the same prefix waits for it
+      const hold = yield* Deferred.make<true>();
+      fake.state.script = [{ gate: Effect.runPromise(Deferred.await(hold)), text: "user: b" }, { text: "user: c" }];
+      const before = fake.state.requests;
+      const both = yield* Effect.forkChild(Effect.all([compact(job(12), null), compact(job(13), null)], { concurrency: "unbounded" }));
+      while (fake.state.requests < before + 1) yield* Effect.sleep("5 millis");
+      yield* Effect.sleep("200 millis");
+      expect(fake.state.requests - before).toBe(1);
+      yield* Deferred.succeed(hold, true);
+      expect(yield* Fiber.join(both)).toEqual(["user: b", "user: c"]);
+      expect(fake.state.requests - before).toBe(2);
+    }).pipe(Effect.provide(plan(e, secrets))),
+  );
+});
+
 test("a compactor call streams its line; a long one is retried in the same conversation and the shortest try kept", async () => {
   const secrets = memorySecrets();
   const e = await signedIn(secrets);

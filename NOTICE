@@ -60,3 +60,9 @@ What was taken, and from which commit, is tracked in docs/uniichat.md:
 - A long pasted message folded in the chat (web/src/Html.ts): SPEC
   "Web UI".
 - A file edit shown as a diff (Machine.ts): SPEC E45.
+- A long message zoomed a page at a time from a character, saying
+  where to go on (Memory.ts Memory.zoom, Clip.ts clip_page): SPEC E48.
+- What a compaction reads of one message bounded, as UniiChat's pages
+  of a long text bound it (Memory.ts Memory.pages): SPEC E49.
+- Single flight on every block prefix of a request, aware of the
+  cache's TTLs (AskAI.ts AskAI.keys, AskAI.wait): SPEC E50.

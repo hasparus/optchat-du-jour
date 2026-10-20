@@ -5,21 +5,23 @@ import { Effect, Option, Schema } from "effect";
 import { ARTIFACT_TOOL_DEFS, type ArtifactTools, noArtifacts } from "./artifacts/tools.ts";
 import type { McpTransport } from "./config.ts";
 import { address } from "./kernel.ts";
-import { wireJson } from "./text.ts";
+import { headBytes, headOf, wireJson } from "./text.ts";
 import { type Built, children, type Coord, type Entry, getNode, label, localTime, type Mem } from "./tree.ts";
 import { flat } from "./view.ts";
 import { artifactTool, SUBAGENT_NAME } from "./wire.ts";
 
-// zoom's and date's descriptions are docs/optchat.md §6's, word for word; the input schemas carry
-// no descriptions (ref §9). zoom's id may also be a subagent's name (docs/optchat.md §5's
+// zoom's and date's descriptions are docs/optchat.md §6's, word for word, and zoom's pages after
+// them (§6: "A long message comes in pages", in our words, E48); the input schemas carry no
+// descriptions (ref §9). zoom's id may also be a subagent's name (docs/optchat.md §5's
 // zoom("Name"), SPEC M7a), which the system prompt explains; spawn and tell are the earlier gist's
 // (§9), ours in words; the artifact tools follow (SPEC "Artifacts", src/artifacts/tools.ts). Nothing
 // here changes from call to call: the list is part of every cached prefix.
 export const TOOLS = [
   {
-    description: "Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole.",
+    description:
+      "Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole. A long answer comes in pages, from character at; each page says where the next one starts.",
     inputSchema: {
-      properties: { id: { type: ["integer", "string"] }, n: { type: "integer" } },
+      properties: { id: { type: ["integer", "string"] }, n: { type: "integer" }, at: { type: "integer" } },
       required: ["id"],
       type: "object",
     },
@@ -90,17 +92,47 @@ export function openNode(mem: Mem, id: number, n: number): Opened | null {
   return message ? { at, message } : null;
 }
 
-// Line id+n opened into its two halves, or for n = 1 the message itself, whole. A merge that is
-// not built yet is no line at all; a single message always opens, since the view tells the model
-// to zoom a line that has no summary yet.
-export function zoom(mem: Mem, id: number, n: number): string {
+// One zoom answer (E48) holds at most ZOOM_PAGE characters, under CAP, which a turn's echo of it
+// gets, as SIDE_PAGE's and READ_PAGE's are, and at most ZOOM_BYTES of UTF-8: Claude Code takes at
+// most 25,000 tokens of one MCP answer (MAX_MCP_OUTPUT_TOKENS), and text that costs a token or
+// more per character (CJK, emoji) stays under it at 32,000 bytes (about 11,000 CJK characters,
+// 8,000 emoji). A longer answer comes in pages.
+export const ZOOM_PAGE = 28_000;
+export const ZOOM_BYTES = 32_000;
+
+// A page of a long answer (E48): up to ZOOM_PAGE characters and ZOOM_BYTES bytes from `at`, never
+// ending inside a character (E21), and after a line break in its second half when it has one,
+// with which characters it holds and, before the end, the zoom that reads on (`next`). A text
+// that fits whole from 0 is answered as it always was. Null when `at` is not one of its characters.
+export function page(text: string, at: number, next: (end: number) => string): string | null {
+  if (at === 0 && text.length <= ZOOM_PAGE && Buffer.byteLength(text) <= ZOOM_BYTES) return text;
+  if (!Number.isSafeInteger(at) || at < 0 || at >= text.length) return null;
+  const from = (text.codePointAt(at - 1) ?? 0) > 0xFF_FF ? at - 1 : at; // inside a pair: from its first half
+  let part = headBytes(headOf(text.slice(from), ZOOM_PAGE), ZOOM_BYTES);
+  const line = part.lastIndexOf("\n");
+  if (from + part.length < text.length && line >= part.length / 2) part = part.slice(0, line + 1);
+  const end = from + part.length;
+  return `${part}\n[characters ${from} to ${end} of ${text.length}${end < text.length ? `; ${next(end)} reads on` : ""}]`;
+}
+
+// Line id+n opened into its two halves, or for n = 1 the message itself, whole, a long one in pages
+// from character `at` (E48). A merge that is not built yet is no line at all; a single message
+// always opens, since the view tells the model to zoom a line that has no summary yet.
+export function zoom(mem: Mem, id: number, n: number, at = 0): string {
   const found = openNode(mem, id, n);
   if (!found) return noLine(id, n);
-  if ("message" in found) return `${id}+0|${found.message.kind}: ${found.message.text}`;
+  const paged = (text: string) => page(text, at, (end) => `zoom(${id}, ${n}, ${end})`);
+  const noChar = (text: string) => `No character ${at} in line ${id}+${n}: it has ${text.length}.`;
+  if ("message" in found) {
+    const { kind, text } = found.message;
+    const part = paged(text);
+    return part === null ? noChar(text) : `${id}+0|${kind}: ${part}`;
+  }
   const [left, right] = found.halves;
   // a parent is only built after its children: a missing half is a broken tree
   if (!found.node || !left?.node || !right?.node) return noLine(id, n);
-  return `${label(left.at)}|${flat(left.node.text)}\n${label(right.at)}|${flat(right.node.text)}`;
+  const both = `${label(left.at)}|${flat(left.node.text)}\n${label(right.at)}|${flat(right.node.text)}`;
+  return paged(both) ?? noChar(both);
 }
 
 // the local date and time of message id, "YYYY-MM-DD HH:MM"
@@ -126,8 +158,8 @@ const decodeInitialize = Schema.decodeUnknownOption(Initialize);
 const Call = Schema.Struct({ arguments: Schema.optional(Schema.Record(Schema.String, Schema.Json)), name: Schema.String });
 const decodeCall = Schema.decodeUnknownOption(Call);
 // zoom and date take integers; zoom() and date() check the rest. zoom("Name") and zoom("Name", n)
-// open a subagent's side log, from its entry n on.
-const decodeZoom = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.Number, n: Schema.Number }));
+// open a subagent's side log, from its entry n on, a page at a time of its own (`at` is not used).
+const decodeZoom = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.Number, n: Schema.Number, at: Schema.optional(Schema.Number) }));
 // A subagent's name (SPEC M7a, src/wire.ts)
 export { SUBAGENT_NAME } from "./wire.ts";
 const decodeAgentZoom = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.String.check(Schema.isPattern(SUBAGENT_NAME)), n: Schema.optional(Schema.Number) }));
@@ -162,10 +194,10 @@ const answer = (text: string): ToolResult => ({ content: [{ text, type: "text" }
 const refuse = (text: string): ToolResult => ({ content: [{ text, type: "text" }], isError: true });
 
 // zoom(id, 1) on a message with attachments answers with their pictures after its text, so the
-// model can look again at what it was sent (SPEC "Media"); the tool's schema is the same
-function zoomed(mem: Mem, id: number, n: number, attached: Attached): ToolResult {
-  const text = answer(zoom(mem, id, n));
-  const found = n === 1 ? openNode(mem, id, n) : null;
+// model can look again at what it was sent (SPEC "Media"): on its first page only
+function zoomed(mem: Mem, id: number, n: number, at: number, attached: Attached): ToolResult {
+  const text = answer(zoom(mem, id, n, at));
+  const found = n === 1 && at === 0 ? openNode(mem, id, n) : null;
   if (!found || !("message" in found) || found.message.kind !== "user") return text;
   return { content: [...text.content, ...attached(found.message.text)] };
 }
@@ -180,7 +212,7 @@ function call(mem: Mem, params: Schema.Json | undefined, attached: Attached, age
       if (Option.isSome(named)) return answer(agents.zoom(named.value.id, named.value.n ?? 0));
       return Option.match(decodeZoom(args), {
         onNone: () => answer(noLine(shown(args.id), shown(args.n))),
-        onSome: ({ id, n }) => zoomed(mem, id, n, attached),
+        onSome: ({ at, id, n }) => zoomed(mem, id, n, at ?? 0, attached),
       });
     }
     case "date":

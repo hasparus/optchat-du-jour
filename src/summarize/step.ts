@@ -4,7 +4,8 @@
 // marks; the system prompt and tools are the turns' (docs/optchat.md §5, §7 mistake 6).
 import { Clock, Effect } from "effect";
 import type { Job } from "../compactor.ts";
-import { NODE, TRIES } from "../config.ts";
+import { clipMiddle } from "../cap.ts";
+import { LEAF, NODE, TRIES } from "../config.ts";
 import { type EngineError, ModelError, Refusal } from "../engines/errors.ts";
 import { bytes, children, cut, label, span } from "../tree.ts";
 import { type Tokens, type UsageRecord, isCold } from "../usage.ts";
@@ -19,12 +20,21 @@ export const contextBlocks = (job: Job): Blocks => viewBlocks(["<chat>", ...job.
 // "The size"; a real sample line as the ruler got its content copied)
 export const RULER = "-".repeat(NODE);
 
-// The task, verbatim from docs/optchat.md §4: compress a message, whole, or merge two adjacent lines,
-// each as the view shows it (id+n|text). A merge's messages run from its first to its last.
+// What a compaction reads of message i (E49): the whole text when it is at most LEAF characters,
+// else its head and its tail, cut as cap() cuts a tool's output (clipMiddle), with a line between
+// them for a later reader: how much was left out, and that a turn reads it from where it begins
+// (src/mcp.ts page). Worded as a note, not as a call: the compactor must call no tool. The log and
+// the tree keep the message whole; only the task is bounded.
+export const leafText = (i: number, text: string): string =>
+  clipMiddle(text, LEAF, (cut, at) => `[… ${cut} chars cut here; a turn reads them with zoom(${i}, 1, ${at}) …]`);
+
+// The task, verbatim from docs/optchat.md §4: compress a message, whole up to LEAF characters
+// (leafText), or merge two adjacent lines, each as the view shows it (id+n|text). A merge's
+// messages run from its first to its last.
 export function task(job: Job): string {
   const limit = `of at most\n${NODE} bytes (about 70 words), the length of this ruler:\n${RULER}\n`;
   if ("msg" in job)
-    return `Compaction: compress message ${job.i} into one line of at most ${NODE} bytes\n(about 70 words), the length of this ruler:\n${RULER}\n<input>\n${job.msg.kind}: ${job.msg.text}\n</input>`;
+    return `Compaction: compress message ${job.i} into one line of at most ${NODE} bytes\n(about 70 words), the length of this ruler:\n${RULER}\n<input>\n${job.msg.kind}: ${leafText(job.i, job.msg.text)}\n</input>`;
   const [a, b] = children(job);
   const { id, n } = span(job);
   return [

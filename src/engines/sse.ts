@@ -13,13 +13,10 @@ export const sseFold = <S, E>(
   init: S,
   step: (state: S, data: string) => Effect.Effect<S, E | EngineError | Schema.SchemaError>,
   done: (state: S) => boolean,
-  started: Effect.Effect<void> = Effect.void, // run once, at the first event: the response has started
-): Effect.Effect<S, E | EngineError> => {
-  let first = true;
-  return stream.pipe(
+): Effect.Effect<S, E | EngineError> =>
+  stream.pipe(
     Stream.decodeText(),
     Stream.pipeThroughChannel(Sse.decode()),
-    Stream.tap(() => (first ? ((first = false), started) : Effect.void)),
     Stream.scanEffect(
       () => init,
       (acc, event) => (event.data === "[DONE]" ? Effect.succeed(acc) : step(acc, event.data)),
@@ -34,7 +31,6 @@ export const sseFold = <S, E>(
       return e;
     }))),
   );
-};
 
 // the JSON of one event's data, decoded with `schema`
 export const json = <S extends Schema.Top>(schema: S) => Schema.decodeUnknownEffect(Schema.fromJsonString(schema));

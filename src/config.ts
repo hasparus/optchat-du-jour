@@ -69,9 +69,24 @@ export const IDLE_OPENAI = "20 minutes";
 export const CAPTION_WAIT_MOST = 60_000;
 // the most characters of one tool result that get logged
 export const CAP = 30_000;
+// The most characters of one message a compaction reads (E49): its head and its tail, half each,
+// with a line between them that says how much was cut and which zoom reads it. CAP plus room for
+// cap()'s own cut line, so a tool's output, capped when it was logged, is read whole as before;
+// a pasted log, a long reply or a long tool call past it costs a compaction what a capped tool
+// output does (about 8,000 tokens a try, sent again with each size retry) instead of growing with
+// it. UniiChat logs a long text in pages of CAP; we log it whole (E23), so the bound goes here.
+export const LEAF = 32_000;
 // lines per content block of the view, or of a compactor's context (docs/optchat.md §3.3 "How the
 // cache is marked"): one cache mark on the last whole block
 export const BLOCK = 4;
+// the blocks a vendor looks back from a mark for an entry an earlier request wrote (docs/optchat.md
+// §3.3, Anthropic's): single flight waits only on a prefix within it (E50)
+export const LOOKBACK = 20;
+// The longest a call waits on another writing its prefix (E50); past it the writer's claim lapses
+// and the waiter writes instead. A request is taken within seconds (priming gets PRIME_TIMEOUT for
+// it); a writer still without its first response event after this is in a long retry pause or
+// hung, and its CALL_TIMEOUT is minutes away.
+export const FLIGHT_WAIT = "30 seconds";
 
 export const CALL_TIMEOUT = "5 minutes";
 export const KILL_GRACE = "5 seconds";

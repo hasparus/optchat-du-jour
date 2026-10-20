@@ -51,7 +51,10 @@ test("zoom and date over JSON-RPC: the handshake, the verbatim tools, a zoom dow
 
   const { tools } = Schema.decodeUnknownSync(ToolList)(rpc(mem, "tools/list").result);
   expect(tools.map((t) => [t.name, t.description])).toEqual([
-    ["zoom", "Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole."],
+    [
+      "zoom",
+      "Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole. A long answer comes in pages, from character at; each page says where the next one starts.",
+    ],
     ["date", "The date and time of message id."],
     ["spawn", TOOLS[2].description],
     ["tell", TOOLS[3].description],
