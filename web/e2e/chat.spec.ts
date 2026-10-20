@@ -232,19 +232,16 @@ test.describe("on a wide screen", () => {
   });
 });
 
-test("the memory screen zooms into a line and shows it in the chat", async ({ page }) => {
+test("the memory screen shows what the model reads, with how full the view is", async ({ page }) => {
   await open(page);
   await send(page, "remember this");
   await answered(page, "remember this");
   await page.getByRole("tab", { name: "Memory" }).click();
-  const line = page.getByTestId("view-line").filter({ hasText: "remember this" });
-  await expect(line).toBeVisible();
+  const memory = page.getByTestId("memory");
+  // a short message is its own summary: it shows as the log shows it
+  await expect(memory.getByTestId("user-message").filter({ hasText: "remember this" })).toBeVisible();
+  await expect(memory).toContainText(/What the model reads each turn: \d+ lines/);
   await expect(page.getByRole("button", { name: /%/ })).toBeVisible(); // the context meter
-  await line.click();
-  await expect(page.getByTestId("zoom-message")).toHaveText("remember this");
-  await page.getByRole("button", { name: "show in chat" }).click();
-  await expect(page.getByRole("tab", { name: "Chat" })).toHaveAttribute("data-state", "active");
-  await expect(page.getByTestId("user-message").filter({ hasText: "remember this" })).toBeInViewport();
 });
 
 test("the stats and devices screens render", async ({ page }) => {

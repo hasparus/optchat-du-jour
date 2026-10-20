@@ -404,6 +404,44 @@ export type ViewLine = typeof ViewLine.Type;
 export const View = Schema.Struct({ budget: Schema.Number, lines: Schema.Array(ViewLine), size: Schema.Number, text: Schema.String });
 export type View = typeof View.Type;
 
+// The memory view (E46, E47): what the model reads, line by line, live. A line is a node of the
+// tree: `l`, `i` and the messages it covers, `id` to `id + n - 1`; its summary (`text`, null until
+// the compactor writes it, `size` in bytes, `clipped` when it is its source cut to fit, E33); the
+// dates of its first and last message (ISO); at level 0 the message's `kind`, and the message
+// itself (`entry`) when "kind: text" fits in NODE, since it is then its own summary (a free node) and
+// a client shows it as the log does. Optional keys are absent, never null.
+export const MemoryLine = Schema.Struct({
+  l: Schema.Number,
+  i: Schema.Number,
+  id: Schema.Number,
+  n: Schema.Number,
+  built: Schema.Boolean,
+  text: Schema.NullOr(Schema.String),
+  size: Schema.NullOr(Schema.Number),
+  from: Schema.NullOr(Schema.String),
+  to: Schema.NullOr(Schema.String),
+  kind: Schema.optional(Kind),
+  clipped: Schema.optional(Schema.Boolean),
+  entry: Schema.optional(Msg),
+});
+export type MemoryLine = typeof MemoryLine.Type;
+// GET /api/memory/view?before&limit: the view's lines [from, from + lines.length) of `total`, as of
+// change `rev` (the CUSTOM `memory` frames count up from it)
+export const MemoryPage = Schema.Struct({ rev: Schema.Number, total: Schema.Number, from: Schema.Number, lines: Schema.Array(MemoryLine) });
+export type MemoryPage = typeof MemoryPage.Type;
+// GET /api/memory/children?l&i&depth&from&limit: node (l, i) opened `depth` levels down, its 2^depth
+// descendants (`total`), lines [from, from + lines.length) of them, oldest first
+export const MemoryChildren = Schema.Struct({ l: Schema.Number, i: Schema.Number, depth: Schema.Number, total: Schema.Number, from: Schema.Number, lines: Schema.Array(MemoryLine) });
+export type MemoryChildren = typeof MemoryChildren.Type;
+// CUSTOM `memory` (E47): the view's lines changed, as change `rev`, one more than the one before it.
+// Each hunk, in order, replaces `removed` lines from index `at` of the list as the hunks before it
+// left it with `added` new ones: `lines` when the frame had room for them (MEMORY_BYTES), else
+// read from /api/memory/view. `total`: the view's lines after it.
+export const MemoryHunk = Schema.Struct({ at: Schema.Number, removed: Schema.Number, added: Schema.Number, lines: Schema.optional(Schema.Array(MemoryLine)) });
+export type MemoryHunk = typeof MemoryHunk.Type;
+export const MemoryChange = Schema.Struct({ rev: Schema.Number, total: Schema.Number, hunks: Schema.Array(MemoryHunk) });
+export type MemoryChange = typeof MemoryChange.Type;
+
 // /api/node: a message (level 0), or a node and its two children
 export const NodeView = Schema.Union([
   Schema.Struct({ l: Schema.Literal(0), i: Schema.Number, id: Schema.Number, n: Schema.Number, kind: Kind, text: Schema.String, date: Schema.String }),

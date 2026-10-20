@@ -30,13 +30,16 @@ import { makeSubagents, type SubagentHost, type Subagents } from "../src/subagen
 import { makeSummarize } from "../src/summarize/index.ts";
 import { loadChoices, saveChoices, startingChoices } from "../src/choices.ts";
 import { makeMaster } from "../src/master.ts";
+import type { Marks } from "../src/tree.ts";
 import { type UsageRecord, logUsage } from "../src/usage.ts";
 import { allowed, policyFor } from "./auth.ts";
 import { makePlacements } from "./placement.ts";
+import { watchMemory } from "./memory-feed.ts";
 import { apiRoutes } from "./routes/api.ts";
 import { artifactRoutes } from "./routes/artifacts.ts";
 import { assetRoutes } from "./routes/assets.ts";
 import { mcpRoutes } from "./routes/mcp.ts";
+import { memoryRoutes } from "./routes/memory.ts";
 import { webRoute } from "./routes/web.ts";
 import { wsRoute } from "./routes/ws.ts";
 
@@ -51,6 +54,7 @@ export type ServerOptions = {
   readonly window?: number; // log entries in a client's first snapshot
   readonly heartbeat?: Duration.Input; // HEARTBEAT; tests make it short
   readonly secrets?: Layer.Layer<Secrets>; // the plan's tokens and the API keys; SecretsLive unless a test says
+  readonly marks?: { readonly view: Marks; readonly compaction: Marks }; // the sawtooths' marks; tests make them small
 };
 
 export const routes = (o: ServerOptions) =>
@@ -94,7 +98,13 @@ export const routes = (o: ServerOptions) =>
         ? { summarize: o.summarize }
         : yield* makeSummarize({ ...needs, device: o.device, gate: makeGate(), instructions, placement: runnerFor(o.device), tools: defsFor(settings.defaultDevice) });
       // a failed call rests WAIT_RETRY before a logged entry tries it again (E33); the waiting turn's own retry doesn't wait
-      const chat = yield* openChat(stream, { report, rest: WAIT_RETRY, summarize: compactor.summarize });
+      const chat = yield* openChat(stream, { compactionMarks: o.marks?.compaction, marks: o.marks?.view, report, rest: WAIT_RETRY, summarize: compactor.summarize });
+      // the view's lines as they change, to every client (E47): published as the memory changes, so
+      // before what the session says after it
+      const memory = yield* Effect.acquireRelease(
+        Effect.sync(() => watchMemory(chat.mem, (e) => void PubSub.publishUnsafe(events, e))),
+        (feed) => Effect.sync(feed.close),
+      );
       // a turn's thinking, kept beside the log in the stream's chat/reasoning/ (SPEC "Reasoning")
       const thinking = reasoningSettings(settings);
       const reasoning = yield* openReasoning(stream, { keep: thinking.keep, report });
@@ -193,6 +203,7 @@ export const routes = (o: ServerOptions) =>
       yield* mcpRoutes(router, { agents: subagents.tools, artifacts: artifactTools.tools, attached: media.zoomContent, callerOf: subagents.callerOf, mem: chat.mem, secret });
       yield* artifactRoutes(router, { artifacts });
       yield* assetRoutes(router, { media, settings: mediaConfig });
+      yield* memoryRoutes(router, { mem: chat.mem, rev: memory.rev });
       yield* apiRoutes(router, { assets: { find: media.find }, device: o.device, mem: chat.mem, reasoning, report, session, settings, subagents, usagePath });
       yield* webRoute(router, o.web);
       return { artifacts, chat, session, subagents };

@@ -8,6 +8,7 @@ import { App } from "./app";
 import { WIRE } from "@wire";
 import { openLink, wakeOnReturn } from "./lib/connection";
 import { syncThemeColor } from "./lib/theme";
+import { makeMemory } from "./lib/memory";
 import { makeSession } from "./lib/session";
 import "./index.css";
 
@@ -16,6 +17,7 @@ ws.protocol = location.protocol === "https:" ? "wss:" : "ws:";
 ws.searchParams.set("wire", String(WIRE)); // a server of another build says so (E44)
 const link = openLink(ws.href);
 const session = makeSession(link); // for the page's lifetime, so no event falls between renders
+const memory = makeMemory(link); // the memory view, read once shown and kept live from then on
 
 wakeOnReturn(link); // back in front: a link that dropped, or may have, reconnects at once
 
@@ -23,7 +25,7 @@ const root = document.querySelector("#root");
 if (root) {
   createRoot(root).render(
     <StrictMode>
-      <App link={link} session={session} />
+      <App link={link} memory={memory} session={session} />
     </StrictMode>,
   );
 }

@@ -2,7 +2,7 @@
 
 [UniiChat](https://github.com/VictorTaelin/uniichat) is Victor Taelin's own OptChat: the code behind docs/optchat.md, open-sourced under Apache-2.0 (Copyright 2026 Higher Order Company). We read it and port ideas, written in our own style; we copy none of its code or text. [NOTICE](../NOTICE) credits what we took.
 
-**Pinned:** `0500bf6` (`0500bf6a8ea4bf0ce047488562022b1b6532cc30`), 2026-10-19. Everything below compares that commit with our main at `4be9d68` (M7a). The comparison was four reports, one each on the memory core, the model engines, agents and devices, and the clients and protocol. This file keeps what they found, and how far we got. M7b (E36–E40) has since ported its subagents' power, waking and resume, and E41–E42 its link's exactly-once acts and bounded frames; the summary below is as of the pin.
+**Pinned:** `0500bf6` (`0500bf6a8ea4bf0ce047488562022b1b6532cc30`), 2026-10-19. Everything below compares that commit with our main at `4be9d68` (M7a). The comparison was four reports, one each on the memory core, the model engines, agents and devices, and the clients and protocol. This file keeps what they found, and how far we got. M7b (E36–E40) has since ported its subagents' power, waking and resume, E41–E42 its link's exactly-once acts and bounded frames, and E46–E47 its transcript that is the view; the summary below is as of the pin.
 
 ## What it has, what we have
 
@@ -48,6 +48,7 @@ Each item is **ported** (in our code now, with its E-number in SPEC), **planned*
 | A `?wire=N` version check | E44, `server/routes/ws.ts` `staleWire`, `web/src/lib/connection.ts` | A page of another build gets a typed close (4426) and asks to be reloaded instead of reconnecting; a client that names no version (the REPL, an older page) is served as before |
 | Esc, or an empty Enter, to stop | `web/src/lib/stop-keys.ts`, `web/src/chat/use-stop-keys.ts` | The same abort as Stop, on the chat's tab only. Not while an input method composes, the artifact pane or a select has focus, or a sheet, popover, menu or paste preview takes the key; not on a touch screen's Enter, nor an Enter within a second of the one that sent |
 | Long pastes folded | `web/src/lib/paste.ts`, `web/src/chat/pasted.tsx` | Past 40 lines or 4 KB: a token and a chip in the composer (open, remove), the block folded in the sent bubble, kept by log index. What the model reads is the text as pasted. Other long messages fold whole; reports never |
+| The live Memory view in the chat | E46, E47, `server/memory-feed.ts`, `src/memory-view.ts`, `web/src/lib/memory.ts`, `web/src/memory/memory-view.tsx` | UniiChat's transcript is the view: its blocks open in place, a summary reaches a client that was shown its block once built (`Chat.made`). Ours is a toggle on the chat (Log or Memory, the log the default), and the Memory screen draws the same blocks. A short message that is its own summary reads as the log's row; a summary opens one level at a time, or straight down to its messages a page at a time. Live by a CUSTOM `memory` frame per change of the view's lines, numbered, at most 16 KiB (lines that don't fit are read from `/api/memory/view`), instead of a frame per summary to each client that was shown its block |
 | Diffs for Edit and Write calls | E45, `src/partial-json.ts`, `web/src/lib/diff.ts`, `web/src/chat/tool-diff.tsx` | An Edit or MultiEdit as a line diff, a Write as its new file behind its line count, drawn while the input streams: Claude Code's file tools' input now reaches clients before the call is logged, read as an artifact's draft is |
 
 ### Planned
@@ -61,7 +62,6 @@ The first group was left out of the robustness PR on purpose.
 | Single flight on every block prefix, with TTLs (`AskAI.keys`, `AskAI.wait`) | `src/engines/inflight.ts` waits only on an exact key. Needed before raising `JOBS` toward UniiChat's 64 |
 | Paged `zoom(id, 1, at)` and a bounded leaf input | A 200 KB paste is one leaf and one zoom answer today. Adding `at` changes the cached tool list once |
 | Importers: Claude Code, Codex, claude.ai and ChatGPT exports (E12) | Decide where imported messages go (before the chat, not at its end as UniiChat does), how imported AI turns show without breaking E23, and a pausable compaction side |
-| The live Memory view in the chat | UniiChat's transcript is the view, with summaries that open in place and fill in live. Ours: the raw log, plus a Memory tab reloaded by hand |
 | The terminal UI | Line editing, history, `/help` from the key table, markdown painted in the terminal's own palette |
 | The iOS share extension | `POST /api/messages` takes a message once by its id now (E41); the extension, its uploads and its sign-in to the tailnet are the work |
 

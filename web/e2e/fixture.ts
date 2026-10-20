@@ -11,7 +11,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-export { ARTIFACT, EDITED, EDITED_HEADING, LANDING, LANDING_HEADING, OUTSIDE, PUBLISHED } from "./replies.ts";
+export { ARTIFACT, EDITED, EDITED_HEADING, LANDING, LANDING_HEADING, MEMORY_SUMMARY, OUTSIDE, PUBLISHED } from "./replies.ts";
 export { EDIT_INPUT, WRITE_INPUT } from "./replies.ts";
 export { FETCHED, FIXER_REPORT, FIXER_TASK, NOTES_REPORT, NOTES_TASK, PLAN_DONE, PLAN_START, REPLY, SCOUT_REPORT, SCOUT_TASK, SEARCH_LINKS, SOL_REPLY, SPAWNED, SPAWNED_ISOLATED, THOUGHT, TOOL_ERROR, WOKEN } from "./replies.ts";
 
@@ -93,9 +93,10 @@ type Options = {
   readonly subagents: boolean;
   readonly isolated: boolean;
   readonly artifacts: "" | "ui" | "hostile";
+  readonly memory: boolean;
 };
 
-async function startServer({ artifacts, edits, isolated, patterns, seeded, spent, subagents, thinking, toolError }: Options, listeners: Pick<Listeners, "tcp" | "udp">): Promise<Server & { readonly stop: () => Promise<void> }> {
+async function startServer({ artifacts, edits, isolated, memory, patterns, seeded, spent, subagents, thinking, toolError }: Options, listeners: Pick<Listeners, "tcp" | "udp">): Promise<Server & { readonly stop: () => Promise<void> }> {
   const home = mkdtempSync(`${tmpdir()}/oc-e2e-`); // short: socket paths stop at ~107 characters
   let port = 0; // the server picks it on the first start; a restart asks for the one the page knows
   let total = seeded;
@@ -111,6 +112,7 @@ async function startServer({ artifacts, edits, isolated, patterns, seeded, spent
     if (subagents) env.E2E_SUBAGENTS = "1";
     if (isolated) env.E2E_ISOLATED = "1";
     if (artifacts !== "") env.E2E_ARTIFACTS = artifacts;
+    if (memory) env.E2E_MEMORY = "1";
     env.E2E_STUN_PORT = String(listeners.udp);
     env.E2E_TCP_PORT = String(listeners.tcp);
     const child = spawn("bun", ["e2e/server.ts"], { cwd: web, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -205,8 +207,9 @@ export const test = base.extend<Options & { server: Server; listeners: Listeners
   subagents: [false, { option: true }], // every Claude turn spawns two subagents (E2E_SUBAGENTS)
   isolated: [false, { option: true }], // the first Claude turn spawns an isolated subagent (E2E_ISOLATED)
   artifacts: ["", { option: true }], // the turns publish and edit artifacts (E2E_ARTIFACTS)
-  server: async ({ artifacts, edits, isolated, seeded, spent, toolError, patterns, thinking, subagents, listeners }, provide) => {
-    const server = await startServer({ artifacts, edits, isolated, patterns, seeded, spent, subagents, thinking, toolError }, listeners);
+  memory: [false, { option: true }], // tiny view marks and a slow compactor (E2E_MEMORY)
+  server: async ({ artifacts, edits, isolated, memory, seeded, spent, toolError, patterns, thinking, subagents, listeners }, provide) => {
+    const server = await startServer({ artifacts, edits, isolated, memory, patterns, seeded, spent, subagents, thinking, toolError }, listeners);
     await provide(server);
     await server.stop();
   },

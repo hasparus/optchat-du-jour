@@ -120,3 +120,7 @@ document.getElementById("forged").addEventListener("click",()=>parent.postMessag
 document.getElementById("selfnav").addEventListener("click",()=>{location.href="${OUTSIDE}/self"});
 `;
 export const hostile = (udp: number, tcp: number) => `<!doctype html><html><head><title>Hostile</title></head><body><pre id="out">{}</pre><a id="link" href="https://example.com/opened">a link out</a> <button id="forged">forged open</button> <button id="selfnav">navigate away</button><script>${hostileScript(udp, tcp)}</script></body></html>`;
+
+// E2E_MEMORY: what every compactor call answers, after MEMORY_WAIT (E46, E47)
+export const MEMORY_SUMMARY = "talk: the user asked the fake to keep a long note in mind";
+export const MEMORY_WAIT = 2500;

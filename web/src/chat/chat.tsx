@@ -46,6 +46,9 @@ import { ChatRow, ReplyActions } from "./row";
 import { Outdated, RetryCountdown } from "./turn-status";
 import { useStopKeys } from "./use-stop-keys";
 import { useStickToEnd } from "./use-stick-to-end";
+import { memoryItems, type MemoryStore } from "@/lib/memory";
+import { MemoryItems, MemoryParts, useMemory } from "../memory/memory-view";
+import { TranscriptToggle, useTranscript } from "./memory-mode";
 
 // The preview pane is only fetched when an artifact is first opened (its draft preview and export
 // with it), so the chat's first paint doesn't wait for it
@@ -226,9 +229,10 @@ export type ChatProps = {
   // the chat is the tab shown: only then does Esc stop the turn
   readonly active: boolean;
   readonly uploader?: Uploader; // tests replace PUT /api/assets
+  readonly memory: MemoryStore; // the memory view (E46), for the transcript's Memory mode
 };
 
-export function Chat({ link, session, state, devices, target, onTargetShown, onWork, active, uploader }: ChatProps) {
+export function Chat({ link, session, state, devices, target: asked, onTargetShown, onWork, active, uploader, memory }: ChatProps) {
   const [loading, setLoading] = useState(false);
   // the artifacts (SPEC "Artifacts"): their list, read again when a version is saved; the one the
   // pane shows (v null: its latest), beside the chat on a wide screen, in a sheet on a phone
@@ -277,9 +281,22 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
   const rows = useMemo(() => chatRows(items, settled, draft, thinkingAt), [items, settled, draft, thinkingAt]);
   // the row the live thought shows above, given to it as is (rows.ts thoughtHolder)
   const holder = useMemo(() => (thinkingAt === null ? undefined : thoughtHolder(rows, thinkingAt)?.key), [rows, thinkingAt]);
-  const placed = placeMarkers(state.markers, rows);
+  // The transcript (./memory-mode.tsx): the log, or the memory view, whose lines cover the log up to
+  // its last message; what comes after (the reply streaming in) is the log's rows. A message to
+  // show (from the Memory screen, or a block's "Show in the log") shows in the log.
+  const [mode, setMode] = useTranscript();
+  const [shownHere, setShownHere] = useState<number | null>(null);
+  const target = asked ?? shownHere;
+  const memoryOn = mode === "memory" && target === null;
+  useEffect(() => (memoryOn ? memory.show() : undefined), [memoryOn, memory]);
+  const m = useMemory(memory);
+  const memItems = useMemo(() => (memoryOn ? memoryItems(m.lines, m.want) : []), [memoryOn, m.lines, m.want]);
+  const lastLine = m.lines.at(-1);
+  const viewEnd = lastLine ? lastLine.id + lastLine.n : (state.state?.messages ?? 0);
+  const shownRows = useMemo(() => (memoryOn ? rows.filter((r) => r.id >= viewEnd) : rows), [memoryOn, rows, viewEnd]);
+  const placed = placeMarkers(state.markers, shownRows);
   const draftKey = draft ? `e${draft.i}` : null;
-  const first = rows[0]?.id ?? 0;
+  const first = memoryOn ? m.want : (rows[0]?.id ?? 0);
   const busy = state.state !== null && state.state.phase !== "idle";
   const waiting = queued(state);
   // the tray on the composer's top edge shows that the server was updated, a turn waiting for a
@@ -307,6 +324,10 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
 
   // one older page, prepended: true while there may be more, null when it couldn't be read
   const loadOlder = useCallback(async () => {
+    if (memoryOn) {
+      memory.earlier();
+      return false;
+    }
     if (loading || first <= 0) return false;
     setLoading(true);
     try {
@@ -316,7 +337,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
     } finally {
       setLoading(false);
     }
-  }, [first, loading, session]);
+  }, [first, loading, session, memoryOn, memory]);
 
   // the top in view: the page before it
   useEffect(() => {
@@ -342,8 +363,10 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
     }
     const row = rowFor(rows, target);
     if (row) scrollToMessage(row.key, { align: "start" });
+    setShownHere(null);
+    if (mode === "memory") setMode("log");
     onTargetShown();
-  }, [target, rows, first, loading, loadOlder, scrollToMessage, onTargetShown]);
+  }, [target, rows, first, loading, loadOlder, scrollToMessage, onTargetShown, mode, setMode]);
 
   const lastTool = rows.findLast((r) => r.kind === "tool")?.key;
   // a plan is live only in the run that goes on now: from the user entry RUN_STARTED named
@@ -353,6 +376,24 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
   const plans = useMemo(() => planStates(rows, liveFrom), [rows, liveFrom]);
   const sources = useMemo(() => turnSources(rows), [rows]);
   const picked = device ?? state.state?.device ?? devices.find((d) => d.local)?.name ?? null;
+
+  // a log row inside the memory view: as the log draws it, settled (no run's plan, nothing streaming)
+  const renderRow = useCallback(
+    (row: Row) => (
+      <ChatRow
+        fold={row.kind === "user" ? state.folds.get(row.id) : undefined}
+        made={madeBy(row, artifacts)}
+        onArtifact={openArtifact}
+        onThought={session.toggleThought}
+        row={row}
+        streaming={false}
+        thought={row.kind === "talk" || row.kind === "tool" ? thoughts.get(row.id) : undefined}
+        toolState={row.kind === "tool" && row.output !== null ? toolStateOf(row, false, false) : "done"}
+      />
+    ),
+    [state.folds, artifacts, openArtifact, session.toggleThought, thoughts],
+  );
+  const memoryParts = useMemo(() => ({ memory, onShow: setShownHere, renderRow }), [memory, renderRow]);
 
   const paneView =
     pane === null ? null : (
@@ -404,11 +445,28 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
             {/* the dock floats over the transcript's end; the content keeps its height clear below
                 the last row (--dock-h, set by useStickToEnd) */}
             <ReplyActions>
-              <MessageScrollerContent className="mx-auto w-full max-w-184 gap-0 px-4 pt-6 pb-[calc(var(--dock-h,9rem)+1.5rem)] sm:px-6" data-region="chat-content">
-                {placed.above.map((m) => (
-                  <StatusRow key={`k${m.key}`} marker={m} />
-                ))}
-                {rows.map((row, k) => (
+              <MessageScrollerContent className="mx-auto w-full max-w-184 gap-0 px-4 pt-12 pb-[calc(var(--dock-h,9rem)+1.5rem)] sm:px-6" data-region="chat-content">
+                {!memoryOn &&
+                  placed.above.map((x) => (
+                    <StatusRow key={`k${x.key}`} marker={x} />
+                  ))}
+                {memoryOn && m.rev === null && <Shimmer className="self-center text-xs">{m.error === null ? "reading the memory…" : `The memory couldn't be read: ${m.error}`}</Shimmer>}
+                {memoryOn && (
+                  <MemoryParts value={memoryParts}>
+                    {memItems.map((item) => (
+                      <MessageScrollerItem
+                        data-kind={item.kind === "row" ? item.row.kind : "memory"}
+                        data-log-index={item.kind === "row" ? item.row.id : item.kind === "line" ? item.line.id : undefined}
+                        key={item.key}
+                        messageId={item.key}
+                        scrollAnchor={item.kind === "row" && item.row.kind === "user"}
+                      >
+                        <MemoryItems items={[item]} />
+                      </MessageScrollerItem>
+                    ))}
+                  </MemoryParts>
+                )}
+                {shownRows.map((row, k) => (
                   <Fragment key={row.key}>
                     <MessageScrollerItem data-kind={row.kind} data-log-index={row.id} messageId={row.key} scrollAnchor={row.kind === "user"}>
                       <ChatRow
@@ -424,8 +482,8 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
                         fold={row.kind === "user" ? state.folds.get(row.id) : undefined}
                       />
                     </MessageScrollerItem>
-                    {placed.after.get(k)?.map((m) => (
-                      <StatusRow key={`k${m.key}`} marker={m} />
+                    {placed.after.get(k)?.map((x) => (
+                      <StatusRow key={`k${x.key}`} marker={x} />
                     ))}
                   </Fragment>
                 ))}
@@ -447,6 +505,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
               </MessageScrollerContent>
             </ReplyActions>
           </MessageScrollerViewport>
+          <TranscriptToggle mode={memoryOn ? "memory" : "log"} onMode={setMode} />
           <MessageScrollerButton className="size-9 rounded-full border-0 bg-raised text-foreground shadow-float hover:bg-raised hover:text-foreground data-[direction=end]:bottom-[calc(var(--dock-h,9rem)+0.75rem)]" />
         </MessageScroller>
 

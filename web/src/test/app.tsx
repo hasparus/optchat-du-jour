@@ -11,6 +11,8 @@ import { openLink } from "../lib/connection";
 import type { Inbound } from "../lib/protocol";
 import { makeSession } from "../lib/session";
 import { type Entry, fakeServer, IDLE, parseSent, snapshot } from "./fixture";
+import { childrenPage, viewPage } from "../../../src/memory-view.ts";
+import type { Mem } from "../../../src/tree.ts";
 
 export const LOG: Entry[] = [
   { kind: "user", text: "what is in the repo?" },
@@ -29,12 +31,30 @@ export const DEVICES = [
 export const THOUGHTS = new Map<number, { readonly ms: number; readonly text: string }>();
 export const thoughtReads: number[] = [];
 
+// The memory /api/memory/* reads from in a test that sets one (the server's own, in this process),
+// the change it is as of, and the paths read, to tell a live update from a read
+type MemoryServer = { mem: Mem | null; rev: () => number; reads: string[] };
+export const MEMORY: MemoryServer = { mem: null, reads: [], rev: () => 0 };
+const memoryApi = (url: URL, mem: Mem) => {
+  const n = (k: string) => (url.searchParams.has(k) ? Number(url.searchParams.get(k)) : undefined);
+  MEMORY.reads.push(`${url.pathname}${url.search}`);
+  if (url.pathname === "/api/memory/view") return Response.json(viewPage(mem, MEMORY.rev(), n("before"), n("limit")));
+  if (url.pathname === "/api/memory/children") {
+    const page = childrenPage(mem, { i: n("i") ?? 0, l: n("l") ?? 0 }, n("depth") ?? 1, n("from"), n("limit"));
+    return page === null ? new Response(null, { status: 404 }) : Response.json(page);
+  }
+  const before = n("before") ?? mem.root.length;
+  return Response.json({ entries: mem.root.slice(Math.max(0, before - (n("limit") ?? 100)), before), total: mem.root.length });
+};
+
 // /api for each test: the devices, the page before message 100 of a long log, and THOUGHTS
 export function stubApi() {
   const realFetch = globalThis.fetch;
   beforeEach(() => {
     globalThis.fetch = Object.assign(async (input: string | URL | Request) => {
-      const path = new URL(input instanceof Request ? input.url : input, "http://127.0.0.1:7700/").pathname;
+      const url = new URL(input instanceof Request ? input.url : input, "http://127.0.0.1:7700/");
+      const path = url.pathname;
+      if (MEMORY.mem !== null && (path.startsWith("/api/memory/") || path === "/api/messages")) return memoryApi(url, MEMORY.mem);
       if (path === "/api/devices") return Response.json(DEVICES);
       if (path === "/api/reasoning") {
         const pieces = [...THOUGHTS].map(([i, t]) => ({ chars: t.text.length, engine: "claude-code:opus", i, ms: t.ms }));
@@ -58,6 +78,14 @@ export function stubApi() {
     globalThis.fetch = realFetch;
     THOUGHTS.clear();
     thoughtReads.length = 0;
+    MEMORY.mem = null;
+    MEMORY.reads = [];
+    MEMORY.rev = () => 0;
+    try {
+      localStorage.removeItem("transcript");
+    } catch {
+      // none to clear
+    }
   });
 }
 

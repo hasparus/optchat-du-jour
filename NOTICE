@@ -60,3 +60,7 @@ What was taken, and from which commit, is tracked in docs/uniichat.md:
 - A long pasted message folded in the chat (web/src/Html.ts): SPEC
   "Web UI".
 - A file edit shown as a diff (Machine.ts): SPEC E45.
+- A transcript that is the memory view, with summaries that open in
+  place and fill in as the compactor writes them, and a summary sent to
+  the clients shown it once it is built (View.ts part_rows, Server.ts
+  Chat.made): SPEC E46, E47.

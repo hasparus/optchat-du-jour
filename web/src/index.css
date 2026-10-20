@@ -576,6 +576,11 @@
 [data-region="chat-content"] > [data-kind="talk"] + [data-kind="tool"] {
   margin-top: 0;
 }
+/* the memory view (E46): a summary block keeps 12 px from what is around it, as a row does */
+[data-region="chat-content"] > * + [data-kind="memory"],
+[data-region="chat-content"] > [data-kind="memory"] + * {
+  margin-top: 0.5rem;
+}
 
 /* ---------- live state ---------- */
 

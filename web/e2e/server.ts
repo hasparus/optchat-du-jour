@@ -27,6 +27,9 @@
 //             git repository of its own (a temporary one, not the data dir), which commits a file in
 //             its worktree and reports FIXER_REPORT; its branch is merged back, and the report wakes
 //             the master, whose turn (any other message) answers WOKEN
+//   E2E_MEMORY=1  the view's marks are tiny (400 / 200 bytes; the compaction view's 200 / 100), so a few
+//             messages merge it into summaries, and every compactor call takes MEMORY_WAIT before it
+//             answers MEMORY_SUMMARY, so a page can watch a line wait for its summary (E46, E47)
 //   E2E_ARTIFACTS=ui  a Claude turn publishes LANDING, its input streamed slowly, unless its
 //             message says "long weekend": that one edits it (LANDING_EDIT). =hostile: every turn
 //             publishes hostile(E2E_STUN_PORT, E2E_TCP_PORT), whose WebRTC aims at that UDP port and whose
@@ -53,6 +56,8 @@ import {
   hostile as hostilePage,
   LANDING,
   LANDING_EDIT,
+  MEMORY_SUMMARY,
+  MEMORY_WAIT,
   NOTES_REPORT,
   NOTES_TASK,
   PLAN_DONE,
@@ -157,7 +162,8 @@ const turnsOf = () => {
   return Bun.env.E2E_ARTIFACTS === "hostile" ? [[hostile]] : [[turn]];
 };
 const turns = turnsOf();
-writeFileSync(`${home}/script.json`, JSON.stringify({ subagent: { fixer: [fixer], notes: [notes], scout: [scout] }, turn: turns }));
+const compact = Bun.env.E2E_MEMORY ? { compact: [[{ sleep: MEMORY_WAIT }, { text: MEMORY_SUMMARY }]] } : {};
+writeFileSync(`${home}/script.json`, JSON.stringify({ ...compact, subagent: { fixer: [fixer], notes: [notes], scout: [scout] }, turn: turns }));
 writeFileSync(`${home}/fake.jsonl`, "");
 Object.assign(process.env, {
   FAKE_CLAUDE_LOG: `${home}/fake.jsonl`,
@@ -198,7 +204,8 @@ BunRuntime.runMain(
     const port = Number(Bun.env.E2E_PORT ?? 0) || freePort(); // as late as possible: the bind is next
     yield* Effect.logInfo(`e2e optchat-server on http://127.0.0.1:${port}, home ${home}`);
     const summarize: Summarize | undefined = Bun.env.E2E_QUICK_SUMMARIES ? (job) => Effect.succeed(`summary of ${job.l}:${job.i}`) : undefined;
-    const serve = serverLayer({ device: "mini", home, host: "127.0.0.1", port, secrets, settings, summarize, web: `${root}web/dist` });
+    const marks = Bun.env.E2E_MEMORY ? { compaction: { high: 200, low: 100 }, view: { high: 400, low: 200 } } : undefined;
+    const serve = serverLayer({ device: "mini", home, host: "127.0.0.1", marks, port, secrets, settings, summarize, web: `${root}web/dist` });
     return yield* Layer.launch(announce(port).pipe(Layer.provide(serve)));
   }),
 );
