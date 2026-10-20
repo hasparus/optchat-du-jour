@@ -43,6 +43,8 @@ import { loadModel, saveModel } from "@/lib/draft";
 import { Composer } from "./composer";
 import { shortLabel } from "./pickers";
 import { ChatRow, ReplyActions } from "./row";
+import { Outdated, RetryCountdown } from "./turn-status";
+import { useStopKeys } from "./use-stop-keys";
 import { useStickToEnd } from "./use-stick-to-end";
 
 // The preview pane is only fetched when an artifact is first opened (its draft preview and export
@@ -57,6 +59,7 @@ const ArtifactPane = lazy(async () => {
 const labelOf = (state: SessionState | null, ref: string) => state?.engines.find((e) => e.ref === ref)?.label ?? engineLabel(ref);
 
 function status(s: Session): string | null {
+  if (s.status === "outdated") return null; // said by its own banner
   if (s.status !== "open") return s.status === "connecting" ? "connecting…" : "disconnected; reconnecting…";
   switch (s.state?.phase) {
     case "waiting":
@@ -277,8 +280,12 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
   const first = rows[0]?.id ?? 0;
   const busy = state.state !== null && state.state.phase !== "idle";
   const waiting = queued(state);
-  // the tray on the composer's top edge shows a turn waiting for a model, or messages waiting
-  const tray = state.state?.phase === "needs-model" || waiting.length > 0;
+  // the tray on the composer's top edge shows that the server was updated, a turn waiting for a
+  // model, or messages waiting
+  const outdated = state.status === "outdated";
+  const tray = outdated || state.state?.phase === "needs-model" || waiting.length > 0;
+  // the turn's engine waits to ask again (E43): a quiet countdown instead of the status
+  const retry = state.state?.phase === "running" ? (state.state.retry ?? null) : null;
   const line = status(state);
   // the server says the log is empty: a first visit, not a page still loading
   const empty = state.state !== null && rows.length === 0 && state.markers.length === 0;
@@ -289,6 +296,11 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
   }, [scrollToEnd]);
   const root = useRef<HTMLDivElement>(null);
   useStickToEnd(dock, root, atEnd && !busy && target === null, toEnd);
+  // Esc stops the running turn, as Stop does (./use-stop-keys.ts)
+  const stop = useCallback(() => {
+    link.abort();
+  }, [link]);
+  useStopKeys(busy && state.status === "open", stop, root);
 
   // one older page, prepended: true while there may be more, null when it couldn't be read
   const loadOlder = useCallback(async () => {
@@ -455,7 +467,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
                     type="button"
                   >
                     <span aria-hidden="true" className="size-1.5 shrink-0 animate-breathe rounded-full bg-signal" />
-                    <Shimmer>{line}</Shimmer>
+                    {retry === null ? <Shimmer>{line}</Shimmer> : <RetryCountdown retry={retry} stateAt={state.stateAt} />}
                   </button>
                 ) : (
                   <span className="text-muted-foreground">{line}</span>
@@ -467,6 +479,7 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
               // glass radius and the composer's squared under it, so the two read as one shape whose
               // rings meet in one line (and one focus ring, glass-tray)
               <div className="glass-surface glass-tray relative overflow-hidden rounded-t-glass [&>*+*]:border-t" data-testid="composer-tray">
+                {outdated && <Outdated />}
                 {state.state?.phase === "needs-model" && <NeedsModel onModel={onModel} session={session} state={state.state} />}
                 {waiting.length > 0 && (
                   <Queue data-testid="queue">
@@ -516,7 +529,8 @@ export function Chat({ link, session, state, devices, target, onTargetShown, onW
       </div>
       {/* the pane: a side panel from 1024 px, a sheet from the bottom on a phone (DESIGN.md, Artifacts) */}
       {wide && paneView !== null && (
-        <aside className="flex w-[min(46rem,50vw)] shrink-0 flex-col border-l bg-background px-2 pb-2" data-testid="artifact-side">
+        // its keys are its own: Esc there doesn't stop the turn (lib/stop-keys.ts)
+        <aside className="flex w-[min(46rem,50vw)] shrink-0 flex-col border-l bg-background px-2 pb-2" data-keys="own" data-testid="artifact-side">
           {paneView}
         </aside>
       )}

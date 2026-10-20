@@ -18,7 +18,12 @@ import { cn } from "@/lib/utils";
 import { splitMarkers } from "@wire";
 import { CheckIcon, CodeIcon, CopyIcon, NotebookPenIcon, TextIcon } from "lucide-react";
 import { Component, createContext, memo, type ReactNode, use, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { loadFolds } from "@/lib/draft";
+import { textKey } from "@/lib/paste";
 import { ArtifactCard, madeDetail } from "./artifact-card";
+import { FoldedText } from "./pasted";
+import { DiffStat, ToolDiff } from "./tool-diff";
+import { fileChange } from "@/lib/diff";
 
 // copy the reply as written; the check stays a moment
 function CopyAction({ text }: { text: string }) {
@@ -173,6 +178,8 @@ function Reply({ id, text, streaming, sources }: { id: string; text: string; str
 // and keeps its own shape where Attachment's image media is a square crop.
 function UserMessage({ text }: { text: string }) {
   const { body, markers } = splitMarkers(text);
+  // where its long pastes are, when it was sent from this browser (./pasted.tsx folds them)
+  const spans = useMemo(() => loadFolds().get(textKey(body)) ?? null, [body]);
   return (
     <Message align="end" data-testid="user-message">
       <MessageContent className="gap-1.5">
@@ -194,7 +201,7 @@ function UserMessage({ text }: { text: string }) {
         )}
         <Bubble align="end" className="max-w-[85%] sm:max-w-[min(80%,36rem)]" variant="soft">
           <BubbleContent className="rounded-2xl px-3.5 py-2 text-read whitespace-pre-wrap">
-            {body}
+            <FoldedText spans={spans} text={body} />
             {markers.length > 0 && (
               <span className="font-mono text-xs text-muted-foreground">
                 {body === "" ? "" : "\n"}
@@ -336,15 +343,29 @@ function RowView({ row, streaming, toolState, plan, sources, made, onArtifact }:
     case "tool": {
       const steps = plan === undefined ? null : planOf(row);
       if (steps !== null) return <PlanRow plan={plan} row={row} steps={steps} toolState={toolState} />;
+      // a file tool's change, drawn under its line (./tool-diff.tsx), also while its input streams
+      const change = fileChange(row.name, row.args);
       const line = (
         <Tool>
-          <ToolHeader detail={made ? made.name : toolSummary(row.args)} name={row.name} state={toolState} />
+          <ToolHeader
+            detail={made ? made.name : (change?.path ?? toolSummary(row.args))}
+            meta={change?.kind === "edit" ? <DiffStat added={change.added} removed={change.removed} /> : undefined}
+            name={row.name}
+            state={toolState}
+          />
           <ToolContent>
             {row.args !== "" && <ToolInput input={row.args} />}
             {row.output !== null && <ToolOutput failed={toolState === "error"} output={row.output} />}
           </ToolContent>
         </Tool>
       );
+      if (change !== null)
+        return (
+          <div className="flex min-w-0 flex-col gap-1.5 pb-1">
+            {line}
+            <ToolDiff change={change} />
+          </div>
+        );
       // a version an artifact call made: its card under the call's line, which keeps the input
       // and output as logged (a stub, E31) one tap away
       if (!made) return line;

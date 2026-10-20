@@ -8,7 +8,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import type { Uploader } from "@/lib/attach";
-import type { Link } from "@/lib/connection";
+import type { Link, LinkStatus } from "@/lib/connection";
 import type { SessionStore } from "@/lib/session";
 import { syncThemeColor } from "@/lib/theme";
 import { useApi } from "@/lib/use-api";
@@ -55,6 +55,9 @@ class ScreenBoundary extends Component<{ readonly children: ReactNode }, { reado
     );
   }
 }
+
+// the connection dot's title; an outdated link doesn't come back by itself (E44), so it doesn't breathe
+const LINK_TITLES = { closed: "Disconnected, reconnecting…", connecting: "Connecting…", open: "Connected", outdated: "OptChat was updated: reload" } satisfies Record<LinkStatus, string>;
 
 type Tab = "chat" | "memory" | "stats" | "devices";
 const TABS: readonly Tab[] = ["chat", "memory", "stats", "devices"];
@@ -123,10 +126,10 @@ export function App({ link, session, uploader }: { link: Link; session: SessionS
               aria-label={`connection ${state.status}`}
               className={cn(
                 "size-2 shrink-0 rounded-full md:order-first",
-                state.status === "open" ? "bg-success shadow-[0_0_0_3px_color-mix(in_oklch,var(--success)_18%,transparent)]" : "animate-breathe bg-muted-foreground",
+                state.status === "open" ? "bg-success shadow-[0_0_0_3px_color-mix(in_oklch,var(--success)_18%,transparent)]" : state.status === "outdated" ? "bg-muted-foreground" : "animate-breathe bg-muted-foreground",
               )}
               role="img"
-              title={state.status === "open" ? "Connected" : state.status === "connecting" ? "Connecting…" : "Disconnected, reconnecting…"}
+              title={LINK_TITLES[state.status]}
             />
             <TabsList className={cn(segmentedList({ ground: "bare" }), "h-auto min-w-0 flex-1 justify-start md:flex-none")}>
               {TABS.map((t) => (

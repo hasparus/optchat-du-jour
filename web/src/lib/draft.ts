@@ -1,7 +1,8 @@
 // What the composer keeps across a reload, or a phone browser evicting the tab (SPEC "Web UI",
 // Chat): the draft (the text and the attachments already uploaded, as their asset descriptors),
 // the messages sent from here that no ack has answered yet, this client's sent texts for Up to
-// recall, and the model its picker is on. All of it lives in this browser's localStorage only; every access may throw (a
+// recall, the model its picker is on, and where the long pastes were in the messages it sent
+// (lib/paste.ts), so they show folded. All of it lives in this browser's localStorage only; every access may throw (a
 // private window, storage turned off or full), and then the page works as before, keeping nothing.
 import { Asset } from "@wire";
 import { Option, Schema } from "effect";
@@ -10,6 +11,9 @@ const DRAFT = "optchat:draft";
 const SENT = "optchat:sent";
 const HISTORY = "optchat:history";
 const MODEL = "optchat:model";
+const FOLDS = "optchat:folds";
+// sent messages whose pasted blocks are remembered, the newest last
+export const FOLDS_MAX = 50;
 // sent texts kept for recall, the newest last
 export const HISTORY_MAX = 50;
 
@@ -32,13 +36,25 @@ const write = (key: string, value: string | null) => {
 const load = <A, I>(key: string, schema: Schema.Codec<A, I>): A | null =>
   Option.getOrNull(Schema.decodeUnknownOption(Schema.fromJsonString(schema))(read(key) ?? ""));
 
-export const Draft = Schema.Struct({ text: Schema.String, media: Schema.Array(Asset) });
+// `pastes`: the long blocks folded into the text's tokens (lib/paste.ts); a draft from before them has none
+const Paste = Schema.Struct({ id: Schema.Number, text: Schema.String });
+export const Draft = Schema.Struct({ text: Schema.String, media: Schema.Array(Asset), pastes: Schema.optional(Schema.Array(Paste)) });
 export type Draft = typeof Draft.Type;
 
 export const loadDraft = (): Draft | null => load(DRAFT, Draft);
 // an empty draft is no draft
 export const saveDraft = (d: Draft) => {
   write(DRAFT, d.text === "" && d.media.length === 0 ? null : JSON.stringify(d));
+};
+
+// Where the pasted blocks are in a message sent from here (lib/paste.ts expand), by its text's key
+// (textKey), for the chat to fold just those; the newest FOLDS_MAX messages
+const Folds = Schema.Array(Schema.Struct({ key: Schema.String, spans: Schema.Array(Schema.Tuple([Schema.Number, Schema.Number])) }));
+export const loadFolds = (): ReadonlyMap<string, readonly (readonly [number, number])[]> => new Map((load(FOLDS, Folds) ?? []).map((f) => [f.key, f.spans]));
+export const rememberFolds = (key: string, spans: readonly (readonly [number, number])[]) => {
+  if (spans.length === 0) return;
+  const kept = (load(FOLDS, Folds) ?? []).filter((f) => f.key !== key);
+  write(FOLDS, JSON.stringify([...kept, { key, spans }].slice(-FOLDS_MAX)));
 };
 
 // A message sent from here, kept until its ack says it is logged: after a reload the session store

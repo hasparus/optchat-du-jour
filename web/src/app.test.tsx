@@ -505,6 +505,26 @@ test("attach, paste and drop fill the tray; send waits for the uploads, names ea
   ]);
 });
 
+test("removing an attachment while text is typed sends nothing: the tile's button is no submit", async () => {
+  const uploads = fakeUploads();
+  const { server } = start(LOG, 0, uploads.uploader);
+  await screen.findByText("what is in the repo?");
+  type("a caption I am still writing");
+  const picker = screen.getByLabelText("Attach: files");
+  Object.defineProperty(picker, "files", { configurable: true, value: filesOf(png("board.png")) });
+  fireEvent.change(picker);
+  await waitFor(() => {
+    expect(uploads.started).toHaveLength(1);
+  });
+  await act(async () => {
+    uploads.started[0]?.finish(SHA("e"));
+  });
+  const before = server.sent.length;
+  fireEvent.click(screen.getByLabelText("Remove board.png"));
+  expect(server.sent.length).toBe(before);
+  expect(box().value).toBe("a caption I am still writing");
+});
+
 test("a fifth attachment is refused in the tray, and a reply's marker-like text never loads a thumbnail", async () => {
   const uploads = fakeUploads();
   const { play } = start(LOG, 0, uploads.uploader);

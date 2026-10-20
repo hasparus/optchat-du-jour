@@ -5,10 +5,13 @@
 // is opened afresh (after UniiChat's link, docs/uniichat.md). TanStack AI's webSocket() adapter opens its
 // socket only when this client sends, and gives up when it closes, so a phone that only watches
 // would never see a turn the laptop started (SPEC M2 open question).
+import { WIRE_STALE } from "@wire";
 import { Option } from "effect";
 import { ABORT, STOP_ALL, type AttachmentRef, type Forwarded, type Inbound, parseFrame, resumeFrame, runInput, type Settings, settingsFrame, type SubagentAction, subagentFrame, takeBackFrame } from "./protocol.ts";
 
-export type LinkStatus = "connecting" | "open" | "closed";
+// "outdated": the server runs another build and closed the socket with WIRE_STALE (E44); the link
+// stays down until the page reloads
+export type LinkStatus = "connecting" | "open" | "closed" | "outdated";
 
 export type Link = {
   // a message: it starts a turn, or joins the running one. Sent while the link is down, it goes out
@@ -46,7 +49,8 @@ export type Link = {
 
 // the part of a WebSocket the link uses; the server sends text frames only
 export type SocketLike = {
-  addEventListener(type: "open" | "close", listener: () => void): void;
+  addEventListener(type: "open", listener: () => void): void;
+  addEventListener(type: "close", listener: (event: { readonly code?: number }) => void): void;
   addEventListener(type: "message", listener: (event: { readonly data: string }) => void): void;
   send(frame: string): void;
   close(): void;
@@ -161,10 +165,16 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
       }
       for (const l of listeners) l(event.value);
     });
-    ws.addEventListener("close", () => {
+    ws.addEventListener("close", (event) => {
       if (ws !== socket) return;
       clearTimeout(silence);
       socket = null;
+      // a server of another build: reconnecting would get the same answer, so the page reloads instead
+      if (event.code === WIRE_STALE) {
+        closed = true;
+        setStatus("outdated");
+        return;
+      }
       setStatus("closed");
       if (closed) return;
       timer = setTimeout(connect, retry);

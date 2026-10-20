@@ -5,6 +5,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
 import { App } from "./app";
+import { WIRE } from "@wire";
 import { openLink, wakeOnReturn } from "./lib/connection";
 import { syncThemeColor } from "./lib/theme";
 import { makeSession } from "./lib/session";
@@ -12,6 +13,7 @@ import "./index.css";
 
 const ws = new URL("/ws", location.href);
 ws.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+ws.searchParams.set("wire", String(WIRE)); // a server of another build says so (E44)
 const link = openLink(ws.href);
 const session = makeSession(link); // for the page's lifetime, so no event falls between renders
 

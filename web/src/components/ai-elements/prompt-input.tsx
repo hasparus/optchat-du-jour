@@ -170,6 +170,7 @@ export const PromptInputAttachment = ({ name, kind, preview, progress, done, err
           className="size-5 rounded-full border-0 bg-foreground text-background shadow-[0_0_0_2px_var(--raised)] transition-transform after:absolute after:-inset-2.5 hover:scale-105 hover:bg-foreground hover:text-background active:scale-95 pointer-coarse:size-6"
           onClick={onRemove}
           size="icon-xs"
+          type="button"
           variant="default"
         >
           <XIcon className="size-3" strokeWidth={2.5} />
