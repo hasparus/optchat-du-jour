@@ -5,7 +5,7 @@ Everything is built and tested against fakes. Each check below needs a real logi
 ## Claude Code (Max plan)
 
 - [ ] Re-run ref §14 P1–P8 on our Claude Code version (SPEC M1).
-- [ ] 1-hour marks on real turns and priming: no ordering errors, cold turns cut (SPEC E6, M1). Against a fake cache the cache replay has them cut (22 cold turns of 200 against 53 with 5-minute marks); `cold` in a real `usage.jsonl` decides.
+- [ ] 1-hour marks on real turns and priming: no ordering errors, cold turns cut (SPEC E6, M1). Against a fake cache the cache replay has them cut (SPEC "Usage and cost tracking"); `cold` in a real `usage.jsonl` decides.
 - [ ] A view primed on the Mini, read by a turn on the MacBook: same cache key? (SPEC M1)
 - [ ] Does a priming request killed at `message_start` count against limits? (SPEC M1, ref §14 F6)
 - [ ] How a real Claude Code reports a spent plan mid-turn; we match `usage limit` in the result text (SPEC M5).

@@ -47,7 +47,7 @@ const vendor = (o: { readonly hangs?: readonly number[]; readonly fails?: readon
         }
         // each part a block, the mark where the provider puts it; no least size, five minutes
         const blocks = parts.map((key, k): CacheBlock => ({ key, mark: k === mark ? "5m" : null, run: null, tier: "message", tokens: 1 }));
-        const look = cache.look({ blocks, least: 0, model: "fake", vendor: "anthropic" }, sent);
+        const look = cache.look({ blocks, front: "", least: 0, model: "fake", vendor: "anthropic" }, sent);
         const request: Seen = { at: sent, done: null, wrote: look.use.blocksWritten };
         seen.push(request);
         if (o.hangs?.includes(n)) return yield* Effect.never;

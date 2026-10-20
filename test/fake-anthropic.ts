@@ -5,6 +5,7 @@
 // tool calls and text after them, in that order, with the stop reason it is given (else tool_use
 // or end_turn), or an HTTP error. No model.
 import { Schema } from "effect";
+import { markRefusal } from "./fake-cache.ts";
 
 export type AnthropicAnswer =
   | {
@@ -47,10 +48,7 @@ const decodeMarks = Schema.decodeUnknownSync(
 const cacheRefusal = (raw: string) => {
   const body = decodeMarks(raw);
   const blocks = [...(body.tools ?? []), ...(body.system ?? []), ...(body.messages ?? []).flatMap((m) => m.content)];
-  const ttls = [...blocks, body].flatMap((b) => (b.cache_control ? [b.cache_control.ttl ?? "5m"] : []));
-  if (ttls.length > 4) return `A maximum of 4 blocks with cache_control may be provided. Found ${ttls.length}.`;
-  if (ttls.some((t, k) => t === "1h" && ttls.slice(0, k).includes("5m"))) return "a ttl='1h' cache_control block must not come after a ttl='5m' cache_control block";
-  return null;
+  return markRefusal([...blocks, body].flatMap((b) => (b.cache_control ? [b.cache_control.ttl === "1h" ? "1h" : "5m"] : [])));
 };
 
 export type FakeAnthropicState = { readonly headers: Headers[]; script: AnthropicAnswer[]; readonly seen: string[] };

@@ -19,13 +19,13 @@ import { apiKeyPrices } from "../optchat.config.ts";
 import { dollarsOf } from "../src/apikey/budget.ts";
 import { makeMessages } from "../src/apikey/anthropic.ts";
 import { openChat } from "../src/chat.ts";
-import { parseSettings, type Price, WAIT_RETRY } from "../src/config.ts";
+import { parseSettings, type Price, type Settings, WAIT_RETRY } from "../src/config.ts";
 import { makeGate } from "../src/engines/inflight.ts";
 import { masterPolicy, turnEngine } from "../src/engines/registry.ts";
 import { makeMaster } from "../src/master.ts";
 import { makeResponses } from "../src/openai/responses.ts";
 import { systemPrompt } from "../src/prompts.ts";
-import { makeSession, noMedia } from "../src/session.ts";
+import { type FollowUp, makeSession, noMedia } from "../src/session.ts";
 import { viewSize } from "../src/view.ts";
 import { makeSummarize } from "../src/summarize/index.ts";
 import { toolDefs } from "../src/tools/box.ts";
@@ -34,14 +34,16 @@ import type { Placement } from "../src/turn/claude-code.ts";
 import type { Marks } from "../src/tree.ts";
 import type { UsageRecord } from "../src/usage.ts";
 import { TTL_MS, type Ttl } from "./fake-cache.ts";
-import { hash, makeVendors, modelOf, readText, type Role, type Sent } from "./fake-vendors.ts";
+import { modelOf } from "./fake-claude-request.ts";
+import { engineName, hash, makeVendors, readText, type Role, type Sent } from "./fake-vendors.ts";
 import { makeSimClock } from "./sim-clock.ts";
 
 // ---------------------------------------------------------------------------------------------
 // the layouts
 
-// `outage`: the vendor engine the compactor's outage takes down (its chain moves on); `limit`:
-// the master engine whose one turn hits a usage limit, and `resume`, the ref it is resumed on
+// The compactor's outage takes down the first engine of its first level's chain, which moves on;
+// the usage limit stops one turn of the master's first engine, resumed on its second, or on it
+// again when it has none (`rolesOf`)
 type Chain = readonly [string, ...string[]];
 type Level = { readonly from: number; readonly chain: Chain };
 export type Layout = {
@@ -50,39 +52,27 @@ export type Layout = {
   readonly master: Chain;
   readonly compactor: readonly [Level, ...Level[]];
   readonly ttl: Ttl;
-  readonly outage: string;
-  readonly limit: string;
-  readonly resume: string;
 };
 
 export const LAYOUTS: readonly Layout[] = [
   {
     compactor: [{ chain: ["api-key:anthropic/claude-haiku-5-5@xhigh", "api-key:anthropic/claude-opus-5-5@high"], from: 0 }],
-    limit: "api-key:anthropic/claude-opus-5-5",
     master: ["api-key:anthropic/claude-opus-5-5"],
     name: "api-key",
-    outage: "api-key:anthropic/claude-haiku-5-5",
-    resume: "api-key:anthropic/claude-opus-5-5",
     ttl: "5m",
     what: "Anthropic on an API key: Opus turns, Haiku compactions falling over to Opus at the turns' effort",
   },
   {
     compactor: [{ chain: ["claude-code:haiku@xhigh", "claude-code:opus@high"], from: 0 }],
-    limit: "claude-code:claude-opus-5-5",
     master: ["claude-code:opus"],
     name: "claude-code",
-    outage: "claude-code:claude-haiku-5-5",
-    resume: "claude-code:opus",
     ttl: "1h",
     what: "The Claude plan only, 1-hour marks (E6): Opus turns with priming, Haiku compactions falling over to Opus",
   },
   {
     compactor: [{ chain: ["claude-code:haiku@xhigh", "claude-code:opus@high"], from: 0 }],
-    limit: "claude-code:claude-opus-5-5",
     master: ["claude-code:opus"],
     name: "claude-code-5m",
-    outage: "claude-code:claude-haiku-5-5",
-    resume: "claude-code:opus",
     ttl: "5m",
     what: "The same with the reference's 5-minute marks",
   },
@@ -91,11 +81,8 @@ export const LAYOUTS: readonly Layout[] = [
       { chain: ["openai-plan:gpt-6-luna", "claude-code:haiku@xhigh"], from: 0 },
       { chain: ["openai-plan:gpt-6.1-sol", "claude-code:haiku@xhigh"], from: 3 },
     ],
-    limit: "claude-code:claude-opus-5-5",
     master: ["claude-code:opus", "openai-plan:gpt-6.1-sol"],
     name: "shipped",
-    outage: "openai-plan:gpt-6-luna",
-    resume: "openai-plan:gpt-6.1-sol",
     ttl: "1h",
     what: "optchat.config.ts: Opus turns on the Claude plan, Luna and Sol compactions on the ChatGPT plan falling over to Haiku; the stopped turn goes on on Sol",
   },
@@ -105,13 +92,15 @@ export const LAYOUTS: readonly Layout[] = [
 // the script
 
 export type Step =
-  | { readonly at: number; readonly type: "say"; readonly text: string }
+  | { readonly at: number; readonly type: "say"; readonly text: string; readonly followUp?: FollowUp } // the session's "steer" unless it says
   | { readonly at: number; readonly type: "connect" } // a client connects: the session primes
   | { readonly at: number; readonly type: "outage"; readonly on: boolean }
   | { readonly at: number; readonly type: "limit" } // the master's next turn hits a usage limit
   | { readonly at: number; readonly type: "resume" };
 
 const MINUTE = 60_000;
+// the long turn's tool calls: under our tool loop's TOOL_ROUNDS (40), so it ends by itself
+export const LONG_TURN = 36;
 export const START = Date.UTC(2026, 9, 1, 8);
 
 // a chat of `turns` messages, the same every time for a seed
@@ -136,10 +125,14 @@ export const script = (turns: number, seed = 1): Step[] => {
     if (k === Math.floor(turns * 0.45)) steps.push({ at: at - 1000, on: false, type: "outage" });
     const stopped = k === Math.floor(turns * 0.6);
     if (stopped) steps.push({ at: at - 1000, type: "limit" });
-    const toolCalls = Math.floor(rand() * 5);
+    // one long turn, and a message queued while it runs: the turn after it starts the moment it
+    // ends, with no priming between, its view grown by the long turn's 74 lines (SPEC E26)
+    const long = k === Math.floor(turns * 0.2);
+    const toolCalls = long ? LONG_TURN : Math.floor(rand() * 5);
     const words = Math.round(span(8, 300));
     steps.push({ at, text: `message ${k} [steps ${toolCalls}] ${Array.from({ length: words }, (_, w) => `w${(hash(`${seed}:${k}:${w}`) % 5000).toString(36)}`).join(" ")}`, type: "say" });
     if (stopped) steps.push({ at: at + 30_000, type: "resume" });
+    else if (long) steps.push({ at: at + 5000, followUp: "queue", text: `then ${k} [steps 0] one more thing`, type: "say" });
     // sent while the turn runs: taken after its first tool results
     else if (k % 6 === 5 && toolCalls > 0) steps.push({ at: at + 1500, text: `and also ${k} [steps 0] look at the other one too`, type: "say" });
   }
@@ -157,6 +150,15 @@ export type Replay = {
   readonly messages: number;
   readonly batches: number; // times the view merged a batch, as seen before each message
   readonly refused: readonly string[]; // requests the cache rules say the API would refuse (A2, O1)
+  readonly limits: number; // turns the usage limit stopped
+  readonly resumes: number; // and the resumes that went on with them
+};
+
+// the vendor engines the outage and the usage limit hit, and the ref the stopped turn resumes on,
+// named from the layout's own refs as the fakes name them (engineName)
+export const rolesOf = (settings: Settings) => {
+  const [first, second] = settings.master.chain;
+  return { limit: engineName(first), outage: engineName(settings.compactor.byLevel[0].chain[0]), resume: (second ?? first).ref };
 };
 
 const FOLDERS = ["~/repos"];
@@ -179,6 +181,7 @@ export const replay = async (layout: Layout, steps: readonly Step[], marks?: { r
     devices: { [DEVICE]: { folders: FOLDERS, url: "http://mini:7710" } },
     master: { chain: layout.master, effort: "high", permissionMode: "bypassPermissions" },
   });
+  const roles = rolesOf(settings);
   type Handles = { readonly session: Effect.Success<ReturnType<typeof makeSession>>; readonly messages: () => number; readonly size: () => number };
   const { promise: handles, resolve: ready } = Promise.withResolvers<Handles>();
   const log = (r: UsageRecord) => Effect.sync(() => void usage.push(r));
@@ -220,39 +223,44 @@ export const replay = async (layout: Layout, steps: readonly Step[], marks?: { r
   }).pipe(Effect.scoped, Effect.provideService(HttpClient.HttpClient, vendors.http));
   const fiber = clock.fork(program);
   // a session that could not start fails the replay rather than leaving it waiting
-  const ended = clock.run(Fiber.await(fiber)).then((exit): never => {
-    throw new Error(`the session ended before the script did: ${String(exit)}`);
+  const ended = new Promise<never>((_, fail) => {
+    fiber.addObserver((exit) => {
+      fail(new Error(`the session ended before the script did: ${String(exit)}`));
+    });
   });
   ended.catch(() => null);
   try {
     const { messages, session, size } = await Promise.race([handles, ended]);
-    let batches = 0, last = 0;
+    let batches = 0, last = 0, resumes = 0;
     for (const step of steps) {
       await clock.advanceTo(step.at);
       if (size() < last) batches++;
       last = size();
       switch (step.type) {
         case "say":
-          await clock.run(session.input(step.text, { clientId: `m${step.at}` }));
+          await clock.run(session.input(step.text, { clientId: `m${step.at}`, followUp: step.followUp }));
           break;
         case "connect":
           await clock.run(session.primeSoon);
           break;
         case "outage":
-          if (step.on) vendors.out.add(layout.outage);
-          else vendors.out.delete(layout.outage);
+          if (step.on) vendors.out.add(roles.outage);
+          else vendors.out.delete(roles.outage);
           break;
         case "limit":
-          vendors.limitOnce.add(layout.limit);
+          vendors.limitOnce.add(roles.limit);
           break;
         case "resume":
-          if (session.state().phase === "needs-model") await clock.run(session.resume(layout.resume));
+          // the limit stopped the turn, or the replay has lost what it means to measure
+          if (session.state().phase !== "needs-model") throw new Error(`${layout.name}: no turn waits for a resume at ${step.at - START} (phase ${session.state().phase})`);
+          await clock.run(session.resume(roles.resume));
+          resumes++;
           break;
       }
     }
     // the last turn ends, its lines are built, the view is primed
     await clock.advanceTo((steps.at(-1)?.at ?? START) + 3 * 60 * MINUTE);
-    return { batches, layout, messages: messages(), refused: vendors.refused, reports, sent: vendors.sent, usage };
+    return { batches, layout, limits: vendors.fired.length, messages: messages(), refused: vendors.refused, reports, resumes, sent: vendors.sent, usage };
   } finally {
     await clock.run(Fiber.interrupt(fiber));
     rmSync(dir, { force: true, recursive: true });
@@ -409,8 +417,11 @@ export const doubleWrites = (sent: readonly Sent[]) => {
 };
 
 // Compactions that read an entry a turn wrote (E26): on an API key's Anthropic, through the mark on
-// the system prompt, when the compactor runs on the turns' model; on claude-code never, since its
-// DISABLE_PROMPT_CACHING=1 drops Claude Code's own marks there. With the tokens they read so.
+// the system prompt, when the compactor runs on the turns' model. On claude-code its
+// DISABLE_PROMPT_CACHING=1 drops Claude Code's own marks, so a compaction there finds a turn's
+// entry only while its context is short enough for its one mark to look back to the system
+// prompt, at the chat's start (SPEC "Usage and cost tracking", the cache replay). With the tokens
+// they read so.
 export const turnEntriesRead = (sent: readonly Sent[]) => {
   const byTurn = new Set(sent.flatMap((s) => (s.role === "turn" ? s.use.wrote.map((w) => w.key) : [])));
   const reads = sent.filter((s) => s.role === "compact" && s.use.readKey !== null && byTurn.has(s.use.readKey));
@@ -432,14 +443,16 @@ export const accounting = (r: Replay) => {
 };
 
 // one layout in a few numbers: the share of turns' and compactions' input read from the cache, the
-// cold turns, every token written, and the dollars at the price table (Anthropic's engines only)
+// cold turns, every token written, and the dollars at the price table (Anthropic's engines only);
+// the shares and dollars to 4 digits, so a recorded summary compares exactly
+const four = (n: number) => Math.round(n * 10_000) / 10_000;
 export const summary = (r: Replay) => {
   const rs = rows(r);
   return {
     cold: rs.reduce((n, x) => n + x.cold, 0),
-    compactRead: readShare(rs.filter((x) => x.role === "compact")),
-    dollars: rs.reduce((n, x) => n + (x.dollars ?? 0), 0),
-    turnRead: readShare(rs.filter((x) => x.role === "turn")),
+    compactRead: four(readShare(rs.filter((x) => x.role === "compact"))),
+    dollars: four(rs.reduce((n, x) => n + (x.dollars ?? 0), 0)),
+    turnRead: four(readShare(rs.filter((x) => x.role === "turn"))),
     written: rs.reduce((n, x) => n + x.write5m + x.write1h, 0),
   };
 };
@@ -457,3 +470,17 @@ export const checks = (r: Replay) => ({
   primed: primedTurns(r.sent, r.layout.ttl),
   turnEntries: turnEntriesRead(r.sent),
 });
+
+// The turn queued behind the long one (SPEC E26): it starts as the long turn ends, so no priming
+// comes between, and its view has grown by the long turn's lines since the last priming. Of that
+// priming's marks, the furthest still in this turn's prompt (none: the view merged a batch in
+// between, and nothing primed is left to read), how many blocks back from the turn's end mark it
+// is (beyond VENDOR_LOOKBACK the vendor can't find it), and what the turn read of all it sent.
+// Null when the script has no such turn.
+export const afterLongTurn = (sent: readonly Sent[]) => {
+  const t = sent.find((s) => s.role === "turn" && s.opening.startsWith("then "));
+  if (t === undefined) return null;
+  const p = sent.findLast((x) => x.role === "prime" && x.begun && x.at < t.at && x.engine === t.engine);
+  const found = Math.max(-1, ...(p?.use.marks ?? []).map((m) => t.use.keys.indexOf(p?.use.keys[m] ?? "")));
+  return { blocksBack: found === -1 ? null : t.use.keys.length - 1 - found, primed: p !== undefined, read: t.use.read, total: t.use.total };
+};

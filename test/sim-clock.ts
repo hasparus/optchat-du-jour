@@ -7,7 +7,14 @@
 // has had nothing to run for two turns of the event loop".
 //
 // `advanceTo(t)` wakes the sleepers in time order, letting each wake's work settle before the
-// next, then stops at t.
+// next, then stops at t. `run` awaits an effect and moves time for as long as it waits on a sleep.
+//
+// Its limits: work takes no simulated time, and a response begins exactly when its sleep ends, so
+// each race plays out in one interleaving (the order sleeps were made in) and a timeout racing a
+// slow response is never tried. And anything that waits outside Effect's scheduler (an async fs
+// call, a socket, a subprocess) would let `settle` call the run quiet too early: that shows as
+// numbers that differ between runs, not as a failure, which is why `dev/cache-replay.ts --test`
+// runs the replay twice and compares.
 import { Clock, Duration, Effect, Scheduler } from "effect";
 
 type Sleeper = { readonly at: number; readonly seq: number; readonly wake: () => void };
@@ -94,8 +101,24 @@ export const makeSimClock = (start: number) => {
     await settle();
   };
 
-  // an effect run on this clock and scheduler, which every fiber it forks inherits
-  const run = async <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(Effect.provideService(effect, Clock.Clock, clock), { scheduler });
+  // An effect run on this clock and scheduler, which every fiber it forks inherits, awaited: while
+  // it waits on a sleep, time moves to that sleep, so an effect that sleeps never hangs the run
+  const run = async <A, E>(effect: Effect.Effect<A, E>) => {
+    const state = { done: false };
+    const result = Effect.runPromise(Effect.provideService(effect, Clock.Clock, clock), { scheduler }).finally(() => {
+      state.done = true;
+    });
+    const ended = result.then(
+      () => null,
+      () => null,
+    );
+    for (;;) {
+      await settle();
+      if (state.done) return result;
+      const next = sleepers.toSorted(earlier)[0];
+      await (next === undefined ? Promise.race([ended, turn()]) : advanceTo(next.at));
+    }
+  };
   const fork = <A, E>(effect: Effect.Effect<A, E>) => Effect.runFork(Effect.provideService(effect, Clock.Clock, clock), { scheduler });
   return { advanceTo, fork, now: () => now, run, settle };
 };

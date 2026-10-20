@@ -84,7 +84,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { CAPTION } from "../src/prompts.ts";
+import { type ClaudeRole, roleOf } from "./fake-claude-request.ts";
 
 const Usage = Schema.Struct({
   cache_creation_input_tokens: Schema.optional(Schema.Number),
@@ -136,7 +136,7 @@ const McpAnswer = Schema.Struct({
   result: Schema.optional(Schema.Struct({ content: Schema.Array(Schema.Struct({ text: Schema.optional(Schema.String), type: Schema.String })), isError: Schema.optional(Schema.Boolean) })),
 });
 
-type Role = "caption" | "compact" | "prime" | "subagent" | "turn";
+type Role = ClaudeRole;
 type Json = Schema.Json;
 type LogRecord =
   | { readonly type: "start"; readonly role: Role; readonly call: number; readonly argv: readonly string[]; readonly cwd: string; readonly env: Json }
@@ -151,16 +151,7 @@ if (argv.includes("--version")) {
   process.exit(0);
 }
 const { env } = process;
-const system = argv[argv.indexOf("--system-prompt") + 1] ?? "";
-const role: Role = system === CAPTION
-  ? "caption"
-  : env.DISABLE_PROMPT_CACHING === "1" && !argv.includes("--replay-user-messages")
-    ? "compact"
-    : env.DISABLE_PROMPT_CACHING === "1"
-      ? "prime"
-      : argv.includes("--allowedTools") || (env.OPTCHAT_SUBAGENT ?? "") !== ""
-        ? "subagent"
-        : "turn";
+const role: Role = roleOf(argv, env);
 const flag = (name: string) => {
   const at = argv.indexOf(name);
   return at === -1 ? undefined : argv[at + 1];

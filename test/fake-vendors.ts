@@ -15,14 +15,18 @@
 import { type Cause, Clock, Effect, Predicate, Queue, Schema, Stream } from "effect";
 import { HttpClient, HttpClientResponse, type HttpClientRequest } from "effect/http";
 import { makeClaude, type Runner, type Spawn } from "../src/claude/process.ts";
-import { TOOLS } from "../src/mcp.ts";
 import { type CacheRequest, decodeMessagesBody, decodeResponsesBody, makeVendorCache, type MessagesBody, messagesRequest, responsesRequest, type Use } from "./fake-cache.ts";
+import { claudeBody, type Message, modelOf, procOf } from "./fake-claude-request.ts";
+import { sse } from "./fake-http.ts";
 
 export const RESPONSE = 1000; // ms from a request to the first event of its response
 
 export type Role = "turn" | "prime" | "compact";
 // one request, as the vendor saw it; `begun` once its response began (its writes are in)
-export type Sent = { readonly at: number; readonly engine: string; readonly role: Role; readonly use: Use; begun: boolean; readonly output: number };
+// `opening`: a turn's opening text (the first message's last text), "" for other calls
+export type Sent = { readonly at: number; readonly engine: string; readonly role: Role; readonly opening: string; readonly use: Use; begun: boolean; readonly output: number };
+// a request to ask the cache: what it is (`build` throws for one the API refuses), and for Sent
+type Asked = { readonly build: () => CacheRequest; readonly engine: string; readonly role: Role; readonly opening: string; readonly output: number };
 
 // a small deterministic hash, for sizes that differ between nodes and turns but never between runs
 export const hash = (s: string) => {
@@ -31,11 +35,12 @@ export const hash = (s: string) => {
   return h >>> 0;
 };
 
-// Claude Code's aliases as Anthropic's model ids (SPEC "Haiku and effort": `haiku` is Haiku 5.5)
-export const modelOf = (alias: string) => ({ haiku: "claude-haiku-5-5", opus: "claude-opus-5-5", sonnet: "claude-sonnet-5-5" })[alias] ?? alias;
+// How the fakes name an engine (the model it runs, as its vendor spells it), from a chain's ref:
+// what `out` and `limitOnce` take and what Sent.engine says
+export const engineName = (ref: { readonly engine: string; readonly model: string; readonly provider?: string }) =>
+  ref.engine === "claude-code" ? `claude-code:${modelOf(ref.model)}` : ref.engine === "openai-plan" ? `openai-plan:${ref.model}` : `api-key:${ref.provider ?? ""}/${ref.model}`;
 
 type Json = Schema.Json;
-const sse = (event: { readonly type: string; readonly [key: string]: Json }) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 
 // ---------------------------------------------------------------------------------------------
 // what a reply says
@@ -104,19 +109,25 @@ export const makeVendors = () => {
   const sent: Sent[] = [];
   const out = new Set<string>(); // engines that answer every call with a usage limit
   const limitOnce = new Set<string>(); // engines whose next turn does
-  const limited = (engine: string, role: Role) => out.has(engine) || (role === "turn" && limitOnce.delete(engine));
+  const fired: string[] = []; // the engines whose turn limitOnce stopped, in order
+  const limited = (engine: string, role: Role) => {
+    if (out.has(engine)) return true;
+    if (role !== "turn" || !limitOnce.delete(engine)) return false;
+    fired.push(engine);
+    return true;
+  };
 
   // what the vendors refused: a request the cache rules say the API would answer with a 400 (A2)
   const refused: string[] = [];
   // a request sent now: what it reads and writes; then RESPONSE later its response begins, and
   // the cache has what it wrote. Interrupted before that, it wrote nothing (A4). One the API would
   // refuse fails with why
-  const ask = (build: () => CacheRequest, engine: string, role: Role, output: number) =>
+  const ask = ({ build, engine, opening, output, role }: Asked) =>
     Effect.gen(function* () {
       const req = yield* Effect.try({ catch: (e) => (e instanceof Error ? e.message : String(e)), try: build });
       const at = yield* Clock.currentTimeMillis;
       const look = cache.look(req, at);
-      const record: Sent = { at, begun: false, engine, output, role, use: look.use };
+      const record: Sent = { at, begun: false, engine, opening: role === "turn" ? opening : "", output, role, use: look.use };
       sent.push(record);
       yield* Effect.sleep(RESPONSE);
       look.commit();
@@ -130,14 +141,15 @@ export const makeVendors = () => {
   const anthropic = (raw: string) =>
     Effect.gen(function* () {
       const body = decodeMessagesBody(raw);
-      const engine = `api-key:anthropic/${body.model}`;
+      const engine = engineName({ engine: "api-key", model: body.model, provider: "anthropic" });
       const users = body.messages.filter((m) => m.role === "user").flatMap((m) => textsOf(m.content));
       const calls = body.messages.flatMap((m) => m.content).filter((b) => b.type === "tool_use").length;
-      const reply = replyTo(users, textsOf(body.messages[0]?.content ?? []).at(-1) ?? "", calls);
+      const opening = textsOf(body.messages[0]?.content ?? []).at(-1) ?? "";
+      const reply = replyTo(users, opening, calls);
       const role: Role = reply.kind === "line" ? "compact" : "turn";
       if (limited(engine, role))
         return Response.json({ error: { message: "rate limited", type: "rate_limit_error" }, type: "error" }, { headers: { "retry-after": "3600" }, status: 429 });
-      return yield* ask(() => messagesRequest(body), engine, role, outputOf(reply)).pipe(
+      return yield* ask({ build: () => messagesRequest(body), engine, opening, output: outputOf(reply), role }).pipe(
         Effect.map((use) => new Response(anthropicReply(body, use, reply), { headers: { "content-type": "text/event-stream" } })),
         Effect.catch(badRequest),
       );
@@ -149,14 +161,14 @@ export const makeVendors = () => {
   const responses = (raw: string, plan: boolean) =>
     Effect.gen(function* () {
       const body = decodeResponsesBody(raw);
-      const engine = plan ? `openai-plan:${body.model}` : `api-key:openai/${body.model}`;
+      const engine = plan ? engineName({ engine: "openai-plan", model: body.model }) : engineName({ engine: "api-key", model: body.model, provider: "openai" });
       const parts = body.input.flatMap(userTexts);
       const opening = userTexts(body.input.find((i) => i.role === "user") ?? {}).at(-1) ?? "";
       const calls = body.input.filter((i) => i.type === "function_call").length;
       const reply = replyTo(parts, opening, calls);
       const role: Role = reply.kind === "line" ? "compact" : "turn";
       if (limited(engine, role)) return Response.json({ error: { code: "subscription_sharing_usage_limit_exceeded", message: "limit" } }, { status: 429 });
-      const asked = yield* ask(() => responsesRequest(body), engine, role, outputOf(reply)).pipe(Effect.result);
+      const asked = yield* ask({ build: () => responsesRequest(body), engine, opening, output: outputOf(reply), role }).pipe(Effect.result);
       if (asked._tag === "Failure") return yield* badRequest(asked.failure);
       const use = asked.success;
       const n = body.input.length;
@@ -194,73 +206,25 @@ export const makeVendors = () => {
   // claude
 
   const claude: Runner["Service"] = { spawn: (s) => spawnClaude(s, { ask, limited }), warm: () => Effect.void };
-  return { claude, http, limitOnce, out, refused, sent };
+  return { claude, fired, http, limitOnce, out, refused, sent };
 };
 export type Vendors = ReturnType<typeof makeVendors>;
 
 const outputOf = (reply: Reply) => Math.ceil((reply.kind === "call" ? JSON.stringify(reply.input) : reply.text).length / 4) + 40; // and its thought
 
 // ---------------------------------------------------------------------------------------------
-// Claude Code, as far as its requests go. The assumptions, from SPEC's citations of the
-// reference's probes (ref D2, D6, §14 F2; SPEC E6, E26, "Priming"):
-//   C1  It sends the tools (`--tools`, then the MCP servers' tools), then two system blocks (its
-//       own first line, then `--system-prompt`), then the conversation; `--effort` as effort.
-//   C2  Its own marks, with CLAUDE_CODE_PROMPT_CACHE_TTL's TTL: both system blocks, and the last
-//       block of each of the last two messages: all 4 slots (D2).
-//   C3  With DISABLE_PROMPT_CACHING=1 it places none, and the marks we send on a message's blocks
-//       go to the API as they are (D6, priming).
-//   C4  Its tools' definitions are the sizes below (stand-ins: the real ones differ per version).
-//   C5  A message that arrives while it works joins the conversation after the current tool
-//       results (ref §5.2), replayed with --replay-user-messages, as the opening is.
-const IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
-const TOOL_SIZES = new Map([["Bash", 9000], ["Edit", 2000], ["Glob", 800], ["Grep", 2500], ["Read", 2500], ["TodoWrite", 9000], ["WebFetch", 1500], ["WebSearch", 1200], ["Write", 1500]]);
-const toolDef = (name: string) => ({ description: `${name}: `.padEnd(TOOL_SIZES.get(name) ?? 1000, "d"), input_schema: { type: "object" }, name });
-const mcpTools = TOOLS.map((t) => ({ description: t.description, input_schema: t.inputSchema, name: `mcp__optchat__${t.name}` }));
-
-type Message = { readonly role: "user" | "assistant"; readonly content: Readonly<Record<string, Json>>[] };
-type Proc = { readonly model: string; readonly effort: string | undefined; readonly system: string; readonly tools: readonly string[]; readonly ttl: "5m" | "1h"; readonly ours: boolean; readonly role: Role; readonly replays: boolean };
-
-const argOf = (args: readonly string[], flag: string) => {
-  const k = args.indexOf(flag);
-  return k === -1 ? undefined : args[k + 1];
-};
-const procOf = (s: Spawn): Proc => {
-  const ours = s.env.DISABLE_PROMPT_CACHING === "1";
-  const replays = s.args.includes("--replay-user-messages");
-  return {
-    effort: argOf(s.args, "--effort"),
-    model: modelOf(argOf(s.args, "--model") ?? ""),
-    ours,
-    replays,
-    role: ours ? (replays ? "prime" : "compact") : "turn",
-    system: argOf(s.args, "--system-prompt") ?? "",
-    tools: (argOf(s.args, "--tools") ?? "").split(",").filter((t) => t !== ""),
-    ttl: s.env.CLAUDE_CODE_PROMPT_CACHE_TTL === "5m" ? "5m" : "1h",
-  };
-};
-
-// the Messages request Claude Code sends for the conversation so far (C1-C3)
-export const claudeBody = (p: Proc, convo: readonly Message[]): MessagesBody => {
-  const mark = p.ours ? undefined : { ttl: p.ttl, type: "ephemeral" as const };
-  const marked = (b: Readonly<Record<string, Json>>) => (mark === undefined ? b : { ...b, cache_control: mark });
-  return {
-    messages: convo.map((m, k) => ({ content: k >= convo.length - 2 ? m.content.map((b, j) => (j === m.content.length - 1 ? marked(b) : b)) : m.content, role: m.role })),
-    model: p.model,
-    output_config: p.effort === undefined ? undefined : { effort: p.effort },
-    system: [marked({ text: IDENTITY, type: "text" }), marked({ text: p.system, type: "text" })],
-    tools: [...p.tools.map(toolDef), ...mcpTools],
-  };
-};
+// claude: the request it builds is test/fake-claude-request.ts's (C1-C4); this plays the rest (C5)
 
 const Line = Schema.Struct({ message: Schema.Struct({ content: Schema.Array(Schema.Record(Schema.String, Schema.Json)) }) });
 const decodeLine = Schema.decodeUnknownSync(Schema.fromJsonString(Line));
 
-type Ask = (build: () => CacheRequest, engine: string, role: Role, output: number) => Effect.Effect<Use, string>;
+type Ask = (o: Asked) => Effect.Effect<Use, string>;
 
 const spawnClaude = (s: Spawn, v: { readonly ask: Ask; readonly limited: (engine: string, role: Role) => boolean }) =>
   Effect.gen(function* () {
-    const p = procOf(s);
-    const engine = `claude-code:${p.model}`;
+    const p = procOf(s.args, s.env);
+    const role: Role = p.role === "prime" || p.role === "compact" ? p.role : "turn";
+    const engine = engineName({ engine: "claude-code", model: p.model });
     const stdin = yield* Queue.unbounded<string>();
     const lines = yield* Queue.unbounded<string, Cause.Done>();
     const emit = (e: Readonly<Record<string, Json>>) => Queue.offer(lines, JSON.stringify(e));
@@ -276,9 +240,9 @@ const spawnClaude = (s: Spawn, v: { readonly ask: Ask; readonly limited: (engine
       });
     const total = { cache_creation_input_tokens: 0, cache_read_input_tokens: 0, input_tokens: 0, output_tokens: 0 };
     // one request of the conversation so far; its message_start, with what it cost
-    const request = (output: number) =>
+    const request = (output: number, opening: string) =>
       Effect.gen(function* () {
-        const use = yield* v.ask(() => messagesRequest(claudeBody(p, convo)), engine, p.role, output);
+        const use = yield* v.ask({ build: () => messagesRequest(claudeBody(p, convo)), engine, opening, output, role });
         const usage = { cache_creation_input_tokens: use.write5m + use.write1h, cache_read_input_tokens: use.read, input_tokens: use.input, output_tokens: output };
         for (const k of ["cache_creation_input_tokens", "cache_read_input_tokens", "input_tokens", "output_tokens"] as const) total[k] += usage[k];
         yield* emit({ event: { message: { model: p.model, usage }, type: "message_start" }, type: "stream_event" });
@@ -291,7 +255,7 @@ const spawnClaude = (s: Spawn, v: { readonly ask: Ask; readonly limited: (engine
       yield* emit({ mcp_servers: [{ name: "optchat", status: "connected" }], model: p.model, subtype: "init", type: "system" });
       for (;;) {
         yield* take(yield* Queue.take(stdin));
-        if (v.limited(engine, p.role)) {
+        if (v.limited(engine, role)) {
           yield* limit;
           continue;
         }
@@ -302,7 +266,7 @@ const spawnClaude = (s: Spawn, v: { readonly ask: Ask; readonly limited: (engine
           const texts = convo.filter((m) => m.role === "user").flatMap((m) => textsOf(m.content));
           const calls = convo.flatMap((m) => m.content).filter((b) => b.type === "tool_use").length;
           const reply = replyTo(texts, opening, calls);
-          const asked = yield* request(outputOf(reply)).pipe(Effect.result);
+          const asked = yield* request(outputOf(reply), opening).pipe(Effect.result);
           if (asked._tag === "Failure") {
             yield* emit({ is_error: true, result: `API Error: 400 ${asked.failure}`, subtype: "success", type: "result" });
             break;

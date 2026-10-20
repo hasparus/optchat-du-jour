@@ -8,28 +8,37 @@
 //   A1  A request is a list of blocks, keyed in a chain: a block's key names every byte up to its
 //       end, so two requests share a key exactly where they share their whole prefix
 //       (docs/optchat.md §3.3 "the cached prefix ends at the first changed byte"; skill "prefix
-//       match"). Anthropic renders tools, then system, then messages; `tool_choice`, `effort` and
-//       `thinking` are keyed in front of the messages, so changing them keeps the tools and system
-//       entry and loses the messages' (skill "Invalidation hierarchy").
+//       match"). Anthropic renders tools, then system, then messages; `tool_choice` is keyed in
+//       front of the messages, so changing it keeps the tools and system entry and loses the
+//       messages' (skill "Invalidation hierarchy").
 //   A2  An entry is written only at a marked block: `cache_control` on a block, or the top-level
 //       automatic one on the request's last block. At most 4 marks, the automatic one counted; a
 //       1-hour mark after a 5-minute one is refused (skill; SPEC E6, E26). Our test fakes refuse
 //       both as the API does (test/fake-anthropic.ts); here they fail the replay.
-//   A3  A mark looks back at most LOOKBACK (20) positions for an entry an earlier request wrote,
-//       its own included; a run of consecutive tool_use blocks is one position, and so is a run of
-//       tool_result blocks (docs/optchat.md §3.3; SPEC LOOKBACK; skill "20-block lookback window").
-//       The request reads the longest entry any of its marks finds.
+//   A3  A mark looks back at most VENDOR_LOOKBACK (20) positions for an entry an earlier request
+//       wrote, its own included; a run of consecutive tool_use blocks is one position, and so is a
+//       run of tool_result blocks (docs/optchat.md §3.3; skill "20-block lookback window"). The
+//       request reads the longest entry any of its marks finds. The vendor's own number, not our
+//       LOOKBACK (src/config.ts), which is our guess at it: the replay checks the guess, never
+//       borrows it.
 //   A4  An entry is readable once the writing request's response begins (message_start) and not
 //       before: requests sent together all write (skill "Concurrent-request timing"; SPEC E50).
 //       A request whose client is gone before then writes nothing (an assumption, the cautious
 //       one: priming killed before message_start, E17).
 //   A5  An entry lives its TTL from the start of the request that wrote or last read it: 5
 //       minutes by default, an hour with `ttl: "1h"` (docs/optchat.md §3.3 "5 minutes from their
-//       last read"; skill "Choosing the TTL"). A read renews it by its own TTL.
-//   A6  A prefix under the model's minimum is never written: 512 tokens on Opus 5.5 and Haiku 5.5,
-//       4096 on Haiku 4.5 (skill table).
+//       last read"; skill "Choosing the TTL"). A read renews the entry it read by that entry's own
+//       TTL, and only that one: a shorter entry under it, a system prompt's, ages on (an
+//       assumption, the cautious one).
+//   A6  A prefix under the model's minimum is never written (skill table): 512 tokens on Opus 5.5,
+//       Opus 5, Sonnet 5.5 and Haiku 5.5; 1024 on Opus 4.8, 4.1 and 4, Sonnet 5, 4.6, 4.5 and 4;
+//       2048 on Opus 4.7 and Haiku 3.5; 4096 on Opus 4.6 and 4.5 and Haiku 4.5. A model not in the
+//       table fails the request, rather than being guessed at.
 //   A7  Tokens are counted as a block's JSON text over 4, rounded up (an assumption: no tokenizer
 //       here, and every engine is measured with the same one).
+//   A8  `effort` and `thinking` key the whole prefix, the tools and system prompt included: the skill
+//       says changing them loses the tools and system entry on models that render them first and
+//       not on others, without naming which (an assumption, the cautious one).
 //   O1  The Responses API (openai-plan, an OpenAI key) caches the same way, keyed on the model,
 //       effort, tool choice, tools and instructions, then the input items: an entry at each
 //       `prompt_cache_breakpoint` and at the request's end, which OpenAI caches implicitly (SPEC
@@ -40,7 +49,9 @@
 //       assumption, the cautious one (M5). A write costs what input costs there; the fake still
 //       counts it apart, as Anthropic's would be.
 import { Schema } from "effect";
-import { LOOKBACK } from "../src/config.ts";
+
+// A3: how far back a mark looks for an entry (skill "20-block lookback window"; docs/optchat.md §3.3)
+export const VENDOR_LOOKBACK = 20;
 
 export type Ttl = "5m" | "1h";
 export const TTL_MS = { "1h": 3_600_000, "5m": 300_000 } as const satisfies Record<Ttl, number>;
@@ -56,7 +67,8 @@ export type CacheBlock = {
   readonly run: "tool_use" | "tool_result" | null;
   readonly tier: "head" | "message";
 };
-export type CacheRequest = { readonly vendor: Vendor; readonly model: string; readonly blocks: readonly CacheBlock[]; readonly least: number };
+// `front`: what keys the whole prefix besides the model (A8)
+export type CacheRequest = { readonly vendor: Vendor; readonly model: string; readonly front: string; readonly blocks: readonly CacheBlock[]; readonly least: number };
 
 // what one request did: tokens read, written (by TTL) and sent uncached; the blocks it read and
 // wrote, for tests that count in blocks; each marked prefix it wrote, by key, with its tier
@@ -69,6 +81,7 @@ export type Use = {
   readonly blocksWritten: number;
   readonly wrote: readonly { readonly key: string; readonly tier: CacheBlock["tier"]; readonly ttl: Ttl }[];
   readonly keys: readonly string[];
+  readonly marks: readonly number[]; // the blocks it marks, by index into keys
   readonly readKey: string | null; // the entry it read
   readonly total: number;
 };
@@ -94,7 +107,7 @@ export const makeVendorCache = () => {
   // A request sent at `sent`: what it reads now (and renews), what it would write; `commit` writes
   // it, called as its response begins (A4)
   const look = (req: CacheRequest, sent: number): Look => {
-    const keys = chain(req.blocks, `${req.vendor}:${req.model}`);
+    const keys = chain(req.blocks, `${req.vendor}:${req.model}:${req.front}`);
     const pos = positions(req.blocks);
     const sums: number[] = [];
     for (const b of req.blocks) sums.push((sums.at(-1) ?? 0) + b.tokens);
@@ -103,7 +116,7 @@ export const makeVendorCache = () => {
     const marks = req.blocks.flatMap((b, k) => (b.mark === null ? [] : [k]));
     let hit = -1;
     for (const m of marks)
-      for (let k = m; k >= 0 && (pos[m] ?? 0) - (pos[k] ?? 0) <= LOOKBACK; k--)
+      for (let k = m; k >= 0 && (pos[m] ?? 0) - (pos[k] ?? 0) <= VENDOR_LOOKBACK; k--)
         if (live(k)) {
           hit = Math.max(hit, k);
           break;
@@ -126,6 +139,7 @@ export const makeVendorCache = () => {
       blocksWritten: last === undefined ? 0 : last - hit,
       input: total - from,
       keys,
+      marks,
       read,
       readKey: hit < 0 ? null : (keys[hit] ?? null),
       total,
@@ -167,8 +181,26 @@ export type MessagesBody = typeof MessagesBody.Type;
 export const decodeMessagesBody = Schema.decodeUnknownSync(Schema.fromJsonString(MessagesBody));
 const decodeMark = Schema.decodeUnknownOption(Mark);
 
-// a model's least cacheable prefix (A6)
-export const leastTokens = (model: string) => (/haiku-4|haiku-4-5|opus-4-[56]/.test(model) ? 4096 : 512);
+// a model's least cacheable prefix (A6), by its id without a date
+const LEAST = new Map<string, number>([
+  ...["claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-haiku-5-5"].map((m) => [m, 512] as const),
+  ...["claude-opus-4-8", "claude-opus-4-1", "claude-opus-4", "claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4"].map((m) => [m, 1024] as const),
+  ...["claude-opus-4-7", "claude-haiku-3-5"].map((m) => [m, 2048] as const),
+  ...["claude-opus-4-6", "claude-opus-4-5", "claude-haiku-4-5"].map((m) => [m, 4096] as const),
+]);
+export const leastTokens = (model: string) => {
+  const least = LEAST.get(model.replace(/-\d{8}$/, ""));
+  if (least === undefined) throw new Error(`no least cacheable size known for ${model} (fake-cache.ts A6)`);
+  return least;
+};
+
+// What Anthropic answers a request whose marks it refuses (A2), or null: `ttls` are the marks' TTLs
+// in prompt order (tools, system, messages), then the automatic one. test/fake-anthropic.ts too.
+export const markRefusal = (ttls: readonly Ttl[]) => {
+  if (ttls.length > 4) return `A maximum of 4 blocks with cache_control may be provided. Found ${ttls.length}.`;
+  if (ttls.some((t, k) => t === "1h" && ttls.slice(0, k).includes("5m"))) return "a ttl='1h' cache_control block must not come after a ttl='5m' cache_control block";
+  return null;
+};
 
 // a block without its mark, as its key and size; and its mark
 type Split = { readonly text: string; readonly mark: Ttl | null };
@@ -185,10 +217,10 @@ export const messagesRequest = (body: MessagesBody): CacheRequest => {
     return { key: s.text, mark: s.mark, run: null, tier: "head", tokens: tokensOf(s.text) };
   });
   // what keys the messages in front of them (A1)
-  const front = JSON.stringify({ effort: body.output_config ?? null, thinking: body.thinking ?? null, tool_choice: body.tool_choice ?? null });
+  const choice = JSON.stringify(body.tool_choice ?? null);
   const rest = body.messages.flatMap((m) => m.content).map((b, k): CacheBlock => {
     const s = split(b);
-    return { key: k === 0 ? `${front}\u0000${s.text}` : s.text, mark: s.mark, run: runOf(b), tier: "message", tokens: tokensOf(s.text) };
+    return { key: k === 0 ? `${choice}\u0000${s.text}` : s.text, mark: s.mark, run: runOf(b), tier: "message", tokens: tokensOf(s.text) };
   });
   const blocks = [...head, ...rest];
   const last = blocks.at(-1);
@@ -196,9 +228,10 @@ export const messagesRequest = (body: MessagesBody): CacheRequest => {
   if (body.cache_control && last?.mark === null) blocks[blocks.length - 1] = { ...last, mark: body.cache_control.ttl ?? "5m" };
   const ttls = [...head, ...rest].flatMap((b) => (b.mark === null ? [] : [b.mark]));
   if (body.cache_control) ttls.push(body.cache_control.ttl ?? "5m");
-  if (ttls.length > 4) throw new Error(`a request with ${ttls.length} cache marks: Anthropic allows 4`);
-  if (ttls.some((t, k) => t === "1h" && ttls.slice(0, k).includes("5m"))) throw new Error("a 1-hour cache mark after a 5-minute one: Anthropic refuses it");
-  return { blocks, least: leastTokens(body.model), model: body.model, vendor: "anthropic" };
+  const refused = markRefusal(ttls);
+  if (refused !== null) throw new Error(refused);
+  const front = JSON.stringify({ effort: body.output_config ?? null, thinking: body.thinking ?? null }); // A8
+  return { blocks, front, least: leastTokens(body.model), model: body.model, vendor: "anthropic" };
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -243,5 +276,5 @@ export const responsesRequest = (body: ResponsesBody): CacheRequest => {
   }
   const last = blocks.at(-1);
   if (last?.mark === null) blocks[blocks.length - 1] = { ...last, mark: "5m" }; // the implicit end
-  return { blocks, least: 1024, model: body.model, vendor: "openai" };
+  return { blocks, front: "", least: 1024, model: body.model, vendor: "openai" };
 };
