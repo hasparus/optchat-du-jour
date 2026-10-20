@@ -65,8 +65,8 @@ export const makePlacements = (o: {
       return place(at.device, at.cwd, publicUrl, runner, at.key);
     };
     // isolated subagents' worktrees (E37): this machine's in-process, another's through its runner
-    const root = subagentSettings(o.settings).worktrees;
-    const worktrees = new Map<string, Worktrees>(Object.entries(devices).map(([name, d]) => [name, name === o.device ? localWorktrees(expandHome(root), d.folders) : remoteWorktrees(name, d.url)] as const));
+    const { disposable, worktrees: root } = subagentSettings(o.settings);
+    const worktrees = new Map<string, Worktrees>(Object.entries(devices).map(([name, d]) => [name, name === o.device ? localWorktrees(expandHome(root), d.folders, disposable) : remoteWorktrees(name, d.url)] as const));
     // A folder a spawn asks for on a device (E36): one of its folders or inside one, or inside the
     // worktree root, as a turn's cwd must be. This machine's is resolved first (`~`, `..`,
     // symlinks); another's is checked as written, `~` against `~`, and its runner resolves it when

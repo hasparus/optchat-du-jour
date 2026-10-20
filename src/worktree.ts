@@ -7,7 +7,8 @@
 // moves only by `git merge --ff-only` to that commit, a compare-and-swap that refuses when HEAD
 // moved meanwhile, a merge is in progress, or local changes are in the way. No merge ever runs
 // in the folder's working tree, and nothing is ever aborted there. Then the worktree and branch
-// are removed, unless gitignored files are in the worktree. A conflict, or anything else in the
+// are removed, unless gitignored files other than disposable ones (DISPOSABLE) are in the
+// worktree. A conflict, or anything else in the
 // way, keeps both and says why. Every git command has fixed arguments (src/git.ts). The device
 // runner runs the same code for its own folders (device/runner.ts, POST /worktree); the server's
 // own device runs it in-process. Which of these happens is `plan`, a pure function of the facts
@@ -124,8 +125,22 @@ const inProgress = (repo: string) =>
     return null;
   });
 
-// gitignored files in the worktree (`--ignored`: a directory counts once)
-const ignoredIn = (path: string) => must(path, ["status", "--porcelain", "--ignored"]).pipe(Effect.map((out) => out.split("\n").filter((l) => l.startsWith("!! ")).length));
+// Gitignored files a finish deletes with the worktree, by name at any depth: what a tool or a build
+// makes again (dependencies, caches, build output, Finder's litter), plus `subagents.disposable`.
+// Any other ignored file (notes, .env.local, output the task asked for) keeps the worktree. A name
+// may hold `*`, any run of characters within it.
+export const DISPOSABLE: readonly string[] = ["node_modules", "__pycache__", "*.pyc", ".venv", ".pytest_cache", ".next", ".turbo", "dist", "build", "target", ".DS_Store"];
+const nameRe = (glob: string) => new RegExp(`^${glob.split("*").map((part) => part.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)).join("[^/]*")}$`);
+export const disposable = (extra: readonly string[] = []) => {
+  const names = [...DISPOSABLE, ...extra].map(nameRe);
+  return (path: string) => path.split("/").some((part) => part !== "" && names.some((re) => re.test(part)));
+};
+
+// gitignored files in the worktree that aren't disposable: each path an ignore rule matches
+// (`--ignored=matching`; a directory it matches counts once, whatever it holds, and is disposable
+// when its own path is)
+const ignoredIn = (path: string, isDisposable: (path: string) => boolean) =>
+  must(path, ["status", "--porcelain", "-z", "--ignored=matching"]).pipe(Effect.map((out) => out.split("\0").filter((l) => l.startsWith("!! ") && !isDisposable(l.slice(3))).length));
 
 // the worktree and its branch go: the branch only when what it holds is in the folder's branch (-d)
 const remove = (w: Isolation) => must(w.repo, ["worktree", "remove", "--force", w.path]).pipe(Effect.andThen(git(w.repo, ["branch", "-q", "-d", w.branch])), Effect.asVoid);
@@ -133,8 +148,9 @@ const remove = (w: Isolation) => must(w.repo, ["worktree", "remove", "--force", 
 // The end of a clean run (`plan` says what happens): what the subagent left uncommitted is
 // committed on its branch first (nothing is lost, and the merge carries all of it); then the folder
 // moves by `--ff-only` to the branch's tip, or to a merge commit made off the working tree; then
-// the worktree and branch go, unless gitignored files are in the worktree, which are kept with it.
-export const finishWorktree = (w: Isolation, name: string) =>
+// the worktree and branch go, unless gitignored files other than disposable ones are in the
+// worktree, which are kept with it.
+export const finishWorktree = (w: Isolation, name: string, isDisposable = disposable()) =>
   Effect.gen(function* () {
     const left = yield* must(w.path, ["status", "--porcelain"]);
     let note = "";
@@ -168,7 +184,7 @@ export const finishWorktree = (w: Isolation, name: string) =>
     // the worktree and branch go once their work is in, unless ignored files would go with them
     const done = (outcome: "nothing" | "fast-forward" | "merged", detail: string) =>
       Effect.gen(function* () {
-        const ignored = yield* ignoredIn(w.path);
+        const ignored = yield* ignoredIn(w.path, isDisposable);
         if (ignored > 0) return merge(outcome, `${detail}; kept: ${ignored} ignored files in its worktree at ${w.path}, which git worktree remove --force deletes`, { ignored });
         yield* remove(w);
         return merge(outcome, `${detail}; its worktree and branch are removed`);
@@ -190,11 +206,13 @@ export const finishWorktree = (w: Isolation, name: string) =>
 // a worktree made for a spawn that then failed: removed, with its branch, whatever they hold
 export const discardWorktree = (w: Isolation) => must(w.repo, ["worktree", "remove", "--force", w.path]).pipe(Effect.andThen(git(w.repo, ["branch", "-q", "-D", w.branch])), Effect.asVoid);
 
-// This machine's worktrees, under `root` (expanded), for repositories inside `folders`. One finish
+// This machine's worktrees, under `root` (expanded), for repositories inside `folders`; `extra`
+// names more ignored files a finish may delete (subagents.disposable). One finish
 // at a time per repository: two at once would race for the folder's HEAD (the second's --ff-only
 // would refuse, and its branch be kept for nothing). Never interrupted halfway: a stop, a restart or
 // a dropped link waits for git to finish, and a finish asked again is safe (nothing to merge).
-export const localWorktrees = (root: string, folders: readonly string[]): Worktrees => {
+export const localWorktrees = (root: string, folders: readonly string[], extra: readonly string[] = []): Worktrees => {
+  const isDisposable = disposable(extra);
   const locks = new Map<string, Semaphore.Semaphore>();
   const lockOf = (repo: string) => {
     const found = locks.get(repo);
@@ -207,7 +225,7 @@ export const localWorktrees = (root: string, folders: readonly string[]): Worktr
   return {
     add: (folder, name) => Effect.uninterruptible(addWorktree(root, folder, name, allowed)),
     discard: (w) => Effect.uninterruptible(discardWorktree(w)),
-    finish: (w, name) => Effect.uninterruptible(lockOf(w.repo).withPermit(finishWorktree(w, name))),
+    finish: (w, name) => Effect.uninterruptible(lockOf(w.repo).withPermit(finishWorktree(w, name, isDisposable))),
   };
 };
 

@@ -8,7 +8,7 @@ import { Effect } from "effect";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { addWorktree, discardWorktree, type Facts, finishWorktree, plan } from "../src/worktree.ts";
+import { addWorktree, discardWorktree, disposable, type Facts, finishWorktree, plan } from "../src/worktree.ts";
 
 const dirs: string[] = [];
 afterAll(() => {
@@ -115,6 +115,41 @@ test("gitignored files keep the worktree after a merge, and the report says how 
   expect(readFileSync(`${folder}/b.txt`, "utf8")).toBe("b\n");
   // finished again with nothing new: still kept while the ignored file is there
   expect(await run(finishWorktree(w, "Notes"))).toMatchObject({ ignored: 1, outcome: "nothing" });
+});
+
+test("disposable ignored files (dependencies, caches, build output, subagents.disposable) don't keep the worktree; any other does", async () => {
+  const { folder, root, top } = repo();
+  writeFileSync(`${folder}/.gitignore`, "node_modules/\n__pycache__/\n*.pyc\n.DS_Store\ndist/\n.cache/\nnotes/\n");
+  git(folder, "add", "-A");
+  git(folder, "commit", "-qm", "ignores");
+  const litter = (path: string) => {
+    for (const d of ["node_modules/left-pad", "pkg/__pycache__", "web/dist", ".cache"]) mkdirSync(`${path}/${d}`, { recursive: true });
+    writeFileSync(`${path}/node_modules/left-pad/index.js`, "x\n");
+    writeFileSync(`${path}/pkg/__pycache__/m.cpython-313.pyc`, "x\n");
+    writeFileSync(`${path}/pkg/m.pyc`, "x\n");
+    writeFileSync(`${path}/.DS_Store`, "x\n");
+    writeFileSync(`${path}/web/dist/app.js`, "x\n");
+    writeFileSync(`${path}/.cache/blob`, "x\n");
+  };
+  const extra = disposable([".cache"]);
+  const w = await run(addWorktree(root, folder, "Builder", [top]));
+  litter(w.path);
+  writeFileSync(`${w.path}/b.txt`, "built\n");
+  const merge = await run(finishWorktree(w, "Builder", extra));
+  expect(merge).toMatchObject({ into: "main", outcome: "fast-forward" });
+  expect(merge.ignored).toBeUndefined();
+  expect(existsSync(w.path)).toBe(false);
+  expect(git(folder, "rev-parse", "--verify", "-q", "refs/heads/optchat/Builder").code).not.toBe(0);
+  // the same litter and one note: only the note counts, and keeps it
+  const v = await run(addWorktree(root, folder, "Writer", [top]));
+  litter(v.path);
+  mkdirSync(`${v.path}/notes`);
+  writeFileSync(`${v.path}/notes/plan.md`, "keep me\n");
+  writeFileSync(`${v.path}/c.txt`, "c\n");
+  expect(await run(finishWorktree(v, "Writer", extra))).toMatchObject({ ignored: 1, outcome: "fast-forward" });
+  expect(readFileSync(`${v.path}/notes/plan.md`, "utf8")).toBe("keep me\n");
+  // without subagents.disposable, .cache/ is someone's: it counts
+  expect(await run(finishWorktree(v, "Writer"))).toMatchObject({ ignored: 2, outcome: "nothing" });
 });
 
 test("a repository whose top folder is outside the folders can't be isolated; a dropped worktree goes with its branch", async () => {

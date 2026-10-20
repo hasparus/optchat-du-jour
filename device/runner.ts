@@ -30,6 +30,7 @@ export type DeviceOptions = {
   readonly trust: Trust;
   readonly killGrace?: Duration.Input; // KILL_GRACE
   readonly worktrees?: string; // where isolated subagents' worktrees go (subagents.worktrees, WORKTREES)
+  readonly disposable?: readonly string[]; // ignored files a finish may delete with one (subagents.disposable)
 };
 
 export class SpawnRefused extends Data.TaggedError("SpawnRefused")<{ readonly message: string }> {}
@@ -146,7 +147,7 @@ export const deviceRoutes = (o: DeviceOptions) =>
       // must name the worktree an add made for that name (its path and branch follow from the name,
       // its base is a commit id). Never interrupted halfway: a dropped link, the server's timeout or
       // its restart lets git finish here, and the server may ask again (a finish twice is safe).
-      const worktrees = localWorktrees(root, o.folders);
+      const worktrees = localWorktrees(root, o.folders, o.disposable);
       const decodeWorktree = Schema.decodeUnknownEffect(Schema.fromJsonString(WorktreeRequest));
       const inside = (path: string) => confine(path, folders).pipe(Effect.provideService(FileSystem.FileSystem, fs));
       const worktreeReply = (r: WorktreeRequest) =>
