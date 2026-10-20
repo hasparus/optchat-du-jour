@@ -37,8 +37,8 @@ export const Message = Schema.Union([
 ]);
 export type Message = typeof Message.Type;
 
-// A JSON Patch operation. The server sends only top-level "replace" and "remove" ops (server/agui.ts
-// delta), but the op is decoded as any string, so an op this client doesn't know costs that op (the
+// A JSON Patch operation. The server sends only top-level "add", "replace" and "remove" ops
+// (server/agui.ts delta), but the op is decoded as any string, so an op this client doesn't know costs that op (the
 // session store logs and skips it), not the whole frame.
 const Patch = Schema.Struct({ op: Schema.String, path: Schema.String, value: Schema.optional(Schema.Json) });
 export type Patch = typeof Patch.Type;

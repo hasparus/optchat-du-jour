@@ -77,14 +77,14 @@ export const snapshotFrame = (entries: readonly Entry[], from: number, cap: numb
   return { messages: messages.slice(first), metadata, type: EventType.MESSAGES_SNAPSHOT };
 };
 
-// JSON Patch from one state to the next (STATE_DELTA): each top-level key that changed replaced,
-// and each the state no longer has removed (an optional one, such as `wakePaused`), so a client
-// never keeps showing what the server stopped saying
+// JSON Patch from one state to the next (STATE_DELTA, RFC 6902): each top-level key that changed
+// replaced, or added when the state before had none, and each the state no longer has removed (an
+// optional one, such as `wakePaused`), so a client never keeps showing what the server stopped saying
 const delta = (before: SessionState, after: SessionState) => {
   const old: Readonly<Record<string, SessionState[keyof SessionState]>> = before;
   const changed = Object.entries(after)
     .filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(old[k]))
-    .map(([k, v]) => ({ op: "replace" as const, path: `/${k}`, value: v }));
+    .map(([k, v]) => ({ op: Object.hasOwn(before, k) ? ("replace" as const) : ("add" as const), path: `/${k}`, value: v }));
   const gone = Object.keys(before)
     .filter((k) => !Object.hasOwn(after, k))
     .map((k) => ({ op: "remove" as const, path: `/${k}` }));

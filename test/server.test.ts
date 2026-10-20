@@ -323,7 +323,7 @@ test("/api/node takes a level and an index that are non-negative integers, and k
 });
 
 // each follow-up behavior a STATE_DELTA sets
-const followUps = (es: readonly Inbound[]) => es.flatMap((e) => (e.type === "STATE_DELTA" ? e.delta.flatMap((op) => (op.op === "replace" && op.path === "/followUp" ? [op.value] : [])) : []));
+const followUps = (es: readonly Inbound[]) => es.flatMap((e) => (e.type === "STATE_DELTA" ? e.delta.flatMap((op) => (op.op !== "remove" && op.path === "/followUp" ? [op.value] : [])) : []));
 
 // SPEC "Protocol": the settings, resume and take-back frames are decoded by their schema; a
 // malformed one is dropped like any frame the server can't read, and a well-formed one that names

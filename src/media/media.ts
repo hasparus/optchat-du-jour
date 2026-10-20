@@ -22,6 +22,8 @@ export type Media = {
   readonly find: (id: string) => Asset | null;
   // the attachment's caption, waited for at most `captionWait`; "(not described)" when none came
   readonly caption: (a: Asset) => Effect.Effect<string>;
+  // its caption if a call already gave one, without asking for one; null otherwise
+  readonly known: (a: Asset) => string | null;
   // what an engine is sent of it, as budget.ts decided (`look`, `capped`): its picture, or a video's
   // frames with their times, or its sheet, and its transcript; each picture after a line naming it
   readonly parts: (a: Asset, look: Look, capped: boolean) => Part[];
@@ -119,6 +121,8 @@ export const makeMedia = (o: {
 
     // captions by asset, each started once; a failed one is forgotten, so the next ask tries again
     const captions = new Map<string, Deferred.Deferred<string>>();
+    // the captions calls gave, by asset, for `known`
+    const settled = new Map<string, string>();
     // The map is read and written in one synchronous step, so two callers never start two calls.
     const describe = (a: Asset) =>
       Effect.suspend(() => {
@@ -132,6 +136,7 @@ export const makeMedia = (o: {
           o.captioner === null || input === null
             ? Effect.succeed(NOT_DESCRIBED)
             : o.captioner({ heard, picture: input }).pipe(
+                Effect.tap((c) => Effect.sync(() => settled.set(a.sha, c))),
                 Effect.tapError((e) => Effect.sync(() => captions.delete(a.sha)).pipe(Effect.andThen(o.report(`no caption for ${a.kind} ${shortSha(a.sha)}: ${e.message}`)))),
                 Effect.orElseSucceed(() => NOT_DESCRIBED),
               );
@@ -228,6 +233,8 @@ export const makeMedia = (o: {
           return [{ text: `video ${m.sha}: ${a.frames.length} frames over ${Math.round(a.duration)} s, shown as one sheet; ${heard}`, type: "text" }, pic];
         });
 
-    return { caption, find: store.find, ingest, parts, store, unreferenced, zoomContent };
+    const known = (a: Asset) => settled.get(a.sha) ?? null;
+
+    return { caption, find: store.find, ingest, known, parts, store, unreferenced, zoomContent };
   });
 

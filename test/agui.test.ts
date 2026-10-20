@@ -135,11 +135,11 @@ test("a client that joins mid-input gets the input so far, then the rest without
   expect(c.out.filter((e) => e.type === EventType.TOOL_CALL_START)).toHaveLength(2);
 });
 
-test("a state key the server stops setting goes out as a remove, which the REPL decodes", () => {
+test("a state key goes out as an add when the state had none, a replace when it changes, and a remove once the server stops setting it; the REPL decodes each", () => {
   const c = connect([]);
-  c.feed({ state: { ...STATE, wakePaused: 3 }, type: "state" }, { state: STATE, type: "state" });
+  c.feed({ state: { ...STATE, wakePaused: 3 }, type: "state" }, { state: { ...STATE, wakePaused: 4 }, type: "state" }, { state: STATE, type: "state" });
   const deltas = c.out.flatMap((e) => (e.type === EventType.STATE_DELTA ? [e.delta] : []));
-  expect(deltas).toEqual([[{ op: "replace", path: "/wakePaused", value: 3 }], [{ op: "remove", path: "/wakePaused" }]]);
-  // the REPL decodes both frames: one it couldn't would be dropped whole, with whatever else it said
-  expect(c.out.filter((e) => e.type === EventType.STATE_DELTA).map((e) => Option.isSome(parseInbound(JSON.stringify(e))))).toEqual([true, true]);
+  expect(deltas).toEqual([[{ op: "add", path: "/wakePaused", value: 3 }], [{ op: "replace", path: "/wakePaused", value: 4 }], [{ op: "remove", path: "/wakePaused" }]]);
+  // the REPL decodes every frame: one it couldn't would be dropped whole, with whatever else it said
+  expect(c.out.filter((e) => e.type === EventType.STATE_DELTA).map((e) => Option.isSome(parseInbound(JSON.stringify(e))))).toEqual([true, true, true]);
 });

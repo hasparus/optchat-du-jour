@@ -28,7 +28,8 @@ export type Marker = {
 // message went out with) says it is logged, and then it is no longer pending, or that it could not
 // be: `error`. An ack told to a connection that dropped is lost: the message goes out again under
 // its id, and the server answers what became of it (E41, `resend` below). One the server refused
-// (`received`: nothing to send) has an `error` too, and is not sent again. `forwarded`: the device,
+// (`received`: nothing to send) keeps why in `refused`, kept across a reload too, and is marked
+// with it and never sent again. `forwarded`: the device,
 // engine and follow-up it went with, the same when it goes again. `from`: only on one a page from
 // before E41 kept (draft.ts), which is marked rather than sent again.
 export type Pending = {
@@ -39,6 +40,7 @@ export type Pending = {
   readonly forwarded: Forwarded;
   readonly from?: number;
   readonly spans?: readonly Span[]; // where its long pastes are in `text` (./paste.ts), to fold once it is logged
+  readonly refused?: string; // why the server refused it (nothing to send): never sent again
 };
 
 // a message this client took back, for the composer to hold again; `key` tells one from the next
@@ -77,6 +79,8 @@ const MAX_MARKERS = 100;
 const foldOf = (p: Pending) => ({ length: p.text.length, spans: p.spans ?? [] });
 // what a message a page from before E41 kept is marked with: it may be logged, and can't be asked about
 export const UNSENT = "it may not have reached the server: send it again";
+// what a message the server refused is marked with, and why
+const notSent = (why: string) => `not sent: ${why}`;
 const PAGE = 100; // older entries per page
 const MAX_FILL = 500; // a wider hole under the window is dropped, not fetched
 
@@ -159,8 +163,8 @@ export function queued(s: Session): Queued[] {
 
 const parseState = Schema.decodeUnknownOption(SessionState);
 
-// JSON Patch over the state object. The server sends only top-level "replace" ops, and "remove"
-// for an optional key it no longer sets; "add" is applied too. Any other op, or a nested path, is logged and skipped: the rest of the
+// JSON Patch over the state object. The server sends only top-level ops: "add" for a key the state
+// had none of, "replace", and "remove" for an optional key it no longer sets. Any other op, or a nested path, is logged and skipped: the rest of the
 // frame still applies, and the next STATE_SNAPSHOT (every reconnect) sets the whole state again.
 function patch(state: Record<string, Schema.Json>, ops: readonly Patch[]) {
   const next = new Map(Object.entries(state));
@@ -188,9 +192,10 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
   const reasoning = options.reasoning ?? api.reasoning;
   const reasoningText = options.reasoningText ?? api.reasoningText;
   // what was sent before a reload and never acked: sent again once connected (E41), unless a page
-  // from before E41 kept it
-  const kept = loadSent().map(({ device, engine, followUp, from, id, media, spans, text }): Pending => {
+  // from before E41 kept it, or the server refused it
+  const kept = loadSent().map(({ device, engine, followUp, from, id, media, refused, spans, text }): Pending => {
     const p: Pending = { error: null, forwarded: { device, engine, followUp }, id, media, spans, text };
+    if (refused !== undefined) return { ...p, error: notSent(refused), refused };
     return from === undefined ? p : { ...p, error: UNSENT, from };
   });
   let s: Session = { ...initial, folds: loadFolds(), pending: kept, status: link.status() };
@@ -203,12 +208,9 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
   let want = 0;
   const subscribers = new Set<() => void>();
   let restores = 0;
-  // our messages the server refused (nothing to send, or a frame it couldn't read): marked with
-  // why, to be taken back from here, and not sent again on the next connection
-  const refused = new Set<string>();
 
   const set = (next: Partial<Session>) => {
-    if (next.pending && next.pending !== s.pending) saveSent(next.pending.map(({ forwarded, from, id, media, spans, text }) => ({ ...forwarded, from, id, media, spans, text })));
+    if (next.pending && next.pending !== s.pending) saveSent(next.pending.map(({ forwarded, from, id, media, refused, spans, text }) => ({ ...forwarded, from, id, media, refused, spans, text })));
     s = { ...s, ...next };
     for (const f of subscribers) f();
   };
@@ -256,8 +258,8 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
       const p = s.pending[at];
       if (p === undefined) mark("the server couldn't read something this page sent, and didn't do it: reload the page", "error");
       else {
-        refused.add(r.id);
-        set({ pending: s.pending.toSpliced(at, 1, { ...p, error: `not sent: ${r.error ?? "the server couldn't read it"}` }) });
+        const why = r.error ?? "the server couldn't read it";
+        set({ pending: s.pending.toSpliced(at, 1, { ...p, error: notSent(why), refused: why }) });
       }
     }
   };
@@ -267,7 +269,7 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
   // keeps goes out once. One it refused would be refused again: it waits to be taken back.
   const resend = () => {
     const there = new Set((s.state?.pending ?? []).map((m) => m.clientId));
-    for (const p of s.pending) if (p.from === undefined && !there.has(p.id) && !refused.has(p.id)) link.send(p.text, p.id, { ...p.forwarded, attachments: p.media.map(refOf) });
+    for (const p of s.pending) if (p.from === undefined && !there.has(p.id) && p.refused === undefined) link.send(p.text, p.id, { ...p.forwarded, attachments: p.media.map(refOf) });
   };
   const setLog = (log: Log) => {
     if (log !== s.log) set({ log });

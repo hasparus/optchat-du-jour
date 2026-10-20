@@ -24,7 +24,7 @@ import { makePieces, noReasoning, type Pieces, type Reasoning } from "./reasonin
 import { BLIND, type Mid, type TurnEngine, type TurnEvents } from "./turn/engine.ts";
 import type { UsageRecord } from "./usage.ts";
 import { allBuilt, render, settle, unbuilt, viewSize } from "./view.ts";
-import { type Asset, canonicalRef, engineLabel, type FollowUp, liveTool, MAX_ATTACHMENTS, markerOf, NOT_DESCRIBED, type Phase, type SessionState, type SubagentInfo, withMarkers } from "./wire.ts";
+import { type Asset, canonicalRef, engineLabel, type FollowUp, liveTool, MAX_ATTACHMENTS, markerOf, NOT_DESCRIBED, type Phase, type SessionState, shortSha, type SubagentInfo, withMarkers } from "./wire.ts";
 
 // the state every client is shown (STATE_SNAPSHOT, STATE_DELTA, /api/state): src/wire.ts
 export type { FollowUp, Phase, SessionState } from "./wire.ts";
@@ -82,6 +82,9 @@ export type Session = {
 // each time it changes
 export type SubagentList = { readonly list: () => readonly SubagentInfo[]; readonly changes: PubSub.PubSub<true> };
 
+// an attachment as a message names it: an image or a video by its digest (SPEC "Media")
+export type Named = { readonly kind: string; readonly sha: string };
+
 // A message's options, shaped like the RunAgentInput's forwardedProps it came with: `device` and
 // `engine` (a ref of the master's chain; the chain's first when none) it is for, and `followUp`,
 // what it does if a turn runs, when not the session's setting. With a `clientId` the client is
@@ -93,9 +96,9 @@ export type InputOptions = {
   readonly followUp?: FollowUp;
   readonly clientId?: string;
   readonly media?: readonly Asset[];
-  // the attachments it named that the store doesn't hold ("image 9d0c38e7aafe"): said once it is
-  // taken, and why it is refused when nothing else is left to send
-  readonly leftOut?: readonly string[];
+  // the attachments it named that the store doesn't hold: said once it is taken, and why it is
+  // refused when nothing else is left to send
+  readonly leftOut?: readonly Named[];
 };
 
 // "/on macbook ..." picks the device for that turn; the text stays as typed
@@ -105,14 +108,16 @@ export const deviceOf = (text: string, devices: readonly string[]) => {
 };
 
 // What the session needs of the media service (src/media/media.ts) for attachments: a caption,
-// waited for at most a few seconds, and an attachment's pictures as the picture budget planned them.
+// waited for at most a few seconds; one a call already gave, without asking for one (null: none);
+// and an attachment's pictures as the picture budget planned them.
 export type SessionMedia = {
   readonly caption: (a: Asset) => Effect.Effect<string>;
+  readonly known: (a: Asset) => string | null;
   readonly parts: (a: Asset, look: Look, capped: boolean) => Part[];
 };
 
 // no captions and no pictures: for a session that is not tested on attachments
-export const noMedia: SessionMedia = { caption: () => Effect.succeed(NOT_DESCRIBED), parts: () => [] };
+export const noMedia: SessionMedia = { caption: () => Effect.succeed(NOT_DESCRIBED), known: () => null, parts: () => [] };
 
 export const makeSession = (o: {
   readonly chat: Chat;
@@ -342,13 +347,14 @@ export const makeSession = (o: {
     // what the log keeps of the message and what an engine is sent of it come from this one answer,
     // so they agree, and a marker is never written without having waited for its caption. Asked
     // first while the session's scope closes (the server stops, and logs what it holds), they are
-    // NOT_DESCRIBED: a caption call started then would be paid for and cut off.
+    // what the media service already has (the call starts at upload, so usually all of them), and
+    // NOT_DESCRIBED for the rest: a caption call started then would be paid for and cut off.
     const captionsOf = (m: Incoming): Effect.Effect<readonly string[]> =>
       Effect.suspend(() => {
         if (m.described) return Deferred.await(m.described);
         const done = Deferred.makeUnsafe<readonly string[]>();
         m.described = done;
-        if (scope.state._tag === "Closed") return Deferred.succeed(done, m.media.map(() => NOT_DESCRIBED)).pipe(Effect.andThen(Deferred.await(done)));
+        if (scope.state._tag === "Closed") return Deferred.succeed(done, m.media.map((a) => o.media.known(a) ?? NOT_DESCRIBED)).pipe(Effect.andThen(Deferred.await(done)));
         // Uninterruptible, so `done` is settled whoever stops: a fiber interrupted before it starts
         // (the scope closing, as the server stops) would never run, and every await of it hang. A
         // caption waits at most media.captionWait.
@@ -833,7 +839,7 @@ export const makeSession = (o: {
         const sentFor = on && o.devices.includes(on) ? on : deviceOf(text, o.devices);
         const steer = (how ?? followUp) === "steer";
         inbox.push({ clientId: clientId ?? null, described: null, device: sentFor, engine: named?.ref ?? head, media, seq: ++seq, state: "held", steer, text });
-        for (const name of leftOut) yield* info(`${name} is not on the server: left out of the message`);
+        for (const a of leftOut) yield* info(`${nameOf(a)} is not on the server: left out of the message`);
         if (attached.length > media.length) yield* info(`at most ${MAX_ATTACHMENTS} attachments per message: ${attached.length - media.length} left out`);
         if (asked !== undefined && !named) yield* info(`${asked} is not an engine of the master's chain: the message is for ${master.label(head)}`);
         parked = null; // a newer message: the ones parked after an error go with it
@@ -934,9 +940,11 @@ const logText = (m: Incoming, said: readonly string[]) =>
     m.media.map((a, k) => markerOf(a, said[k] ?? NOT_DESCRIBED)),
   );
 
+// an attachment the store doesn't hold, as the user is told of it: "image 9d0c38e7aafe"
+const nameOf = (a: Named) => `${a.kind} ${shortSha(a.sha)}`;
 // why a message is refused: no text, and no attachment the store holds (`missing`: those it named)
-const nothingToSend = (missing: readonly string[]) =>
-  missing.length === 0 ? "nothing to send" : `nothing to send: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not on the server`;
+const nothingToSend = (missing: readonly Named[]) =>
+  missing.length === 0 ? "nothing to send" : `nothing to send: ${missing.map(nameOf).join(", ")} ${missing.length === 1 ? "is" : "are"} not on the server`;
 
 // a defect in one line: what was thrown
 const thrown = (cause: Cause.Cause<unknown>) => {

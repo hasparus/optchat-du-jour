@@ -551,7 +551,7 @@ describe("session", () => {
     expect(session.get().markers.map((m) => [m.tone, m.text])).toEqual([["error", "the server couldn't read something this page sent, and didn't do it: reload the page"]]);
   });
 
-  test("a message the server refused (nothing to send) is marked with why, not sent again on the next connection, and taken back from here", async () => {
+  test("a message the server refused (nothing to send) is marked with why, not sent again on the next connection nor after a reload, and taken back from here", async () => {
     const server = fakeServer(() => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT }]);
     server.mode.receipts = "drop";
     const session = makeSession(openLink("ws://x/ws", { retryMs: 1, socket: server.socket }));
@@ -566,6 +566,13 @@ describe("session", () => {
     server.drop();
     await tick(20);
     expect(messageIds(server)).toEqual([id]); // refused, it would be refused again
+    // a reload: a fresh page on a fresh socket keeps it, refused, and still doesn't send it
+    const again = fakeServer(() => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT }]);
+    const reloaded = makeSession(openLink("ws://x/ws", { retryMs: 1, socket: again.socket }));
+    await tick();
+    expect(messageIds(again)).toEqual([]);
+    expect(waiting(reloaded)).toEqual([` (not sent: ${why})`]);
+    reloaded.dispose();
     const [q] = queued(session.get());
     if (!q) throw new Error("nothing queued");
     expect([q.where, q.back]).toEqual(["failed", "local"]);

@@ -83,7 +83,8 @@ export const apiRoutes = (
     // answered once by its client's id: a retry is told what became of it (src/wire.ts Received)
     // and is not taken again. A body that doesn't decode, or that has nothing to send, is a 400;
     // one left with nothing to send once the attachments the server doesn't hold are left out is
-    // refused, a 422 with the receipt saying why.
+    // refused, a 422 with the receipt saying why. Apart on purpose: a 400 can never be taken as it
+    // is, a 422 can once its upload is there (uploaded again, then retried under the same id).
     yield* router.add("POST", "/api/messages", (request) =>
       Effect.gen(function* () {
         const body = decodePost(yield* request.text.pipe(Effect.orElseSucceed(() => ""))); // a body cut short reads as none
