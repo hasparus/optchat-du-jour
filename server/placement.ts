@@ -65,8 +65,8 @@ export const makePlacements = (o: {
       return place(at.device, at.cwd, publicUrl, runner, at.key);
     };
     // isolated subagents' worktrees (E37): this machine's in-process, another's through its runner
-    const root = subagentSettings(o.settings).worktrees;
-    const worktrees = new Map<string, Worktrees>(Object.entries(devices).map(([name, d]) => [name, name === o.device ? localWorktrees(expandHome(root), d.folders) : remoteWorktrees(name, d.url)] as const));
+    const { disposable, worktrees: root } = subagentSettings(o.settings);
+    const worktrees = new Map<string, Worktrees>(Object.entries(devices).map(([name, d]) => [name, name === o.device ? localWorktrees(expandHome(root), d.folders, disposable) : remoteWorktrees(name, d.url)] as const));
     // A folder a spawn asks for on a device (E36): one of its folders or inside one, or inside the
     // worktree root, as a turn's cwd must be. This machine's is resolved first (`~`, `..`,
     // symlinks); another's is checked as written, `~` against `~`, and its runner resolves it when
@@ -76,11 +76,8 @@ export const makePlacements = (o: {
       if (d === undefined) return Result.fail(`${device} is not a configured device`);
       const allowed = [...d.folders, root];
       const outside = Result.fail(`${path} is outside ${device}'s folders (${d.folders.join(", ")})`);
-      if (device === o.device) {
-        if (!posix.isAbsolute(expandHome(path))) return Result.fail(`${path} is not an absolute path`);
-        const real = realInside(path, allowed);
-        return real === null ? Result.fail(`${path} is outside ${device}'s folders (${d.folders.join(", ")}), or doesn't exist there`) : Result.succeed(real);
-      }
+      // realInside's own reason: not absolute, not on this machine, or outside the folders
+      if (device === o.device) return Result.mapError(realInside(path, allowed), (why) => `${why} (${device}: ${d.folders.join(", ")})`);
       const written = posix.normalize(path);
       if (!posix.isAbsolute(written) && written !== "~" && !written.startsWith("~/")) return Result.fail(`${path} is not an absolute path`);
       const home = written.startsWith("~");

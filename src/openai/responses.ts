@@ -410,28 +410,35 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
         });
       });
 
-    // A 401 renews the token once, inside the tries: the try fails as one to send again at once,
-    // with the new token. A second 401 counts as signed out, which the chain moves past. One
-    // askAgain per call, so what every try cost reaches whatever ends it.
+    // A 401 renews the token once and sends the same request again at once with the new one, inside
+    // the try that met it: a renewal is no failure of the API's, so it never counts as a try, and a
+    // 401 on the last one still gets its fresh round. A second 401 counts as signed out, which the
+    // chain moves past. One askAgain per call, so what every try cost reaches whatever ends it.
     const respond: Respond = (ask) =>
       Effect.gen(function* () {
         let token = yield* o.bearer.current;
         let renewed = false;
-        const renew = (u: Unauthorized) =>
-          renewed
-            ? Effect.fail(new UsageLimit({ message: `${o.label}: still unauthorized after a refresh: ${u.message}` }))
-            : o.bearer.renew(token).pipe(
-                Effect.flatMap((fresh) =>
-                  Effect.sync(() => {
-                    token = fresh;
-                    renewed = true;
-                  }),
-                ),
-                Effect.andThen(Effect.fail(new ModelError({ message: `${o.label}: unauthorized, so the token was renewed: ${u.message}`, retryAfter: 0, transient: true }))),
-              );
+        const signedOut = (u: Unauthorized) => new UsageLimit({ message: `${o.label}: still unauthorized after a refresh: ${u.message}` });
+        const attempt = (shown: Shown) =>
+          once(ask, token, shown).pipe(
+            Effect.catchIf(isUnauthorized, (u) =>
+              renewed
+                ? Effect.fail(signedOut(u))
+                : o.bearer.renew(token).pipe(
+                    Effect.tap((fresh) =>
+                      Effect.sync(() => {
+                        token = fresh;
+                        renewed = true;
+                      }),
+                    ),
+                    Effect.andThen(Effect.suspend(() => once(ask, token, shown))),
+                    Effect.catchIf(isUnauthorized, (again) => Effect.fail(signedOut(again))),
+                  ),
+            ),
+          );
         return yield* askAgain({
           merge: (reply: Reply, before) => ({ ...reply, usage: addSpent(before, { model: reply.model, usage: reply.usage }).usage }),
-          once: (shown) => once(ask, token, shown).pipe(Effect.catchIf(isUnauthorized, renew)),
+          once: attempt,
         });
       });
     return respond;

@@ -314,13 +314,16 @@ export const Settings = Schema.Struct({
   // `wake`: a report that reaches an idle master starts a turn (E39; off: it waits for the next
   // one, as in M7a); `wakeLimit`: woken turns in a row before waking pauses (WAKE_LIMIT, 0: none);
   // `worktrees`: where every device keeps isolated subagents' git worktrees (WORKTREES, `~` that
-  // device's home). All optional.
+  // device's home); `disposable`: names of gitignored files a finished worktree may be removed with,
+  // besides src/worktree.ts DISPOSABLE (`*` within a name; any other ignored file keeps it). All
+  // optional.
   subagents: Schema.optional(
     Schema.Struct({
       max: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
       wake: Schema.optional(Schema.Boolean),
       wakeLimit: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
       worktrees: Schema.optional(Schema.String),
+      disposable: Schema.optional(Schema.Array(Schema.String.check(Schema.isPattern(/^[^/]+$/)))),
     }),
   ),
   // The artifacts the master publishes (SPEC "Artifacts"): `commit` lets persist commit their
@@ -413,6 +416,7 @@ export const subagentSettings = (settings: Settings) => ({
   wake: settings.subagents?.wake ?? true,
   wakeLimit: settings.subagents?.wakeLimit ?? WAKE_LIMIT,
   worktrees: settings.subagents?.worktrees ?? WORKTREES,
+  disposable: settings.subagents?.disposable ?? [],
 });
 
 // the reasoning settings with their defaults filled in (SPEC "Reasoning")

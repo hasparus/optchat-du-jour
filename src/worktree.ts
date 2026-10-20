@@ -7,12 +7,13 @@
 // moves only by `git merge --ff-only` to that commit, a compare-and-swap that refuses when HEAD
 // moved meanwhile, a merge is in progress, or local changes are in the way. No merge ever runs
 // in the folder's working tree, and nothing is ever aborted there. Then the worktree and branch
-// are removed, unless gitignored files are in the worktree. A conflict, or anything else in the
+// are removed, unless gitignored files other than disposable ones (DISPOSABLE) are in the
+// worktree. A conflict, or anything else in the
 // way, keeps both and says why. Every git command has fixed arguments (src/git.ts). The device
 // runner runs the same code for its own folders (device/runner.ts, POST /worktree); the server's
 // own device runs it in-process. Which of these happens is `plan`, a pure function of the facts
 // gathered first.
-import { Data, Effect, Semaphore } from "effect";
+import { Data, Effect, Result, Semaphore } from "effect";
 import { existsSync, mkdirSync } from "node:fs";
 import { type GitFailed, must as gitMust, run, said } from "./git.ts";
 import { realInside } from "./paths.ts";
@@ -55,7 +56,7 @@ export const addWorktree = (root: string, folder: string, name: string, folders:
     const top = yield* git(folder, ["rev-parse", "--show-toplevel"]);
     if (top.code !== 0) return yield* new WorktreeError({ message: `${folder} is not in a git repository, so it can't be isolated: spawn without isolate to work there directly` });
     const repo = top.out.trim();
-    if (realInside(repo, folders) === null) return yield* new WorktreeError({ message: `${folder} is inside the repository ${repo}, which is outside this device's folders, so it can't be isolated` });
+    if (Result.isFailure(realInside(repo, folders))) return yield* new WorktreeError({ message: `${folder} is inside the repository ${repo}, which is outside this device's folders, so it can't be isolated` });
     const base = yield* git(repo, ["rev-parse", "--verify", "-q", "HEAD"]);
     if (base.code !== 0) return yield* new WorktreeError({ message: `${repo} has no commit yet, so there is nothing to branch from: commit first, or spawn without isolate` });
     const on = yield* git(repo, ["symbolic-ref", "--short", "-q", "HEAD"]);
@@ -88,7 +89,9 @@ export type Facts = {
 
 export type Plan =
   | { readonly do: "remove"; readonly outcome: "nothing" }
-  | { readonly do: "advance"; readonly outcome: "fast-forward" | "merged" }
+  | { readonly do: "advance"; readonly outcome: "fast-forward" }
+  // the merge commit's tree: merge-tree's clean result
+  | { readonly do: "advance"; readonly outcome: "merged"; readonly tree: string }
   | { readonly do: "keep"; readonly outcome: "conflict" | "not-merged"; readonly why: string; readonly conflicts?: readonly string[] };
 
 // What to do with a finished worktree, `branch` naming it in the reasons
@@ -102,7 +105,7 @@ export const plan = (f: Facts, branch: string): Plan => {
   if (f.tree === null) return { do: "keep", outcome: "not-merged", why: `git could not tell whether ${branch} merges into ${f.on}` };
   if ("conflicts" in f.tree) return { conflicts: f.tree.conflicts, do: "keep", outcome: "conflict", why: `${branch} conflicts with ${f.on} in ${f.tree.conflicts.join(", ") || "some files"}` };
   if ("failed" in f.tree) return { do: "keep", outcome: "not-merged", why: `git could not merge ${branch} into ${f.on} off the working tree (${f.tree.failed})` };
-  return { do: "advance", outcome: "merged" };
+  return { do: "advance", outcome: "merged", tree: f.tree.clean };
 };
 
 // what is in progress in the folder's repository, by the files git keeps for it; null: nothing
@@ -124,8 +127,26 @@ const inProgress = (repo: string) =>
     return null;
   });
 
-// gitignored files in the worktree (`--ignored`: a directory counts once)
-const ignoredIn = (path: string) => must(path, ["status", "--porcelain", "--ignored"]).pipe(Effect.map((out) => out.split("\n").filter((l) => l.startsWith("!! ")).length));
+// Gitignored files a finish deletes with the worktree, by the ignored entry's own name at any depth:
+// what a tool or a build makes again (dependencies, caches, build output, Finder's litter), plus
+// `subagents.disposable`. Only the entry's own name counts, never a folder above it: an ignored
+// .env.local in a tracked build/ is someone's. Any other ignored file (notes, .env.local, output the
+// task asked for) keeps the worktree. A name may hold `*`, any run of characters within it.
+export const DISPOSABLE: readonly string[] = ["node_modules", "__pycache__", "*.pyc", ".venv", ".pytest_cache", ".next", ".turbo", "dist", "build", "target", ".DS_Store"];
+const nameRe = (glob: string) => new RegExp(`^${glob.split("*").map((part) => part.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)).join("[^/]*")}$`);
+export const disposable = (extra: readonly string[] = []) => {
+  const names = [...DISPOSABLE, ...extra].map(nameRe);
+  return (path: string) => {
+    const name = path.replace(/\/$/, "").split("/").at(-1) ?? "";
+    return names.some((re) => re.test(name));
+  };
+};
+
+// gitignored files in the worktree that aren't disposable: each path an ignore rule matches
+// (`--ignored=matching`; a directory it matches counts once, whatever it holds, and is disposable
+// when its own name is)
+const ignoredIn = (path: string, isDisposable: (path: string) => boolean) =>
+  must(path, ["status", "--porcelain", "-z", "--ignored=matching"]).pipe(Effect.map((out) => out.split("\0").filter((l) => l.startsWith("!! ") && !isDisposable(l.slice(3))).length));
 
 // the worktree and its branch go: the branch only when what it holds is in the folder's branch (-d)
 const remove = (w: Isolation) => must(w.repo, ["worktree", "remove", "--force", w.path]).pipe(Effect.andThen(git(w.repo, ["branch", "-q", "-d", w.branch])), Effect.asVoid);
@@ -133,8 +154,9 @@ const remove = (w: Isolation) => must(w.repo, ["worktree", "remove", "--force", 
 // The end of a clean run (`plan` says what happens): what the subagent left uncommitted is
 // committed on its branch first (nothing is lost, and the merge carries all of it); then the folder
 // moves by `--ff-only` to the branch's tip, or to a merge commit made off the working tree; then
-// the worktree and branch go, unless gitignored files are in the worktree, which are kept with it.
-export const finishWorktree = (w: Isolation, name: string) =>
+// the worktree and branch go, unless gitignored files other than disposable ones are in the
+// worktree, which are kept with it.
+export const finishWorktree = (w: Isolation, name: string, isDisposable = disposable()) =>
   Effect.gen(function* () {
     const left = yield* must(w.path, ["status", "--porcelain"]);
     let note = "";
@@ -168,7 +190,7 @@ export const finishWorktree = (w: Isolation, name: string) =>
     // the worktree and branch go once their work is in, unless ignored files would go with them
     const done = (outcome: "nothing" | "fast-forward" | "merged", detail: string) =>
       Effect.gen(function* () {
-        const ignored = yield* ignoredIn(w.path);
+        const ignored = yield* ignoredIn(w.path, isDisposable);
         if (ignored > 0) return merge(outcome, `${detail}; kept: ${ignored} ignored files in its worktree at ${w.path}, which git worktree remove --force deletes`, { ignored });
         yield* remove(w);
         return merge(outcome, `${detail}; its worktree and branch are removed`);
@@ -177,10 +199,7 @@ export const finishWorktree = (w: Isolation, name: string) =>
     if (p.do === "keep") return merge(p.outcome, `${p.why}; ${kept}`, p.conflicts === undefined ? {} : { conflicts: p.conflicts });
     if (p.do === "remove") return yield* done("nothing", `${w.branch} has nothing the folder lacks`);
     // the merge commit, made off the working tree, with the folder's HEAD and the branch as parents
-    const target =
-      p.outcome === "fast-forward" || tree === null || !("clean" in tree)
-        ? tip
-        : yield* must(w.repo, ["commit-tree", tree.clean, "-p", head, "-p", tip, "-m", `Merge ${w.branch} (subagent ${name})`], "user");
+    const target = p.outcome === "fast-forward" ? tip : yield* must(w.repo, ["commit-tree", p.tree, "-p", head, "-p", tip, "-m", `Merge ${w.branch} (subagent ${name})`], "user");
     // the one write to the folder: a compare-and-swap that refuses if HEAD moved since `head`
     const moved = yield* git(w.repo, ["merge", "--ff-only", "-q", target]);
     if (moved.code !== 0) return merge("not-merged", `git did not move ${into ?? "the folder"} to ${p.outcome === "merged" ? "the merge commit" : w.branch} (${said(moved)}); ${kept}`);
@@ -190,11 +209,13 @@ export const finishWorktree = (w: Isolation, name: string) =>
 // a worktree made for a spawn that then failed: removed, with its branch, whatever they hold
 export const discardWorktree = (w: Isolation) => must(w.repo, ["worktree", "remove", "--force", w.path]).pipe(Effect.andThen(git(w.repo, ["branch", "-q", "-D", w.branch])), Effect.asVoid);
 
-// This machine's worktrees, under `root` (expanded), for repositories inside `folders`. One finish
+// This machine's worktrees, under `root` (expanded), for repositories inside `folders`; `extra`
+// names more ignored files a finish may delete (subagents.disposable). One finish
 // at a time per repository: two at once would race for the folder's HEAD (the second's --ff-only
 // would refuse, and its branch be kept for nothing). Never interrupted halfway: a stop, a restart or
 // a dropped link waits for git to finish, and a finish asked again is safe (nothing to merge).
-export const localWorktrees = (root: string, folders: readonly string[]): Worktrees => {
+export const localWorktrees = (root: string, folders: readonly string[], extra: readonly string[] = []): Worktrees => {
+  const isDisposable = disposable(extra);
   const locks = new Map<string, Semaphore.Semaphore>();
   const lockOf = (repo: string) => {
     const found = locks.get(repo);
@@ -207,7 +228,7 @@ export const localWorktrees = (root: string, folders: readonly string[]): Worktr
   return {
     add: (folder, name) => Effect.uninterruptible(addWorktree(root, folder, name, allowed)),
     discard: (w) => Effect.uninterruptible(discardWorktree(w)),
-    finish: (w, name) => Effect.uninterruptible(lockOf(w.repo).withPermit(finishWorktree(w, name))),
+    finish: (w, name) => Effect.uninterruptible(lockOf(w.repo).withPermit(finishWorktree(w, name, isDisposable))),
   };
 };
 

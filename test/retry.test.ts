@@ -118,6 +118,27 @@ test("Anthropic: a stream quiet for `idle` is cut and sent again, and what the c
   expect(server.bodies).toHaveLength(1);
 });
 
+// a tool_use block whose input has begun to stream: `name`'s
+const toolUse = (name: string) => [
+  start,
+  sse({ content_block: { id: "toolu_1", input: {}, name, type: "tool_use" }, index: 0, type: "content_block_start" }),
+  sse({ delta: { partial_json: '{"name":"Plan"', type: "input_json_delta" }, index: 0, type: "content_block_delta" }),
+];
+test("Anthropic: a stream quiet after an artifact's input went out as a live draft is not sent again; after a Read's input, it is", async () => {
+  const pieces: string[] = [];
+  const onToolInput = { delta: (_call: { readonly id: string; readonly name: string }, piece: string) => Effect.sync(() => void pieces.push(piece)), end: () => Effect.void };
+  fresh({ after: "hang", chunks: toolUse("publish_artifact") }, whole("never"));
+  const drafted = await run(messages(ask({ onToolInput })));
+  expect(drafted._tag === "Failure" && drafted.failure.message).toBe("api-key: anthropic: no word from the API in 150ms");
+  expect(pieces).toEqual(['{"name":"Plan"']);
+  expect(server.bodies).toHaveLength(1);
+  // a Read's input reaches no client: the quiet try is sent again
+  fresh({ after: "hang", chunks: toolUse("Read") }, whole("read it"));
+  const read = await run(messages(ask({ onToolInput })));
+  expect(read._tag === "Success" && textOf(read.success)).toBe("read it");
+  expect(server.bodies).toHaveLength(2);
+});
+
 test("Anthropic: what a try that may pass cost still counts when the try after it fails with what won't: a 400, a refusal, a spent key, a long retry-after", async () => {
   // 100,000 input tokens told, then silence: cut, and sent again
   const big = sse({ message: { model: "fake-opus", usage: { ...USAGE, input_tokens: 100_000 } }, type: "message_start" });
@@ -188,6 +209,26 @@ test("Responses: a stream quiet for `idle` is cut and sent again; one whose reas
   expect(server.bodies).toHaveLength(1);
 });
 
+// a function call whose arguments have begun to stream: `name`'s
+const functionCall = (name: string) => [
+  sse({ type: "response.created" }),
+  sse({ item: { call_id: "call_1", id: "fc_1", name, type: "function_call" }, output_index: 0, type: "response.output_item.added" }),
+  sse({ delta: '{"name":"Plan"', item_id: "fc_1", output_index: 0, type: "response.function_call_arguments.delta" }),
+];
+test("Responses: a stream quiet after an artifact's arguments went out as a live draft is not sent again; after a Read's, it is", async () => {
+  const pieces: string[] = [];
+  const onToolInput = { delta: (_call: { readonly id: string; readonly name: string }, piece: string) => Effect.sync(() => void pieces.push(piece)), end: () => Effect.void };
+  fresh({ after: "hang", chunks: functionCall("edit_artifact") }, done("never"));
+  const drafted = await run(respond({ ...askOpenAi, onToolInput }));
+  expect(drafted._tag === "Failure" && drafted.failure.message).toBe("openai-plan: no word from the API in 150ms");
+  expect(pieces).toEqual(['{"name":"Plan"']);
+  expect(server.bodies).toHaveLength(1);
+  fresh({ after: "hang", chunks: functionCall("Read") }, done("read it"));
+  const read = await run(respond({ ...askOpenAi, onToolInput }));
+  expect(read._tag === "Success" && read.success.text).toBe("read it");
+  expect(server.bodies).toHaveLength(2);
+});
+
 test("openai-plan: a failed try's cost is carried across a token renewed after a 401, to the failure that ends the call", async () => {
   let renewed = 0;
   const plan = Effect.runSync(
@@ -204,4 +245,24 @@ test("openai-plan: a failed try's cost is carried across a token renewed after a
   fresh(failedStream, { body: JSON.stringify({ error: { code: "invalid_token", message: "expired" } }), status: 401 }, done("ok"));
   const through = await run(plan(askOpenAi));
   expect(through._tag === "Success" && through.success.usage.input).toBe(10);
+});
+
+test("openai-plan: a 401 on the last try renews the token and sends it again, a renewal never counted as a try; a second 401 is a sign-out", async () => {
+  let renewed = 0;
+  const plan = Effect.runSync(
+    makeResponses({ api: server.base, bearer: { current: Effect.succeed("old"), renew: () => Effect.sync(() => ((renewed += 1), "new")) }, idle: "150 millis", label: "openai-plan" }).pipe(Effect.provide(FetchHttpClient.layer)),
+  );
+  const unauthorized: Step = { body: JSON.stringify({ error: { code: "invalid_token", message: "expired" } }), status: 401 };
+  // three tries the server failed, then the fourth and last meets a 401
+  fresh(openAiError(503, "unavailable"), openAiError(503, "unavailable"), openAiError(503, "unavailable"), unauthorized, done("ok"));
+  const out = await run(plan(askOpenAi));
+  expect(out._tag === "Success" && out.success.text).toBe("ok");
+  expect(renewed).toBe(1);
+  expect(server.bodies).toHaveLength(5);
+  // still unauthorized with the new token: signed out, for the chain, with no more tries
+  fresh(unauthorized, unauthorized, done("never"));
+  const again = await run(plan(askOpenAi));
+  expect(again._tag === "Failure" && again.failure).toBeInstanceOf(UsageLimit);
+  expect(again._tag === "Failure" && again.failure.message).toBe("openai-plan: still unauthorized after a refresh: {\"error\":{\"code\":\"invalid_token\",\"message\":\"expired\"}}");
+  expect(server.bodies).toHaveLength(2);
 });

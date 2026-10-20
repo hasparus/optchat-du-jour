@@ -56,9 +56,6 @@ export type CompactorNeeds = EngineNeeds & {
 // a turn engine's needs: the one system prompt (docs/optchat.md §5), where each device's claude runs (E7),
 // and the read-only tools of an engine with its own loop (M5)
 export type TurnNeeds = EngineNeeds & {
-  // the warm processes follow it: it ran the most recent turn, or heads the chain before any (E18);
-  // a policy that isn't pooled (a subagent's) is never warmed, so it needs none
-  readonly warms?: () => boolean;
   readonly instructions: string;
   readonly runnerFor: (device: string) => Effect.Effect<Placement, DeviceOffline>;
   readonly toolsFor: (device: string) => ToolBox;
@@ -103,11 +100,15 @@ export const providerOf = (ref: ProviderRef, o: EngineNeeds, effort?: string): E
 };
 
 // How a turn engine's claude runs: in its own permission mode (none: the master's, from the
-// config), with tools let through without asking, kept warm (and so primed) when the session says
-// so, or never (`pooled: false`: no warm process is started for it or handed to it, E18), with more
-// environment for its claude (`env`: a subagent's name)
-export type TurnPolicy = { readonly permissionMode?: string; readonly allowedTools?: readonly string[]; readonly pooled: boolean; readonly env?: Readonly<Record<string, string>> };
-export const MASTER_POLICY: TurnPolicy = { pooled: true };
+// config), with tools let through without asking, with more environment for its claude (`env`: a
+// subagent's name), and either pooled, kept warm (and so primed) while `warms` says the warm
+// processes follow it (it ran the most recent turn, or heads the chain before any, E18), or never
+// (`pooled: false`: no warm process is started for it or handed to it). A pooled policy without
+// `warms` is a type error.
+type PolicyBase = { readonly permissionMode?: string; readonly allowedTools?: readonly string[]; readonly env?: Readonly<Record<string, string>> };
+export type TurnPolicy = PolicyBase & ({ readonly pooled: true; readonly warms: () => boolean } | { readonly pooled: false });
+// a master turn's: pooled, warm while `warms` says so
+export const masterPolicy = (warms: () => boolean): TurnPolicy => ({ pooled: true, warms });
 // A subagent's (SPEC "Subagents", E36): the master's own permission mode and tools, so on
 // claude-code it runs Bash, Edit, Write, WebFetch and WebSearch as a turn does, and its argv is a
 // turn's but for its cwd and its /mcp key; on our tool loop its box is the master's list. Never
@@ -115,7 +116,7 @@ export const MASTER_POLICY: TurnPolicy = { pooled: true };
 // (OPTCHAT_SUBAGENT, for process listings and tests; neither claude nor the model reads it).
 export const subagentPolicy = (name: string): TurnPolicy => ({ env: { OPTCHAT_SUBAGENT: name }, pooled: false });
 
-export const turnEngine = (ref: Ref, o: TurnNeeds, policy: TurnPolicy = MASTER_POLICY): Effect.Effect<TurnEngine> => {
+export const turnEngine = (ref: Ref, o: TurnNeeds, policy: TurnPolicy): Effect.Effect<TurnEngine> => {
   const { permissionMode, tools } = o.settings.master;
   const effort = runEffort(ref, o.settings.master.effort); // the entry's own, else the master's as its model takes it, or none
   switch (ref.engine) {
@@ -135,7 +136,7 @@ export const turnEngine = (ref: Ref, o: TurnNeeds, policy: TurnPolicy = MASTER_P
         runnerFor: o.runnerFor,
         tools: tools ?? MASTER_TOOLS,
         ttl: o.settings.cache.claudeCodeTtl,
-        warms: (policy.pooled ? o.warms : undefined) ?? (() => false),
+        warms: policy.pooled ? policy.warms : () => false,
       });
     case "openai-plan":
     case "api-key":

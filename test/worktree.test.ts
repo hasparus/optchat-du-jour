@@ -1,14 +1,18 @@
 // Isolated subagents' worktrees (SPEC "Subagents", E37): what a finish does, as a pure plan over its
 // facts (a table), and in temporary git repositories only: the folder's own merge in progress is
 // never touched, a folder that moved to another branch gets nothing, gitignored files keep the
-// worktree, a repository outside the folders is refused at the add, and a dropped worktree goes
-// with its branch.
+// worktree, a repository outside the folders is refused at the add, a dropped worktree goes with
+// its branch, and none of the three is ever interrupted halfway.
 import { afterAll, expect, test } from "bun:test";
-import { Effect } from "effect";
+import { BunServices } from "@effect/platform-bun";
+import { Effect, Fiber, Result } from "effect";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { addWorktree, discardWorktree, type Facts, finishWorktree, plan } from "../src/worktree.ts";
+import { makePlacements } from "../server/placement.ts";
+import { remoteRunner } from "../src/claude/remote.ts";
+import { parseSettings } from "../src/config.ts";
+import { addWorktree, discardWorktree, disposable, type Facts, finishWorktree, localWorktrees, plan } from "../src/worktree.ts";
 
 const dirs: string[] = [];
 afterAll(() => {
@@ -40,7 +44,7 @@ test("the plan: nothing to merge, a fast-forward, a merge commit, or kept and wh
   const b = "optchat/x";
   expect(plan(facts({ ahead: 0, busy: "a merge", on: null }), b)).toEqual({ do: "remove", outcome: "nothing" });
   expect(plan(facts({ ff: true, tree: null }), b)).toEqual({ do: "advance", outcome: "fast-forward" });
-  expect(plan(facts(), b)).toEqual({ do: "advance", outcome: "merged" });
+  expect(plan(facts(), b)).toEqual({ do: "advance", outcome: "merged", tree: "abc" });
   expect(plan(facts({ tree: { conflicts: ["a.txt"] } }), b)).toEqual({ conflicts: ["a.txt"], do: "keep", outcome: "conflict", why: "optchat/x conflicts with main in a.txt" });
   // only into the branch it was made from, never while something else is in progress, never on no branch
   expect(plan(facts({ on: "release" }), b)).toMatchObject({ do: "keep", outcome: "not-merged", why: "the folder is on release now, not main, which optchat/x was made from, so it was not merged" });
@@ -117,6 +121,56 @@ test("gitignored files keep the worktree after a merge, and the report says how 
   expect(await run(finishWorktree(w, "Notes"))).toMatchObject({ ignored: 1, outcome: "nothing" });
 });
 
+// what an install, a build and a cache leave in a worktree, every piece of it gitignored
+const litter = (path: string) => {
+  for (const d of ["node_modules/left-pad", "pkg/__pycache__", "web/dist", ".cache"]) mkdirSync(`${path}/${d}`, { recursive: true });
+  writeFileSync(`${path}/node_modules/left-pad/index.js`, "x\n");
+  writeFileSync(`${path}/pkg/__pycache__/m.cpython-313.pyc`, "x\n");
+  writeFileSync(`${path}/pkg/m.pyc`, "x\n");
+  writeFileSync(`${path}/.DS_Store`, "x\n");
+  writeFileSync(`${path}/web/dist/app.js`, "x\n");
+  writeFileSync(`${path}/.cache/blob`, "x\n");
+};
+test("disposable ignored files (dependencies, caches, build output, subagents.disposable) don't keep the worktree; any other does", async () => {
+  const { folder, root, top } = repo();
+  writeFileSync(`${folder}/.gitignore`, "node_modules/\n__pycache__/\n*.pyc\n.DS_Store\ndist/\n.cache/\nnotes/\n");
+  git(folder, "add", "-A");
+  git(folder, "commit", "-qm", "ignores");
+  const extra = disposable([".cache"]);
+  const w = await run(addWorktree(root, folder, "Builder", [top]));
+  litter(w.path);
+  writeFileSync(`${w.path}/b.txt`, "built\n");
+  const merge = await run(finishWorktree(w, "Builder", extra));
+  expect(merge).toMatchObject({ into: "main", outcome: "fast-forward" });
+  expect(merge.ignored).toBeUndefined();
+  expect(existsSync(w.path)).toBe(false);
+  expect(git(folder, "rev-parse", "--verify", "-q", "refs/heads/optchat/Builder").code).not.toBe(0);
+  // the same litter and one note: only the note counts, and keeps it
+  const v = await run(addWorktree(root, folder, "Writer", [top]));
+  litter(v.path);
+  mkdirSync(`${v.path}/notes`);
+  writeFileSync(`${v.path}/notes/plan.md`, "keep me\n");
+  writeFileSync(`${v.path}/c.txt`, "c\n");
+  expect(await run(finishWorktree(v, "Writer", extra))).toMatchObject({ ignored: 1, outcome: "fast-forward" });
+  expect(readFileSync(`${v.path}/notes/plan.md`, "utf8")).toBe("keep me\n");
+  // without subagents.disposable, .cache/ is someone's: it counts
+  expect(await run(finishWorktree(v, "Writer"))).toMatchObject({ ignored: 2, outcome: "nothing" });
+});
+
+test("an ignored file in a tracked build/ is someone's: only an entry's own name is disposable, never a folder above it", async () => {
+  const { folder, root, top } = repo();
+  mkdirSync(`${folder}/build`);
+  writeFileSync(`${folder}/.gitignore`, ".env.local\n*.key\n");
+  writeFileSync(`${folder}/build/release.sh`, "#!/bin/sh\n"); // a build/ folder the repository tracks
+  git(folder, "add", "-A");
+  git(folder, "commit", "-qm", "a tracked build/");
+  const w = await run(addWorktree(root, folder, "Signer", [top]));
+  writeFileSync(`${w.path}/build/.env.local`, "SIGNING_PASSWORD=the one the task asked for\n");
+  writeFileSync(`${w.path}/b.txt`, "work\n");
+  expect(await run(finishWorktree(w, "Signer"))).toMatchObject({ ignored: 1, outcome: "fast-forward" });
+  expect(readFileSync(`${w.path}/build/.env.local`, "utf8")).toBe("SIGNING_PASSWORD=the one the task asked for\n");
+});
+
 test("a repository whose top folder is outside the folders can't be isolated; a dropped worktree goes with its branch", async () => {
   const { folder, root, top } = repo();
   mkdirSync(`${folder}/web`);
@@ -132,4 +186,63 @@ test("a repository whose top folder is outside the folders can't be isolated; a 
   // so the name can be used again
   const again = await run(addWorktree(root, folder, "Dropped", [top]));
   expect(again.branch).toBe("optchat/Dropped");
+});
+
+test("add, finish and discard are never interrupted halfway: an interrupt as each starts waits for git to finish", async () => {
+  const { folder, root, top } = repo();
+  const trees = localWorktrees(root, [top]);
+  // forked and interrupted at once: started, so the interrupt lands inside the step, not before it
+  const interrupted = async <A, E>(e: Effect.Effect<A, E>) =>
+    run(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(e, { startImmediately: true });
+        yield* Fiber.interrupt(fiber);
+      }),
+    );
+  await interrupted(trees.add(folder, "Steady"));
+  const path = `${root}/Steady`;
+  expect(existsSync(`${path}/.git`)).toBe(true);
+  const w = await run(addWorktree(root, folder, "Merger", [top]));
+  writeFileSync(`${w.path}/c.txt`, "c\n");
+  git(w.path, "add", "-A");
+  git(w.path, "commit", "-qm", "c");
+  const tip = git(folder, "rev-parse", w.branch).out;
+  await interrupted(trees.finish(w, "Merger"));
+  // the folder's HEAD reached the branch, and the worktree went
+  expect(git(folder, "rev-parse", "HEAD").out).toBe(tip);
+  expect(existsSync(w.path)).toBe(false);
+  await interrupted(trees.discard({ ...w, branch: "optchat/Steady", path }));
+  expect(existsSync(path)).toBe(false);
+  expect(git(folder, "branch", "--list", "optchat/Steady").out).toBe("");
+});
+
+test("the server's own device: its finish deletes what subagents.disposable names, and a spawn's folder is refused with realInside's reason", async () => {
+  const { folder, root, top } = repo();
+  writeFileSync(`${folder}/.gitignore`, ".scratch/\n");
+  git(folder, "add", "-A");
+  git(folder, "commit", "-qm", "ignore .scratch");
+  const settings = parseSettings({
+    allowedLogins: [],
+    cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
+    compactor: { byLevel: [{ chain: ["claude-code:haiku"], from: 0 }], effort: "medium" },
+    defaultDevice: "mini",
+    devices: { mini: { folders: [top], url: "http://127.0.0.1:1" } },
+    master: { chain: ["claude-code:opus"], effort: "high", permissionMode: "bypassPermissions" },
+    subagents: { disposable: [".scratch"], worktrees: root },
+  });
+  const placements = await Effect.runPromise(
+    makePlacements({ device: "mini", local: remoteRunner("mini", "http://127.0.0.1:1"), port: 1, report: () => Effect.void, secret: "s", settings }).pipe(Effect.provide(BunServices.layer)),
+  );
+  const trees = placements.worktrees.get("mini");
+  if (trees === undefined) throw new Error("no worktrees for mini");
+  const w = await run(trees.add(folder, "Scratcher"));
+  mkdirSync(`${w.path}/.scratch`);
+  writeFileSync(`${w.path}/.scratch/tmp`, "x\n");
+  writeFileSync(`${w.path}/b.txt`, "b\n");
+  expect(await run(trees.finish(w, "Scratcher"))).toMatchObject({ outcome: "fast-forward" });
+  expect(existsSync(w.path)).toBe(false);
+  expect(placements.folderFor("mini", "/etc")).toEqual(Result.fail(`/etc is outside this device's folders (mini: ${top})`));
+  expect(placements.folderFor("mini", `${top}/missing`)).toEqual(Result.fail(`${top}/missing does not exist on this device (mini: ${top})`));
+  expect(placements.folderFor("mini", "repo")).toEqual(Result.fail(`repo is not an absolute path (mini: ${top})`));
+  expect(placements.folderFor("mini", `${folder}/../repo`)).toEqual(Result.succeed(folder));
 });

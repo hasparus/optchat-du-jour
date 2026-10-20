@@ -24,10 +24,9 @@ export type Row =
 
 type ToolRow = Extract<Row, { kind: "tool" }>;
 
-/** Entry identity and index determine its immutable row. Identical canonical snapshots/pages
- * keep held items (log.ts); changed content or live provenance replaces them. Echo rows also
- * depend on the answered call's row identity (null when standalone), including hole fills/trims.
- */
+// Entry identity and index determine its immutable row. Identical canonical snapshots/pages
+// keep held items (log.ts); changed content or live provenance replaces them. Echo rows also
+// depend on the answered call's row identity (null when standalone), including hole fills/trims.
 type Made = { readonly i: number; readonly answers: Row | null; readonly row: Row };
 const made = new WeakMap<object, Made>();
 const rowOf = (e: Pick<Item, "i">, answers: Row | null, make: () => Row): Row => {
@@ -259,9 +258,8 @@ const Links = Schema.fromJsonString(Schema.Array(Schema.Struct({ title: Schema.o
 const decodeLinks = Schema.decodeUnknownOption(Links);
 
 const NO_SOURCES: readonly WebSource[] = [];
-/** Immutable rows cite once per object: streamed tokens, appended entries and identical
- * canonical snapshots/pages keep cache hits. Changed content or provenance is read again.
- */
+// Immutable rows cite once per object: streamed tokens, appended entries and identical
+// canonical snapshots/pages keep cache hits. Changed content or provenance is read again.
 const cited = new WeakMap<object, readonly WebSource[]>();
 
 // what one tool row cites, in order: a WebFetch's address, a WebSearch's result links; the same

@@ -43,14 +43,14 @@ const whoisOf =
 const withDevice = async <A, E>(
   folders: readonly string[],
   body: (url: string) => Effect.Effect<A, E, Scope.Scope>,
-  o: { readonly trust?: Trust; readonly port?: number; readonly worktrees?: string } = {},
+  o: { readonly trust?: Trust; readonly port?: number; readonly worktrees?: string; readonly disposable?: readonly string[] } = {},
 ) =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
         const port = o.port ?? freePort();
         const trust = o.trust ?? loopback;
-        yield* Layer.build(deviceLayer({ claude: ECHO, folders, host: "127.0.0.1", killGrace: "300 millis", name: "macbook", port, trust, worktrees: o.worktrees ?? `${tmp()}/worktrees` }));
+        yield* Layer.build(deviceLayer({ claude: ECHO, disposable: o.disposable, folders, host: "127.0.0.1", killGrace: "300 millis", name: "macbook", port, trust, worktrees: o.worktrees ?? `${tmp()}/worktrees` }));
         return yield* body(`http://127.0.0.1:${port}`);
       }),
     ),
@@ -542,5 +542,34 @@ test("POST /worktree makes a subagent's worktree in a folder's repository and fi
         expect(yield* why(trees.finish(again, "scout"))).toContain("not the worktree this device made for scout");
       }),
     { worktrees },
+  );
+});
+
+test("POST /worktree's finish deletes what subagents.disposable names, and keeps any other ignored file", async () => {
+  const folder = tmp();
+  const worktrees = `${tmp()}/worktrees`;
+  const repo = `${folder}/repo`;
+  mkdirSync(repo);
+  git(repo, "init", "-q", "-b", "main");
+  writeFileSync(`${repo}/.gitignore`, ".scratch/\nnotes/\n");
+  git(repo, "add", "-A");
+  git(repo, "commit", "-q", "-m", "ignores");
+  await withDevice(
+    [folder],
+    (url) =>
+      Effect.gen(function* () {
+        const trees = remoteWorktrees("macbook", url);
+        const scratch = yield* trees.add(repo, "scratcher");
+        mkdirSync(`${scratch.path}/.scratch`);
+        writeFileSync(`${scratch.path}/.scratch/tmp`, "x\n");
+        expect(yield* trees.finish(scratch, "scratcher")).toMatchObject({ outcome: "nothing" });
+        expect(existsSync(scratch.path)).toBe(false);
+        const noted = yield* trees.add(repo, "noter");
+        mkdirSync(`${noted.path}/notes`);
+        writeFileSync(`${noted.path}/notes/plan.md`, "keep me\n");
+        expect(yield* trees.finish(noted, "noter")).toMatchObject({ ignored: 1, outcome: "nothing" });
+        expect(existsSync(`${noted.path}/notes/plan.md`)).toBe(true);
+      }),
+    { disposable: [".scratch"], worktrees },
   );
 });

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { EventType } from "@ag-ui/core";
 import { type Entry, said, snapshot } from "../test/fixture";
-import { applyEvent, applyPage, emptyLog } from "./log";
+import { applyEvent, applyPage, emptyLog, type Item, sameItem } from "./log";
 
 const read = (via: "snapshot" | "page", log: typeof emptyLog, entries: readonly Entry[]) =>
   via === "snapshot" ? applyEvent(log, snapshot(entries)) : applyPage(log, entries.map((e, i) => ({ ...e, i })));
@@ -58,4 +58,11 @@ test("canonical equality does not merge entries at different indices", () => {
   const after = applyEvent(before, { messages: [{ content: "same", id: "1", role: "assistant" }], type: EventType.MESSAGES_SNAPSHOT });
   expect(after.items.get(1)).not.toBe(before.items.get(0));
   expect(after.items.get(1)?.i).toBe(1);
+});
+
+test("a held item is the same only when every field of Item is: each one, changed alone, makes it another", () => {
+  const item: Item = { error: true, i: 3, kind: "echo", live: false, text: "out" };
+  expect(sameItem(item, { ...item })).toBe(true);
+  const changes = { error: false, i: 4, kind: "tool", live: true, text: "other" } satisfies { readonly [K in keyof Item]-?: Item[K] };
+  for (const [k, v] of Object.entries(changes)) expect([k, sameItem(item, { ...item, [k]: v })]).toEqual([k, false]);
 });

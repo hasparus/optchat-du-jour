@@ -8,7 +8,7 @@
 // git worktree (src/worktree.ts, E37), with fixed git arguments, under this device's worktree root,
 // which counts as one of its folders.
 import { BunHttpServer, BunServices } from "@effect/platform-bun";
-import { Data, type Duration, Effect, FileSystem, Layer, Option, Queue, Schema, Stream } from "effect";
+import { Data, type Duration, Effect, Layer, Option, Queue, Schema, Stream } from "effect";
 import { HttpRouter, type HttpServerRequest, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 import { claudeVersion, spawnProcess } from "../src/claude/process.ts";
@@ -30,6 +30,7 @@ export type DeviceOptions = {
   readonly trust: Trust;
   readonly killGrace?: Duration.Input; // KILL_GRACE
   readonly worktrees?: string; // where isolated subagents' worktrees go (subagents.worktrees, WORKTREES)
+  readonly disposable?: readonly string[]; // ignored files a finish may delete with one (subagents.disposable)
 };
 
 export class SpawnRefused extends Data.TaggedError("SpawnRefused")<{ readonly message: string }> {}
@@ -48,7 +49,6 @@ export const confine = (cwd: string, folders: readonly string[]) =>
 export const deviceRoutes = (o: DeviceOptions) =>
   mount((router) =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
       // isolated subagents' worktrees (E37) are made here, and a subagent works in its own: one more folder
       const root = expandHome(o.worktrees ?? WORKTREES);
       const folders = [...o.folders, root];
@@ -72,7 +72,7 @@ export const deviceRoutes = (o: DeviceOptions) =>
           if (Option.isNone(first) || first.value._tag !== "Spawn")
             return yield* new SpawnRefused({ message: "the first frame must be a Spawn request" });
           const request = first.value;
-          const cwd = yield* confine(request.cwd ?? o.folders[0] ?? "", folders).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+          const cwd = yield* confine(request.cwd ?? o.folders[0] ?? "", folders);
           const odd = Object.keys(request.env).find((k) => !ENV.has(k));
           if (odd !== undefined) return yield* new SpawnRefused({ message: `${odd} is not passed to claude` });
 
@@ -146,9 +146,9 @@ export const deviceRoutes = (o: DeviceOptions) =>
       // must name the worktree an add made for that name (its path and branch follow from the name,
       // its base is a commit id). Never interrupted halfway: a dropped link, the server's timeout or
       // its restart lets git finish here, and the server may ask again (a finish twice is safe).
-      const worktrees = localWorktrees(root, o.folders);
+      const worktrees = localWorktrees(root, o.folders, o.disposable);
       const decodeWorktree = Schema.decodeUnknownEffect(Schema.fromJsonString(WorktreeRequest));
-      const inside = (path: string) => confine(path, folders).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+      const inside = (path: string) => confine(path, folders);
       const worktreeReply = (r: WorktreeRequest) =>
         Effect.gen(function* () {
           if (!SUBAGENT_NAME.test(r.name)) return yield* new SpawnRefused({ message: `${r.name} is not a subagent's name` });

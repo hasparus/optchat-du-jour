@@ -88,6 +88,11 @@ export const unseen = (entries: readonly Entry[]) => {
     });
 };
 
+// The sheet's Stop all: reports hushed first, so the stopped runs' reports, and any other until the
+// user's next message, wake no turn (E39); then the turn, then every subagent
+export const stopEverything = (session: Pick<Session, "hush" | "cancel">, subagents: Pick<Subagents, "stopAll"> | undefined) =>
+  session.hush.pipe(Effect.andThen(session.cancel), Effect.andThen(subagents?.stopAll ?? Effect.void), Effect.asVoid);
+
 export const wsRoute = (
   router: HttpRouter.HttpRouter,
   o: {
@@ -153,9 +158,7 @@ export const wsRoute = (
           case "abort":
             return o.session.cancel;
           case "stop-all":
-            // reports hushed first: the stopped runs' reports, and any other until the user's next
-            // message, wake no turn; then the turn, then every subagent
-            return o.session.hush.pipe(Effect.andThen(o.session.cancel), Effect.andThen(o.subagents?.stopAll ?? Effect.void));
+            return stopEverything(o.session, o.subagents);
           case "take-back":
             return o.session.takeBack(m.clientId);
           case "settings":

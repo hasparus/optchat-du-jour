@@ -16,7 +16,7 @@ import { makeArtifactTools } from "../src/artifacts/tools.ts";
 import { artifactSettings, entryLabel, mediaSettings, reasoningSettings, type Settings, subagentSettings, WAIT_RETRY, WAKE_DEBOUNCE } from "../src/config.ts";
 import type { DownList } from "../src/engines/chain.ts";
 import { makeGate } from "../src/engines/inflight.ts";
-import { subagentPolicy, turnEngine } from "../src/engines/registry.ts";
+import { masterPolicy, subagentPolicy, turnEngine } from "../src/engines/registry.ts";
 import { forbidden, mount } from "../src/http.ts";
 import { OpenAiPlan, openAiPlanLayer } from "../src/openai/responses.ts";
 import { makeCaptioner } from "../src/media/caption.ts";
@@ -151,7 +151,7 @@ export const routes = (o: ServerOptions) =>
       });
       const toolsFor = (device: string) => toolsWith(device, chat.mem, subagents.tools("master"), artifactTools.tools("master"));
       const engines = yield* Effect.forEach(settings.master.chain, (ref) =>
-        turnEngine(ref, { ...needs, instructions, runnerFor, toolsFor, warms: () => master.latest() === ref.ref }),
+        turnEngine(ref, { ...needs, instructions, runnerFor, toolsFor }, masterPolicy(() => master.latest() === ref.ref)),
       );
       const session = yield* makeSession({
         chat,

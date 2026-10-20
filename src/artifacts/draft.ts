@@ -5,7 +5,7 @@
 // createDraftBatch (lib/design-draft.ts), both Apache-2.0, © Vercel, modified: on an Effect fiber
 // instead of a timer, and an edit's draft is the latest version with the edits written so far.
 import { Effect, Fiber, Option, Schema, type Scope } from "effect";
-import { type ArtifactDraft, artifactTool } from "../wire.ts";
+import { type ArtifactDraft, draftTool } from "../wire.ts";
 import { MAX_ARTIFACT_BYTES } from "./html.ts";
 import { applyEdits, type Edit } from "./store.ts";
 
@@ -162,8 +162,8 @@ export const makeDrafts = (o: {
     Effect.suspend(() => {
       let call = calls.get(c.id);
       if (!call) {
-        const tool = artifactTool(c.name);
-        if (tool !== "publish_artifact" && tool !== "edit_artifact") return Effect.void;
+        const tool = draftTool(c.name);
+        if (tool === null) return Effect.void;
         const made: Call = { base: undefined, closed: false, due: false, edits: 0, feed: null, html: "", id: c.id, last: null, raw: "", sent: 0, tool: tool === "publish_artifact" ? "publish" : "edit" };
         if (made.tool === "publish")
           made.feed = fieldExtractor("html", (chunk) => {

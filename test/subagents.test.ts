@@ -10,13 +10,14 @@ import { Deferred, type Duration, Effect, PubSub, Result, Schema, type Scope } f
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { stopEverything } from "../server/routes/ws.ts";
 import { openChat } from "../src/chat.ts";
 import { entryLabel, parseSettings, type Ref, SUBAGENTS_MAX } from "../src/config.ts";
 import { ModelError, UsageLimit } from "../src/engines/errors.ts";
 import { makeMaster } from "../src/master.ts";
 import type { AgentTools, Caller } from "../src/mcp.ts";
-import { makeSession, noMedia, type SessionEvent } from "../src/session.ts";
-import { type AgentPlace, makeSubagents, RESUMES_MAX, SIDE_PAGE, type SubagentHost } from "../src/subagents.ts";
+import { makeSession, noMedia, type Session, type SessionEvent } from "../src/session.ts";
+import { type AgentPlace, makeSubagents, RESUMES_MAX, SIDE_PAGE, type SubagentHost, type Subagents } from "../src/subagents.ts";
 import type { TurnEngine, TurnEvents, TurnInput } from "../src/turn/engine.ts";
 import type { UsageRecord } from "../src/usage.ts";
 import { localWorktrees } from "../src/worktree.ts";
@@ -687,12 +688,18 @@ test("an agent.json that names another folder than its own is left alone, and sa
 test("two runs that report the same words are two reports, each delivered once", async () => {
   await scoped((scope) =>
     Effect.gen(function* () {
+      // agent.json's pending report as each run's end commits it, before its delivery
+      let path = "";
+      const pending: unknown[] = [];
       const r = yield* rig({
         child: { echo: (_input, out) => out.log("talk", "nothing new").pipe(Effect.orDie) },
+        commit: Effect.sync(() => {
+          if (path !== "" && existsSync(path)) pending.push(decodeMeta(readFileSync(path, "utf8")).pending);
+        }),
         master: (call) => Effect.asVoid(call("spawn", { name: "echo", task: "look" })),
         scope,
       });
-      const path = `${r.dir}/agents/echo/agent.json`;
+      path = `${r.dir}/agents/echo/agent.json`;
       yield* r.session.input("go", { clientId: "c1" });
       yield* until("the first report", () => r.log().includes("user: [echo] nothing new"));
       expect(yield* r.subagents.tell("echo", "again")).toBeNull();
@@ -700,6 +707,11 @@ test("two runs that report the same words are two reports, each delivered once",
       yield* until("none pending", () => decodeMeta(readFileSync(path, "utf8")).pending === null);
       yield* Effect.sleep("50 millis");
       expect(r.log().filter((l) => l.startsWith("user: [echo]"))).toEqual(["user: [echo] nothing new", "user: [echo] nothing new"]);
+      // the same words, told apart by the run they end
+      expect(pending.filter((p) => p !== null)).toEqual([
+        { run: 1, text: "[echo] nothing new" },
+        { run: 2, text: "[echo] nothing new" },
+      ]);
     }),
   );
 });
@@ -1035,8 +1047,8 @@ test("a call cut short by a dropped device link goes on from its side log; a lin
 // ---- review of #42: a user's stop is a decision; bounds on unattended work ----
 
 // Stop all as server/routes/ws.ts does it: hush the reports, cancel the turn, stop every subagent
-const stopAllAsWs = (r: { readonly session: { readonly hush: Effect.Effect<void>; readonly cancel: Effect.Effect<void> }; readonly subagents: { readonly stopAll: Effect.Effect<unknown> } }) =>
-  r.session.hush.pipe(Effect.andThen(r.session.cancel), Effect.andThen(r.subagents.stopAll));
+// the ws "stop-all" frame, as server/routes/ws.ts handles it
+const stopAllAsWs = (r: { readonly session: Session; readonly subagents: Subagents }) => stopEverything(r.session, r.subagents);
 
 test("Stop all wakes no master turn: the stopped runs' reports are logged, and nothing else wakes it until the user's next message", async () => {
   await scoped((scope) =>
@@ -1058,6 +1070,48 @@ test("Stop all wakes no master turn: the stopped runs' reports are logged, and n
       yield* r.session.input("and c?", { clientId: "c2" });
       yield* until("turn 2", () => r.turns.length === 2 && r.idle());
       expect(yield* r.tools("master").call("spawn", { name: "c", task: "t" })).toMatchObject({ error: true }); // no turn runs
+    }),
+  );
+});
+
+test("Stop all also hushes a report that came just before it and is still waiting to wake the master", async () => {
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const go = yield* Deferred.make<true>();
+      const r = yield* rig({
+        child: { quick: (_input, out) => Deferred.await(go).pipe(Effect.andThen(out.log("talk", "quick is done")), Effect.orDie), slow: () => Effect.never },
+        master: (call, turn) => (turn === 1 ? Effect.asVoid(call("spawn", { name: "quick", task: "t" }).pipe(Effect.andThen(call("spawn", { name: "slow", task: "t" })))) : Effect.void),
+        scope,
+        wake: "200 millis",
+      });
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("both running", () => r.calls.length === 2 && r.idle());
+      yield* Deferred.succeed(go, true);
+      yield* until("quick done", () => r.stateOf("quick")?.state === "done");
+      // within the debounce: quick's report waits to wake the master when the user stops everything
+      yield* stopAllAsWs(r);
+      yield* until("slow stopped", () => r.stateOf("slow")?.state === "stopped");
+      yield* Effect.sleep("500 millis");
+      expect(r.turns).toHaveLength(1);
+    }),
+  );
+});
+
+test("a card's Stop of one subagent wakes no master turn, with waking on", async () => {
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      const r = yield* rig({
+        child: { a: () => Effect.never },
+        master: (call, turn) => (turn === 1 ? Effect.asVoid(call("spawn", { name: "a", task: "t" })) : Effect.void),
+        scope,
+        wake: "30 millis",
+      });
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("running", () => r.calls.length === 1 && r.idle());
+      expect(yield* r.subagents.stop("a")).toBeNull();
+      yield* until("its report", () => r.log().some((l) => l.startsWith("user: [a] stopped after")));
+      yield* Effect.sleep("200 millis");
+      expect(r.turns).toHaveLength(1);
     }),
   );
 });
@@ -1096,6 +1150,63 @@ test("a parent the user stopped is never started again by its child's report, wi
         expect(r.calls.filter((c) => c.name === "boss")).toHaveLength(1);
       }),
     );
+});
+
+test("a running child's tell to a parent the user stopped is refused, and doesn't start it again; the master's tell and the user's own do", async () => {
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      let tools: ((caller: Caller) => AgentTools) | null = null;
+      const go = yield* Deferred.make<true>();
+      const answer = yield* Deferred.make<{ readonly text: string; readonly error: boolean }>();
+      const r = yield* rig({
+        child: {
+          boss: (_input, _out, call) =>
+            call === 1
+              ? Effect.gen(function* () {
+                  const theirs = tools?.({ agent: "boss" });
+                  if (theirs === undefined) return yield* Effect.die(new Error("no tools"));
+                  yield* theirs.call("spawn", { name: "worker", task: "count" });
+                  return yield* Effect.never;
+                })
+              : Effect.never,
+          // the worker, as models do, tells its parent its result before it ends
+          worker: () =>
+            Effect.gen(function* () {
+              yield* Deferred.await(go);
+              const theirs = tools?.({ agent: "worker" });
+              if (theirs === undefined) return yield* Effect.die(new Error("no tools"));
+              yield* Deferred.succeed(answer, yield* theirs.call("tell", { name: "boss", text: "12 files" }));
+              return yield* Effect.never;
+            }),
+        },
+        master: (call, turn) => (turn === 1 ? Effect.asVoid(call("spawn", { name: "boss", task: "delegate" })) : Effect.void),
+        scope,
+        wake: "30 millis",
+      });
+      tools = r.tools;
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("both running", () => r.stateOf("worker")?.state === "running" && r.idle());
+      expect(yield* r.subagents.stop("boss")).toBeNull(); // the user stops the parent from its card
+      yield* Deferred.succeed(go, true);
+      expect(yield* Deferred.await(answer)).toEqual({
+        error: true,
+        text: "tell: the user stopped boss, and a subagent's message doesn't start it again. Say it in your final reply instead, which your report carries",
+      });
+      yield* Effect.sleep("100 millis");
+      expect(r.stateOf("boss")).toMatchObject({ state: "stopped", why: "stopped by the user" });
+      expect(r.calls.filter((c) => c.name === "boss")).toHaveLength(1);
+      expect(r.subagents.log("boss")?.entries.some((e) => e.text.includes("12 files"))).toBe(false);
+      // the master's tell starts it again: only a subagent's message is refused
+      expect(yield* r.tools("master").call("tell", { name: "boss", text: "carry on" })).toEqual({ error: false, text: "boss had ended (stopped); it starts again with your message." });
+      yield* until("boss again", () => r.calls.filter((c) => c.name === "boss").length === 2);
+      expect(r.calls.filter((c) => c.name === "boss")[1]?.input.texts[0]).toContain("[from OptChat] carry on");
+      // and so does the user's own tell, once the user stopped it again
+      expect(yield* r.subagents.stop("boss")).toBeNull();
+      expect(yield* r.subagents.tell("boss", "go on")).toBeNull();
+      yield* until("boss a third time", () => r.calls.filter((c) => c.name === "boss").length === 3);
+      expect(r.calls.filter((c) => c.name === "boss")[2]?.input.texts[0]).toContain("[from the user] go on");
+    }),
+  );
 });
 
 test("waking pauses after subagents.wakeLimit woken turns in a row; the user's next message resumes it", async () => {

@@ -46,7 +46,8 @@ export const main = (name: string) =>
     const host = found.value;
     const callers = trust._tag === "tailnet" ? trust.names.join(", ") || "nobody" : "this machine only";
     yield* Effect.logInfo(`optchat-device ${name}: http://${host}:${port}, folders ${device.folders.join(", ")}, callers ${callers}`);
-    return yield* Layer.launch(deviceLayer({ claude: claudeBinary(), folders: device.folders, host, name, port, trust, worktrees: subagentSettings(settings).worktrees }));
+    const { disposable, worktrees } = subagentSettings(settings);
+    return yield* Layer.launch(deviceLayer({ claude: claudeBinary(), disposable, folders: device.folders, host, name, port, trust, worktrees }));
   }).pipe(Effect.provide(BunServices.layer));
 
 if (import.meta.main) BunRuntime.runMain(main(Bun.env.OPTCHAT_DEVICE ?? ""));
