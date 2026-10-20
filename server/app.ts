@@ -1,6 +1,6 @@
 // optchat-server (SPEC "Server, WebSocket API and CLI"): the memory, the compactor, the turn loop,
 // and their HTTP face on one port: /ws (AG-UI, ./routes/ws.ts), /mcp (zoom and date over a
-// WebSocket or POST, ./routes/mcp.ts), /api/* (read-only JSON, ./routes/api.ts) and / (the built
+// WebSocket or POST, ./routes/mcp.ts), /api/* (JSON, ./routes/api.ts) and / (the built
 // web UI, ./routes/web.ts). This file builds the parts and hands them to the routes.
 import { BunHttpServer, BunServices } from "@effect/platform-bun";
 import { Context, Deferred, type Duration, Effect, Layer, PubSub } from "effect";
@@ -193,7 +193,7 @@ export const routes = (o: ServerOptions) =>
       yield* mcpRoutes(router, { agents: subagents.tools, artifacts: artifactTools.tools, attached: media.zoomContent, callerOf: subagents.callerOf, mem: chat.mem, secret });
       yield* artifactRoutes(router, { artifacts });
       yield* assetRoutes(router, { media, settings: mediaConfig });
-      yield* apiRoutes(router, { device: o.device, mem: chat.mem, reasoning, report, session, settings, subagents, usagePath });
+      yield* apiRoutes(router, { assets: { find: media.find, report }, device: o.device, mem: chat.mem, reasoning, report, session, settings, subagents, usagePath });
       yield* webRoute(router, o.web);
       return { artifacts, chat, session, subagents };
     }),

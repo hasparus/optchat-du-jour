@@ -197,8 +197,35 @@ export const SessionState = Schema.Struct({
   // the subagents (SPEC M7a): every running one, then the most recent others, newest first.
   // Optional: a server from before them sends none, and a client from before them ignores it
   subagents: Schema.optional(Schema.Array(SubagentInfo)),
+  // How many times the turn loop has started (E41): a Stop or a resume names the run of it the user
+  // saw, so one sent again after a reconnect never stops or settles a later one. Optional, as above
+  loop: Schema.optional(Schema.Number),
 });
 export type SessionState = typeof SessionState.Type;
+
+// POST /api/messages (E41): a message from outside the app, iOS Shortcuts or a share extension,
+// as /ws takes one: `id` is its client's, so a retry is answered and not taken again; `text`, and
+// `attachments` uploaded first (PUT /api/assets) by their digests; `device`, `engine` and
+// `followUp` as a RunAgentInput's forwardedProps.
+export const PostMessage = Schema.Struct({
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
+  text: Schema.String,
+  attachments: Schema.optional(Schema.Array(Schema.Struct({ kind: Schema.Literals(["image", "video"]), sha: Schema.String }))),
+  device: Schema.optional(Schema.String),
+  engine: Schema.optional(Schema.String),
+  followUp: Schema.optional(FollowUp),
+});
+export type PostMessage = typeof PostMessage.Type;
+// The server's answer to a client action by its id (E41): /ws's CUSTOM `received`, to the client
+// that sent it, and POST /api/messages's body. `taken`: seen for the first time, and done. A repeat
+// is done again by nothing: a message is still `held` for a turn, `logged` as entry `messageId`, or
+// `taken-back` by a client (src/once.ts Receipt); any other action was `done` already.
+export const Received = Schema.Struct({
+  id: Schema.String,
+  outcome: Schema.Literals(["taken", "done", "held", "logged", "taken-back"]),
+  messageId: Schema.NullOr(Schema.String),
+});
+export type Received = typeof Received.Type;
 
 // ---------------------------------------------------------------------------------------------
 // how log entries map to AG-UI messages (SPEC "Protocol"): a message id is the entry's log index,

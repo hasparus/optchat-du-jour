@@ -1,10 +1,11 @@
 // A scripted optchat-server for UI tests (SPEC "Web UI": fixtures replay conversations as AG-UI
 // events, no model, no network). Each socket the app opens gets the server's greeting (a
 // MESSAGES_SNAPSHOT and a STATE_SNAPSHOT), then whatever the test plays; what the app sends is
-// recorded. @shadcn/helpers/tanstack-ai can't stand in here: it answers a client's own request,
+// recorded, and each action answered with a `received` by its id (E41), unless the test says to
+// drop the answers (`receipts`), as a socket that died before they came back. @shadcn/helpers/tanstack-ai can't stand in here: it answers a client's own request,
 // while our server pushes snapshots and turns other clients started.
 import { EventType } from "@ag-ui/core";
-import { Schema } from "effect";
+import { Schema, Struct } from "effect";
 import type { SocketLike } from "@/lib/connection";
 import type { Inbound } from "@/lib/protocol";
 import type { SessionState } from "@wire";
@@ -78,9 +79,11 @@ export const state = (s: Partial<SessionState>): Inbound => ({
   type: EventType.STATE_DELTA,
 });
 
-// a frame the app sent: a RunAgentInput, or the abort
+// a frame the app sent: a RunAgentInput, or an action
 const Sent = Schema.Struct({
   type: Schema.optional(Schema.String),
+  id: Schema.optional(Schema.String), // an action's (E41); a message's is its own
+  loop: Schema.optional(Schema.Number), // the run of the turn loop a Stop or a resume is for
   // content: the text, or with attachments AG-UI's parts (lib/protocol.ts runInput)
   messages: Schema.optional(Schema.Array(Schema.Struct({ content: Schema.Union([Schema.String, Schema.Array(Schema.Json)]), id: Schema.String, role: Schema.String }))),
   forwardedProps: Schema.optional(Schema.Struct({ device: Schema.optional(Schema.String), engine: Schema.optional(Schema.String), followUp: Schema.optional(Schema.String) })),
@@ -100,10 +103,27 @@ export const ack = (clientId: string, at: number | null, error: string | null = 
   value: { clientId, error, messageId: at === null ? null : String(at) },
 });
 export const parseSent = Schema.decodeUnknownSync(Schema.fromJsonString(Sent));
+// what the app sent, each action without the id it went out with (a fresh one each time)
+export const actionsOf = (sent: readonly string[]) => sent.map((f) => Struct.omit(parseSent(f), ["id"]));
+// the ids a frame the app sent is answered by: its user messages', or the action's
+export const idsOf = (frame: string) => {
+  const f = parseSent(frame);
+  return f.messages ? f.messages.flatMap((m) => (m.role === "user" ? [m.id] : [])) : f.id === undefined ? [] : [f.id];
+};
+// the server got action `id`: `taken` the first time
+export const received = (id: string, outcome: "taken" | "done" | "held" | "logged" | "taken-back" = "taken", at: number | null = null): Inbound => ({
+  name: "received",
+  type: EventType.CUSTOM,
+  value: { id, messageId: at === null ? null : String(at), outcome },
+});
+
+// "answer": each frame the app sends is answered with its `received`; "drop": none is
+export type Mode = { receipts: "answer" | "drop" };
 
 export function fakeServer(greeting: () => readonly Inbound[]) {
   const sockets: FakeSocket[] = [];
   const sent: string[] = [];
+  const mode: Mode = { receipts: "answer" };
 
   class FakeSocket implements SocketLike {
     readyState = 0;
@@ -121,6 +141,10 @@ export function fakeServer(greeting: () => readonly Inbound[]) {
     }
     send(frame: string) {
       sent.push(frame);
+      if (mode.receipts === "drop") return;
+      queueMicrotask(() => {
+        if (this.readyState === 1) for (const id of idsOf(frame)) this.fire("message", { data: JSON.stringify(received(id)) });
+      });
     }
     close() {
       if (this.readyState === 3) return;
@@ -133,6 +157,7 @@ export function fakeServer(greeting: () => readonly Inbound[]) {
   }
 
   return {
+    mode,
     socket: (url: string) => new FakeSocket(url),
     sent,
     sockets,

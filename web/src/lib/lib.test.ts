@@ -4,7 +4,7 @@ import { Option } from "effect";
 import { openStream } from "../../../server/agui.ts";
 import type { SessionEvent } from "../../../src/session.ts";
 import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { ack, type Entry, fakeServer, IDLE, parseSent, said, snapshot, state } from "../test/fixture";
+import { ack, actionsOf, type Entry, fakeServer, IDLE, idsOf, parseSent, received, said, snapshot, state } from "../test/fixture";
 import { openLink, SILENT_MS, type SocketLike, STALE_MS, wakeOnReturn } from "./connection";
 import { sentKey } from "./draft";
 import { applyEvent, applyPage, emptyLog, hole, type Log, MAX_HELD, tip, trimHeld, visible, withDraft } from "./log";
@@ -95,7 +95,7 @@ const rec = (date: string, o: Partial<UsageRecord>): UsageRecord => ({
 });
 
 describe("link", () => {
-  test("reconnects after a drop and sends a message written while it was down, but not a cancel", async () => {
+  test("reconnects after a drop and sends a message written while it was down, but not a cancel; a cancel made while open names its loop", async () => {
     const server = fakeServer(() => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT }]);
     const link = openLink("ws://x/ws", { retryMs: 1, socket: server.socket });
     const statuses: string[] = [];
@@ -106,7 +106,7 @@ describe("link", () => {
     expect(link.status()).toBe("open");
     server.drop();
     link.send("while down", "id-1", { device: "macbook" });
-    expect(link.abort()).toBe(false); // kept, it would cancel whatever turn runs after the reconnect
+    expect(link.abort(2)).toBe(false); // made while down, it would cancel whatever turn runs after the reconnect
     expect(server.sent).toHaveLength(0);
     await tick();
     expect(server.sockets).toHaveLength(2);
@@ -115,8 +115,42 @@ describe("link", () => {
     const frame = parseSent(server.sent[0] ?? "{}");
     expect(frame.messages?.at(-1)).toMatchObject({ content: "while down", id: "id-1", role: "user" });
     expect(frame.forwardedProps?.device).toBe("macbook");
-    expect(link.abort()).toBe(true);
-    expect(server.sent[1]).toBe('{"type":"abort"}');
+    expect(link.abort(2)).toBe(true);
+    expect(parseSent(server.sent[1] ?? "{}")).toMatchObject({ loop: 2, type: "abort" });
+    link.close();
+  });
+
+  test("every action is kept until the server's receipt for its id, and goes out again, in the order made, on each socket that opens; once received, never again", async () => {
+    const server = fakeServer(() => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT }]);
+    server.mode.receipts = "drop"; // the socket dies before any answer comes back
+    const link = openLink("ws://x/ws", { retryMs: 1, socket: server.socket });
+    await tick();
+    link.send("first", "m1");
+    expect(link.abort(4)).toBe(true);
+    link.configure({ followUp: "queue" });
+    expect(link.takeBack("q1")).toBe(true);
+    link.send("second", "m2");
+    link.send("first", "m1"); // kept already: not twice
+    expect(link.subagent({ name: "scout", text: "go on", type: "tell" })).toBe(true);
+    const made = [...server.sent];
+    expect(made).toHaveLength(6);
+    const ids = made.map((f) => idsOf(f)[0]);
+    expect(new Set(ids).size).toBe(6); // each action its own id
+    server.drop();
+    await tick(20);
+    expect(server.sent.slice(made.length)).toEqual(made); // the same frames, ids and all, in order
+    // the server answers some of them (a repeat or not, it is received): those go no more
+    server.play(...[ids[0], ids[2], ids[3]].map((id) => received(id ?? "")));
+    server.drop();
+    await tick(20);
+    expect(server.sent.slice(2 * made.length)).toEqual([1, 4, 5].map((k) => made[k] ?? ""));
+    server.mode.receipts = "answer";
+    server.drop();
+    await tick(20);
+    const answered = server.sent.length;
+    server.drop();
+    await tick(20);
+    expect(server.sent).toHaveLength(answered); // all received: nothing goes out again
     link.close();
   });
 
@@ -452,20 +486,17 @@ describe("log", () => {
 });
 
 // user entries from..to-1: m<i>, except "same" at 12 and 600
-const twice = (from: number, to: number) => Array.from({ length: to - from }, (_, k): Entry => ({ kind: "user", text: from + k === 12 || from + k === 600 ? "same" : `m${from + k}` }));
-// /api/messages over `twice`
-const twicePages = async (before: number, limit: number) => {
-  const from = Math.max(0, before - limit);
-  return { entries: twice(from, before).map((e, k) => entry(from + k, e.kind, e.text)) };
-};
 const waiting = (session: { readonly get: () => Session }) => queued(session.get()).map((q) => (q.error === null ? q.text : `${q.text} (${q.error})`));
 const idOf = (server: { readonly sent: readonly string[] }, k: number) => parseSent(server.sent[k] ?? "{}").messages?.at(-1)?.id ?? "";
+// the ids of the messages the app sent, in order, each time it went out
+const messageIds = (server: { readonly sent: readonly string[] }) => server.sent.flatMap((f) => parseSent(f).messages?.map((m) => m.id) ?? []);
+const actions = (server: { readonly sent: readonly string[] }) => actionsOf(server.sent);
 
 describe("session", () => {
-  // a resume kept for later would settle whatever turn waits after the reconnect, maybe retrying
+  // a resume made while down would settle whatever turn waits after the reconnect, maybe retrying
   // the engine that just hit its limit: the user never chose that
-  test("a resume goes out only while connected and says when it didn't; the follow-up setting and a message wait for the connection", async () => {
-    const server = fakeServer(() => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT }]);
+  test("a resume is made only while connected and says when it wasn't, and names the run of the turn loop it saw; the follow-up setting and a message wait for the connection", async () => {
+    const server = fakeServer(() => [snapshot([]), { snapshot: { ...IDLE, loop: 3, phase: "needs-model" }, type: EventType.STATE_SNAPSHOT }]);
     const link = openLink("ws://x/ws", { socket: server.socket }); // it opens once this test yields
     const session = makeSession(link);
     expect(session.resume("openai-plan:gpt-6.1-sol")).toBe(false);
@@ -473,36 +504,29 @@ describe("session", () => {
     link.configure({ followUp: "queue" });
     session.send("for sol", { engine: "openai-plan:gpt-6.1-sol" });
     await tick();
-    const { sent } = server;
     // no resume replayed; the message names its engine
-    expect(sent.map((f) => parseSent(f))).toMatchObject([{ followUp: "queue", type: "settings" }, { forwardedProps: { engine: "openai-plan:gpt-6.1-sol" } }]);
+    expect(actions(server)).toMatchObject([{ followUp: "queue", type: "settings" }, { forwardedProps: { engine: "openai-plan:gpt-6.1-sol" } }]);
     expect(session.resume("openai-plan:gpt-6.1-sol")).toBe(true);
-    expect(parseSent(sent.at(-1) ?? "")).toEqual({ engine: "openai-plan:gpt-6.1-sol", type: "resume" });
+    expect(actions(server).at(-1)).toEqual({ engine: "openai-plan:gpt-6.1-sol", loop: 3, type: "resume" });
   });
 
-  test("messages sent before a reload from below the loaded window are looked for in /api/messages up to it; only the missing are offered to send again", async () => {
+  test("messages kept from before a reload go out again under their ids once the state says the server doesn't hold them; one a page from before E41 kept is marked instead", async () => {
     const sent = [
-      { from: 10, id: "a", media: [], text: "m12" },
-      { from: 20, id: "b", media: [], text: "never logged" },
+      { engine: "openai-plan:gpt-6.1-sol", id: "a", media: [], text: "logged while away" },
+      { id: "b", media: [], text: "held there" },
+      { from: 20, id: "c", media: [], text: "from an older page" },
     ];
     localStorage.setItem(sentKey, JSON.stringify({ at: Date.now(), sent }));
-    const { asked, session } = longLog({ n: 700 }); // the window holds 500..699
-    await tick(20);
-    expect(asked).toEqual(["500/490"]); // from the oldest one's `from` to the window, one page
-    expect(waiting(session)).toEqual([`never logged (${UNSENT})`]);
-  });
-
-  test("two kept messages with the same text, one from below the window: each is matched once, in log order, and neither is marked", async () => {
-    const sent = [
-      { from: 10, id: "a", media: [], text: "same" },
-      { from: 550, id: "b", media: [], text: "same" },
-    ];
-    localStorage.setItem(sentKey, JSON.stringify({ at: Date.now(), sent }));
-    // the log has "same" at 12 (a's) and at 600 (b's); the window holds 500..699
-    const server = fakeServer(() => [snapshot(twice(500, 700), 500), { snapshot: { ...IDLE, messages: 700 }, type: EventType.STATE_SNAPSHOT }]);
-    const session = makeSession(openLink("ws://x/ws", { retryMs: 1, socket: server.socket }), { messages: twicePages });
-    await tick(20);
-    expect(waiting(session)).toEqual([]);
+    const server = fakeServer(() => [snapshot([]), { snapshot: { ...IDLE, pending: [{ clientId: "b", engine: "claude-code:opus", queued: true, text: "held there" }] }, type: EventType.STATE_SNAPSHOT }]);
+    server.mode.receipts = "drop";
+    const session = makeSession(openLink("ws://x/ws", { retryMs: 1, socket: server.socket }));
+    await tick();
+    expect(messageIds(server)).toEqual(["a"]);
+    expect(actions(server)[0]).toMatchObject({ forwardedProps: { engine: "openai-plan:gpt-6.1-sol" } });
+    expect(waiting(session)).toEqual(["held there", "logged while away", `from an older page (${UNSENT})`]);
+    // the server logged it while the page was away: its receipt says where, and settles it
+    server.play(received("a", "logged", 7));
+    expect(waiting(session)).toEqual(["held there", `from an older page (${UNSENT})`]);
   });
 
   test("a take-back asked for and not answered is forgotten on a reconnect, so it can be asked again", async () => {
@@ -541,66 +565,19 @@ describe("session", () => {
     expect(waiting(session)).toEqual(["again"]);
   });
 
-  test("a message the log refused shows as not logged with the error, until the log holds it", async () => {
+  test("a message the log refused shows as not logged with the error, until its ack says the log holds it; an entry with its text is not that", async () => {
     const { server, session } = await setup();
     session.send("lost?");
     server.play(ack(idOf(server, 0), null, "disk full"));
     expect(waiting(session)).toEqual(["lost? (disk full)"]);
-    // it stayed queued there: the next message's run logs it, and its text is matched even
-    // without the ack that comes with it
-    server.play(...said(1, "user", "lost?"));
+    // another client's message with the same text, then ours, logged with the next message's run
+    server.play(ack("someone else's", 1), ...said(1, "user", "lost?"));
+    expect(waiting(session)).toEqual(["lost? (disk full)"]);
+    server.play(ack(idOf(server, 0), 2), ...said(2, "user", "lost?"));
     expect(waiting(session)).toEqual([]);
   });
 
-  test("an entry acked to another message is never claimed by text, also when the ack was another client's", async () => {
-    const { server, session } = await setup();
-    session.send("same");
-    server.play(ack(idOf(server, 0), null, "disk full"));
-    // this page's second "same" and another client's are logged, each with its own ack
-    session.send("same");
-    server.play(ack(idOf(server, 1), 1), ...said(1, "user", "same"), ack("someone else's", 2), ...said(2, "user", "same"));
-    expect(waiting(session)).toEqual(["same (disk full)"]);
-    server.play(ack(idOf(server, 0), 3), ...said(3, "user", "same"));
-    expect(waiting(session)).toEqual([]);
-  });
-
-  test("an ack lost to a dropped connection is made up from the snapshot after it; one for the new connection is not", async () => {
-    const log = { n: 1 };
-    const server = fakeServer(() => [snapshot([{ kind: "user", text: "old" }, ...Array.from({ length: log.n - 1 }, (): Entry => ({ kind: "user", text: "lost ack" }))]), { snapshot: { ...IDLE, messages: log.n }, type: EventType.STATE_SNAPSHOT }]);
-    const link = openLink("ws://x/ws", { retryMs: 1, socket: server.socket });
-    const session = makeSession(link);
-    await tick();
-    session.send("lost ack");
-    session.send("not yet");
-    log.n = 2; // "lost ack" was logged while the page was away; its ack went to the old socket
-    server.drop();
-    await tick(20);
-    // "not yet" went out on the old socket too, and neither the log nor the queue has it
-    expect(waiting(session)).toEqual([`not yet (${UNSENT})`]);
-    // sent on the new connection, its text in the log is not enough: its own ack decides
-    session.send("lost ack");
-    server.play(snapshot([{ kind: "user", text: "old" }, { kind: "user", text: "lost ack" }]));
-    expect(waiting(session)).toEqual([`not yet (${UNSENT})`, "lost ack"]);
-  });
-
-  test("a message sent on a connection that dropped is kept, marked, unless the log or the server's queue has it", async () => {
-    let heldThere: readonly { readonly clientId: string | null; readonly engine: string; readonly queued: boolean; readonly text: string }[] = [];
-    const server = fakeServer(() => [snapshot([{ kind: "user", text: "old" }]), { snapshot: { ...IDLE, messages: 1, pending: heldThere }, type: EventType.STATE_SNAPSHOT }]);
-    const link = openLink("ws://x/ws", { retryMs: 1, socket: server.socket });
-    const session = makeSession(link);
-    await tick();
-    session.send("in flight");
-    session.send("held there");
-    heldThere = [{ clientId: idOf(server, 1), engine: "claude-code:opus", queued: false, text: "held there" }]; // the server had it, in any state of its inbox, when the socket dropped
-    server.drop();
-    await tick(20);
-    expect(waiting(session)).toEqual(["held there", `in flight (${UNSENT})`]);
-    // the log takes it after all: it is gone from the queue
-    server.play(...said(1, "user", "in flight"));
-    expect(waiting(session)).toEqual(["held there"]);
-  });
-
-  test("after a reconnect the server's copy is told by the client id, not the text: of two equal texts only the lost one is marked", async () => {
+  test("an ack lost to a dropped connection: after the reconnect the message goes out again under its id, and the server's receipt settles it; one the server holds is not sent again", async () => {
     let heldThere: readonly { readonly clientId: string | null; readonly engine: string; readonly queued: boolean; readonly text: string }[] = [];
     const server = fakeServer(() => [snapshot([{ kind: "user", text: "old" }]), { snapshot: { ...IDLE, messages: 1, pending: heldThere }, type: EventType.STATE_SNAPSHOT }]);
     const link = openLink("ws://x/ws", { retryMs: 1, socket: server.socket });
@@ -608,11 +585,32 @@ describe("session", () => {
     await tick();
     session.send("same");
     session.send("same");
-    heldThere = [{ clientId: idOf(server, 1), engine: "claude-code:opus", queued: false, text: "same" }]; // held while it waited for summaries: the second one only
+    session.send("logged while away");
+    await tick();
+    const [first = "", second = "", third = ""] = messageIds(server);
+    // the server holds the second; the third it logged, and its ack went to the socket that dropped
+    heldThere = [{ clientId: second, engine: "claude-code:opus", queued: false, text: "same" }];
     server.drop();
     await tick(20);
-    expect(session.get().pending.map((p) => p.error)).toEqual([UNSENT, null]);
-    expect(waiting(session)).toEqual(["same", `same (${UNSENT})`]);
+    expect(messageIds(server).slice(3)).toEqual([first, third]); // in the order they were sent
+    expect(waiting(session)).toEqual(["same", "same", "logged while away"]);
+    server.play(received(third, "logged", 1));
+    expect(waiting(session)).toEqual(["same", "same"]);
+    expect(session.get().pending.every((p) => p.error === null)).toBe(true); // nothing for the user to send again
+  });
+
+  test("a message another client took back while this page was away is dropped once the server says so", async () => {
+    const server = fakeServer(() => [snapshot([]), { snapshot: IDLE, type: EventType.STATE_SNAPSHOT }]);
+    server.mode.receipts = "drop";
+    const session = makeSession(openLink("ws://x/ws", { retryMs: 1, socket: server.socket }));
+    await tick();
+    session.send("for later");
+    server.drop();
+    await tick(20);
+    const id = idOf(server, 0);
+    expect(messageIds(server)).toEqual([id, id]);
+    server.play(received(id, "taken-back"));
+    expect(waiting(session)).toEqual([]);
   });
 
   test("a status marker goes after the last entry the run's snapshot holds, not after a cut-off reply's index", async () => {

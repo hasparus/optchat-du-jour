@@ -1,24 +1,32 @@
 // GET /ws (SPEC "Protocol", E15): one WebSocket per client, AG-UI events out; RunAgentInput frames,
-// aborts, take-backs, settings and resumes in. Every client watches the same server-owned session.
+// aborts, take-backs, settings and resumes in, each done once by its id (E41). Every client watches
+// the same server-owned session.
 import { type Duration, Effect, Option, Predicate, PubSub, Schema } from "effect";
 import { EventType } from "@ag-ui/core";
 import { type HttpRouter, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
-import type { Session } from "../../src/session.ts";
+import { makeSeen } from "../../src/once.ts";
+import type { InputOptions, Session } from "../../src/session.ts";
 import type { Subagents } from "../../src/subagents.ts";
 import type { Entry } from "../../src/tree.ts";
-import { HEARTBEAT } from "../../src/config.ts";
-import { type Asset, FollowUp, shortSha } from "../../src/wire.ts";
+import { ACTS, HEARTBEAT } from "../../src/config.ts";
+import { FollowUp, type Received } from "../../src/wire.ts";
 import { type AgUiEvent, openStream } from "../agui.ts";
+import { type Assets, takeMessage } from "../messages.ts";
 
-// What a client sends: AG-UI's RunAgentInput (its user messages not seen before are the ones to
-// answer), an abort, a take-back of a held message by the id its sender gave it, a change to the
-// session's settings, the resume of a turn waiting for a model on an engine of the master's chain,
-// or a subagent card's tell, stop or model (SPEC M7a), or the sheet's Stop all (the turn and every subagent). A user message's content is its text, or AG-UI's parts: text, and image
-// or video parts whose source is a URL "asset:<sha256>", an upload PUT /api/assets stored
-// (SPEC "Media"). The server finds each in its own store; a client never names a path.
-// `forwardedProps.followUp` asks for the other follow-up behavior for this one message;
-// `forwardedProps.engine` names the engine of the master's chain it is for (the chain's first if none).
+// What a client sends: AG-UI's RunAgentInput (its user messages are the ones to answer), an abort,
+// a take-back of a held message by the id its sender gave it, a change to the session's settings,
+// the resume of a turn waiting for a model on an engine of the master's chain, or a subagent card's
+// tell, stop or model (SPEC M7a), or the sheet's Stop all (the turn and every subagent). A user
+// message's content is its text, or AG-UI's parts: text, and image or video parts whose source is a
+// URL "asset:<sha256>", an upload PUT /api/assets stored (SPEC "Media"). The server finds each in
+// its own store; a client never names a path. `forwardedProps.followUp` asks for the other
+// follow-up behavior for this one message; `forwardedProps.engine` names the engine of the master's
+// chain it is for (the chain's first if none).
+// Every action carries an id of its client's (E41): a message its own, any other `id`; each is
+// done once and answered to its sender with a `received`, however often it comes. An abort, a Stop
+// all and a resume name the run of the turn loop they were for (`loop`, the state's). A frame
+// without an id (a client from before E41, the REPL's) is done as it comes, unanswered.
 const Source = Schema.Struct({ type: Schema.String, value: Schema.String });
 const ContentPart = Schema.Struct({ text: Schema.optional(Schema.String), type: Schema.String, source: Schema.optional(Source) });
 const InboundMessage = Schema.Struct({
@@ -27,18 +35,20 @@ const InboundMessage = Schema.Struct({
   role: Schema.String,
 });
 type InboundMessage = typeof InboundMessage.Type;
+const Id = Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)));
+const Loop = Schema.optional(Schema.Number);
 const Inbound = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("abort") }),
-  Schema.Struct({ type: Schema.Literal("take-back"), clientId: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("abort"), id: Id, loop: Loop }),
+  Schema.Struct({ type: Schema.Literal("take-back"), clientId: Schema.String, id: Id }),
   // `lead`: an out-of-date client's model pick (the server no longer has one): it is told to reload
-  Schema.Struct({ type: Schema.Literal("settings"), followUp: Schema.optional(FollowUp), lead: Schema.optional(Schema.Unknown) }),
-  Schema.Struct({ type: Schema.Literal("resume"), engine: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("settings"), followUp: Schema.optional(FollowUp), lead: Schema.optional(Schema.Unknown), id: Id }),
+  Schema.Struct({ type: Schema.Literal("resume"), engine: Schema.String, id: Id, loop: Loop }),
   // a subagent's card (SPEC M7a): a message to it, its stop, the model of its next call
-  Schema.Struct({ type: Schema.Literal("tell"), name: Schema.String, text: Schema.String }),
-  Schema.Struct({ type: Schema.Literal("stop-subagent"), name: Schema.String }),
-  Schema.Struct({ type: Schema.Literal("subagent-model"), name: Schema.String, model: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("tell"), name: Schema.String, text: Schema.String, id: Id }),
+  Schema.Struct({ type: Schema.Literal("stop-subagent"), name: Schema.String, id: Id }),
+  Schema.Struct({ type: Schema.Literal("subagent-model"), name: Schema.String, model: Schema.String, id: Id }),
   // Background work's Stop all: the turn, as an abort, and every running subagent, as their Stops
-  Schema.Struct({ type: Schema.Literal("stop-all") }),
+  Schema.Struct({ type: Schema.Literal("stop-all"), id: Id, loop: Loop }),
   Schema.Struct({
     forwardedProps: Schema.optional(Schema.Struct({ device: Schema.optional(Schema.String), followUp: Schema.optional(FollowUp), engine: Schema.optional(Schema.String) })),
     messages: Schema.Array(InboundMessage),
@@ -46,6 +56,8 @@ const Inbound = Schema.Union([
 ]);
 type Inbound = typeof Inbound.Type;
 const decodeInbound = Schema.decodeUnknownOption(Schema.fromJsonString(Inbound));
+// the id of a frame that doesn't decode (a newer client's action, a malformed one), if it has one
+const decodeId = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Struct({ id: Schema.String })));
 
 const textOf = ({ content = "" }: InboundMessage) => (Predicate.isString(content) ? content : content.map((p) => (p.type === "text" ? (p.text ?? "") : "")).join(""));
 
@@ -62,36 +74,20 @@ const attachmentsOf = ({ content = "" }: InboundMessage) =>
 // what a client that still sends a model pick (`settings.lead`, before PR #21) is told, alone
 export const OUT_OF_DATE = "this client is out of date: reload it (the model is picked per message now)";
 
-// how many message ids a connection remembers
-const SEEN = 1000;
-
-// The user messages of each RunAgentInput on one connection that it has not sent before: a client
-// that sends the whole history every time must not have old texts answered again. An id that is a
-// log index names an entry the server sent (message ids are log indexes, server/agui.ts) when that
-// entry is a user message with the same text; any other id, numeric or not, is the client's own.
-export const unseen = (entries: readonly Entry[]) => {
-  const seen = new Set<string>();
-  const logged = (id: string, text: string) => {
-    const entry = /^\d+$/.test(id) ? entries[Number(id)] : undefined;
-    return entry?.kind === "user" && entry.text === text;
-  };
-  return (messages: readonly InboundMessage[]) =>
-    messages.filter((m) => {
-      const { id } = m;
-      if (m.role !== "user" || seen.has(id) || logged(id, textOf(m))) return false;
-      seen.add(id);
-      for (const old of seen) {
-        if (seen.size <= SEEN) break;
-        seen.delete(old); // the oldest first
-      }
-      return true;
-    });
+// A client that sends the whole history every time must not have old texts answered again: an id
+// that is a log index names an entry the server sent (message ids are log indexes, server/agui.ts)
+// when that entry is a user message with the same text, and that message is logged already. Any
+// other id, numeric or not, is the client's own, which the session answers once (E41).
+export const historyOf = (entries: readonly Entry[]) => (m: InboundMessage) => {
+  const entry = /^\d+$/.test(m.id) ? entries[Number(m.id)] : undefined;
+  return entry?.kind === "user" && entry.text === textOf(m) ? entry : null;
 };
 
 // The sheet's Stop all: reports hushed first, so the stopped runs' reports, and any other until the
-// user's next message, wake no turn (E39); then the turn, then every subagent
-export const stopEverything = (session: Pick<Session, "hush" | "cancel">, subagents: Pick<Subagents, "stopAll"> | undefined) =>
-  session.hush.pipe(Effect.andThen(session.cancel), Effect.andThen(subagents?.stopAll ?? Effect.void), Effect.asVoid);
+// user's next message, wake no turn (E39); then the turn (of `loop`, when named), then every
+// subagent. What it couldn't stop is said.
+export const stopEverything = (session: Pick<Session, "hush" | "stop">, subagents: Pick<Subagents, "stopAll"> | undefined, loop?: number) =>
+  session.hush.pipe(Effect.andThen(session.stop(loop)), Effect.tap(() => subagents?.stopAll ?? Effect.void));
 
 export const wsRoute = (
   router: HttpRouter.HttpRouter,
@@ -101,12 +97,15 @@ export const wsRoute = (
     readonly entries: readonly Entry[];
     readonly thread: string;
     readonly window: number;
-    // the asset store's lookup, and where a client is told of one it named that isn't there
-    readonly assets: { readonly find: (sha: string) => Asset | null; readonly report: (message: string) => Effect.Effect<void> };
+    readonly assets: Assets; // the asset store's lookup, and where a client is told of one it named that isn't there
     readonly heartbeat?: Duration.Input; // HEARTBEAT
   },
-) =>
-  router.add("GET", "/ws", (request) =>
+) => {
+  // the ids of the actions other than messages done so far, the newest ACTS, on every connection:
+  // one sent again on another socket, or from another tab, is answered and not done again (E41)
+  const done = makeSeen(ACTS);
+  const history = historyOf(o.entries);
+  return router.add("GET", "/ws", (request) =>
     Effect.gen(function* () {
       const socket = yield* request.upgrade;
       const write = yield* socket.writer;
@@ -126,18 +125,13 @@ export const wsRoute = (
         Effect.forever,
         Effect.forkScoped,
       );
-      const fresh = unseen(o.entries);
-      // a message's attachments as stored; one the store doesn't hold is left out, and said
-      const attached = (m: InboundMessage) =>
-        Effect.forEach(attachmentsOf(m), ({ kind, sha }) => {
-          const asset = o.assets.find(sha);
-          if (asset?.kind === kind) return Effect.succeed([asset]);
-          return o.assets.report(`${kind} ${shortSha(sha)} is not on the server: left out of the message`).pipe(Effect.as([]));
-        }).pipe(Effect.map((found) => found.flat()));
+      // what this client alone is told: an action's receipt (E41), why one did nothing
+      const answer = (value: Received) => send([{ name: "received", type: EventType.CUSTOM, value }]);
+      const say = (error: string | null) => (error === null ? Effect.void : send([{ name: "info", type: EventType.CUSTOM, value: error }]));
       // a card's action; what went wrong is told to this client alone
       const subagent = (m: Extract<Inbound, { readonly type: "tell" | "stop-subagent" | "subagent-model" }>) => {
         const agents = o.subagents;
-        const done =
+        const did =
           agents === undefined
             ? Effect.succeed("there are no subagents on this server")
             : m.type === "tell"
@@ -145,40 +139,53 @@ export const wsRoute = (
               : m.type === "stop-subagent"
                 ? agents.stop(m.name)
                 : agents.pick(m.name, m.model);
-        return done.pipe(Effect.flatMap((error) => (error === null ? Effect.void : send([{ name: "info", type: EventType.CUSTOM, value: error }]))));
+        return did.pipe(Effect.flatMap(say));
       };
-      const handle = (m: Inbound) => {
-        if ("messages" in m) {
-          const { device, engine, followUp } = m.forwardedProps ?? {};
-          return Effect.forEach(fresh(m.messages), (x) => attached(x).pipe(Effect.flatMap((media) => o.session.input(textOf(x), { clientId: x.id, device, engine, followUp, media }))), {
-            discard: true,
-          });
-        }
+      // A user message: one this client was sent as the log's (`history`) is logged, any other the
+      // session answers once by its id
+      const message = (m: InboundMessage, forwarded: InputOptions): Effect.Effect<Received> => {
+        const logged = history(m);
+        if (logged !== null) return Effect.succeed({ id: m.id, messageId: String(logged.i), outcome: "logged" });
+        return takeMessage(o.session, o.assets, { ...forwarded, attachments: attachmentsOf(m), id: m.id, text: textOf(m) });
+      };
+      const act = (m: Exclude<Inbound, { readonly messages: unknown }>) => {
         switch (m.type) {
           case "abort":
-            return o.session.cancel;
+            return o.session.stop(m.loop).pipe(Effect.flatMap(say));
           case "stop-all":
-            return stopEverything(o.session, o.subagents);
+            return stopEverything(o.session, o.subagents, m.loop).pipe(Effect.flatMap(say));
           case "take-back":
             return o.session.takeBack(m.clientId);
           case "settings":
-            return o.session
-              .configure({ followUp: m.followUp })
-              .pipe(Effect.andThen(m.lead === undefined ? Effect.void : send([{ name: "info", type: EventType.CUSTOM, value: OUT_OF_DATE }])));
+            return o.session.configure({ followUp: m.followUp }).pipe(Effect.andThen(m.lead === undefined ? Effect.void : say(OUT_OF_DATE)));
           case "resume":
-            return o.session.resume(m.engine);
+            return o.session.resume(m.engine, m.loop);
           case "tell":
           case "stop-subagent":
           case "subagent-model":
             return subagent(m);
         }
       };
+      const handle = (m: Inbound) => {
+        if ("messages" in m) {
+          const { device, engine, followUp } = m.forwardedProps ?? {};
+          return Effect.forEach(m.messages, (x) => (x.role === "user" ? message(x, { device, engine, followUp }).pipe(Effect.flatMap(answer)) : Effect.void), { discard: true });
+        }
+        // done once by its id, or, with none, as it comes
+        if (m.id === undefined) return act(m);
+        if (!done.add(m.id)) return answer({ id: m.id, messageId: null, outcome: "done" });
+        return act(m).pipe(Effect.andThen(answer({ id: m.id, messageId: null, outcome: "taken" })));
+      };
+      // a frame that doesn't decode is dropped, and answered when it has an id, so its client
+      // doesn't send it again on every socket
+      const unread = (frame: string) => Option.match(decodeId(frame), { onNone: () => Effect.void, onSome: ({ id }) => answer({ id, messageId: null, outcome: "done" }) });
       const pull = yield* Socket.readerString(socket);
       yield* pull.pipe(
-        Effect.flatMap((frames) => Effect.forEach(frames, (frame) => Option.match(decodeInbound(frame), { onNone: () => Effect.void, onSome: handle }))),
+        Effect.flatMap((frames) => Effect.forEach(frames, (frame) => Option.match(decodeInbound(frame), { onNone: () => unread(frame), onSome: handle }))),
         Effect.forever,
         Effect.ignore, // the socket closed
       );
       return HttpServerResponse.empty();
     }).pipe(Effect.scoped, Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
   );
+};

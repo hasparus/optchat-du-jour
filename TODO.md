@@ -66,6 +66,9 @@ Everything is built and tested against fakes. Each check below needs a real logi
 ## Machines and network
 
 - [ ] The phone over Tailscale as a PWA: install, reconnect, chat (SPEC M2). The iOS app has its own list below.
+- [ ] Resends on the phone (SPEC E41): send, then airplane mode before the answer, back a minute later: the message shows once and nothing asks to be sent again; the same with the PWA sent to the background and killed by iOS meanwhile (the message is kept across the reload and goes out again). A Stop tapped just as the network went, coming back after the turn ended and another began: the new turn goes on, with "not stopped" said.
+- [ ] Paged snapshots on a slow link (SPEC E42): the phone on a throttled connection (Network Link Conditioner's 3G or Edge) with a long chat of long messages: the chat opens from its newest entries, the rest of the window fills in, and the socket stays up.
+- [ ] An iOS Shortcut that posts to `POST /api/messages` through `tailscale serve` (Tailscale-User-Login, no Origin), with a fixed `id` run twice: one message (SPEC E41).
 - [ ] A live two-machine run over a real tailnet: one chat edits files on both machines (SPEC M4).
 - [x] Re-measure latency with real claude after the inline system prompt change, `dev/latency.ts` (SPEC Turn and priming).
 
