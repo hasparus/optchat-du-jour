@@ -410,6 +410,29 @@ Modelled on Claude's app: a soft, translucent card with round controls.
   runs; muted text for connecting or reconnecting.
 - **Hint:** under it, centred, 11 px muted: the shortcuts on a keyboard, or why send is off.
 
+### Artifacts
+SPEC "Artifacts": a page the model publishes, shown beside the chat. Restyled from fx0's preview pane
+in this language: no chrome of its own beyond a header line, the page on the sheet in a hairline frame.
+
+- **Card:** under a publish or edit call's tool line, 6 px below it: a button as wide as its
+  content up to 24rem, a 14 px-radius hairline box (no shadow: a card in a sheet), 8 × 10 px
+  padding (10 px on touch), a 36 px soft icon tile (an app window), the artifact's name in UI type
+  semibold and "v3 · 12.4 KB · edited" in 12 px muted under it, a chevron at the end that nudges
+  right on hover; hover washes it in the accent fill. While the call runs it says "Publishing…" or
+  "Editing…", and a draft streaming in is the same card after the running turn's rows, "Writing… 4.2
+  KB", both under the `shimmer` sweep. No thumbnail: a preview of a page is the page.
+- **Pane:** from 1024 px a side panel beside the chat (up to 46rem, half the window), on the sheet
+  ground behind a hairline on its leading edge; on a phone the app's sheet from the bottom, full
+  height bar 1.5rem under the safe area, on Glass. A header line: the name (16 px semibold; the
+  sheet's own title on a phone), the version as the composer's compact select ("v2 of 3", a native
+  select of every version with when and its size, newest first), then 28 px ghost icons (40 px on
+  touch): refresh, copy (a check for a moment once copied), download (not in the iOS app), open in
+  a new tab, close (the side panel's; a sheet closes as sheets do). What happened ("Copied the
+  HTML") in 12 px muted under it, red if it failed. The page in a 14 px-radius hairline frame
+  filling the rest, 8 px from the edges.
+- **Draft:** while the model writes a version, the page so far fills the frame, drawn without
+  scripts, and stays until the saved version has painted, so the swap shows no blank.
+
 ### Background work
 Modelled on Claude's "Background tasks" sheet: the app's sheet (`components/sheet-drawer.tsx`), from
 the bottom on a phone and from the right as a 384 px side panel on a wide screen. It opens from the

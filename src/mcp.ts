@@ -2,16 +2,19 @@
 // frame, or per POST over HTTP, answered from the server's memory. It only reads; the lock stays
 // with the chat.
 import { Effect, Option, Schema } from "effect";
+import { ARTIFACT_TOOL_DEFS, type ArtifactTools, noArtifacts } from "./artifacts/tools.ts";
 import type { McpTransport } from "./config.ts";
 import { address } from "./kernel.ts";
 import { wireJson } from "./text.ts";
 import { type Built, children, type Coord, type Entry, getNode, label, localTime, type Mem } from "./tree.ts";
 import { flat } from "./view.ts";
+import { artifactTool, SUBAGENT_NAME } from "./wire.ts";
 
 // zoom's and date's descriptions are docs/optchat.md §6's, word for word; the input schemas carry
 // no descriptions (ref §9). zoom's id may also be a subagent's name (docs/optchat.md §5's
 // zoom("Name"), SPEC M7a), which the system prompt explains; spawn and tell are the earlier gist's
-// (§9), ours in words. Nothing here changes from call to call: the list is part of every cached prefix.
+// (§9), ours in words; the artifact tools follow (SPEC "Artifacts", src/artifacts/tools.ts). Nothing
+// here changes from call to call: the list is part of every cached prefix.
 export const TOOLS = [
   {
     description: "Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole.",
@@ -42,6 +45,7 @@ export const TOOLS = [
     inputSchema: { properties: { name: { type: "string" }, text: { type: "string" } }, required: ["name", "text"], type: "object" },
     name: "tell",
   },
+  ...ARTIFACT_TOOL_DEFS,
 ] as const;
 
 // What the tools that reach subagents (SPEC M7a) need: zoom("Name", from) reads a side log from
@@ -112,9 +116,8 @@ const decodeCall = Schema.decodeUnknownOption(Call);
 // zoom and date take integers; zoom() and date() check the rest. zoom("Name") and zoom("Name", n)
 // open a subagent's side log, from its entry n on.
 const decodeZoom = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.Number, n: Schema.Number }));
-// A subagent's name (SPEC M7a): a letter, then up to 31 letters, digits, "-" or "_": a folder name
-// on every system, and one that can't end a report's "[Name] " early. Any other string is no name.
-export const SUBAGENT_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
+// A subagent's name (SPEC M7a, src/wire.ts)
+export { SUBAGENT_NAME } from "./wire.ts";
 const decodeAgentZoom = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.String.check(Schema.isPattern(SUBAGENT_NAME)), n: Schema.optional(Schema.Number) }));
 const decodeDate = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.Number }));
 
@@ -175,6 +178,10 @@ function call(mem: Mem, params: Schema.Json | undefined, attached: Attached, age
           onSome: ({ id }) => date(mem, id),
         }),
       );
+    case "publish_artifact":
+    case "edit_artifact":
+    case "read_artifact":
+      return refuse(`${name} is answered by answerMcp.`); // they take an effect, as spawn and tell do
     default:
       return refuse(`There is no tool named ${name}.`);
   }
@@ -215,15 +222,21 @@ export function handleMcp(mem: Mem, body: string, attached: Attached, agents: Ag
   }
 }
 
-// handleMcp, with spawn and tell (SPEC M7a), which go to the supervisor and so take an effect;
-// every other message is answered as handleMcp answers it.
-export const answerMcp = (mem: Mem, body: string, attached: Attached, agents: AgentTools = noAgents): Effect.Effect<Reply> => {
+// handleMcp, with spawn and tell (SPEC M7a), which go to the supervisor, and the artifact tools
+// (SPEC "Artifacts"), which go to the store, and so take an effect; every other message is
+// answered as handleMcp answers it.
+export const answerMcp = (mem: Mem, body: string, attached: Attached, agents: AgentTools = noAgents, artifacts: ArtifactTools = noArtifacts): Effect.Effect<Reply> => {
   const found = decodeRequest(body);
   if (Option.isNone(found) || found.value.id === undefined || found.value.method !== "tools/call") return Effect.succeed(handleMcp(mem, body, attached, agents));
   const { id, params } = found.value;
   const tool = decodeCall(params);
-  if (Option.isNone(tool) || (tool.value.name !== "spawn" && tool.value.name !== "tell")) return Effect.succeed(handleMcp(mem, body, attached, agents));
-  return agents.call(tool.value.name, tool.value.arguments ?? {}).pipe(Effect.map(({ error, text }) => respond(id, error ? refuse(text) : answer(text))));
+  if (Option.isNone(tool)) return Effect.succeed(handleMcp(mem, body, attached, agents));
+  const { arguments: args = {}, name } = tool.value;
+  const reply = ({ error, text }: { readonly error: boolean; readonly text: string }) => respond(id, error ? refuse(text) : answer(text));
+  if (name === "spawn" || name === "tell") return agents.call(name, args).pipe(Effect.map(reply));
+  const artifact = artifactTool(name);
+  if (artifact !== null && artifact === name) return artifacts.call(artifact, args).pipe(Effect.map(reply));
+  return Effect.succeed(handleMcp(mem, body, attached, agents));
 };
 
 // The --mcp-config JSON for `url`, the http(s) URL of /mcp with its key; over "ws" the same URL

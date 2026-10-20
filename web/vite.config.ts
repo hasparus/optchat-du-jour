@@ -39,7 +39,7 @@ export default defineConfig({
         // the shell: everything the page loads at start (assets/, not assets/lazy/). Shiki's
         // grammars and the stats screen load on demand and are cached as they are used
         globPatterns: ["index.html", "assets/*.{js,css}", "*.{png,svg}"],
-        navigateFallbackDenylist: [/^\/(api|ws|mcp)\b/],
+        navigateFallbackDenylist: [/^\/(api|ws|mcp|artifact)\b/],
         runtimeCaching: [
           {
             urlPattern: /\/assets\/.*\.js$/,

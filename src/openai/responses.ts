@@ -19,6 +19,7 @@ import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
 import { admitRequest } from "../engines/request-admission.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
+import type { ToolInputHooks } from "../engines/tool-input.ts";
 import { isPicture, type Part } from "../media/part.ts";
 import { wireJson } from "../text.ts";
 import type { Tokens as Usage } from "../usage.ts";
@@ -57,6 +58,7 @@ export type Ask<E extends Tagged = never> = {
   // start of each item's part. Only clients see it (SPEC "Reasoning"); the item goes back as it came
   readonly onReasoning?: (delta: string, fresh: boolean) => Effect.Effect<void>;
   readonly onOut?: (out: Out) => Effect.Effect<void, E>; // each item of `output` as it completes
+  readonly onToolInput?: ToolInputHooks | undefined; // a function call's arguments as they stream
   readonly onSettledUsage?: (spent: Spent) => Effect.Effect<void>;
   readonly onStart?: Effect.Effect<void>; // the response started: its first stream event
 };
@@ -218,11 +220,16 @@ type Read = {
   readonly spent: Spent | undefined;
 };
 
-type Hooks<E extends Tagged> = Pick<Ask<E>, "onSettledUsage" | "onOut" | "onReasoning" | "onStart" | "onText" | "onThinking">;
+type Hooks<E extends Tagged> = Pick<Ask<E>, "onSettledUsage" | "onOut" | "onReasoning" | "onStart" | "onText" | "onThinking" | "onToolInput">;
+// a function call begins (its item's id, its call id and name), its arguments stream, they end
+const addedItem = json(Schema.Struct({ item: Schema.Struct({ type: Schema.String, id: Schema.optional(Schema.String), call_id: Schema.optional(Schema.String), name: Schema.optional(Schema.String) }) }));
+const argumentsDelta = json(Schema.Struct({ item_id: Schema.String, delta: Schema.String }));
+const argumentsDone = json(Schema.Struct({ item_id: Schema.String }));
 
-const onEvent =
-  <E extends Tagged>(o: { readonly model: string; readonly label: string; readonly reported: (spent: Spent | undefined) => void } & Hooks<E>) =>
-  (r: Read, data: string): Effect.Effect<Read, E | EngineError | Schema.SchemaError> => {
+const onEvent = <E extends Tagged>(o: { readonly model: string; readonly label: string; readonly reported: (spent: Spent | undefined) => void } & Hooks<E>) => {
+  // the function calls whose arguments stream, by their item's id (only with onToolInput)
+  const calls = new Map<string, { readonly id: string; readonly name: string }>();
+  return (r: Read, data: string): Effect.Effect<Read, E | EngineError | Schema.SchemaError> => {
     // an item of `output` is whole: it goes out now, so what follows it streams after it
     const out = (item: Out) => Effect.as(o.onOut ? o.onOut(item) : Effect.void, { ...r, output: [...r.output, item] });
     return Effect.gen(function* () {
@@ -243,6 +250,27 @@ const onEvent =
           if (o.onReasoning && d.delta !== "") yield* o.onReasoning(d.delta, part !== r.part);
           if (o.onThinking) yield* o.onThinking(Math.ceil(reasoning / 4));
           return { ...r, part, reasoning, told: r.told || d.delta !== "" };
+        }
+        case "response.output_item.added": {
+          if (!o.onToolInput) return r;
+          const { item } = yield* addedItem(data);
+          if (item.type === "function_call" && item.id !== undefined) calls.set(item.id, { id: item.call_id ?? item.id, name: item.name ?? "" });
+          return r;
+        }
+        case "response.function_call_arguments.delta": {
+          if (!o.onToolInput) return r;
+          const d = yield* argumentsDelta(data);
+          const call = calls.get(d.item_id);
+          if (call !== undefined) yield* o.onToolInput.delta(call, d.delta);
+          return r;
+        }
+        case "response.function_call_arguments.done": {
+          if (!o.onToolInput) return r;
+          const d = yield* argumentsDone(data);
+          const call = calls.get(d.item_id);
+          calls.delete(d.item_id);
+          if (call !== undefined) yield* o.onToolInput.end(call.id);
+          return r;
         }
         case "response.refusal.delta":
           return { ...r, refusal: r.refusal + (yield* delta(data)).delta };
@@ -291,6 +319,7 @@ const onEvent =
     }).pipe(Effect.catchCause((cause) => Effect.failCause(Cause.map(cause, (e: E | EngineError | Schema.SchemaError): E | EngineError =>
       e instanceof Schema.SchemaError ? new ModelError({ message: `${o.label}: invalid response event or usage counters` }) : e))));
   };
+};
 
 // A stream counts only when it ends in response.completed, and ends there: whatever follows (a
 // `data: [DONE]` line, say) is never read. One that starts well can still fail.
@@ -358,7 +387,7 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
             : classify(res.status, null, text.slice(0, 300), o.label);
         }
         const stream = res.stream.pipe(Stream.mapError((err) => new ModelError({ message: `${o.label}: ${err.message}` })));
-        return yield* readStream(stream, ask.model, { label: o.label, onSettledUsage: ask.onSettledUsage, onOut: ask.onOut, onReasoning: ask.onReasoning, onStart: ask.onStart, onText: ask.onText, onThinking: ask.onThinking });
+        return yield* readStream(stream, ask.model, { label: o.label, onSettledUsage: ask.onSettledUsage, onOut: ask.onOut, onReasoning: ask.onReasoning, onStart: ask.onStart, onText: ask.onText, onThinking: ask.onThinking, onToolInput: ask.onToolInput });
       }).pipe(Effect.catchIf(HttpClientError.isHttpClientError, (err) => Effect.fail(new ModelError({ message: `${o.label}: ${err.message}` }))));
 
     // a 401 renews the token once, then counts as signed out

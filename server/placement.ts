@@ -5,6 +5,7 @@
 // other machine can use. Each device dials /mcp over a WebSocket until its claude is seen not to
 // connect that way (E8).
 import { Effect } from "effect";
+import { type ArtifactTools, noArtifacts } from "../src/artifacts/tools.ts";
 import type { Runner } from "../src/claude/process.ts";
 import { remoteRunner, remoteTool } from "../src/claude/remote.ts";
 import type { Settings } from "../src/config.ts";
@@ -62,10 +63,12 @@ export const makePlacements = (o: {
     // /tool, zoom and date from memory
     const localFiles = yield* makeFileTools(devices[o.device]?.folders ?? []);
     const files = new Map<string, FileTools>(Object.entries(devices).map(([name, d]) => [name, name === o.device ? localFiles : remoteTool(name, d.url)] as const));
-    // `agents`: spawn, tell and zoom("Name") as the caller may use them (SPEC M7a)
-    const toolsFor = (device: string, mem: Mem, agents: AgentTools = noAgents) =>
+    // `agents`: spawn, tell and zoom("Name") as the caller may use them (SPEC M7a); `artifacts`, the
+    // artifact tools likewise (SPEC "Artifacts")
+    const toolsFor = (device: string, mem: Mem, agents: AgentTools = noAgents, artifacts: ArtifactTools = noArtifacts) =>
       toolBox({
         agents,
+        artifacts,
         device,
         files: files.get(device) ?? ((name) => Effect.succeed(toolError(`Error: ${device} is not a configured device, so ${name} can't run`))),
         folders: devices[device]?.folders ?? [],

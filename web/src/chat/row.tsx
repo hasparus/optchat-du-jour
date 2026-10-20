@@ -11,12 +11,14 @@ import { Source, Sources, SourcesContent, SourcesTrigger } from "@/components/ai
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from "@/components/ai-elements/tool";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Message, MessageContent, MessageHeader } from "@/components/ui/message";
+import type { Made } from "@/lib/artifacts";
 import { type Thought, thoughtLabel } from "@/lib/reasoning";
 import { type PlanState, type PlanStep, planOf, type Row, type ToolState, toolSummary, type WebSource } from "@/lib/rows";
 import { cn } from "@/lib/utils";
 import { splitMarkers } from "@wire";
 import { CheckIcon, CodeIcon, CopyIcon, NotebookPenIcon, TextIcon } from "lucide-react";
 import { Component, createContext, memo, type ReactNode, use, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ArtifactCard, madeDetail } from "./artifact-card";
 
 // copy the reply as written; the check stays a moment
 function CopyAction({ text }: { text: string }) {
@@ -271,6 +273,9 @@ export type ChatRowProps = {
   sources?: readonly WebSource[] | undefined;
   thought?: Thought | undefined;
   onThought?: ((i: number, open: boolean) => void) | undefined;
+  // the artifact version a publish or edit row made (SPEC "Artifacts"), and opening it in the pane
+  made?: Made | null | undefined;
+  onArtifact?: ((name: string, v: number | null) => void) | undefined;
 };
 
 const noToggle = () => {
@@ -290,9 +295,9 @@ const rowText = (row: Row) => {
   }
 };
 
-export const ChatRow = memo(function ChatRow({ row, streaming, toolState, plan, sources, thought, onThought = noToggle }: ChatRowProps) {
+export const ChatRow = memo(function ChatRow({ row, streaming, toolState, plan, sources, thought, onThought = noToggle, made, onArtifact }: ChatRowProps) {
   const thinks = thought !== undefined && (row.kind === "talk" || row.kind === "tool" || row.kind === "thinking");
-  const view = <RowView plan={plan} row={row} sources={sources} streaming={streaming} toolState={toolState} />;
+  const view = <RowView made={made} onArtifact={onArtifact} plan={plan} row={row} sources={sources} streaming={streaming} toolState={toolState} />;
   return (
     <RowBoundary text={rowText(row)}>
       {thinks ? (
@@ -307,7 +312,7 @@ export const ChatRow = memo(function ChatRow({ row, streaming, toolState, plan, 
   );
 });
 
-function RowView({ row, streaming, toolState, plan, sources }: ChatRowProps) {
+function RowView({ row, streaming, toolState, plan, sources, made, onArtifact }: ChatRowProps) {
   switch (row.kind) {
     case "thinking":
       return null;
@@ -332,14 +337,30 @@ function RowView({ row, streaming, toolState, plan, sources }: ChatRowProps) {
     case "tool": {
       const steps = plan === undefined ? null : planOf(row);
       if (steps !== null) return <PlanRow plan={plan} row={row} steps={steps} toolState={toolState} />;
-      return (
+      const line = (
         <Tool>
-          <ToolHeader detail={toolSummary(row.args)} name={row.name} state={toolState} />
+          <ToolHeader detail={made ? made.name : toolSummary(row.args)} name={row.name} state={toolState} />
           <ToolContent>
             {row.args !== "" && <ToolInput input={row.args} />}
             {row.output !== null && <ToolOutput failed={toolState === "error"} output={row.output} />}
           </ToolContent>
         </Tool>
+      );
+      // a version an artifact call made: its card under the call's line, which keeps the input
+      // and output as logged (a stub, E31) one tap away
+      if (!made) return line;
+      return (
+        <div className="flex min-w-0 flex-col gap-1.5 pb-1">
+          {line}
+          <ArtifactCard
+            detail={madeDetail(made, toolState === "running")}
+            live={made.v === null && toolState === "running"}
+            name={made.name}
+            onOpen={() => {
+              onArtifact?.(made.name, made.v);
+            }}
+          />
+        </div>
       );
     }
   }
