@@ -2,30 +2,10 @@
 // again (E35, src/engines/retry.ts), the session's state says how long it will wait and which try
 // comes next; the state drops it when the next try starts, and when the turn ends, however it ends.
 // A scripted provider stands in for the HTTP engine: no model, no network.
-import { afterAll, expect, test } from "bun:test";
-import { Deferred, Effect, PubSub } from "effect";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { openChat } from "../src/chat.ts";
+import { expect, test } from "bun:test";
+import { Deferred, Effect } from "effect";
 import type { Provider } from "../src/providers/provider.ts";
-import { makeSession, noMedia, type SessionEvent } from "../src/session.ts";
-import { toolLoop } from "../src/turn/loop.ts";
-
-const dirs: string[] = [];
-afterAll(() => {
-  for (const d of dirs) rmSync(d, { force: true, recursive: true });
-});
-
-const until = (what: string, ok: () => boolean, ms = 4000) =>
-  Effect.gen(function* () {
-    const deadline = Date.now() + ms;
-    while (!ok()) {
-      if (Date.now() > deadline) return yield* Effect.die(new Error(`timed out waiting for ${what}`));
-      yield* Effect.sleep("5 millis");
-    }
-  });
-
-const USAGE = { cacheRead: 0, cacheWrite: 0, input: 1, output: 1 };
+import { rig, until, USAGE } from "./loop-rig.ts";
 
 // A provider whose call pauses as askAgain does (a 30 s pause before try 2 of 4, its end told
 // however it ends), then waits for `go`; once that resolves, the pause ends and the reply comes.
@@ -50,37 +30,6 @@ const pausing = (go: Deferred.Deferred<true>) => {
   };
   return { provider, seen };
 };
-
-const rig = (provider: Provider) =>
-  Effect.gen(function* () {
-    const dir = mkdtempSync(`${tmpdir()}/oc-`);
-    dirs.push(dir);
-    const chat = yield* openChat(dir, { summarize: (job) => Effect.succeed(`summary ${job.l}.${job.i}`) });
-    const engine = toolLoop({ instructions: "MASTER", provider, ref: "api-key:x", toolsFor: () => ({ defs: [], run: () => Effect.die(new Error("no tools here")) }), vision: false });
-    const session = yield* makeSession({
-      chat,
-      commit: Effect.succeed(null),
-      defaultDevice: "mini",
-      devices: ["mini"],
-      engines: [engine],
-      choices: {},
-      idle: "1 hour",
-      logUsage: () => Effect.void,
-      media: noMedia,
-      waitRetry: "1 hour",
-      wake: null,
-    });
-    const events: SessionEvent[] = [];
-    const sub = yield* PubSub.subscribe(session.events);
-    yield* PubSub.take(sub).pipe(
-      Effect.tap((e) => Effect.sync(() => events.push(e))),
-      Effect.forever,
-      Effect.forkScoped,
-    );
-    const states = () => events.flatMap((e) => (e.type === "state" ? [e.state] : []));
-    const idleAfter = (n: number) => states().slice(n).some((s) => s.phase === "idle");
-    return { events, idleAfter, session, states };
-  });
 
 test("the state says the turn's engine waits to ask again, for how long and before which try, until the try starts (E43)", async () => {
   await Effect.runPromise(

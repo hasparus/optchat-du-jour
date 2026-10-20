@@ -60,17 +60,24 @@ test("a long paste folds into a chip that opens and can be removed; the message 
   await box(page).press("Enter");
 
   const sent = `why so slow?\n${LOG}`;
-  await expect.poll(async () => (await server.log()).some((e) => e.kind === "user" && e.text === sent)).toBe(true);
+  await expect
+    .poll(async () => {
+      const log = await server.log();
+      return log.some((e) => e.kind === "user" && e.text === sent);
+    })
+    .toBe(true);
   const bubble = page.getByTestId("user-message").filter({ hasText: "why so slow?" });
   const fold = bubble.getByTestId("pasted-fold");
   await expect(fold).toBeVisible();
   await expect(fold.getByRole("button")).toHaveAttribute("aria-expanded", "false");
   // folded: its summary line and two lines of the block, not 80
-  const closed = (await fold.boundingBox())?.height ?? Number.POSITIVE_INFINITY;
+  const shut = await fold.boundingBox();
+  const closed = shut?.height ?? Number.POSITIVE_INFINITY;
   expect(closed).toBeLessThan(100);
   await fold.getByRole("button").click();
   await expect(fold).toContainText("worker[79]: step 79 ok");
-  expect((await fold.boundingBox())?.height).toBeGreaterThan(closed * 5);
+  const opened = await fold.boundingBox();
+  expect(opened?.height).toBeGreaterThan(closed * 5);
   await expect(page.getByTestId("pasted-chip")).toHaveCount(0);
 });
 
@@ -108,8 +115,8 @@ test.describe("file tools", () => {
 test("a page from another build is told OptChat was updated, and doesn't reconnect", async ({ page }) => {
   // this page names a wire the server doesn't speak, as one left open across a deploy would
   await page.addInitScript(() => {
-    const Real = window.WebSocket;
-    window.WebSocket = class extends Real {
+    const Real = globalThis.WebSocket;
+    globalThis.WebSocket = class extends Real {
       constructor(url: string | URL, protocols?: string | string[]) {
         super(String(url).replace(/wire=\d+/, "wire=0"), protocols);
       }
