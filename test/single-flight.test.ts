@@ -66,6 +66,8 @@ const vendor = (o: { readonly hangs?: readonly number[]; readonly fails?: readon
   return { provider, seen };
 };
 const sent = (seen: readonly Seen[]) => seen.map(({ at, wrote }) => ({ at, wrote }));
+// how many blocks they wrote in all
+const total = (seen: readonly Seen[]) => seen.reduce((n, x) => n + x.wrote, 0);
 // when the last of them was answered
 const last = (seen: readonly Seen[]) => Math.max(...seen.map((s) => s.done ?? Infinity));
 
@@ -241,6 +243,26 @@ test("a writer whose claim lapses: of the calls that waited on it, one writes th
     { at: 60_000, wrote: 2 },
     { at: 60_000 + RESPONSE, wrote: 0 },
   ]);
+});
+
+test("when the tail's writer fails, those that waited on it look again: one writes the tail and the others wait for it, also when it fails twice", async () => {
+  const jobs = [job(7), job(11, 12), job(11, 13), job(11, 14)];
+  const once = await together(makeGate(), jobs, { fails: [1] });
+  expect(sent(once)).toEqual([
+    { at: 0, wrote: 2 },
+    { at: RESPONSE, wrote: 0 }, // the tail's first writer: turned away
+    { at: 2 * RESPONSE, wrote: 1 }, // one of the two left writes it
+    { at: 3 * RESPONSE, wrote: 0 }, // the other waited for that one
+  ]);
+  expect(total(once)).toBe(3);
+  const twice = await together(makeGate(), jobs, { fails: [1, 2] });
+  expect(sent(twice)).toEqual([
+    { at: 0, wrote: 2 },
+    { at: RESPONSE, wrote: 0 },
+    { at: 2 * RESPONSE, wrote: 0 },
+    { at: 3 * RESPONSE, wrote: 1 },
+  ]);
+  expect(total(twice)).toBe(3);
 });
 
 test("a call never takes over a key another call is writing: one marked beyond its lookback stays that call's, read as soon as it is written", async () => {

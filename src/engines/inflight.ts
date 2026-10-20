@@ -69,6 +69,15 @@ export const prefixFor = (head: Head, blocks: readonly string[], marks: readonly
 type Entry =
   | { readonly _tag: "Writing"; readonly done: Deferred.Deferred<boolean>; readonly lapses: number; readonly ttl: number }
   | { readonly _tag: "Cached"; readonly until: number; readonly ttl: number };
+type Writing = Extract<Entry, { readonly _tag: "Writing" }>;
+
+// Wait for `writer`'s response to begin, or for it to end without that, or for its claim to lapse;
+// then `next` if its response began, else `otherwise`
+const after = <A, E, R>(writer: Writing, now: number, next: Effect.Effect<A, E, R>, otherwise: Effect.Effect<A, E, R>) =>
+  Deferred.await(writer.done).pipe(
+    Effect.timeoutOption(writer.lapses - now),
+    Effect.flatMap((began) => (Option.getOrElse(began, () => false) ? next : otherwise)),
+  );
 
 export const makeGate = (): Gate => {
   // by key, the least lately used first
@@ -96,14 +105,6 @@ export const makeGate = (): Gate => {
     return -1;
   };
 
-  // Wait for `writer`'s response to begin, or for it to end without that, or for its claim to lapse;
-  // then `next` if its response began, else `otherwise`
-  const after = <A, E, R>(writer: Entry & { readonly _tag: "Writing" }, now: number, next: Effect.Effect<A, E, R>, otherwise: Effect.Effect<A, E, R>) =>
-    Deferred.await(writer.done).pipe(
-      Effect.timeoutOption(writer.lapses - now),
-      Effect.flatMap((began) => (Option.getOrElse(began, () => false) ? next : otherwise)),
-    );
-
   // The call goes now: it reads the longest written prefix of its own and writes its marked
   // entries past it, those no other call is writing. Once its response begins, what it wrote is
   // the vendor's, and what it read is kept a TTL longer (the entry's own TTL); a call that ends
@@ -116,7 +117,7 @@ export const makeGate = (): Gate => {
         const k = longest(prefix, now, written);
         const read = prefix.keys[k];
         const writes = prefix.marks.flatMap((m) => (m > k ? (prefix.keys[m] ?? []) : [])).filter((key) => !writing(entries.get(key), now));
-        const own: Entry & { readonly _tag: "Writing" } = { _tag: "Writing", done: Deferred.makeUnsafe<boolean>(), lapses: now + wait, ttl: TTL_MS[prefix.ttl] };
+        const own: Writing = { _tag: "Writing", done: Deferred.makeUnsafe<boolean>(), lapses: now + wait, ttl: TTL_MS[prefix.ttl] };
         for (const key of writes) touch(key, own);
         const mine = () => writes.filter((key) => entries.get(key) === own);
         const began = Clock.clockWith((at) =>
@@ -136,15 +137,17 @@ export const makeGate = (): Gate => {
       }),
     );
 
-  // After its one wait, a call goes; but when another call that woke with it already writes this
-  // call's whole prefix, it waits for that one too, and then goes whatever came of it: one more
-  // wait at most, never a chain, and the tail is written once
-  const fly = <A, E, R>(prefix: Prefix, call: (started: Effect.Effect<void>) => Effect.Effect<A, E, R>) =>
+  // `go` sends; `fly` first checks the tail. After its one wait, a call goes; but when another call
+  // that woke with it already writes this call's whole prefix, it waits for that one too: once its
+  // response began, it goes and reads it, so the tail is written once and nothing chains; when that
+  // one failed or lapsed, it looks at the tail again, so of those left one writes it and the others
+  // wait for it
+  const fly = <A, E, R>(prefix: Prefix, call: (started: Effect.Effect<void>) => Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
     Clock.clockWith((clock) =>
       Effect.suspend(() => {
         const now = clock.currentTimeMillisUnsafe();
         const tail = entries.get(prefix.keys.at(-1) ?? "");
-        return tail?._tag === "Writing" && writing(tail, now) ? after(tail, now, go(prefix, call), go(prefix, call)) : go(prefix, call);
+        return tail?._tag === "Writing" && writing(tail, now) ? after(tail, now, go(prefix, call), fly(prefix, call)) : go(prefix, call);
       }),
     );
 
