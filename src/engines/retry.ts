@@ -16,6 +16,7 @@
 import { Context, Duration, Effect, Random, Result, Stream } from "effect";
 import { type HttpClient, HttpClientError, type HttpClientRequest } from "effect/http";
 import { HTTP_RETRY_BASE, HTTP_RETRY_LONGEST, HTTP_TRIES } from "../config.ts";
+import { draftTool } from "../wire.ts";
 import type { ToolInputHooks } from "./tool-input.ts";
 import { addSpent, type EngineError, isEngineError, ModelError, passing, settled, type Spent, type Tagged } from "./errors.ts";
 
@@ -99,11 +100,15 @@ export const bytes = <E extends { readonly message: string }>(res: Answer<E>, w:
 // (a hook that sends text, thinking or an item on)
 export type Shown = <A extends readonly unknown[], R>(f: ((...args: A) => R) | undefined) => ((...args: A) => R) | undefined;
 
-// a tool call's streaming input (an artifact's live draft) under `shown`: a delta that went out
-// shows as much as text does
+// A tool call's streaming input under `shown`: an artifact's that goes out as a live draft shows as
+// much as text does; any other's (a Read's, a Grep's) goes nowhere a client sees, so a try that
+// streamed only that may still be sent again. Its end shows nothing new: a draft's close follows
+// a delta that showed already.
 export const shownToolInput = (shown: Shown, hooks: ToolInputHooks | undefined): ToolInputHooks | undefined => {
-  const delta = shown(hooks?.delta), end = shown(hooks?.end);
-  return delta && end ? { delta, end } : undefined;
+  const drafted = shown(hooks?.delta);
+  if (hooks === undefined || drafted === undefined) return undefined;
+  const { delta } = hooks;
+  return { delta: (call, piece) => (draftTool(call.name) === null ? delta(call, piece) : drafted(call, piece)), end: hooks.end };
 };
 
 // The request (`once`, one try, its hooks wrapped by `shown`) until it succeeds, fails with what

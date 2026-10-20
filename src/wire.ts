@@ -244,6 +244,11 @@ export const artifactTool = (name: string): ArtifactTool | null => {
   const bare = name.startsWith("mcp__optchat__") ? name.slice("mcp__optchat__".length) : name;
   return ARTIFACT_TOOLS.find((t) => t === bare) ?? null;
 };
+// the artifact tool whose input streams as a live draft (publish and edit; a read has none), or null
+export const draftTool = (name: string): "publish_artifact" | "edit_artifact" | null => {
+  const tool = artifactTool(name);
+  return tool === "read_artifact" ? null : tool;
+};
 // A subagent's name (SPEC M7a), and an artifact's: a letter, then up to 31 letters, digits, "-" or
 // "_": a folder name on every system and never a path, and one that can't end a report's "[Name] "
 // early. Any other string is no name.
