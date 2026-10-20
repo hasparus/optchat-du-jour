@@ -66,10 +66,13 @@ export const addSpent = (a: Spent, b: Spent): Spent => {
   return a.dollars !== undefined && b.dollars !== undefined ? { dollars: a.dollars + b.dollars, model, usage } : { model, usage };
 };
 
-// the same failure, with `before` (what earlier attempts of the same request cost) added to its spend
-export const withSpent = (e: EngineError, before: Spent | undefined): EngineError => {
-  if (before === undefined || e._tag === "DeviceOffline") return e;
-  const fields = { message: e.message, spent: e.spent === undefined ? before : addSpent(before, e.spent) };
+// A failure that has a bill: every engine error but an offline device.
+export type Billed = ModelError | Refusal | UsageLimit;
+
+// The same failure with some of its fields changed (`patch`), every other one kept: one place, so
+// none is dropped on the way.
+export const rebuild = (e: Billed, patch: Partial<Fields>): Billed => {
+  const fields: Fields = { message: e.message, retryAfter: e.retryAfter, spent: e.spent, transient: e.transient, ...patch };
   switch (e._tag) {
     case "UsageLimit":
       return new UsageLimit(fields);
@@ -80,20 +83,15 @@ export const withSpent = (e: EngineError, before: Spent | undefined): EngineErro
   }
 };
 
+// The failure a request ends with, once it won't be sent again (src/engines/retry.ts): `before`
+// (what its earlier tries cost) added to its spend, and no longer marked as one that may pass.
+export const settled = (e: EngineError, before: Spent | undefined): EngineError =>
+  e._tag === "DeviceOffline" ? e : rebuild(e, { retryAfter: undefined, spent: before === undefined || e.spent === undefined ? (before ?? e.spent) : addSpent(before, e.spent), transient: undefined });
+
 // the same failure, marked as one worth sending again (E35): an HTTP error the server's status or
 // `x-should-retry` says will pass, with its `retry-after` (ms) when it gave one
-export const passing = (e: EngineError, retryAfter: number | null): EngineError => {
-  if (e._tag === "DeviceOffline") return e;
-  const fields = { message: e.message, retryAfter: retryAfter ?? undefined, spent: e.spent, transient: true };
-  switch (e._tag) {
-    case "UsageLimit":
-      return new UsageLimit(fields);
-    case "Refusal":
-      return new Refusal(fields);
-    case "ModelError":
-      return new ModelError(fields);
-  }
-};
+export const passing = (e: EngineError, retryAfter: number | null): EngineError =>
+  e._tag === "DeviceOffline" ? e : rebuild(e, { retryAfter: retryAfter ?? undefined, transient: true });
 
 // the same failure with its spend priced: an API key's call that failed still costs dollars
 export const priced = (e: EngineError, dollars: (usage: Tokens) => number): EngineError => {
@@ -105,13 +103,5 @@ export const priced = (e: EngineError, dollars: (usage: Tokens) => number): Engi
   } catch {
     return new ModelError({ message: "API-key usage cannot be priced safely", spent: { ...e.spent, dollars: Schema.is(Dollars)(e.spent.dollars) ? e.spent.dollars : undefined } });
   }
-  const fields = { message: e.message, spent: { ...e.spent, dollars: cost } };
-  switch (e._tag) {
-    case "UsageLimit":
-      return new UsageLimit(fields);
-    case "Refusal":
-      return new Refusal(fields);
-    case "ModelError":
-      return new ModelError(fields);
-  }
+  return rebuild(e, { spent: { ...e.spent, dollars: cost } });
 };

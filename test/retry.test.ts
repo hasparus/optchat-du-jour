@@ -89,6 +89,8 @@ test("Anthropic: retry-after is waited for; one past HTTP_RETRY_LONGEST, a spent
   const spent = await run(messages(ask()));
   expect(spent._tag === "Failure" && spent.failure).toBeInstanceOf(UsageLimit); // overloaded: the chain's to move on
   expect(server.bodies).toHaveLength(4);
+  // the retries are over: the failure the call ends with no longer says it may pass
+  expect(spent._tag === "Failure" && spent.failure._tag !== "DeviceOffline" && [spent.failure.transient, spent.failure.retryAfter]).toEqual([undefined, undefined]);
 });
 
 test("Anthropic: a stream quiet for `idle` is cut and sent again, and what the cut try cost counts; once text went out it is not sent again", async () => {

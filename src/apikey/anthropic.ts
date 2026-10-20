@@ -12,7 +12,7 @@
 import { Cause, Duration, Effect, Option, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { IDLE_ANTHROPIC } from "../config.ts";
-import { addSpent, type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
+import { addSpent, type EngineError, ModelError, rebuild, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
 import { admitRequest } from "../engines/request-admission.ts";
 import { askAgain, bytes, errorBody, httpFailure, post, shownToolInput, type Wire } from "../engines/retry.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
@@ -357,10 +357,7 @@ export const readMessages = <E extends Tagged = never>(stream: Stream.Stream<Uin
         const cause = Cause.map(original, (e: EngineError | E): EngineError | E => {
           if (!spent) return e;
           // the same failure, with what the stream told it cost; whether it may pass stays (E35)
-          const fields = (f: ModelError | Refusal | UsageLimit) => ({ message: f.message, retryAfter: f.retryAfter, spent, transient: f.transient });
-          if (e instanceof ModelError && e.spent === undefined) return new ModelError(fields(e));
-          if (e instanceof Refusal && e.spent === undefined) return new Refusal(fields(e));
-          if (e instanceof UsageLimit && e.spent === undefined) return new UsageLimit(fields(e));
+          if ((e instanceof ModelError || e instanceof Refusal || e instanceof UsageLimit) && e.spent === undefined) return rebuild(e, { spent });
           return e;
         });
         return Effect.failCause(cause);

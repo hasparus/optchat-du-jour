@@ -63,8 +63,10 @@ export const STALE_MS = 30_000; // hidden this long, an open socket is no longer
 export const SILENT_MS = 10_000;
 // A frame takes as long as it takes to arrive, and the heartbeat can't cut into one: the opening
 // MESSAGES_SNAPSHOT can be megabytes, which on a slow link takes longer than SILENT_MS. So each
-// socket in a row let go before it said anything doubles the window for the next, up to this many
-// times SILENT_MS; the first frame a socket delivers brings it back to SILENT_MS.
+// socket in a row let go after it opened but before it delivered a frame doubles the window the
+// next open socket gets, up to this many times SILENT_MS; the first frame a socket delivers brings
+// it back to SILENT_MS. A handshake that hangs downloads nothing: it gets SILENT_MS, and the
+// backoff, so a dead link is back within ~20 s of the network.
 const MAX_SILENT_GROWTH = 16;
 
 export function openLink(url: string, options: LinkOptions = {}): Link {
@@ -93,14 +95,16 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
     else outbox.push(frame);
   };
 
-  // A socket that has said nothing for the window is let go. One that had delivered a frame is
+  // A socket that has said nothing for its window is let go. One that had delivered a frame is
   // opened afresh at once: the server was there, the path to it was lost. One that never said
-  // anything (still connecting, or still receiving its first frame on a slow link) goes the way of
-  // a refused connection, the backoff, and the next socket gets twice the window: a link that is
-  // only slow gets its snapshot in the end, instead of starting the same download every 10 s. Its
-  // close event, if one ever comes, is then not ours.
+  // anything goes the way of a refused connection, the backoff; and if it had opened (it was
+  // receiving its first frame, on a slow link), the next open socket gets twice the window, so a
+  // link that is only slow gets its snapshot in the end instead of starting the same download every
+  // 10 s. A socket still connecting always gets SILENT_MS. Its close event, if one ever comes, is
+  // then not ours.
   const hush = (ws: SocketLike, heard: () => boolean) => {
     clearTimeout(silence);
+    const opened = status === "open";
     silence = setTimeout(
       () => {
         if (ws !== socket || closed) return;
@@ -112,11 +116,11 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
           timer = setTimeout(connect, 0);
           return;
         }
-        mute = Math.min(mute + 1, Math.log2(MAX_SILENT_GROWTH));
+        if (opened) mute = Math.min(mute + 1, Math.log2(MAX_SILENT_GROWTH));
         timer = setTimeout(connect, retry);
         retry = Math.min(retry * 2, MAX_RETRY_MS);
       },
-      silentMs * 2 ** mute,
+      opened ? silentMs * 2 ** mute : silentMs,
     );
   };
 
@@ -133,8 +137,8 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
     rearm = arm;
     ws.addEventListener("open", () => {
       if (ws !== socket) return;
-      arm();
       setStatus("open");
+      arm(); // open now: the window a first frame may take
       for (const frame of outbox.splice(0)) ws.send(frame);
     });
     ws.addEventListener("message", (message) => {
@@ -212,9 +216,10 @@ export function openLink(url: string, options: LinkOptions = {}): Link {
         clearTimeout(silence);
         stale?.close();
       } else {
-        // kept: iOS held our timers while the page was away, so the silence timer is overdue and
-        // could fire before the frames that came meanwhile are handed over; it starts again now
-        rearm?.();
+        // kept: iOS held our timers while the page was away, so an open socket's silence timer is
+        // overdue and could fire before the frames that came meanwhile are handed over; it starts
+        // again now. One still connecting keeps its timer: a handshake that hangs isn't helped.
+        if (status === "open") rearm?.();
         return;
       }
       retry = firstRetry;

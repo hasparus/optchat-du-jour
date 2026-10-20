@@ -6,7 +6,7 @@
 // level by level. A failed call is tried again at the next message, once it has rested (E33); a
 // node the model refused, or gave no line for, REFUSALS times is built from its source, clipped.
 import { Cause, Clock, Console, Data, Duration, Effect, Exit, Option, PubSub, Semaphore } from "effect";
-import { AHEAD, JOBS, REFUSALS } from "./config.ts";
+import { AHEAD, JOBS, REFUSALS, REST_MOST } from "./config.ts";
 import type { Node } from "./records.ts";
 import { newNode, type StoreError } from "./store.ts";
 import { built, children, clippedText, type Coord, end, entry, type Entry, freeText, label, type Mem, node, nodes, ready } from "./tree.ts";
@@ -108,6 +108,7 @@ export type PumpOptions = {
   // replies, tool calls and results back to back, and each would otherwise ask a vendor that is
   // down again at once. None by default, as docs/optchat.md §4 has it; the server rests WAIT_RETRY.
   readonly rest?: Duration.Input | undefined;
+  readonly restMost?: Duration.Input | undefined; // REST_MOST: the longest a node rests, failing again and again
   readonly refusals?: number | undefined; // REFUSALS
 };
 
@@ -115,6 +116,7 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
   Effect.gen(function* () {
     const limit = o.jobs ?? JOBS, ahead = o.ahead ?? AHEAD, refusals = o.refusals ?? REFUSALS;
     const rest = Duration.toMillis(Duration.fromInputUnsafe(o.rest ?? 0));
+    const most = Math.max(rest, Duration.toMillis(Duration.fromInputUnsafe(o.restMost ?? REST_MOST)));
     const report = o.report ?? ((line: string) => Console.error(line));
     const scope = yield* Effect.scope;
     const clock = yield* Clock.Clock;
@@ -123,18 +125,25 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
     // nodes whose failure was reported already.
     const leaves = new Line<number>();
     const merges: (Line<Coord> | undefined)[] = [];
-    // `queued` and `running` keep each node's level, for `activity`; `failed`, each failed node and
-    // when it failed; `refused`, how many of its calls the model answered with no line (E33)
+    // `queued` and `running` keep each node's level, for `activity`; `failed`, each failed node,
+    // when it failed and how long it rests; `refused`, how many of its calls the model answered with
+    // no line (E33); `rested`, how long each node rested after its last failure in a row
     const queued = new Map<string, number>(), running = new Map<string, number>(), told = new Set<string>();
-    const failed = new Map<string, { readonly c: Coord; readonly at: number }>(), refused = new Map<string, number>();
-    // node c failed: it waits for the next message, rested
+    const failed = new Map<string, { readonly c: Coord; readonly at: number; readonly wait: number }>();
+    const refused = new Map<string, number>(), rested = new Map<string, number>();
+    // Node c failed: it waits for the next message, rested. Each failure in a row doubles its rest,
+    // from `rest` up to `most` (REST_MOST): a long outage or a spent plan settles to one call per
+    // node every few minutes, while a blip is tried again after `rest`.
     const park = (name: string, c: Coord) => {
-      failed.set(name, { at: clock.currentTimeMillisUnsafe(), c });
+      const before = rested.get(name);
+      const wait = before === undefined ? rest : Math.min(before * 2, most);
+      rested.set(name, wait);
+      failed.set(name, { at: clock.currentTimeMillisUnsafe(), c, wait });
     };
-    // While anything has failed, and failed calls rest (`rest`), one fiber tries them again as each
+    // While anything has failed, and failed calls rest (`rest`), one fiber tries each again as it
     // has rested, so a node that failed near the end of a turn isn't left until the next message,
-    // and the idle view can be primed (E17, E33). The cadence is `rest`, never a hot loop; with no
-    // rest (as docs/optchat.md §4 has it) a failed call waits for the next message.
+    // and the idle view can be primed (E17, E33). Never a hot loop; with no rest (as docs/optchat.md
+    // §4 has it) a failed call waits for the next message.
     let waking = false;
     const wake: Effect.Effect<void> = Effect.suspend(() => {
       if (rest <= 0 || waking) return Effect.void;
@@ -142,12 +151,16 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
       const loop = Effect.gen(function* () {
         for (;;) {
           let due = Number.POSITIVE_INFINITY;
-          for (const { at } of failed.values()) due = Math.min(due, at + rest);
-          if (due === Number.POSITIVE_INFINITY) return;
+          for (const f of failed.values()) due = Math.min(due, f.at + f.wait);
+          if (due === Number.POSITIVE_INFINITY) {
+            waking = false; // in the same step as the decision, so a park after it starts a new fiber
+            return;
+          }
           yield* Effect.sleep(Duration.millis(Math.max(0, due - clock.currentTimeMillisUnsafe())));
           yield* guarded(again(false));
         }
-      }).pipe(Effect.ensuring(Effect.sync(() => void (waking = false))));
+        // ended any other way (interrupted with the pump's scope): it can't have reset the flag
+      }).pipe(Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : Effect.sync(() => void (waking = false)))));
       return Effect.forkIn(loop, scope).pipe(Effect.asVoid);
     });
     const changes = yield* PubSub.sliding<true>(1);
@@ -248,7 +261,7 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
           Effect.flatMap((exit) =>
             restore(
               Exit.isSuccess(exit)
-                ? guarded(Effect.suspend(() => (running.delete(name), refused.delete(name), done(c))))
+                ? guarded(Effect.suspend(() => (running.delete(name), refused.delete(name), rested.delete(name), done(c))))
                 : Effect.andThen(one.withPermit(Effect.suspend(() => (running.delete(name), fail(exit.cause)))), nudge),
             ),
           ),
@@ -275,7 +288,7 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
     const again = (all: boolean) =>
       Effect.suspend(() => {
         const now = clock.currentTimeMillisUnsafe();
-        const waiting = [...failed].filter(([, f]) => all || now - f.at >= rest);
+        const waiting = [...failed].filter(([, f]) => all || now - f.at >= f.wait);
         for (const [name] of waiting) failed.delete(name);
         return Effect.forEach(waiting, ([, f]) => consider(f.c), { discard: true });
       });

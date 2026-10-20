@@ -113,7 +113,7 @@ test("what a compaction sees: the compaction view up to its node, stopping at th
 });
 
 // A pump whose calls each wait for the test: `calls` holds each started call's answer by node.
-const harness = (mem: Mem, jobs = 1000, more: { readonly rest?: Duration.Input } = {}) =>
+const harness = (mem: Mem, jobs = 1000, more: { readonly rest?: Duration.Input; readonly restMost?: Duration.Input } = {}) =>
   Effect.gen(function* () {
     const calls = new Map<string, Deferred.Deferred<string, CompactError | NoLine>>();
     const said: string[] = [];
@@ -125,6 +125,7 @@ const harness = (mem: Mem, jobs = 1000, more: { readonly rest?: Duration.Input }
       jobs,
       mem,
       rest: more.rest,
+      restMost: more.restMost,
       report: (m) => Effect.sync(() => void said.push(m)),
       summarize: (job) =>
         Effect.suspend(() => {
@@ -351,6 +352,49 @@ test("with a rest, a failed call is tried again by itself once it has rested, no
         yield* Deferred.succeed(h.calls.get("0+1")!, "a line");
         yield* h.quiet;
         expect(built(mem, { i: 0, l: 0 })).toBe(true);
+      }),
+    ),
+  );
+});
+
+test("a node failing again and again rests twice as long each time, up to restMost; a success starts it over (E33)", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const mem = newMem();
+        const h = yield* harness(mem, 1000, { rest: "30 millis", restMost: "100 millis" });
+        yield* h.pump.kick;
+        addMessage(mem, newMsg(0, "echo", long(600)));
+        yield* h.pump.logged(0);
+        const gaps: number[] = [];
+        for (let k = 0; k < 5; k++) {
+          yield* h.quiet;
+          while (!h.calls.has("0+1")) yield* Effect.sleep("2 millis");
+          const d = h.calls.get("0+1")!;
+          h.calls.delete("0+1");
+          const t0 = Date.now();
+          yield* Deferred.fail(d, new CompactError({ message: "usage limit" }));
+          while (!h.calls.has("0+1")) yield* Effect.sleep("2 millis");
+          gaps.push(Date.now() - t0);
+        }
+        // 30, 60, then the cap of 100 (each a few ms late at most)
+        expect(gaps.map((g, k) => g >= [30, 60, 100, 100, 100][k]! - 3)).toEqual([true, true, true, true, true]);
+        expect(gaps[0]).toBeLessThan(60);
+        expect(gaps[1]).toBeLessThan(100);
+        expect(Math.max(...gaps)).toBeLessThan(160);
+        yield* Deferred.succeed(h.calls.get("0+1")!, "a line");
+        yield* h.quiet;
+        expect(built(mem, { i: 0, l: 0 })).toBe(true);
+        // the fiber ended with nothing failed; a later failure, of another node, starts it again,
+        // and from `rest`: the backoff was the node's own
+        addMessage(mem, newMsg(1, "echo", long(600)));
+        yield* h.pump.logged(1);
+        yield* h.quiet;
+        const t1 = Date.now();
+        yield* Deferred.fail(h.calls.get("1+1")!, new CompactError({ message: "blip" }));
+        h.calls.delete("1+1");
+        while (!h.calls.has("1+1")) yield* Effect.sleep("2 millis");
+        expect(Date.now() - t1).toBeLessThan(60);
       }),
     ),
   );

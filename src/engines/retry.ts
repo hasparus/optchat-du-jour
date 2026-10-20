@@ -17,7 +17,7 @@ import { Context, Duration, Effect, Random, Result, Stream } from "effect";
 import { type HttpClient, HttpClientError, type HttpClientRequest } from "effect/http";
 import { HTTP_RETRY_BASE, HTTP_RETRY_LONGEST, HTTP_TRIES } from "../config.ts";
 import type { ToolInputHooks } from "./tool-input.ts";
-import { addSpent, type EngineError, isEngineError, ModelError, passing, type Spent, type Tagged, withSpent } from "./errors.ts";
+import { addSpent, type EngineError, isEngineError, ModelError, passing, settled, type Spent, type Tagged } from "./errors.ts";
 
 export type RetryPolicy = {
   readonly tries: number; // in all, the first included
@@ -106,29 +106,19 @@ export const shownToolInput = (shown: Shown, hooks: ToolInputHooks | undefined):
   return delta && end ? { delta, end } : undefined;
 };
 
-// What earlier tries cost, kept across two askAgain of one call (openai-plan's, around a token
-// renewed after a 401): the second one starts from it.
-export type Carry = { before: Spent | undefined };
-
 // The request (`once`, one try, its hooks wrapped by `shown`) until it succeeds, fails with what
-// won't pass, has shown something, or has had its tries; then that failure is the call's. Earlier
-// tries' cost is merged into the reply (`merge`) or added to the failure, on every way out but a
-// failure that isn't an engine's (a 401 to renew, a log that refused): that one leaves it in `carry`.
+// won't pass, has shown something, or has had its tries; then that failure is the call's, no
+// longer marked as one that may pass. What earlier tries cost is merged into the reply (`merge`)
+// or added to the failure, on every way out.
 export const askAgain = <A, E extends Tagged>(o: {
   readonly once: (shown: Shown) => Effect.Effect<A, E>;
   readonly merge: (reply: A, before: Spent) => A;
-  readonly carry?: Carry;
 }): Effect.Effect<A, E | EngineError> =>
   Effect.gen(function* () {
     const policy = yield* EngineRetry;
     const longest = Duration.toMillis(Duration.fromInputUnsafe(policy.longest));
     const base = Duration.toMillis(Duration.fromInputUnsafe(policy.base));
-    const carry: Carry = o.carry ?? { before: undefined };
-    const taken = () => {
-      const { before } = carry;
-      carry.before = undefined;
-      return before;
-    };
+    let before: Spent | undefined;
     for (let k = 1; ; k++) {
       const tried = { shown: false };
       const shown: Shown = (f) =>
@@ -139,15 +129,14 @@ export const askAgain = <A, E extends Tagged>(o: {
         });
       const out = yield* Effect.result(o.once(shown));
       if (Result.isSuccess(out)) {
-        const before = taken();
         return before === undefined ? out.success : o.merge(out.success, before);
       }
       const e = out.failure;
       if (!isEngineError(e)) return yield* Effect.fail(e);
-      if (e._tag === "DeviceOffline" || e.transient !== true || tried.shown || k >= policy.tries) return yield* Effect.fail(withSpent(e, taken()));
+      if (e._tag === "DeviceOffline" || e.transient !== true || tried.shown || k >= policy.tries) return yield* Effect.fail(settled(e, before));
       const pause = e.retryAfter ?? base * 2 ** (k - 1) * (0.8 + 0.4 * (yield* Random.next));
-      if (pause > longest) return yield* Effect.fail(withSpent(e, taken()));
-      if (e.spent !== undefined) carry.before = carry.before === undefined ? e.spent : addSpent(carry.before, e.spent);
+      if (pause > longest) return yield* Effect.fail(settled(e, before));
+      if (e.spent !== undefined) before = before === undefined ? e.spent : addSpent(before, e.spent);
       yield* Effect.sleep(Duration.millis(pause));
     }
   });

@@ -17,9 +17,9 @@
 import { Cause, Context, Data, Duration, Effect, Layer, Option, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { IDLE_OPENAI } from "../config.ts";
-import { addSpent, type EngineError, isEngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit, withSpent } from "../engines/errors.ts";
+import { addSpent, type EngineError, ModelError, Refusal, type Spent, type Tagged, UsageLimit } from "../engines/errors.ts";
 import { admitRequest } from "../engines/request-admission.ts";
-import { askAgain, bytes, type Carry, errorBody, httpFailure, post as send, type Shown, shownToolInput, type Wire } from "../engines/retry.ts";
+import { askAgain, bytes, errorBody, httpFailure, post as send, type Shown, shownToolInput, type Wire } from "../engines/retry.ts";
 import { json, sseFold, typeOf } from "../engines/sse.ts";
 import type { ToolInputHooks } from "../engines/tool-input.ts";
 import { isPicture, type Part } from "../media/part.ts";
@@ -410,23 +410,29 @@ export const makeResponses = (o: { readonly api: string; readonly label: string;
         });
       });
 
-    // A 401 renews the token once, then counts as signed out. What failed tries cost before the
-    // 401 is carried to the tries after the renewal (`carry`), and to whatever failure ends the call.
+    // A 401 renews the token once, inside the tries: the try fails as one to send again at once,
+    // with the new token. A second 401 counts as signed out, which the chain moves past. One
+    // askAgain per call, so what every try cost reaches whatever ends it.
     const respond: Respond = (ask) =>
       Effect.gen(function* () {
-        const carry: Carry = { before: undefined };
-        const again = (token: string) =>
-          askAgain({ carry, merge: (reply: Reply, before) => ({ ...reply, usage: addSpent(before, { model: reply.model, usage: reply.usage }).usage }), once: (shown) => once(ask, token, shown) });
-        const token = yield* o.bearer.current;
-        return yield* again(token).pipe(
-          Effect.catchIf(isUnauthorized, () =>
-            o.bearer.renew(token).pipe(
-              Effect.flatMap(again),
-              Effect.catchIf(isUnauthorized, (u) => Effect.fail(new UsageLimit({ message: `${o.label}: still unauthorized after a refresh: ${u.message}` }))),
-            ),
-          ),
-          Effect.catchIf(isEngineError, (e) => Effect.fail(withSpent(e, carry.before))),
-        );
+        let token = yield* o.bearer.current;
+        let renewed = false;
+        const renew = (u: Unauthorized) =>
+          renewed
+            ? Effect.fail(new UsageLimit({ message: `${o.label}: still unauthorized after a refresh: ${u.message}` }))
+            : o.bearer.renew(token).pipe(
+                Effect.flatMap((fresh) =>
+                  Effect.sync(() => {
+                    token = fresh;
+                    renewed = true;
+                  }),
+                ),
+                Effect.andThen(Effect.fail(new ModelError({ message: `${o.label}: unauthorized, so the token was renewed: ${u.message}`, retryAfter: 0, transient: true }))),
+              );
+        return yield* askAgain({
+          merge: (reply: Reply, before) => ({ ...reply, usage: addSpent(before, { model: reply.model, usage: reply.usage }).usage }),
+          once: (shown) => once(ask, token, shown).pipe(Effect.catchIf(isUnauthorized, renew)),
+        });
       });
     return respond;
   });

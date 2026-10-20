@@ -31,6 +31,10 @@ export const WAIT_RETRY = "10 seconds";
 // input's doing, so asking again mostly fails alike (UniiChat clips at the first); one more try,
 // WAIT_RETRY later, lets a flaky safeguard pass, and holds a waiting turn back by that much at most.
 export const REFUSALS = 2;
+// A failed compactor call rests WAIT_RETRY before a logged entry, or the pump by itself, tries it
+// again; each failure in a row doubles that, up to REST_MOST (E33). A message coming to the
+// session, or a turn waiting for summaries, tries it at once all the same.
+export const REST_MOST = "5 minutes";
 // The /ws heartbeat (UniiChat's values): the server sends a connection the state when nothing else
 // went out for HEARTBEAT, and a client that hears nothing for SILENT takes the socket for dead and
 // opens another. A half-open TCP connection or a laptop on a new Wi-Fi otherwise looks open for
