@@ -205,3 +205,23 @@ test("openai-plan: a failed try's cost is carried across a token renewed after a
   const through = await run(plan(askOpenAi));
   expect(through._tag === "Success" && through.success.usage.input).toBe(10);
 });
+
+test("openai-plan: a 401 on the last try renews the token and sends it again, a renewal never counted as a try; a second 401 is a sign-out", async () => {
+  let renewed = 0;
+  const plan = Effect.runSync(
+    makeResponses({ api: server.base, bearer: { current: Effect.succeed("old"), renew: () => Effect.sync(() => ((renewed += 1), "new")) }, idle: "150 millis", label: "openai-plan" }).pipe(Effect.provide(FetchHttpClient.layer)),
+  );
+  const unauthorized: Step = { body: JSON.stringify({ error: { code: "invalid_token", message: "expired" } }), status: 401 };
+  // three tries the server failed, then the fourth and last meets a 401
+  fresh(openAiError(503, "unavailable"), openAiError(503, "unavailable"), openAiError(503, "unavailable"), unauthorized, done("ok"));
+  const out = await run(plan(askOpenAi));
+  expect(out._tag === "Success" && out.success.text).toBe("ok");
+  expect(renewed).toBe(1);
+  expect(server.bodies).toHaveLength(5);
+  // still unauthorized with the new token: signed out, for the chain, with no more tries
+  fresh(unauthorized, unauthorized, done("never"));
+  const again = await run(plan(askOpenAi));
+  expect(again._tag === "Failure" && again.failure).toBeInstanceOf(UsageLimit);
+  expect(again._tag === "Failure" && again.failure.message).toBe("openai-plan: still unauthorized after a refresh: {\"error\":{\"code\":\"invalid_token\",\"message\":\"expired\"}}");
+  expect(server.bodies).toHaveLength(2);
+});
