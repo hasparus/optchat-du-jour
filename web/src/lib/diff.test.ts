@@ -41,6 +41,8 @@ test("an Edit is its diff with counts; a MultiEdit a hunk per edit; a Write its 
   expect(fileChange("Write", JSON.stringify({ content: "one\ntwo\nthree\n", file_path: "n.txt" }))).toEqual({ kind: "write", lines: ["one", "two", "three"], path: "n.txt", whole: true });
   expect(fileChange("Read", JSON.stringify({ file_path: "a" }))).toBeNull();
   expect(fileChange("Bash", JSON.stringify({ command: "ls" }))).toBeNull();
+  // only those three: another tool whose input looks like an edit's is no file change
+  expect(fileChange("mcp__notes__patch", JSON.stringify({ edits: [{ old_string: "a", new_string: "b" }], file_path: "x" }))).toBeNull();
 });
 
 test("streaming: the diff grows with the input, and is whole once the input is", () => {
