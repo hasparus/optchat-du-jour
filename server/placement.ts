@@ -76,11 +76,8 @@ export const makePlacements = (o: {
       if (d === undefined) return Result.fail(`${device} is not a configured device`);
       const allowed = [...d.folders, root];
       const outside = Result.fail(`${path} is outside ${device}'s folders (${d.folders.join(", ")})`);
-      if (device === o.device) {
-        if (!posix.isAbsolute(expandHome(path))) return Result.fail(`${path} is not an absolute path`);
-        const real = realInside(path, allowed);
-        return Result.isFailure(real) ? Result.fail(`${path} is outside ${device}'s folders (${d.folders.join(", ")}), or doesn't exist there`) : real;
-      }
+      // realInside's own reason: not absolute, not on this machine, or outside the folders
+      if (device === o.device) return Result.mapError(realInside(path, allowed), (why) => `${why} (${device}: ${d.folders.join(", ")})`);
       const written = posix.normalize(path);
       if (!posix.isAbsolute(written) && written !== "~" && !written.startsWith("~/")) return Result.fail(`${path} is not an absolute path`);
       const home = written.startsWith("~");

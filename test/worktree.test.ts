@@ -4,10 +4,14 @@
 // worktree, a repository outside the folders is refused at the add, a dropped worktree goes with
 // its branch, and none of the three is ever interrupted halfway.
 import { afterAll, expect, test } from "bun:test";
-import { Effect, Fiber } from "effect";
+import { BunServices } from "@effect/platform-bun";
+import { Effect, Fiber, Result } from "effect";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { makePlacements } from "../server/placement.ts";
+import { remoteRunner } from "../src/claude/remote.ts";
+import { parseSettings } from "../src/config.ts";
 import { addWorktree, discardWorktree, disposable, type Facts, finishWorktree, localWorktrees, plan } from "../src/worktree.ts";
 
 const dirs: string[] = [];
@@ -210,4 +214,35 @@ test("add, finish and discard are never interrupted halfway: an interrupt as eac
   await interrupted(trees.discard({ ...w, branch: "optchat/Steady", path }));
   expect(existsSync(path)).toBe(false);
   expect(git(folder, "branch", "--list", "optchat/Steady").out).toBe("");
+});
+
+test("the server's own device: its finish deletes what subagents.disposable names, and a spawn's folder is refused with realInside's reason", async () => {
+  const { folder, root, top } = repo();
+  writeFileSync(`${folder}/.gitignore`, ".scratch/\n");
+  git(folder, "add", "-A");
+  git(folder, "commit", "-qm", "ignore .scratch");
+  const settings = parseSettings({
+    allowedLogins: [],
+    cache: { claudeCodeTtl: "1h", primeTtl: "1h" },
+    compactor: { byLevel: [{ chain: ["claude-code:haiku"], from: 0 }], effort: "medium" },
+    defaultDevice: "mini",
+    devices: { mini: { folders: [top], url: "http://127.0.0.1:1" } },
+    master: { chain: ["claude-code:opus"], effort: "high", permissionMode: "bypassPermissions" },
+    subagents: { disposable: [".scratch"], worktrees: root },
+  });
+  const placements = await Effect.runPromise(
+    makePlacements({ device: "mini", local: remoteRunner("mini", "http://127.0.0.1:1"), port: 1, report: () => Effect.void, secret: "s", settings }).pipe(Effect.provide(BunServices.layer)),
+  );
+  const trees = placements.worktrees.get("mini");
+  if (trees === undefined) throw new Error("no worktrees for mini");
+  const w = await run(trees.add(folder, "Scratcher"));
+  mkdirSync(`${w.path}/.scratch`);
+  writeFileSync(`${w.path}/.scratch/tmp`, "x\n");
+  writeFileSync(`${w.path}/b.txt`, "b\n");
+  expect(await run(trees.finish(w, "Scratcher"))).toMatchObject({ outcome: "fast-forward" });
+  expect(existsSync(w.path)).toBe(false);
+  expect(placements.folderFor("mini", "/etc")).toEqual(Result.fail(`/etc is outside this device's folders (mini: ${top})`));
+  expect(placements.folderFor("mini", `${top}/missing`)).toEqual(Result.fail(`${top}/missing does not exist on this device (mini: ${top})`));
+  expect(placements.folderFor("mini", "repo")).toEqual(Result.fail(`repo is not an absolute path (mini: ${top})`));
+  expect(placements.folderFor("mini", `${folder}/../repo`)).toEqual(Result.succeed(folder));
 });
