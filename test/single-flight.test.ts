@@ -93,11 +93,11 @@ const exactOnly = (gate: Gate): Gate => ({
   through: (prefix, call) => gate.through(prefix && { keys: prefix.keys.slice(-1), marks: [0], ttl: prefix.ttl }, call),
 });
 
-// the requests of compactions of `jobs` started together, run until all are answered
-const together = async (gate: Gate, jobs: readonly Job[], answer = 0) =>
+// the requests of compactions of `jobs` started together, run until all are answered or failed
+const together = async (gate: Gate, jobs: readonly Job[], o: Parameters<typeof vendor>[0] = {}) =>
   run(
     Effect.gen(function* () {
-      const v = vendor({ answer });
+      const v = vendor(o);
       const all = yield* Effect.forkChild(compact(gate, v.provider, jobs));
       for (let s = 0; s < 3 * jobs.length + 4; s++) yield* advance(RESPONSE);
       yield* Fiber.join(all);
@@ -124,8 +124,8 @@ test("eight compactions on nested contexts are all answered within one first-res
   // a merge batch: contexts of 7 to 35 lines, each extending the one before; an answer takes 3 s
   // after its response begins
   const jobs = [7, 11, 15, 19, 23, 27, 31, 35].map((n) => job(n));
-  const free = await together(none, jobs, 3 * RESPONSE);
-  const gated = await together(makeGate(), jobs, 3 * RESPONSE);
+  const free = await together(none, jobs, { answer: 3 * RESPONSE });
+  const gated = await together(makeGate(), jobs, { answer: 3 * RESPONSE });
   expect(last(free)).toBe(4 * RESPONSE);
   expect(last(gated)).toBe(last(free) + RESPONSE);
   // and it wrote 2 + 7 × (its own tail) blocks, against 2 + 3 + … + 9
@@ -197,6 +197,90 @@ test("a call that fails before its response begins books nothing: the calls afte
     { at: 0, wrote: 0 }, // turned away
     { at: RESPONSE, wrote: 2 }, // writes the prefix
     { at: 2 * RESPONSE, wrote: 0 }, // waited for it: had the failure been booked as written, both would have written it
+  ]);
+});
+
+test("a writer that fails before its response begins: of the calls that waited on it, one writes the prefix and the others wait for that one, and again when that one fails too", async () => {
+  // the next writer fails as well: those left look again
+  expect(sent(await together(makeGate(), [8, 9, 10, 11].map((i) => job(7, i)), { fails: [0, 1] }))).toEqual([
+    { at: 0, wrote: 0 },
+    { at: RESPONSE, wrote: 0 },
+    { at: 2 * RESPONSE, wrote: 2 },
+    { at: 3 * RESPONSE, wrote: 0 },
+  ]);
+  for (const n of [3, 8]) {
+    const jobs = Array.from({ length: n }, (_, k) => job(7, 8 + k));
+    expect(sent(await together(makeGate(), jobs, { fails: [0] }))).toEqual([
+      { at: 0, wrote: 0 }, // turned away: it wrote nothing
+      { at: RESPONSE, wrote: 2 }, // one of the waiters writes it
+      ...Array.from({ length: n - 2 }, () => ({ at: 2 * RESPONSE, wrote: 0 })), // the rest wait for that one and read it
+    ]);
+  }
+});
+
+test("a writer whose claim lapses: of the calls that waited on it, one writes the prefix and the others wait for that one, and again when that one lapses too", async () => {
+  const seen = await run(
+    Effect.gen(function* () {
+      const v = vendor({ hangs: [0, 1] });
+      const gate = makeGate();
+      const stuck = yield* Effect.forkChild(compact(gate, v.provider, [job(7)]));
+      yield* settle;
+      const waiting = yield* Effect.forkChild(compact(gate, v.provider, [job(7, 8), job(7, 9), job(7, 10)]));
+      yield* advance("30 seconds");
+      yield* advance("30 seconds");
+      yield* advance(RESPONSE);
+      yield* advance(RESPONSE);
+      yield* Fiber.interrupt(waiting);
+      yield* Fiber.interrupt(stuck);
+      return v.seen;
+    }),
+  );
+  expect(sent(seen)).toEqual([
+    { at: 0, wrote: 2 }, // stuck
+    { at: 30_000, wrote: 2 }, // stuck too
+    { at: 60_000, wrote: 2 },
+    { at: 60_000 + RESPONSE, wrote: 0 },
+  ]);
+});
+
+test("a call never takes over a key another call is writing: one marked beyond its lookback stays that call's, read as soon as it is written", async () => {
+  const short: Prefix = { keys: ["a"], marks: [0], ttl: "5m" };
+  // marks block 0 and block 25; block 0 is beyond the lookback of 25, so it never waits on it
+  const long: Prefix = { keys: ["a", ...Array.from({ length: 25 }, (_, k) => `b${k}`)], marks: [0, 25], ttl: "5m" };
+  const times = await run(
+    Effect.gen(function* () {
+      const gate = makeGate();
+      const went: number[] = [];
+      const now = Effect.clockWith((clock) => Effect.sync(() => clock.currentTimeMillisUnsafe()));
+      const go = (p: Prefix, begins: number) =>
+        gate.through(p, (begun) =>
+          Effect.gen(function* () {
+            went.push(yield* now);
+            yield* Effect.sleep(begins);
+            yield* begun;
+          }),
+        );
+      const writer = yield* Effect.forkChild(go(short, RESPONSE));
+      yield* settle;
+      const slow = yield* Effect.forkChild(go(long, 10 * RESPONSE)); // goes at once, begins at 10 s
+      yield* advance(RESPONSE); // the writer begins: block 0 is written
+      const reader = yield* Effect.forkChild(go(short, RESPONSE));
+      yield* advance(RESPONSE);
+      yield* Fiber.join(writer);
+      yield* Fiber.join(reader);
+      yield* Fiber.interrupt(slow);
+      return went;
+    }),
+  );
+  expect(times).toEqual([0, 0, RESPONSE]); // the reader went at 1 s, not when the slow call began
+});
+
+test("two calls on one context that waited on a shorter writer: one writes the tail, the other waits for it once more and reads it", async () => {
+  // the 11-line context extends the 7-line one by block 2
+  expect(sent(await together(makeGate(), [job(7), job(11, 12), job(11, 13)]))).toEqual([
+    { at: 0, wrote: 2 },
+    { at: RESPONSE, wrote: 1 },
+    { at: 2 * RESPONSE, wrote: 0 }, // without the second wait it would write block 2 again
   ]);
 });
 

@@ -12,7 +12,7 @@
 // Waiting once bounds what single flight costs a call to one wait, as an exact-prefix wait did:
 // calls on contexts that extend each other (a merge batch's) all wait on the first writer and then
 // go together, each writing its own tail, rather than one after another (`test/single-flight.test.ts`).
-import { Clock, Deferred, Duration, Effect } from "effect";
+import { Clock, Deferred, Duration, Effect, Option } from "effect";
 import { FLIGHT_WAIT, LOOKBACK } from "../config.ts";
 
 // how long a vendor keeps an entry no request reads: a Claude subscription's marks as E6 sets
@@ -63,10 +63,11 @@ export const prefixFor = (head: Head, blocks: readonly string[], marks: readonly
   return last === undefined ? null : { keys: prefixKeys(head, blocks.slice(0, last + 1)), marks: shared, ttl };
 };
 
-// a prefix some call is writing, whose response hasn't begun (it holds the prefix until `lapses`),
-// or one written, which the vendor keeps until `until`, and `ttl` longer after each read
+// a prefix some call is writing, whose response hasn't begun (it holds the prefix until `lapses`;
+// `done` is true once its response began, false when it ended without that), or one written,
+// which the vendor keeps until `until`, and `ttl` longer after each read
 type Entry =
-  | { readonly _tag: "Writing"; readonly done: Deferred.Deferred<true>; readonly lapses: number; readonly ttl: number }
+  | { readonly _tag: "Writing"; readonly done: Deferred.Deferred<boolean>; readonly lapses: number; readonly ttl: number }
   | { readonly _tag: "Cached"; readonly until: number; readonly ttl: number };
 
 export const makeGate = (): Gate => {
@@ -95,11 +96,19 @@ export const makeGate = (): Gate => {
     return -1;
   };
 
+  // Wait for `writer`'s response to begin, or for it to end without that, or for its claim to lapse;
+  // then `next` if its response began, else `otherwise`
+  const after = <A, E, R>(writer: Entry & { readonly _tag: "Writing" }, now: number, next: Effect.Effect<A, E, R>, otherwise: Effect.Effect<A, E, R>) =>
+    Deferred.await(writer.done).pipe(
+      Effect.timeoutOption(writer.lapses - now),
+      Effect.flatMap((began) => (Option.getOrElse(began, () => false) ? next : otherwise)),
+    );
+
   // The call goes now: it reads the longest written prefix of its own and writes its marked
   // entries past it, those no other call is writing. Once its response begins, what it wrote is
   // the vendor's, and what it read is kept a TTL longer (the entry's own TTL); a call that ends
-  // before that frees what it held, and the calls waiting on it go.
-  const fly = <A, E, R>(prefix: Prefix, call: (started: Effect.Effect<void>) => Effect.Effect<A, E, R>) =>
+  // before that frees what it held, and the calls waiting on it look again.
+  const go = <A, E, R>(prefix: Prefix, call: (started: Effect.Effect<void>) => Effect.Effect<A, E, R>) =>
     Clock.clockWith((clock) =>
       Effect.suspend(() => {
         const now = clock.currentTimeMillisUnsafe();
@@ -107,7 +116,7 @@ export const makeGate = (): Gate => {
         const k = longest(prefix, now, written);
         const read = prefix.keys[k];
         const writes = prefix.marks.flatMap((m) => (m > k ? (prefix.keys[m] ?? []) : [])).filter((key) => !writing(entries.get(key), now));
-        const own: Entry = { _tag: "Writing", done: Deferred.makeUnsafe<true>(), lapses: now + wait, ttl: TTL_MS[prefix.ttl] };
+        const own: Entry & { readonly _tag: "Writing" } = { _tag: "Writing", done: Deferred.makeUnsafe<boolean>(), lapses: now + wait, ttl: TTL_MS[prefix.ttl] };
         for (const key of writes) touch(key, own);
         const mine = () => writes.filter((key) => entries.get(key) === own);
         const began = Clock.clockWith((at) =>
@@ -121,9 +130,21 @@ export const makeGate = (): Gate => {
         );
         const ended = Effect.sync(() => {
           for (const key of mine()) entries.delete(key);
-          Deferred.doneUnsafe(own.done, Effect.succeed(true));
+          Deferred.doneUnsafe(own.done, Effect.succeed(false));
         });
         return call(began).pipe(Effect.ensuring(ended));
+      }),
+    );
+
+  // After its one wait, a call goes; but when another call that woke with it already writes this
+  // call's whole prefix, it waits for that one too, and then goes whatever came of it: one more
+  // wait at most, never a chain, and the tail is written once
+  const fly = <A, E, R>(prefix: Prefix, call: (started: Effect.Effect<void>) => Effect.Effect<A, E, R>) =>
+    Clock.clockWith((clock) =>
+      Effect.suspend(() => {
+        const now = clock.currentTimeMillisUnsafe();
+        const tail = entries.get(prefix.keys.at(-1) ?? "");
+        return tail?._tag === "Writing" && writing(tail, now) ? after(tail, now, go(prefix, call), go(prefix, call)) : go(prefix, call);
       }),
     );
 
@@ -135,10 +156,12 @@ export const makeGate = (): Gate => {
             const now = clock.currentTimeMillisUnsafe();
             sweep(now);
             // a writer of a prefix of its own, already writing, and longer than any written one:
-            // wait for its response to begin (or for its claim to lapse), once, then go
+            // wait for its response to begin, then go. A writer that ended without that, or whose
+            // claim lapsed, wrote nothing: look again, so one of those that waited writes the
+            // prefix and the others wait for it, rather than all writing it at once
             const found = entries.get(prefix.keys[longest(prefix, now, (e, t) => writing(e, t) || written(e, t))] ?? "");
             if (found?._tag !== "Writing") return fly(prefix, call);
-            return Deferred.await(found.done).pipe(Effect.timeoutOption(found.lapses - now), Effect.andThen(fly(prefix, call)));
+            return after(found, now, fly(prefix, call), through(prefix, call));
           }),
         );
   return { through };
