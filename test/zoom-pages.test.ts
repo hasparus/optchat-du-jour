@@ -21,6 +21,7 @@ function memory(): Mem {
   addMessage(mem, newMsg(2, "talk", `a${"😀".repeat(20_000)}`)); // every pair starts at an odd character
   addMessage(mem, newMsg(3, "talk", "漢".repeat(40_000))); // 3 bytes a character
   addMessage(mem, newMsg(4, "talk", `a\n${"x".repeat(60_000)}`)); // a line break at its very start
+  addMessage(mem, newMsg(5, "talk", "漢".repeat(20_000))); // under ZOOM_PAGE characters, over ZOOM_BYTES bytes
   addNode(mem, { i: 0, l: 0, text: "user: pasted a log" });
   addNode(mem, { i: 1, l: 0, text: "talk: a short reply" });
   addNode(mem, { i: 0, l: 1, text: "user pasted a log; talk replied" });
@@ -81,6 +82,8 @@ test("a 200 KB message comes in pages from character at: each under CAP, cut at 
   const cjk = readAll(mem, 3);
   expect(cjk.parts.join("")).toBe(mem.root[3]?.text ?? "");
   expect(cjk.parts.map((p) => p.length)).toEqual([10_666, 10_666, 10_666, 8002]);
+  // fewer characters than a page, but more bytes: not answered whole
+  expect(readAll(mem, 5).parts.map((p) => p.length)).toEqual([10_666, 20_000 - 10_666]);
   // a line break early in the window is no place to end a page: no 2-character page
   const early = readAll(mem, 4);
   expect(early.parts.map((p) => p.length)).toEqual([ZOOM_PAGE, ZOOM_PAGE, 4002]);
