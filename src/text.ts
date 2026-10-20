@@ -23,6 +23,20 @@ export const tailOf = (text: string, n: number): string => {
   return text.slice(pairAt(text, start - 1) ? start + 1 : start);
 };
 
+// the longest head of `text` that is at most `n` bytes of UTF-8, never ending inside a character;
+// a lone surrogate counts as the 3 bytes of the U+FFFD it is sent as
+export const headBytes = (text: string, n: number): string => {
+  let bytes = 0;
+  for (let k = 0; k < text.length; ) {
+    const c = text.codePointAt(k) ?? 0;
+    const size = c < 0x80 ? 1 : c < 0x8_00 ? 2 : c > 0xFF_FF ? 4 : 3;
+    if (bytes + size > n) return text.slice(0, k);
+    bytes += size;
+    k += c > 0xFF_FF ? 2 : 1;
+  }
+  return text;
+};
+
 // JSON for a model's wire, every string in it made well-formed first: a lone surrogate becomes
 // U+FFFD. JSON.stringify alone would write it as a \udXXX escape, which the provider decodes back
 // into the ill-formed text it refuses. Each encoder of what a model reads goes through this one

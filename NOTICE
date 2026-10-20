@@ -64,3 +64,9 @@ What was taken, and from which commit, is tracked in docs/uniichat.md:
   place and fill in as the compactor writes them, and a summary sent to
   the clients shown it once it is built (View.ts part_rows, Server.ts
   Chat.made): SPEC E46, E47.
+- A long message zoomed a page at a time from a character, saying
+  where to go on (Memory.ts Memory.zoom, Clip.ts clip_page): SPEC E48.
+- What a compaction reads of one message bounded, as UniiChat's pages
+  of a long text bound it (Memory.ts Memory.pages): SPEC E49.
+- Single flight on every block prefix of a request, aware of the
+  cache's TTLs (AskAI.ts AskAI.keys, AskAI.wait): SPEC E50.

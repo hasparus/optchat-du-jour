@@ -156,6 +156,8 @@ export function fakeOpenAi() {
               ? [{ type: "response.created" }, { response: { incomplete_details: { reason: answer.incomplete }, model: "fake-luna", usage }, type: "response.incomplete" }]
               : [
                 { type: "response.created" },
+                // the first output item begins: the input has been read (the real API announces each item)
+                { item: { type: answer.reasoning === undefined && answer.summary === undefined ? (answer.text ? "message" : "function_call") : "reasoning" }, type: "response.output_item.added" },
                 ...(answer.summary === undefined || answer.summaryWhole === true
                   ? []
                   : [...answer.summary.match(/[\s\S]{1,20}/gu) ?? []].map((delta) => ({ delta, item_id: `rs_${state.seen.length}`, summary_index: 0, type: "response.reasoning_summary_text.delta" }))),

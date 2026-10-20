@@ -43,8 +43,8 @@ export type EngineNeeds = {
 // prompt, and a turn's tools (the default device's for a provider; for claude-code, a turn's on
 // this machine, `placement`): the same bytes before the view. A cache entry is the model's own at
 // its effort, so they read a turn's entry only when they run on the turns' model and effort, which
-// the shipped chains don't (E5, E26). They wait on a call writing the same marked prefix, on the
-// same model and effort (`gate`, docs/optchat.md §3.3).
+// the shipped chains don't (E5, E26). They wait on a call writing a marked prefix of their own, on
+// the same engine, model and effort (`gate`, docs/optchat.md §3.3, E50).
 export type CompactorNeeds = EngineNeeds & {
   readonly device?: string;
   readonly instructions: string;

@@ -418,3 +418,20 @@ for (const provider of ["anthropic", "openai"] as const) {
     }
   });
 }
+
+test("a response begins (onStart, single flight's 'written', E50) at message_start or response.output_item.added, never at response.created or an error", async () => {
+  let begun = 0;
+  const onStart = Effect.sync(() => void begun++);
+  const completed = { response: { model: "fake", usage: { input_tokens: 2, output_tokens: 1 } }, type: "response.completed" };
+  const failed = { response: { error: { code: "server_error", message: "stopped" }, usage: { input_tokens: 2, output_tokens: 0 } }, type: "response.failed" };
+  // the Responses API: created, then failed, is no beginning; an output item is
+  await Effect.runPromise(Effect.flip(readStream(stream([{ type: "response.created" }, failed]), "fake", { onStart })));
+  expect(begun).toBe(0);
+  await Effect.runPromise(readStream(stream([{ type: "response.created" }, { item: { type: "message" }, type: "response.output_item.added" }, completed]), "fake", { onStart }));
+  expect(begun).toBe(1);
+  // Anthropic: an error before message_start is none; message_start is
+  await Effect.runPromise(Effect.flip(readMessages(stream([{ error: { type: "overloaded_error" }, type: "error" }]), { ...ask, onStart })));
+  expect(begun).toBe(1);
+  await Effect.runPromise(readMessages(stream([start(first), delta({ output_tokens: 1 }), stop]), { ...ask, onStart }));
+  expect(begun).toBe(2);
+});
