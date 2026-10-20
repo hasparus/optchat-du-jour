@@ -81,7 +81,9 @@ export const apiRoutes = (
 
     // A message from outside the app (E41): iOS Shortcuts, a share extension. As /ws takes one, and
     // answered once by its client's id: a retry is told what became of it (src/wire.ts Received)
-    // and is not taken again. A body that doesn't decode, or that has nothing to send, is a 400.
+    // and is not taken again. A body that doesn't decode, or that has nothing to send, is a 400;
+    // one left with nothing to send once the attachments the server doesn't hold are left out is
+    // refused, a 422 with the receipt saying why.
     yield* router.add("POST", "/api/messages", (request) =>
       Effect.gen(function* () {
         const body = decodePost(yield* request.text.pipe(Effect.orElseSucceed(() => ""))); // a body cut short reads as none
@@ -89,7 +91,8 @@ export const apiRoutes = (
         const { attachments = [], ...m } = body.value;
         if (m.text.trim() === "" && attachments.length === 0) return badRequest();
         const answer = yield* takeMessage(o.session, o.assets, { ...m, attachments });
-        return yield* HttpServerResponse.schemaJson(Received)(answer).pipe(Effect.orElseSucceed(serverError));
+        const status = answer.outcome === "refused" ? 422 : 200;
+        return yield* HttpServerResponse.schemaJson(Received)(answer, { status }).pipe(Effect.orElseSucceed(serverError));
       }),
     );
 

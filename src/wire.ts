@@ -201,15 +201,16 @@ export const SessionState = Schema.Struct({
   // server's own clock, so no two clocks are compared): a client adds the time since it got it
   elapsed: Schema.optional(Schema.Number),
   // reports no longer wake the master (E39): it was woken this many turns in a row, with no user
-  // message between them; the next message resumes waking. Optional, like the list below.
+  // message between them; the next message resumes waking. Optional, like the list below: absent
+  // while it wakes, so a delta removes it once waking resumes.
   wakePaused: Schema.optional(Schema.Number),
   // the subagents (SPEC M7a): every running one, then the most recent others, newest first.
   // Optional: a server from before them sends none, and a client from before them ignores it
   subagents: Schema.optional(Schema.Array(SubagentInfo)),
   // The running turn's retry pause (E35, E43): its engine waits `ms` more as of when this state was
   // made (a client counts down from when it got it, as with `elapsed`), before try `next` of
-  // `tries`; null when it doesn't wait (a delta replaces keys and never removes one, so the end of a
-  // pause is a null). Optional, so either side from before it still decodes.
+  // `tries`; null when it doesn't wait (said as a null since the delta could not remove a key when
+  // it came). Optional, so either side from before it still decodes.
   retryPause: Schema.optional(Schema.NullOr(Schema.Struct({ ms: Schema.Number, next: Schema.Number, tries: Schema.Number }))),
   // The turn loop's newest run (E41), counted up from this boot's clock as it starts again: a Stop,
   // a Stop all or a resume names the run the user saw, so one sent again after a reconnect or a
@@ -235,11 +236,14 @@ export type PostMessage = typeof PostMessage.Type;
 // that sent it, and POST /api/messages's body. `taken`: seen for the first time, and done. A repeat
 // is done again by nothing: a message is still `held` for a turn, `logged` as entry `messageId`, or
 // `taken-back` by a client (src/once.ts Receipt); any other action was `done` already. `refused`: a
-// frame the server couldn't read (a newer client's action, a malformed one), dropped undone.
+// frame the server couldn't read (a newer client's action, a malformed one), or a message with
+// nothing to send (no text, and none of its attachments on the server), dropped undone; `error`
+// says why, for a message. Optional, so a client from before it still decodes the receipt.
 export const Received = Schema.Struct({
   id: Schema.String,
   outcome: Schema.Literals(["taken", "done", "held", "logged", "taken-back", "refused"]),
   messageId: Schema.NullOr(Schema.String),
+  error: Schema.optional(Schema.String),
 });
 export type Received = typeof Received.Type;
 

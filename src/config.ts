@@ -61,6 +61,12 @@ export const HTTP_RETRY_LONGEST = "60 seconds";
 // model thinks, the Responses API can stay quiet through a long reasoning
 export const IDLE_ANTHROPIC = "5 minutes";
 export const IDLE_OPENAI = "20 minutes";
+// The most `media.captionWait` may be, in ms (SPEC "Media"): how long a message, and the turn it
+// starts, waits for its attachments' captions before it is logged without them. The default, 10 s,
+// is a few times what one picture's caption takes once claude is up; a minute leaves room for a
+// slow caption chain (a cold start, a later link). Longer, a turn that hasn't started reads as
+// hung, and the server's stop waits longer too: it still awaits a caption asked for before it began.
+export const CAPTION_WAIT_MOST = 60_000;
 // the most characters of one tool result that get logged
 export const CAP = 30_000;
 // lines per content block of the view, or of a compactor's context (docs/optchat.md §3.3 "How the
@@ -295,15 +301,15 @@ export const Settings = Schema.Struct({
     }),
   ),
   // Media (SPEC "Media"): the caption chain, how long a message waits for its captions before it
-  // is logged without them (ms), upload limits, the ffmpeg tools for video and how long each call
-  // may take (`toolSeconds`, on top of the clip's length), a local whisper
-  // command (the WAV's path is appended; none: audio is not transcribed) with its own limit
+  // is logged without them (ms, at most CAPTION_WAIT_MOST), upload limits, the ffmpeg tools for
+  // video and how long each call may take (`toolSeconds`, on top of the clip's length), a local
+  // whisper command (the WAV's path is appended; none: audio is not transcribed) with its own limit
   // (`whisperSeconds`, on top of the clip's length), and whether the ChatGPT
   // plan's route is sent images (not probed yet, so off unless set)
   media: Schema.optional(
     Schema.Struct({
       caption: Schema.optional(Chain),
-      captionWait: Schema.optional(Schema.Number),
+      captionWait: Schema.optional(Schema.Number.check(Schema.isBetween({ maximum: CAPTION_WAIT_MOST, minimum: 0 }))),
       maxImageBytes: Schema.optional(Schema.Int),
       maxVideoBytes: Schema.optional(Schema.Int),
       maxVideoSeconds: Schema.optional(Schema.Number),

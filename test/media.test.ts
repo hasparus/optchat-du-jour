@@ -8,7 +8,7 @@ import { Effect } from "effect";
 import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
-import { mediaSettings, NODE, parseSettings } from "../src/config.ts";
+import { CAPTION_WAIT_MOST, mediaSettings, NODE, parseSettings } from "../src/config.ts";
 import { MediaError } from "../src/media/image.ts";
 import { makeMedia } from "../src/media/media.ts";
 import { textOnly } from "../src/media/part.ts";
@@ -388,4 +388,12 @@ test("an upload no logged message names is left out of the commits; what a messa
   // only the picture nobody sent: its bytes and its metadata
   expect(named.toSorted()).toEqual([`${stray.sha.slice(0, 2)}/${stray.sha}.jpg`, `${stray.sha.slice(0, 2)}/${stray.sha}.json`].toSorted());
   expect(store.high.kind === "image" && store.high.small !== undefined).toBe(true);
+});
+
+test("media.captionWait is at most CAPTION_WAIT_MOST, a minute: past it, or below zero, the config is refused", () => {
+  expect(CAPTION_WAIT_MOST).toBe(60_000);
+  expect(settingsWith().captionWait).toBe(10_000);
+  expect(settingsWith({ captionWait: CAPTION_WAIT_MOST }).captionWait).toBe(60_000);
+  expect(() => settingsWith({ captionWait: CAPTION_WAIT_MOST + 1 })).toThrow();
+  expect(() => settingsWith({ captionWait: -1 })).toThrow();
 });

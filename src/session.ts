@@ -34,7 +34,8 @@ export type { LiveRun, SessionEvent } from "./session-events.ts";
 
 export type Session = {
   // a message from a client: it starts a turn, or joins the running one (InputOptions say how).
-  // One whose `clientId` the session has seen is answered and not taken again (E41, src/once.ts)
+  // One whose `clientId` the session has seen is answered and not taken again (E41, src/once.ts);
+  // one with nothing to send is refused, with why
   readonly input: (text: string, o?: InputOptions) => Effect.Effect<Receipt>;
   // a client wants a held message back: a "taken-back" event says whether it got it
   readonly takeBack: (clientId: string) => Effect.Effect<void>;
@@ -92,7 +93,8 @@ export type InputOptions = {
   readonly followUp?: FollowUp;
   readonly clientId?: string;
   readonly media?: readonly Asset[];
-  // what is to be said of attachments it named that the store doesn't hold: said once it is taken
+  // the attachments it named that the store doesn't hold ("image 9d0c38e7aafe"): said once it is
+  // taken, and why it is refused when nothing else is left to send
   readonly leftOut?: readonly string[];
 };
 
@@ -338,12 +340,15 @@ export const makeSession = (o: {
 
     // A message's attachments' captions, each waited for at most media.captionWait, asked for once:
     // what the log keeps of the message and what an engine is sent of it come from this one answer,
-    // so they agree, and a marker is never written without having waited for its caption.
+    // so they agree, and a marker is never written without having waited for its caption. Asked
+    // first while the session's scope closes (the server stops, and logs what it holds), they are
+    // NOT_DESCRIBED: a caption call started then would be paid for and cut off.
     const captionsOf = (m: Incoming): Effect.Effect<readonly string[]> =>
       Effect.suspend(() => {
         if (m.described) return Deferred.await(m.described);
         const done = Deferred.makeUnsafe<readonly string[]>();
         m.described = done;
+        if (scope.state._tag === "Closed") return Deferred.succeed(done, m.media.map(() => NOT_DESCRIBED)).pipe(Effect.andThen(Deferred.await(done)));
         // Uninterruptible, so `done` is settled whoever stops: a fiber interrupted before it starts
         // (the scope closing, as the server stops) would never run, and every await of it hang. A
         // caption waits at most media.captionWait.
@@ -819,14 +824,16 @@ export const makeSession = (o: {
         const seen = clientId === undefined ? null : receiptOf(clientId, { inbox, logged: chat.mem.clients, taken });
         if (seen !== null) return seen;
         const media = attached.slice(0, MAX_ATTACHMENTS);
+        // nothing to send: no turn, no empty user entry, and its client is told why, so it can
+        // take it back rather than send it again (E41)
+        if (text.trim() === "" && media.length === 0) return { type: "refused", why: nothingToSend(leftOut) } satisfies Receipt;
         const fresh: Receipt = { type: "new" };
-        if (text.trim() === "" && media.length === 0) return fresh; // nothing to answer: no turn, no empty user entry
         const head = o.engines[0]?.ref ?? "";
         const named = asked === undefined ? undefined : engineOf(asked);
         const sentFor = on && o.devices.includes(on) ? on : deviceOf(text, o.devices);
         const steer = (how ?? followUp) === "steer";
         inbox.push({ clientId: clientId ?? null, described: null, device: sentFor, engine: named?.ref ?? head, media, seq: ++seq, state: "held", steer, text });
-        for (const said of leftOut) yield* info(said);
+        for (const name of leftOut) yield* info(`${name} is not on the server: left out of the message`);
         if (attached.length > media.length) yield* info(`at most ${MAX_ATTACHMENTS} attachments per message: ${attached.length - media.length} left out`);
         if (asked !== undefined && !named) yield* info(`${asked} is not an engine of the master's chain: the message is for ${master.label(head)}`);
         parked = null; // a newer message: the ones parked after an error go with it
@@ -926,6 +933,10 @@ const logText = (m: Incoming, said: readonly string[]) =>
     m.text,
     m.media.map((a, k) => markerOf(a, said[k] ?? NOT_DESCRIBED)),
   );
+
+// why a message is refused: no text, and no attachment the store holds (`missing`: those it named)
+const nothingToSend = (missing: readonly string[]) =>
+  missing.length === 0 ? "nothing to send" : `nothing to send: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not on the server`;
 
 // a defect in one line: what was thrown
 const thrown = (cause: Cause.Cause<unknown>) => {

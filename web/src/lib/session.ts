@@ -27,7 +27,8 @@ export type Marker = {
 // Sent from here and not in the log yet. The server's ack (CUSTOM "ack", matched on `id`, the id the
 // message went out with) says it is logged, and then it is no longer pending, or that it could not
 // be: `error`. An ack told to a connection that dropped is lost: the message goes out again under
-// its id, and the server answers what became of it (E41, `resend` below). `forwarded`: the device,
+// its id, and the server answers what became of it (E41, `resend` below). One the server refused
+// (`received`: nothing to send) has an `error` too, and is not sent again. `forwarded`: the device,
 // engine and follow-up it went with, the same when it goes again. `from`: only on one a page from
 // before E41 kept (draft.ts), which is marked rather than sent again.
 export type Pending = {
@@ -104,7 +105,8 @@ export const runStart = (runId: string): number | null => {
 
 // One message that waits for the model, and where it stands: "queued", the server holds it for a
 // later turn; "sent", a turn has it (offered to the running call, or being logged); "sending", the
-// server hasn't shown it yet; "failed", the log refused it or it may never have arrived (`error`).
+// server hasn't shown it yet; "failed", the log or the server refused it, or it may never have
+// arrived (`error`).
 // `back`: how it can be taken back into the composer: from the server (it is queued there), from
 // here (the server doesn't hold it), or not at all (a turn has it).
 export type Queued = {
@@ -157,8 +159,8 @@ export function queued(s: Session): Queued[] {
 
 const parseState = Schema.decodeUnknownOption(SessionState);
 
-// JSON Patch over the state object. The server sends only top-level "replace" ops; "add" and
-// "remove" are applied too. Any other op, or a nested path, is logged and skipped: the rest of the
+// JSON Patch over the state object. The server sends only top-level "replace" ops, and "remove"
+// for an optional key it no longer sets; "add" is applied too. Any other op, or a nested path, is logged and skipped: the rest of the
 // frame still applies, and the next STATE_SNAPSHOT (every reconnect) sets the whole state again.
 function patch(state: Record<string, Schema.Json>, ops: readonly Patch[]) {
   const next = new Map(Object.entries(state));
@@ -201,6 +203,9 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
   let want = 0;
   const subscribers = new Set<() => void>();
   let restores = 0;
+  // our messages the server refused (nothing to send, or a frame it couldn't read): marked with
+  // why, to be taken back from here, and not sent again on the next connection
+  const refused = new Set<string>();
 
   const set = (next: Partial<Session>) => {
     if (next.pending && next.pending !== s.pending) saveSent(next.pending.map(({ forwarded, from, id, media, spans, text }) => ({ ...forwarded, from, id, media, spans, text })));
@@ -246,15 +251,23 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
       // its `taken-back` went to a socket that dropped: what this page asked for comes back to the composer
       const p = s.pending.find((x) => x.id === r.id);
       if (p !== undefined) takenBack(r.id, null, p.text, p.media);
-    } else if (r.outcome === "refused") mark("the server couldn't read something this page sent, and didn't do it: reload the page", "error");
+    } else if (r.outcome === "refused") {
+      const at = s.pending.findIndex((p) => p.id === r.id);
+      const p = s.pending[at];
+      if (p === undefined) mark("the server couldn't read something this page sent, and didn't do it: reload the page", "error");
+      else {
+        refused.add(r.id);
+        set({ pending: s.pending.toSpliced(at, 1, { ...p, error: `not sent: ${r.error ?? "the server couldn't read it"}` }) });
+      }
+    }
   };
   // A connection's first state (E41): a message of ours the server doesn't hold, and no ack has
   // answered, goes out again under its id. The server answers what became of it (logged, taken
   // back) or, never seen (lost with a socket, or by a restart), takes it now; one the link still
-  // keeps goes out once.
+  // keeps goes out once. One it refused would be refused again: it waits to be taken back.
   const resend = () => {
     const there = new Set((s.state?.pending ?? []).map((m) => m.clientId));
-    for (const p of s.pending) if (p.from === undefined && !there.has(p.id)) link.send(p.text, p.id, { ...p.forwarded, attachments: p.media.map(refOf) });
+    for (const p of s.pending) if (p.from === undefined && !there.has(p.id) && !refused.has(p.id)) link.send(p.text, p.id, { ...p.forwarded, attachments: p.media.map(refOf) });
   };
   const setLog = (log: Log) => {
     if (log !== s.log) set({ log });
@@ -437,12 +450,12 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
       return true;
     },
     // A turn waiting for a model goes on, on `engine`: only while connected (a resume kept for
-    // later would settle whatever turn waits after the reconnect, which the user never chose);
-    // said when it wasn't sent.
+    // later would settle whatever turn waits after the reconnect, which the user never chose), and
+    // with a state that names the run of the turn loop it is for; said when it wasn't sent, and why.
     resume: (engine: string) => {
       const loop = s.state?.loop;
       if (loop !== undefined && link.resume(engine, loop)) return true;
-      mark("not connected: the resume was not sent", "error");
+      mark(link.status() === "open" ? "the resume was not sent: the server hasn't said which turn waits" : "not connected: the resume was not sent", "error");
       return false;
     },
     // the reader reached the chat's newest end, or left it: only there are the oldest entries

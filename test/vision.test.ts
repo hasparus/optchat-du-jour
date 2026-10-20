@@ -3,7 +3,7 @@
 // attachment, with its caption waited for briefly), a failover to an engine that is not sent
 // images gets the markers and a note, and the compactor's input keeps a marker's sha.
 import { afterAll, expect, test } from "bun:test";
-import { Effect, Layer, PubSub, Schema } from "effect";
+import { Deferred, Effect, Layer, PubSub, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -488,4 +488,27 @@ test("a cancel while a caption is awaited loses nothing: the message is logged, 
       expect(r.log()).toEqual([["user", `look\n[image ${shortSha(a.sha)} 1568x1176 195KB: late]`]]);
     }).pipe(Effect.scoped),
   );
+});
+
+test("the session closes while a photo message is held: it is logged not described, and no caption call is started", async () => {
+  let calls = 0;
+  const media: SessionMedia = { caption: () => Effect.sync(() => ((calls += 1), "a cat on a desk")), parts: () => [PIC] };
+  const a = image(1);
+  const r = await Effect.runPromise(
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<true>();
+      const seeing: TurnEngine = { ref: "seeing:x", run: () => Deferred.await(gate), vision: true, warm: () => Effect.void };
+      const r = yield* rig([seeing], media);
+      yield* r.session.input("one", { clientId: "c1" });
+      yield* until("its turn", () => r.session.state().phase === "running" && r.log().length === 1);
+      yield* r.session.input("look", { clientId: "c2", followUp: "queue", media: [a] });
+      expect(r.session.state().pending.map((p) => p.clientId)).toEqual(["c2"]);
+      return r;
+    }).pipe(Effect.scoped, Effect.timeout("3 seconds")),
+  );
+  expect(r.log()).toEqual([
+    ["user", "one"],
+    ["user", `look\n${markerOf(a, NOT_DESCRIBED)}`],
+  ]);
+  expect(calls).toBe(0);
 });

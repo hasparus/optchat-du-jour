@@ -37,7 +37,7 @@ const median = (xs: readonly number[]) => {
 
 // the session's phase, when an event says it
 const phase = (e: Inbound) =>
-  e.type === "STATE_SNAPSHOT" ? e.snapshot.phase : e.type === "STATE_DELTA" ? e.delta.find((d) => d.path === "/phase")?.value : undefined;
+  e.type === "STATE_SNAPSHOT" ? e.snapshot.phase : e.type === "STATE_DELTA" ? e.delta.flatMap((d) => (d.op === "replace" && d.path === "/phase" ? [d.value] : [])).at(0) : undefined;
 
 // one client on /ws for every turn, as a page left open would be
 async function measure(url: string, o: { readonly turns: number; readonly pause: number; readonly text: string }) {

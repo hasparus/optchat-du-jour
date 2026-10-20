@@ -52,7 +52,9 @@ const Inbound = Schema.Union([
   Schema.Struct({ type: Schema.Literal("STATE_SNAPSHOT"), snapshot: Schema.Record(Schema.String, Schema.Json) }),
   Schema.Struct({
     type: Schema.Literal("STATE_DELTA"),
-    delta: Schema.Array(Schema.Struct({ op: Schema.Literal("replace"), path: Schema.String, value: Schema.Json })),
+    delta: Schema.Array(
+      Schema.Union([Schema.Struct({ op: Schema.Literal("replace"), path: Schema.String, value: Schema.Json }), Schema.Struct({ op: Schema.Literal("remove"), path: Schema.String })]),
+    ),
   }),
 ]);
 export type Inbound = typeof Inbound.Type;
@@ -337,9 +339,12 @@ export function makeScreen(o: ScreenOptions) {
           applyState(e.snapshot);
           return;
         case "STATE_DELTA": {
-          const next = { ...state };
-          for (const op of e.delta) next[op.path.slice(1)] = op.value;
-          applyState(next);
+          // a key replaced, or removed (an optional one the server no longer sets)
+          const next = new Map(Object.entries(state));
+          for (const op of e.delta)
+            if (op.op === "replace") next.set(op.path.slice(1), op.value);
+            else next.delete(op.path.slice(1));
+          applyState(Object.fromEntries(next));
           return;
         }
       }
