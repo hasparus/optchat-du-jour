@@ -26,6 +26,32 @@ export const TRIES = 5;
 // while a turn waits for summaries, a failed call is also tried again this often (E24): no message
 // comes to try it again then, and a fixed pause never delays the turn by more than itself
 export const WAIT_RETRY = "10 seconds";
+// A node whose call the model refused, or answered with an empty line, this many times is built
+// from its source clipped to NODE bytes, marked so it can be rebuilt (E33). A refusal is the
+// input's doing, so asking again mostly fails alike (UniiChat clips at the first); one more try,
+// WAIT_RETRY later, lets a flaky safeguard pass, and holds a waiting turn back by that much at most.
+export const REFUSALS = 2;
+// A failed compactor call rests WAIT_RETRY before a logged entry, or the pump by itself, tries it
+// again; each failure in a row doubles that, up to REST_MOST (E33). A message coming to the
+// session, or a turn waiting for summaries, tries it at once all the same.
+export const REST_MOST = "5 minutes";
+// The /ws heartbeat (UniiChat's values): the server sends a connection the state when nothing else
+// went out for HEARTBEAT, and a client that hears nothing for SILENT takes the socket for dead and
+// opens another. A half-open TCP connection or a laptop on a new Wi-Fi otherwise looks open for
+// minutes. SILENT lives with the client (web/src/lib/connection.ts), which can't import this file.
+export const HEARTBEAT = "5 seconds";
+// Our own HTTP engines (api-key, openai-plan; E35): one request that fails on the vendor's side (a
+// 408, 409, 429, 5xx or 529, a dropped connection, a stream gone quiet) is sent again up to this
+// many tries in all, after a doubling pause from HTTP_RETRY_BASE with jitter, or the server's
+// `retry-after`, before the failure reaches the failover chain. A `retry-after` longer than
+// HTTP_RETRY_LONGEST is a limit, not a hiccup: the chain moves on at once.
+export const HTTP_TRIES = 4;
+export const HTTP_RETRY_BASE = "1 second";
+export const HTTP_RETRY_LONGEST = "60 seconds";
+// A stream with no bytes for this long is dead (UniiChat's values): Anthropic pings while the
+// model thinks, the Responses API can stay quiet through a long reasoning
+export const IDLE_ANTHROPIC = "5 minutes";
+export const IDLE_OPENAI = "20 minutes";
 // the most characters of one tool result that get logged
 export const CAP = 30_000;
 // lines per content block of the view, or of a compactor's context (docs/optchat.md §3.3 "How the

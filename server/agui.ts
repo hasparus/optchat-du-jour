@@ -268,5 +268,17 @@ export function openStream(o: {
     }
   };
 
-  return { first, translate };
+  // The heartbeat (HEARTBEAT, docs/uniichat.md): what a connection is sent when nothing else was
+  // for a while, so a client can tell a quiet socket from a dead one. It is the state as it is now,
+  // as a STATE_DELTA: every client, old ones too, decodes and applies it; it is empty when nothing
+  // changed, and otherwise carries what drifted (the phase's `elapsed`, a subagent's), so a client
+  // that counts time from when it got the state counts right. Sent by the loop that sends the
+  // events, only once none has come for a while, so it is never older than what it follows.
+  const beat = (now: SessionState): AgUiEvent[] => {
+    const ops = delta(state, now);
+    state = now;
+    return [{ delta: ops, type: EventType.STATE_DELTA }];
+  };
+
+  return { beat, first, translate };
 }

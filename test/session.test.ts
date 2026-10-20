@@ -5,10 +5,10 @@
 import { afterAll, expect, test } from "bun:test";
 import { type AGUIEvent, EventType } from "@ag-ui/core";
 import { Deferred, type Duration, Effect, Fiber, PubSub } from "effect";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { openChat } from "../src/chat.ts";
-import { CompactError } from "../src/compactor.ts";
+import { CompactError, type Job, NoLine } from "../src/compactor.ts";
 import { openStream } from "../server/agui.ts";
 import { UsageLimit } from "../src/engines/errors.ts";
 import { type Choices, loadChoices, startingChoices } from "../src/choices.ts";
@@ -17,6 +17,8 @@ import { StoreError } from "../src/store.ts";
 import type { Provider } from "../src/providers/provider.ts";
 import { type Mid, openingText, type TurnEngine, type TurnInput } from "../src/turn/engine.ts";
 import { toolLoop } from "../src/turn/loop.ts";
+import { built, cut, getNode } from "../src/tree.ts";
+import { NODE, REFUSALS } from "../src/config.ts";
 
 const dirs: string[] = [];
 afterAll(() => {
@@ -42,13 +44,14 @@ const rig = (
     readonly commit?: Effect.Effect<void>;
     readonly followUp?: FollowUp;
     readonly summarize?: Effect.Effect<void, CompactError>;
+    readonly answer?: (job: Job) => Effect.Effect<string, CompactError | NoLine>; // the compactor's whole answer, instead of `summarize`'s
     readonly waitRetry?: Duration.Input;
   } = {},
 ) =>
   Effect.gen(function* () {
     const dir = mkdtempSync(`${tmpdir()}/oc-`);
     dirs.push(dir);
-    const chat = yield* openChat(dir, { summarize: (job) => (o.summarize ?? Effect.void).pipe(Effect.as(`summary ${job.l}.${job.i}`)) });
+    const chat = yield* openChat(dir, { summarize: (job) => o.answer?.(job) ?? (o.summarize ?? Effect.void).pipe(Effect.as(`summary ${job.l}.${job.i}`)) });
     // bugs: how many of the next writes throw; before and after: a slow disk, around each write
     const disk: Disk = { after: null, bugs: 0, before: null, full: false };
     const log: typeof chat.log = (kind, body, extra) =>
@@ -1199,6 +1202,51 @@ test("a turn waiting for a summary whose call keeps failing goes on once a retry
       expect(calls.made).toBeGreaterThanOrEqual(4); // three failures, then the one that got through (and B's own reply)
     }).pipe(Effect.scoped),
   );
+});
+
+// E33: a message the model always refuses to summarize, or always answers with an empty line,
+// would leave its node unbuilt for ever, and every later turn waits for it (the start rule). After
+// REFUSALS such answers the node is its source, clipped, and says so on its tree line.
+test("a compactor that always refuses, or always answers an empty line, doesn't block the chat: the node becomes its source, clipped (E33)", async () => {
+  const answers: readonly (readonly [string, Effect.Effect<string, NoLine>])[] = [
+    ["refuses", Effect.fail(new NoLine({ message: "the model would not answer this message" }))],
+    ["answers nothing", Effect.succeed("")],
+  ];
+  for (const [what, answer] of answers) {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const turns: string[] = [];
+        const engine: TurnEngine = {
+          ref: "fake:x",
+          // a long reply: its node needs a call, and the next turn waits for it
+          run: (input, out) => Effect.andThen(Effect.sync(() => void turns.push(input.texts.join("+"))), out.log("talk", `${"r".repeat(400)} ${"s".repeat(400)}`)),
+          vision: false,
+          warm: () => Effect.void,
+        };
+        let calls = 0;
+        const r = yield* rig(engine, { answer: () => Effect.suspend(() => ((calls += 1), answer)), waitRetry: "50 millis" });
+        yield* r.session.input("A", { clientId: "c1" });
+        yield* until("the first turn", () => r.events.some((e) => e.type === "run-finished"));
+        yield* r.session.input("B", { clientId: "c2" });
+        yield* until(`two turns, though the compactor ${what}`, () => r.events.filter((e) => e.type === "run-finished").length === 2);
+        expect(turns).toEqual(["A", "B"]);
+        // the reply (entry 1) was asked REFUSALS times, then clipped without a call
+        const reply = `talk: ${"r".repeat(400)} ${"s".repeat(400)}`;
+        expect(getNode(r.chat.mem, { i: 1, l: 0 })).toEqual({ clipped: true, i: 1, l: 0, size: NODE, text: cut(reply) });
+        expect(calls).toBeGreaterThanOrEqual(REFUSALS);
+        // its merge with "user: A" won't fit either: the model refuses it too, and it is each half
+        // cut to just under half of NODE, a line apart
+        // (no message comes to try it again: the chat's retry stands in for one)
+        for (let k = 0; k < 400 && !built(r.chat.mem, { i: 0, l: 1 }); k++) yield* Effect.andThen(r.chat.retry, Effect.sleep("5 millis"));
+        expect(built(r.chat.mem, { i: 0, l: 1 })).toBe(true);
+        expect(getNode(r.chat.mem, { i: 0, l: 1 })).toMatchObject({ clipped: true, text: `user: A\n${cut(reply, 255)}` });
+        // on disk: the reference's keys, then `clipped`; a free node's line has none
+        const tree = readdirSync(`${r.chat.dir}/chat/tree`).flatMap((f) => readFileSync(`${r.chat.dir}/chat/tree/${f}`, "utf8").trim().split("\n"));
+        expect(tree.find((l) => l.startsWith('{"l":0,"i":1,'))).toBe(JSON.stringify({ l: 0, i: 1, text: cut(reply), size: NODE, clipped: true }));
+        expect(tree.find((l) => l.startsWith('{"l":0,"i":0,'))).toBe(JSON.stringify({ l: 0, i: 0, text: "user: A", size: 7 }));
+      }).pipe(Effect.scoped),
+    );
+  }
 });
 
 // SPEC "Engines", a turn stopped for a resume: clients get the state (phase needs-model, `stopped`)

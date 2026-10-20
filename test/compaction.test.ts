@@ -3,15 +3,15 @@
 // offers, and linear on a long backlog), a failed call tried again at the next message, and the
 // wait on a call writing the same marked prefix (§3.3).
 import { expect, test } from "bun:test";
-import { Deferred, Effect, Fiber, PubSub } from "effect";
+import { Deferred, type Duration, Effect, Fiber, PubSub } from "effect";
 import { readFileSync } from "node:fs";
-import { CompactError, type Job, makeJob, makePump } from "../src/compactor.ts";
-import { AHEAD, NODE } from "../src/config.ts";
+import { CompactError, type Job, makeJob, makePump, NoLine } from "../src/compactor.ts";
+import { AHEAD, NODE, REFUSALS } from "../src/config.ts";
 import { makeGate } from "../src/engines/inflight.ts";
 import * as K from "../src/kernel.ts";
 import { newMsg, newNode } from "../src/store.ts";
-import { RULER, retryText, task } from "../src/summarize/step.ts";
-import { built, bytes, type Coord, end, label, type Marks, type Mem, newMem, nodes, ready, setNode } from "../src/tree.ts";
+import { RULER, retryText, sizeRetries, task } from "../src/summarize/step.ts";
+import { built, bytes, type Coord, cut, end, getNode, label, type Marks, type Mem, newMem, nodes, ready, setNode } from "../src/tree.ts";
 import { addMessage, addNode, compactionContext, PLACEHOLDER } from "../src/view.ts";
 
 const long = (n: number) => "w".repeat(n);
@@ -113,9 +113,9 @@ test("what a compaction sees: the compaction view up to its node, stopping at th
 });
 
 // A pump whose calls each wait for the test: `calls` holds each started call's answer by node.
-const harness = (mem: Mem, jobs = 1000) =>
+const harness = (mem: Mem, jobs = 1000, more: { readonly rest?: Duration.Input; readonly restMost?: Duration.Input } = {}) =>
   Effect.gen(function* () {
-    const calls = new Map<string, Deferred.Deferred<string, CompactError>>();
+    const calls = new Map<string, Deferred.Deferred<string, CompactError | NoLine>>();
     const said: string[] = [];
     const pump = yield* makePump({
       commit: (n) =>
@@ -124,10 +124,12 @@ const harness = (mem: Mem, jobs = 1000) =>
         }),
       jobs,
       mem,
+      rest: more.rest,
+      restMost: more.restMost,
       report: (m) => Effect.sync(() => void said.push(m)),
       summarize: (job) =>
         Effect.suspend(() => {
-          const d = Deferred.makeUnsafe<string, CompactError>();
+          const d = Deferred.makeUnsafe<string, CompactError | NoLine>();
           calls.set(label(job), d);
           return Deferred.await(d);
         }),
@@ -295,6 +297,165 @@ test("a failed call waits for the next message, not for a timer", async () => {
       }),
     ),
   );
+});
+
+test("a failed call rests before a logged entry tries it again; a message coming to the session, or a waiting turn, tries it at once (E33)", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const mem = newMem();
+        const h = yield* harness(mem, 1000, { rest: "1 hour" });
+        yield* h.pump.kick;
+        addMessage(mem, newMsg(0, "echo", long(600)));
+        yield* h.pump.logged(0);
+        yield* h.quiet;
+        yield* Deferred.fail(h.calls.get("0+1")!, new CompactError({ message: "overloaded" }));
+        h.calls.clear();
+        yield* h.quiet;
+        // a turn logs its entries back to back: none of them asks the vendor that is down again
+        for (let i = 1; i <= 20; i++) {
+          addMessage(mem, newMsg(i, "user", `entry ${i}`));
+          yield* h.pump.logged(i);
+        }
+        yield* h.quiet;
+        expect([...h.calls.keys()]).toEqual([]);
+        expect(h.pump.activity()).toEqual([{ failed: 1, level: 0, queued: 0, running: 0 }]);
+        // a message that comes to the session (chat.retry), or the waiting turn's WAIT_RETRY, does
+        yield* h.pump.retry;
+        yield* h.quiet;
+        expect([...h.calls.keys()]).toEqual(["0+1"]);
+      }),
+    ),
+  );
+});
+
+test("with a rest, a failed call is tried again by itself once it has rested, not left until the next message; every rest while it keeps failing (E33)", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const mem = newMem();
+        const h = yield* harness(mem, 1000, { rest: "40 millis" });
+        yield* h.pump.kick;
+        addMessage(mem, newMsg(0, "echo", long(600)));
+        yield* h.pump.logged(0);
+        for (let k = 0; k < 3; k++) {
+          yield* h.quiet;
+          const d = h.calls.get("0+1");
+          if (d === undefined) throw new Error(`no call ${k + 1} for 0+1`);
+          h.calls.delete("0+1");
+          const t0 = Date.now();
+          yield* Deferred.fail(d, new CompactError({ message: "overloaded" }));
+          // no message comes; the call is made again once it has rested, and not before
+          while (!h.calls.has("0+1")) yield* Effect.sleep("5 millis");
+          expect(Date.now() - t0).toBeGreaterThanOrEqual(35);
+        }
+        yield* Deferred.succeed(h.calls.get("0+1")!, "a line");
+        yield* h.quiet;
+        expect(built(mem, { i: 0, l: 0 })).toBe(true);
+      }),
+    ),
+  );
+});
+
+test("a node failing again and again rests twice as long each time, up to restMost; a success starts it over (E33)", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const mem = newMem();
+        const h = yield* harness(mem, 1000, { rest: "30 millis", restMost: "100 millis" });
+        yield* h.pump.kick;
+        addMessage(mem, newMsg(0, "echo", long(600)));
+        yield* h.pump.logged(0);
+        const gaps: number[] = [];
+        for (let k = 0; k < 5; k++) {
+          yield* h.quiet;
+          while (!h.calls.has("0+1")) yield* Effect.sleep("2 millis");
+          const d = h.calls.get("0+1")!;
+          h.calls.delete("0+1");
+          const t0 = Date.now();
+          yield* Deferred.fail(d, new CompactError({ message: "usage limit" }));
+          while (!h.calls.has("0+1")) yield* Effect.sleep("2 millis");
+          gaps.push(Date.now() - t0);
+        }
+        // 30, 60, then the cap of 100 (each a few ms late at most)
+        expect(gaps.map((g, k) => g >= [30, 60, 100, 100, 100][k]! - 3)).toEqual([true, true, true, true, true]);
+        expect(gaps[0]).toBeLessThan(60);
+        expect(gaps[1]).toBeLessThan(100);
+        expect(Math.max(...gaps)).toBeLessThan(160);
+        yield* Deferred.succeed(h.calls.get("0+1")!, "a line");
+        yield* h.quiet;
+        expect(built(mem, { i: 0, l: 0 })).toBe(true);
+        // the fiber ended with nothing failed; a later failure, of another node, starts it again,
+        // and from `rest`: the backoff was the node's own
+        addMessage(mem, newMsg(1, "echo", long(600)));
+        yield* h.pump.logged(1);
+        yield* h.quiet;
+        const t1 = Date.now();
+        yield* Deferred.fail(h.calls.get("1+1")!, new CompactError({ message: "blip" }));
+        h.calls.delete("1+1");
+        while (!h.calls.has("1+1")) yield* Effect.sleep("2 millis");
+        expect(Date.now() - t1).toBeLessThan(60);
+      }),
+    ),
+  );
+});
+
+test("REFUSALS answers with no line make a node its source, clipped; any other failure is only tried again (E33)", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const mem = newMem();
+        const h = yield* harness(mem);
+        yield* h.pump.kick;
+        const text = `${long(300)} ä ${long(300)}`;
+        addMessage(mem, newMsg(0, "echo", text));
+        yield* h.pump.logged(0);
+        const fail = (refused: boolean) =>
+          Effect.gen(function* () {
+            yield* h.quiet;
+            const d = h.calls.get("0+1");
+            if (d === undefined) throw new Error("no call for 0+1");
+            h.calls.delete("0+1");
+            yield* Deferred.fail(d, refused ? new NoLine({ message: "refused" }) : new CompactError({ message: "overloaded" }));
+            yield* h.quiet;
+            yield* h.pump.retry;
+          });
+        // limits and outages, however many, never clip
+        for (let k = 0; k < 5; k++) yield* fail(false);
+        for (let k = 1; k < REFUSALS; k++) yield* fail(true);
+        expect(built(mem, { i: 0, l: 0 })).toBe(false);
+        // the last refusal: built at once, without another call, and said
+        yield* fail(true);
+        yield* h.quiet;
+        expect([...h.calls.keys()]).toEqual([]);
+        expect(getNode(mem, { i: 0, l: 0 })).toEqual({ clipped: true, i: 0, l: 0, size: bytes(cut(`echo: ${text}`)), text: cut(`echo: ${text}`) });
+        expect(h.said.at(-1)).toBe(`0+1: refused; the model gave no line ${REFUSALS} times, so the node is its source, clipped`);
+      }),
+    ),
+  );
+});
+
+test("an empty answer with no line before it is a refusal, for the pump to count, unless the reply was cut short (E33)", async () => {
+  const job: Job = { ctx: [], i: 0, l: 0, msg: newMsg(0, "echo", "x") };
+  const error = await Effect.runPromise(
+    Effect.flip(sizeRetries({ ask: () => Effect.succeed({ model: null, text: " \n", usage: { cacheRead: 0, cacheWrite: 0, input: 1, output: 1 } }), auth: "api-key", effort: undefined, engine: "api-key", failoverFrom: null, job, log: () => Effect.void })),
+  );
+  expect(error._tag).toBe("Refusal");
+  // one cut short (its token limit, the context window) is a limit: never counted as a refusal
+  const cut = await Effect.runPromise(
+    Effect.flip(
+      sizeRetries({
+        ask: () => Effect.succeed({ cut: "the reply reached its token limit", model: null, text: "", usage: { cacheRead: 0, cacheWrite: 0, input: 1, output: 1 } }),
+        auth: "api-key",
+        effort: undefined,
+        engine: "api-key",
+        failoverFrom: null,
+        job,
+        log: () => Effect.void,
+      }),
+    ),
+  );
+  expect([cut._tag, cut.message]).toEqual(["ModelError", "the compactor's reply stopped short with no line: the reply reached its token limit"]);
 });
 
 test("the in-flight gate: one call writes a prefix, the others wait for its response to start; a writer that fails first hands over", async () => {

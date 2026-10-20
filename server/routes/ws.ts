@@ -1,12 +1,13 @@
 // GET /ws (SPEC "Protocol", E15): one WebSocket per client, AG-UI events out; RunAgentInput frames,
 // aborts, take-backs, settings and resumes in. Every client watches the same server-owned session.
-import { Effect, Option, Predicate, PubSub, Schema } from "effect";
+import { type Duration, Effect, Option, Predicate, PubSub, Schema } from "effect";
 import { EventType } from "@ag-ui/core";
 import { type HttpRouter, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 import type { Session } from "../../src/session.ts";
 import type { Subagents } from "../../src/subagents.ts";
 import type { Entry } from "../../src/tree.ts";
+import { HEARTBEAT } from "../../src/config.ts";
 import { type Asset, FollowUp, shortSha } from "../../src/wire.ts";
 import { type AgUiEvent, openStream } from "../agui.ts";
 
@@ -95,6 +96,7 @@ export const wsRoute = (
     readonly window: number;
     // the asset store's lookup, and where a client is told of one it named that isn't there
     readonly assets: { readonly find: (sha: string) => Asset | null; readonly report: (message: string) => Effect.Effect<void> };
+    readonly heartbeat?: Duration.Input; // HEARTBEAT
   },
 ) =>
   router.add("GET", "/ws", (request) =>
@@ -103,11 +105,17 @@ export const wsRoute = (
       const write = yield* socket.writer;
       const send = (events: readonly AgUiEvent[]) => Effect.forEach(events, (e) => write.write(JSON.stringify(e)), { discard: true });
       const live = yield* PubSub.subscribe(o.session.events); // before the snapshot, so nothing falls between
-      const { first, translate } = openStream({ entries: o.entries, live: o.session.live(), state: o.session.state(), thread: o.thread, window: o.window });
+      const { beat, first, translate } = openStream({ entries: o.entries, live: o.session.live(), state: o.session.state(), thread: o.thread, window: o.window });
       yield* send(first);
       yield* o.session.primeSoon;
+      // The session's events as they come, and a heartbeat when none came for HEARTBEAT, so a
+      // client knows a silent socket is dead (web/src/lib/connection.ts). A take that the timeout
+      // interrupts had taken nothing (an event that arrives completes it first, in the same step),
+      // so no event is lost; and a beat goes out only once the subscription has been empty for a
+      // whole HEARTBEAT, so it is never fresher than an event still waiting behind it.
       yield* PubSub.take(live).pipe(
-        Effect.flatMap((e) => send(translate(e))),
+        Effect.timeoutOption(o.heartbeat ?? HEARTBEAT),
+        Effect.flatMap(Option.match({ onNone: () => send(beat(o.session.state())), onSome: (e) => send(translate(e)) })),
         Effect.forever,
         Effect.forkScoped,
       );
