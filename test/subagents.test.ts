@@ -1098,6 +1098,58 @@ test("a parent the user stopped is never started again by its child's report, wi
     );
 });
 
+test("a running child's tell to a parent the user stopped is refused, and doesn't start it again; the user's own tell does", async () => {
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      let tools: ((caller: Caller) => AgentTools) | null = null;
+      const go = yield* Deferred.make<true>();
+      const answer = yield* Deferred.make<{ readonly text: string; readonly error: boolean }>();
+      const r = yield* rig({
+        child: {
+          boss: (_input, _out, call) =>
+            call === 1
+              ? Effect.gen(function* () {
+                  const theirs = tools?.({ agent: "boss" });
+                  if (theirs === undefined) return yield* Effect.die(new Error("no tools"));
+                  yield* theirs.call("spawn", { name: "worker", task: "count" });
+                  return yield* Effect.never;
+                })
+              : Effect.never,
+          // the worker, as models do, tells its parent its result before it ends
+          worker: () =>
+            Effect.gen(function* () {
+              yield* Deferred.await(go);
+              const theirs = tools?.({ agent: "worker" });
+              if (theirs === undefined) return yield* Effect.die(new Error("no tools"));
+              yield* Deferred.succeed(answer, yield* theirs.call("tell", { name: "boss", text: "12 files" }));
+              return yield* Effect.never;
+            }),
+        },
+        master: (call, turn) => (turn === 1 ? Effect.asVoid(call("spawn", { name: "boss", task: "delegate" })) : Effect.void),
+        scope,
+        wake: "30 millis",
+      });
+      tools = r.tools;
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("both running", () => r.stateOf("worker")?.state === "running" && r.idle());
+      expect(yield* r.subagents.stop("boss")).toBeNull(); // the user stops the parent from its card
+      yield* Deferred.succeed(go, true);
+      expect(yield* Deferred.await(answer)).toEqual({
+        error: true,
+        text: "tell: the user stopped boss, and a subagent's message doesn't start it again. Say it in your final reply instead, which your report carries",
+      });
+      yield* Effect.sleep("100 millis");
+      expect(r.stateOf("boss")).toMatchObject({ state: "stopped", why: "stopped by the user" });
+      expect(r.calls.filter((c) => c.name === "boss")).toHaveLength(1);
+      expect(r.subagents.log("boss")?.entries.some((e) => e.text.includes("12 files"))).toBe(false);
+      // the user's own tell is a decision too: it starts it again
+      expect(yield* r.subagents.tell("boss", "go on")).toBeNull();
+      yield* until("boss again", () => r.calls.filter((c) => c.name === "boss").length === 2);
+      expect(r.calls.filter((c) => c.name === "boss")[1]?.input.texts[0]).toContain("[from the user] go on");
+    }),
+  );
+});
+
 test("waking pauses after subagents.wakeLimit woken turns in a row; the user's next message resumes it", async () => {
   await scoped((scope) =>
     Effect.gen(function* () {
