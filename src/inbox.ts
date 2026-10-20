@@ -21,7 +21,7 @@ export type Incoming = {
   readonly clientId: string | null;
   state: "held" | "picked" | "offered";
   readonly steer: boolean; // sent mid-run, it joins the running call; else it waits for the next turn
-  // the captions of its attachments, asked for once (session.ts `captionsOf`); null until needed
+  // the captions of its attachments, asked for once (captions.ts `captionsOf`); null until needed
   described: Deferred.Deferred<readonly string[]> | null;
   // a subagent's report that woke the master (E39): what its sender waits on, done once it is logged
   readonly logged?: Deferred.Deferred<true>;
