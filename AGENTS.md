@@ -6,8 +6,9 @@ Use Bun 1.4.2: `mise exec bun@1.4.2 -- <command>`. Run `bun install --frozen-loc
 and `git diff --check`. Tests use fake models and isolated secrets; never read private history
 or call real models to verify a change. Mobile has a separate toolchain.
 
-Build, web typecheck and root postinstall explicitly invoke TypeScript 5.9.3's JS compiler.
-Bare `tsc` is ambiguous because the pinned native TS7 companion also exports that binary.
+Build, web typecheck and root postinstall explicitly invoke the pinned `tsrs` beta, a Rust port
+of the TypeScript 7.1 compiler. TypeScript 5.9.3 stays installed for the editor and standalone
+vendor scripts. Bare `tsc` is ambiguous because the pinned native TS7 companion also exports that binary.
 Use package scripts, not `tsc` shorthand. Native Effect diagnostics run separately; do not
 patch compiler or vendored lint binaries. See [diagnostics policy](agent-patterns/effect-diagnostics.md).
 

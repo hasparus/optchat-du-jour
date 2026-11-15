@@ -143,18 +143,18 @@ test("the fake vendors' unstable HTTP exports stay out of the app", () => {
   expect(uses).toEqual([]);
 });
 
-test("canonical build scripts select JS TS5 and preserve standalone vendor scripts", () => {
+test("canonical build scripts select the pinned tsrs compiler and preserve standalone vendor scripts", () => {
   const Scripts = Schema.Struct({ scripts: Schema.Record(Schema.String, Schema.String) });
   const { scripts } = readJson("package.json", Scripts);
-  expect(scripts.build).toBe("bun node_modules/typescript/bin/tsc -p . && bun --filter optchat-web build");
-  expect(scripts.postinstall).toBe("bun node_modules/typescript/bin/tsc -p vendor/oxlint-config/tsconfig.build.json");
+  expect(scripts.build).toBe("bun node_modules/tsrs/bin/tsrs -p . && bun --filter optchat-web build");
+  expect(scripts.postinstall).toBe("bun node_modules/tsrs/bin/tsrs -p vendor/oxlint-config/tsconfig.build.json");
   const web = readJson("web/package.json", Scripts).scripts;
-  expect(web.build).toBe("bun ../node_modules/typescript/bin/tsc -p . && vite build");
-  expect(web.typecheck).toBe("bun ../node_modules/typescript/bin/tsc -p .");
+  expect(web.build).toBe("bun ../node_modules/tsrs/bin/tsrs -p . && vite build");
+  expect(web.typecheck).toBe("bun ../node_modules/tsrs/bin/tsrs -p .");
   expect(readJson("vendor/oxlint-config/package.json", Scripts).scripts.build).toBe("tsc -p tsconfig.build.json");
-  const version = Bun.spawnSync([process.execPath, path.join(root, "node_modules/typescript/bin/tsc"), "--version"]);
+  const version = Bun.spawnSync([process.execPath, path.join(root, "node_modules/tsrs/bin/tsrs"), "--version"]);
   expect(version.exitCode).toBe(0);
-  expect(version.stdout.toString().trim()).toBe("Version 5.9.3");
+  expect(version.stdout.toString().trim()).toStartWith("Version 7.1.0-beta (tsrs 0.25.0-ts7.1.0-beta,");
 });
 
 test("reference is excluded from tests, lint, editor and compiler inputs", () => {
