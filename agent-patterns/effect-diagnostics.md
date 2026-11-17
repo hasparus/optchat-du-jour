@@ -9,12 +9,13 @@ The **installed 0.52.0 package**, not upstream main, documents TypeScript 7.0.2 
 `node_modules/@effect/tsgo/README.md`. Its `schema.json` supports `allowedUnstableApis` as an
 array of package/module paths or `package/module#export` identifiers. The native companion is
 `@typescript/native: npm:typescript@7.0.2`. Root/web build and root postinstall explicitly invoke
-`node_modules/typescript/bin/tsc` with Bun (web uses `../node_modules/...`), preserving TS5.9.3
-and standalone vendor scripts. Bare `tsc` resolves to TS7 in the verified install and is ambiguous;
-use the package scripts instead. The compiler version can be checked explicitly:
+`node_modules/tsrs/bin/tsrs` with Bun (web uses `../node_modules/...`). This is the pinned `tsrs`
+0.25.0-ts7.1.0-beta, a Rust port of the TypeScript 7.1 compiler. TS5.9.3 stays installed for the
+editor and standalone vendor scripts. Bare `tsc` resolves to TS7 in the verified install and is
+ambiguous; use the package scripts instead. The compiler version can be checked explicitly:
 
 ```sh
-mise exec bun@1.4.2 -- bun node_modules/typescript/bin/tsc --version
+mise exec bun@1.4.2 -- bun node_modules/tsrs/bin/tsrs --version
 ```
 
 ## Deliberately accepted unstable exports

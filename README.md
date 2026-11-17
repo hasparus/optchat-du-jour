@@ -58,9 +58,10 @@ cd web && bun run dev    # /stories.html: UI with no data yet (the Subagent patt
 cd mobile && bun install && bun run check
 ```
 
-Build, web typecheck and root postinstall explicitly use TypeScript 5.9.3's JS compiler; bare
-`tsc` is ambiguous with the pinned native TypeScript 7.0.2 companion installed. Use the package
-scripts, not compiler shorthand. `@effect/tsgo` 0.52.0 supplies the separate native diagnostics
+Build, web typecheck and root postinstall explicitly use the pinned `tsrs` 0.25.0-ts7.1.0-beta, a
+Rust port of the TypeScript 7.1 compiler; bare `tsc` is ambiguous with the pinned native
+TypeScript 7.0.2 companion installed. Use the package scripts, not compiler shorthand. TypeScript
+5.9.3 stays installed for the editor and the standalone vendor and mobile scripts. `@effect/tsgo` 0.52.0 supplies the separate native diagnostics
 gate; CI forwards `--format github-actions`. [Diagnostics policy](agent-patterns/effect-diagnostics.md)
 records the narrow accepted unstable platform exports and negative sentinel tests. No global
 warning suppression or binary patching is used. The JS editor plugin remains 0.87.4; if selecting
