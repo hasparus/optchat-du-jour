@@ -51,3 +51,32 @@ test("one another page took back is only dropped here: its text goes to that pag
   expect(session.get().pending).toEqual([]);
   expect(session.get().restored).toBeNull();
 });
+
+test("a take-back whose answer never reached a page that then reloaded still brings the text back to its composer", async () => {
+  let heldThere: readonly Held[] = [];
+  const server = fakeServer(() => [snapshot([]), { snapshot: { ...IDLE, pending: heldThere, phase: "running" }, type: EventType.STATE_SNAPSHOT }]);
+  const session = makeSession(openLink("ws://x/ws", { retryMs: 1, socket: server.socket }));
+  await tick();
+  session.send("typed on a phone");
+  await tick();
+  const id = session.get().pending[0]?.id ?? "";
+  heldThere = [{ clientId: id, engine: "claude-code:opus", queued: true, text: "typed on a phone" }];
+  server.play({ snapshot: { ...IDLE, pending: heldThere, phase: "running" }, type: EventType.STATE_SNAPSHOT });
+  const q = queued(session.get()).find((x) => x.clientId === id);
+  if (!q) throw new Error("not queued");
+  expect(session.takeBack(q)).toBe(true);
+  // the server takes it back, but the tab is evicted before `taken-back` comes
+  heldThere = [];
+  session.dispose();
+  // the page opens again: it sends the message again under its id, and is told it was taken back
+  const again = fakeServer(() => [snapshot([]), { snapshot: { ...IDLE, pending: heldThere, phase: "running" }, type: EventType.STATE_SNAPSHOT }]);
+  const reloaded = makeSession(openLink("ws://x/ws", { retryMs: 1, socket: again.socket }));
+  await tick();
+  expect(reloaded.get().asking).toEqual([id]);
+  again.play(received(id, "taken-back"));
+  await tick();
+  expect(reloaded.get().restored?.text).toBe("typed on a phone");
+  expect(reloaded.get().pending).toEqual([]);
+  expect(reloaded.get().asking).toEqual([]);
+  reloaded.dispose();
+});

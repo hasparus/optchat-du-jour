@@ -6,7 +6,7 @@ import { openStream } from "../../../server/agui.ts";
 import { type Entry, IDLE, snapshot } from "../test/fixture";
 import { applyEvent, applyPage, emptyLog, type Log, MAX_HELD, trimHeld, visible } from "./log";
 import { type Inbound, parseFrame } from "./protocol";
-import { chatRows, entryRows, planOf, planStates, rowFor, rowIndexFor, sourcesOfTool, thoughtHolder, toolStateOf, toolSummary, turnSources } from "./rows";
+import { chatRows, entryRows, planOf, planStates, rowFor, rowIndexFor, runningTool, sourcesOfTool, thoughtHolder, toolStateOf, toolSummary, turnSources } from "./rows";
 import { runStart } from "./session";
 
 const entry = (i: number, kind: Kind, text: string) => ({ date: "2026-10-05T10:00:00Z", i, kind, text });
@@ -143,6 +143,18 @@ describe("a tool call's one line", () => {
       [7, true],
     ]);
     expect(rows.map((r) => (r.kind === "tool" ? toolStateOf(r, false, false) : null))).toEqual(["error", "done", "done", "error"]);
+  });
+  test("the tool row that may be running is the running turn's newest, never an earlier turn's unanswered call", () => {
+    // turn one's call was stopped before its echo; turn two (from entry 2) has made no call yet
+    const stopped = entryRows([
+      { i: 0, kind: "user", text: "go" },
+      { i: 1, kind: "tool", text: 'Bash {"command":"sleep 100"}' },
+      { i: 2, kind: "user", text: "again" },
+      { i: 3, kind: "talk", text: "on it" },
+    ]);
+    expect(runningTool(stopped, 2)).toBeUndefined();
+    expect(runningTool(stopped, 0)).toBe(stopped.find((r) => r.kind === "tool")?.key);
+    expect(runningTool(stopped, null)).toBe(stopped.find((r) => r.kind === "tool")?.key);
   });
   test("a tool row's state: done or failed once answered, running only while it is the turn's newest", () => {
     expect(toolStateOf({ failed: false, output: "ok" }, true, true)).toBe("done");

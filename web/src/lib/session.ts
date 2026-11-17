@@ -65,8 +65,10 @@ export type Session = {
   readonly thoughts: Thoughts;
   readonly pending: readonly Pending[];
   readonly restored: Restored | null;
-  // the client ids this page asked the server to take back and has no answer for yet; a reconnect
-  // forgets them (an answer told to the old socket is lost), so the take-back can be asked again
+  // The client ids this page asked the server to take back and has no answer for yet. It is what
+  // tells "the message I asked for" from "one another page took", so it outlives a reconnect, and,
+  // for a message sent from here, a reload (./draft.ts Sent): the answer, whenever it comes, brings
+  // the text back to this composer instead of dropping it.
   readonly asking: readonly string[];
   // the log index the running turn started at (RUN_STARTED's run id, `<first>` or `<first>+<n>`
   // once resumed), null between turns, after the run ends or stops for a model, and while the link
@@ -97,8 +99,9 @@ const failure = ({ failed }: Pending): string | null => {
 const resendable = ({ failed }: Pending) => failed === undefined || failed.kind === "unlogged";
 // what is kept of it across a reload (./draft.ts Sent): one the log refused goes out again then,
 // so only a refusal and a page from before E41 are kept
-const sentOf = ({ failed, forwarded, id, media, spans, text }: Pending): Sent => ({
+const sentOf = ({ failed, forwarded, id, media, spans, text }: Pending, asking: boolean): Sent => ({
   ...forwarded,
+  asking: asking ? true : undefined,
   from: failed?.kind === "unsent" ? failed.from : undefined,
   id,
   media,
@@ -221,12 +224,13 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
   const reasoningText = options.reasoningText ?? api.reasoningText;
   // what was sent before a reload and never acked: sent again once connected (E41), unless a page
   // from before E41 kept it, or the server refused it
-  const kept = loadSent().map(({ device, engine, followUp, from, id, media, refused, spans, text }): Pending => {
+  const sentBefore = loadSent();
+  const kept = sentBefore.map(({ device, engine, followUp, from, id, media, refused, spans, text }): Pending => {
     const p: Pending = { forwarded: { device, engine, followUp }, id, media, spans, text };
     if (refused !== undefined) return { ...p, failed: { kind: "refused", why: refused } };
     return from === undefined ? p : { ...p, failed: { from, kind: "unsent" } };
   });
-  let s: Session = { ...initial, folds: loadFolds(), pending: kept, status: link.status() };
+  let s: Session = { ...initial, asking: sentBefore.flatMap((m) => (m.asking === true ? [m.id] : [])), folds: loadFolds(), pending: kept, status: link.status() };
   let raw: Record<string, Schema.Json> = {};
   let keys = 0;
   let filling = false;
@@ -238,8 +242,9 @@ export function makeSession(link: Pick<Link, "listen" | "onStatus" | "resume" | 
   let restores = 0;
 
   const set = (next: Partial<Session>) => {
-    if (next.pending && next.pending !== s.pending) saveSent(next.pending.map(sentOf));
+    const changed = (next.pending !== undefined && next.pending !== s.pending) || (next.asking !== undefined && next.asking !== s.asking);
     s = { ...s, ...next };
+    if (changed) saveSent(s.pending.map((p) => sentOf(p, s.asking.includes(p.id))));
     for (const f of subscribers) f();
   };
   const mark = (text: string, tone: Marker["tone"]) => {

@@ -149,6 +149,30 @@ test("info and errors show as markers in the chat", async () => {
   expect(screen.getByRole("alert").textContent).toContain("usage limit: try later");
 });
 
+test("a page of older entries that can't be read is said, and read again only when asked", async () => {
+  start(LOG, 100);
+  await screen.findByText("what is in the repo?");
+  const stubbed = globalThis.fetch;
+  let reads = 0;
+  globalThis.fetch = Object.assign(
+    async (input: string | URL | Request) => {
+      if (!new URL(input instanceof Request ? input.url : input, "http://127.0.0.1:7700/").pathname.startsWith("/api/messages")) return stubbed(input);
+      reads++;
+      return new Response(null, { status: 503 });
+    },
+    { preconnect: stubbed.preconnect },
+  );
+  fireEvent.click(screen.getByRole("button", { name: "earlier messages" }));
+  const again = await screen.findByRole("button", { name: "couldn't load earlier messages: try again" });
+  await new Promise((resolve) => {
+    setTimeout(resolve, 30);
+  });
+  expect(reads).toBe(1); // not asked again by itself
+  globalThis.fetch = stubbed;
+  fireEvent.click(again);
+  await screen.findByText("older message 99");
+});
+
 test("older entries are prepended from /api/messages", async () => {
   start(LOG, 100);
   await screen.findByText("what is in the repo?");

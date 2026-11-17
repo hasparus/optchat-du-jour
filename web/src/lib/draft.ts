@@ -86,6 +86,9 @@ export const Sent = Schema.Struct({
   spans: Schema.optional(Schema.Array(Span)),
   // why the server refused it (nothing to send): it is marked, and never sent again
   refused: Schema.optional(Schema.String),
+  // this page asked the server to take it back, and has no answer yet: an answer that comes after
+  // a reload still brings it back to this page's composer
+  asking: Schema.optional(Schema.Boolean),
 });
 export type Sent = typeof Sent.Type;
 const Kept = Schema.Struct({ at: Schema.Number, sent: Schema.Array(Sent) });

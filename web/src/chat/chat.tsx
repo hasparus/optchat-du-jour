@@ -28,7 +28,7 @@ import {
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import type { Link } from "@/lib/connection";
 import { visible } from "@/lib/log";
-import { chatRows, entryRows, planStates, type Row, rowFor, rowIndexFor, thoughtHolder, toolStateOf, turnSources } from "@/lib/rows";
+import { chatRows, entryRows, planStates, type Row, rowFor, rowIndexFor, runningTool, thoughtHolder, toolStateOf, turnSources } from "@/lib/rows";
 import { type Marker as StatusMarker, type Queued, queued, type Session, type SessionStore } from "@/lib/session";
 import { type ArtifactInfo, canonicalRef, type Device, engineLabel, type SessionState, shortSha } from "@wire";
 import { cn } from "@/lib/utils";
@@ -110,7 +110,7 @@ const placeMarkers = (markers: readonly StatusMarker[], rows: readonly Row[]) =>
 // One message in the queue: its text, its attachments' thumbnails (our own /api/assets, as the
 // chat shows a logged message's), where it stands, its engine when it is not the composer's
 // `model`, and a take-back while it is still held. `asking`: its take-back is asked for and not
-// answered yet (a reconnect forgets that)
+// answered yet
 function Waiting({ q, asking, model, state, onTakeBack }: { readonly q: Queued; readonly asking: boolean; readonly model: string | null; readonly state: SessionState | null; readonly onTakeBack: () => void }) {
   const queuedHere = q.where === "queued";
   const other = q.engine !== null && q.engine !== model ? labelOf(state, q.engine) : null;
@@ -248,7 +248,11 @@ export function Chat({ link, session, state, devices, target: asked, onTargetSho
   useEffect(() => {
     if (target !== null && mode === "memory") setMode("log");
   }, [target, mode, setMode]);
-  const [loading, setLoading] = useState(false);
+  // Reading the page before the first one shown: not now, under way, or failed. A read that
+  // failed is not asked again by itself, or the top's sentinel would ask on every frame while the
+  // server can't be reached: the button asks, and so does the connection coming back.
+  const [paging, setPaging] = useState<"idle" | "loading" | "failed">("idle");
+  const loading = paging === "loading";
   // the artifacts (SPEC "Artifacts"): their list (`artifacts`, App's), read again when a version is
   // saved; the one the pane shows (v null: its latest), beside the chat on a wide screen, in a sheet
   // on a phone
@@ -323,18 +327,29 @@ export function Chat({ link, session, state, devices, target: asked, onTargetSho
   }, [link, loop]);
   useStopKeys(busy && state.status === "open" && active, stop);
 
-  // one older page, prepended: true while there may be more, null when it couldn't be read
-  const loadOlder = useCallback(async () => {
-    if (loading || first <= 0) return false;
-    setLoading(true);
-    try {
-      return await session.loadOlder();
-    } catch {
-      return null;
-    } finally {
-      setLoading(false);
-    }
-  }, [first, loading, session]);
+  // one older page, prepended: true while there may be more, null when it couldn't be read (now,
+  // or the last time, unless the user asks)
+  const loadOlder = useCallback(
+    async (by: "itself" | "user" = "itself") => {
+      if (paging === "loading" || first <= 0) return false;
+      if (paging === "failed" && by === "itself") return null;
+      setPaging("loading");
+      try {
+        const more = await session.loadOlder();
+        setPaging("idle");
+        return more;
+      } catch {
+        setPaging("failed");
+        return null;
+      }
+    },
+    [first, paging, session],
+  );
+  // connected again: a read that failed may be asked again
+  const online = state.status === "open";
+  useEffect(() => {
+    if (online) setPaging((was) => (was === "failed" ? "idle" : was));
+  }, [online]);
 
   // the top in view: the page before it
   useEffect(() => {
@@ -354,7 +369,10 @@ export function Chat({ link, session, state, devices, target: asked, onTargetSho
     if (target === null || loading || mode !== "log") return;
     if (rows.length > 0 && first > target) {
       void loadOlder().then((more) => {
-        if (more === null) onTargetShown(); // offline: give up rather than retry for ever
+        if (more !== null) return;
+        // offline: give up rather than retry for ever
+        setShownHere(null);
+        onTargetShown();
       });
       return;
     }
@@ -364,7 +382,7 @@ export function Chat({ link, session, state, devices, target: asked, onTargetSho
     onTargetShown();
   }, [target, rows, first, loading, loadOlder, scrollToMessage, onTargetShown, mode]);
 
-  const lastTool = rows.findLast((r) => r.kind === "tool")?.key;
+  const lastTool = runningTool(rows, state.run);
   // a plan is live only in the run that goes on now: from the user entry RUN_STARTED named
   const liveFrom = state.run !== null && state.state?.phase === "running" ? state.run : null;
   // each turn's plan (its last TodoWrite; one live per run) and its sources under its last reply;
@@ -480,10 +498,10 @@ export function Chat({ link, session, state, devices, target: asked, onTargetSho
                     <button
                       className="min-h-8 rounded-full px-3 text-xs text-muted-foreground hairline transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60 pointer-coarse:min-h-10"
                       disabled={loading}
-                      onClick={() => void loadOlder()}
+                      onClick={() => void loadOlder("user")}
                       type="button"
                     >
-                      {loading ? <Shimmer>loading…</Shimmer> : "earlier messages"}
+                      {loading ? <Shimmer>loading…</Shimmer> : paging === "failed" ? "couldn't load earlier messages: try again" : "earlier messages"}
                     </button>
                   </div>
                 )}

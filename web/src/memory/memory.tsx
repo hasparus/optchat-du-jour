@@ -35,7 +35,8 @@ export function Memory({
   const { folds, thoughts } = state;
   // a tool call can still be running only while a turn runs, and only the newest, as in the log
   const busy = state.state !== null && state.state.phase !== "idle";
-  const lastTool = items.findLast((x) => x.kind === "row" && x.row.kind === "tool")?.key;
+  const { run } = state;
+  const lastTool = items.findLast((x) => x.kind === "row" && x.row.kind === "tool" && (run === null || x.row.id >= run))?.key;
   const rows = useMemo(
     () => ({ artifacts, busy, folds, lastTool, onArtifact: (_name: string, _v: number | null, i: number) => {
         onShowInChat(i);

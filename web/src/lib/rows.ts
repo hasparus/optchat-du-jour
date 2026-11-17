@@ -132,6 +132,11 @@ export const TOOL_STATE_LABELS = {
 export const toolStateOf = (row: Pick<ToolRow, "failed" | "output">, busy: boolean, last: boolean): ToolState =>
   row.output === null ? (busy && last ? "running" : "ended") : row.failed ? "error" : "done";
 
+// The tool row that may still be running: the newest one of the turn that runs now (`run`: the log
+// index it started at). A call an earlier turn left unanswered (it was stopped) is not it, whatever
+// the new turn does. With no run known (a page that joined mid-turn isn't told yet), the newest.
+export const runningTool = (rows: readonly Row[], run: number | null) => rows.findLast((r) => r.kind === "tool" && (run === null || r.id >= run))?.key;
+
 // an MCP tool comes as mcp__<server>__<name>; the row names it by <name>
 export const toolName = (name: string) => name.split("__").at(-1) ?? name;
 

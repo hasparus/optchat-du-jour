@@ -8,6 +8,7 @@
 // opens.
 import { Button } from "@/components/ui/button";
 import { DRAFT_URL, type Draft, fileName, frameUrl, rawUrl } from "@/lib/artifacts";
+import { Cover, coverHtml, coverNext, HOLD_MS } from "@/lib/draft-cover";
 import { patchDraftDocument, renderable } from "@/lib/draft-preview";
 import { nativeShell } from "@/lib/shell";
 import { cn } from "@/lib/utils";
@@ -73,14 +74,27 @@ export function ArtifactPane({ name, v, info, draft, onVersion, onClose, heading
       globalThis.removeEventListener("message", onMessage);
     };
   }, []);
-  const liveDraft = draft && renderable(draft.html) && (v === null || v === latest) ? draft.html : null;
-  const [held, setHeld] = useState<string | null>(null);
+  // What covers the frame (../lib/draft-cover.ts): the draft while it is written, then its last
+  // picture until the version it became has painted. Only the latest version is ever covered.
+  const onLatest = v === null || v === latest;
+  const liveDraft = draft && renderable(draft.html) ? draft.html : null;
   const caughtUp = url === null || painted === url;
+  const [cover, setCover] = useState<Cover>(Cover.None);
   useEffect(() => {
-    if (liveDraft) setHeld(liveDraft);
-    else if (!draft && caughtUp) setHeld(null);
-  }, [liveDraft, draft, caughtUp]);
-  const picture = liveDraft ?? held;
+    setCover((was) => coverNext(was, { draft: liveDraft, latest, onLatest, painted: caughtUp }));
+  }, [liveDraft, latest, onLatest, caughtUp]);
+  // held with no newer version painting (the turn was stopped, or the frame never said so): not for ever
+  const holding = cover._tag === "Held";
+  useEffect(() => {
+    if (!holding) return;
+    const timer = setTimeout(() => {
+      setCover((was) => (was._tag === "Held" ? Cover.None() : was));
+    }, HOLD_MS);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [holding]);
+  const picture = onLatest ? (liveDraft ?? coverHtml(cover)) : null;
 
   // the HTML of the version shown, read once per version: copy can then write in the same click
   const cached = useRef<{ readonly key: string; readonly html: Promise<string> } | null>(null);
