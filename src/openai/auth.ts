@@ -5,7 +5,7 @@
 // and …/profiles-and-sessions, Oct 2026): the first sign-in sends client_id=dynamic_agent_client and
 // gets its own client id back on the callback; that one is saved and used for the code exchange,
 // refreshes and later sign-ins.
-import { Clock, Data, Deferred, type Duration, Effect, Option, Schema, Semaphore } from "effect";
+import { Clock, Data, Deferred, type Duration, Effect, Fiber, Option, Schema, Semaphore } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Secrets, type SecretsError } from "../secrets.ts";
@@ -219,8 +219,19 @@ const refresh = (e: Endpoints, c: Credentials) =>
 const EARLY = 2 * 60_000; // refresh this long before expiry, ms
 
 // This process's sign-in: the access token and when it expires, and the credentials it came from.
-// `unsaved`: the refresh token was rotated but couldn't be saved, so memory holds the only good one.
-type Session = { readonly credentials: Credentials; readonly accessToken: string; readonly expiresAt: number; readonly unsaved: boolean };
+type Token = { readonly credentials: Credentials; readonly accessToken: string; readonly expiresAt: number };
+// What this process holds of it. Cold: nothing yet, so the saved credentials are the ones to use.
+// Saved: a token, and its refresh token is the saved one. MemoryOnly: the refresh token was rotated
+// but couldn't be saved, so memory holds the only good one.
+type Held = Data.TaggedEnum<{ Cold: {}; Saved: Token; MemoryOnly: Token }>;
+const Held = Data.taggedEnum<Held>();
+
+// A refresh ends by itself, whatever becomes of the call that asked for it. The issuer rotates
+// the refresh token as it answers, and a stopped turn can't take that back: a refresh cut off
+// between the answer and the save would leave only the spent token, signed out. So it runs in a
+// fiber of its own, which the token endpoint's timeout and one save bound, and the caller only
+// waits for it; a caller that is interrupted stops waiting.
+const settled = <A, E, R>(self: Effect.Effect<A, E, R>) => Effect.forkDetach(self).pipe(Effect.flatMap((fiber) => Fiber.join(fiber)));
 
 // The access token for each call. Refreshes are serialized, since every refresh rotates the
 // refresh token (profiles-and-sessions: "Serialize refreshes").
@@ -230,7 +241,7 @@ export const makeTokenManager = (e: Endpoints, o: { readonly report?: (message: 
     const secrets = yield* Secrets;
     const http = yield* HttpClient.HttpClient;
     const report = o.report ?? ((m: string) => Effect.logError(m));
-    let session: Session | null = null;
+    let held: Held = Held.Cold();
 
     const saved = loadCredentials.pipe(
       Effect.flatMap(
@@ -247,7 +258,7 @@ export const makeTokenManager = (e: Endpoints, o: { readonly report?: (message: 
       Effect.gen(function* () {
         const t = yield* refresh(e, c);
         const credentials = { ...c, refreshToken: t.refresh_token ?? c.refreshToken };
-        const mustSave = credentials.refreshToken !== c.refreshToken || session?.unsaved === true;
+        const mustSave = credentials.refreshToken !== c.refreshToken || held._tag === "MemoryOnly";
         const unsaved = mustSave
           ? yield* save(credentials).pipe(
               Effect.as(false),
@@ -259,15 +270,15 @@ export const makeTokenManager = (e: Endpoints, o: { readonly report?: (message: 
             )
           : false;
         const now = yield* Clock.currentTimeMillis;
-        const next: Session = { accessToken: t.access_token, credentials, expiresAt: now + t.expires_in * 1000, unsaved };
-        session = next;
-        return next.accessToken;
+        const token: Token = { accessToken: t.access_token, credentials, expiresAt: now + t.expires_in * 1000 };
+        held = unsaved ? Held.MemoryOnly(token) : Held.Saved(token);
+        return token.accessToken;
       });
 
     // From the saved refresh token (it may have moved on in another process or a new login), unless
     // only memory has a good one. Refused, and something else is saved by now: one try with that.
     const fresh = Effect.gen(function* () {
-      const c = session?.unsaved ? session.credentials : yield* saved;
+      const c = held._tag === "MemoryOnly" ? held.credentials : yield* saved;
       return yield* renewFrom(c).pipe(
         Effect.catchTag("GrantRejected", (err) =>
           Effect.gen(function* () {
@@ -280,14 +291,16 @@ export const makeTokenManager = (e: Endpoints, o: { readonly report?: (message: 
     });
 
     // a token valid for a while yet
-    const current = one.withPermit(
-      Effect.gen(function* () {
-        const now = yield* Clock.currentTimeMillis;
-        return session !== null && session.expiresAt - EARLY > now ? session.accessToken : yield* fresh;
-      }),
+    const current = settled(
+      one.withPermit(
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis;
+          return held._tag !== "Cold" && held.expiresAt - EARLY > now ? held.accessToken : yield* fresh;
+        }),
+      ),
     );
     // after a 401 with `stale`: refresh, unless another call already did
-    const renew = (stale: string) => one.withPermit(Effect.suspend(() => (session !== null && session.accessToken !== stale ? Effect.succeed(session.accessToken) : fresh)));
+    const renew = (stale: string) => settled(one.withPermit(Effect.suspend(() => (held._tag !== "Cold" && held.accessToken !== stale ? Effect.succeed(held.accessToken) : fresh))));
 
     const provide = <A>(self: Effect.Effect<A, TokenError, Secrets | HttpClient.HttpClient>) =>
       self.pipe(Effect.provideService(Secrets, secrets), Effect.provideService(HttpClient.HttpClient, http));

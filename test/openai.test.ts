@@ -762,6 +762,46 @@ test("a rotated refresh token that can't be saved stays in memory, loudly", asyn
   expect(reports).toHaveLength(2);
 });
 
+test("a call stopped while its refresh is under way doesn't cost the rotated refresh token: the refresh ends by itself, saved", async () => {
+  const secrets = memorySecrets();
+  const e = await signedIn(secrets);
+  const before = decodeCredentials(await stored(secrets)).refreshToken;
+  const gate = Deferred.makeUnsafe<null>();
+  const saving = { entered: false };
+  // a keychain that takes its time: the issuer has rotated the token by the time `set` is asked
+  const slow = Layer.effect(
+    Secrets,
+    Effect.gen(function* () {
+      const inner = yield* Secrets;
+      return {
+        get: inner.get,
+        remove: inner.remove,
+        set: (name: string, value: string) =>
+          Effect.suspend(() => {
+            saving.entered = true;
+            return Effect.andThen(Deferred.await(gate), inner.set(name, value));
+          }),
+      };
+    }),
+  ).pipe(Layer.provide(secrets));
+  const layer = await Effect.runPromise(Layer.build(plan(e, slow)).pipe(Effect.map((ctx) => Layer.succeedContext(ctx)), Effect.scoped));
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const call = yield* Effect.forkChild(respondWith(layer)("one"));
+      while (!saving.entered) yield* Effect.sleep("5 millis");
+      yield* Fiber.interrupt(call); // the user's Stop
+      yield* Deferred.succeed(gate, null);
+      const store = yield* Secrets;
+      for (let k = 0; k < 200 && decodeCredentials(Option.getOrThrow(yield* store.get(SECRET))).refreshToken === before; k++) yield* Effect.sleep("5 millis");
+    }).pipe(Effect.provide(secrets)),
+  );
+  const after = decodeCredentials(await stored(secrets)).refreshToken;
+  expect(after).not.toBe(before);
+  expect(after).toBe(fake.state.refresh);
+  // a new process signs in with what was saved
+  expect(await tokenFailure(secrets, e)).toBe("Success");
+});
+
 // SSE as it comes off the wire, in chunks of any size
 type Json = string | number | null | readonly Json[] | { readonly [key: string]: Json };
 const sse = (e: { readonly type: string; readonly [k: string]: Json }) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`;
