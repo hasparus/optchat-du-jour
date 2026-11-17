@@ -98,7 +98,12 @@ export function makeScreen(o: ScreenOptions) {
   let state: Record<string, Schema.Json> = {};
   let shownWaiting = -1;
   let headerShown = false;
-  const mine: string[] = []; // the ids of messages sent from here, not acked yet
+  // The messages sent from here and not acked yet, by id, and where each is: in the link's
+  // "outbox" (typed with no connection, it goes out when one opens) or on the "wire" (it went out,
+  // and its ack may still come). A lost connection forgets those on the wire, which may be lost
+  // with it; the ones in the outbox are still to be sent, and stay ours.
+  const mine = new Map<string, "outbox" | "wire">();
+  let open = false; // the socket is open: what is sent now goes out now
   const own = new Set<string>(); // the log ids of messages sent from here: not shown again
   let logging = 0; // sent from here and logged, their run not over yet
   let failed = 0; // sent from here and not answered: the server could not log them, or their run ended in an error
@@ -169,7 +174,7 @@ export function makeScreen(o: ScreenOptions) {
     stuck = nowStuck;
     // ours that the server holds for the next turn while one runs: said once each
     for (const m of st.pending ?? [])
-      if (m.queued && st.phase === "running" && m.clientId !== null && mine.includes(m.clientId) && !queued.has(m.clientId)) {
+      if (m.queued && st.phase === "running" && m.clientId !== null && mine.has(m.clientId) && !queued.has(m.clientId)) {
         queued.add(m.clientId);
         note(`queued for the next turn: ${row(clean(m.text))}`);
       }
@@ -185,11 +190,9 @@ export function makeScreen(o: ScreenOptions) {
   // the server says what became of a message: one sent from here is logged (and so not shown
   // again when its user entry follows) or could not be, and counts as answered with an error
   const acked = (clientId: string, messageId: string | null, error: string | null) => {
-    const at = mine.indexOf(clientId);
     // one the log refused is acked again when a later turn logs it: not shown again either
-    if (at === -1 && messageId !== null && refused.delete(clientId)) own.add(messageId);
-    if (at === -1) return;
-    mine.splice(at, 1);
+    if (!mine.has(clientId) && messageId !== null && refused.delete(clientId)) own.add(messageId);
+    if (!mine.delete(clientId)) return;
     if (messageId !== null) {
       own.add(messageId);
       logging++;
@@ -241,9 +244,7 @@ export function makeScreen(o: ScreenOptions) {
 
   // a held message of ours that a client (another, or this one) took back: it is not answered
   const takenBack = (clientId: string, text: string | null) => {
-    const at = mine.indexOf(clientId);
-    if (at === -1 || text === null) return;
-    mine.splice(at, 1);
+    if (text === null || !mine.delete(clientId)) return;
     queued.delete(clientId);
     failed++;
     note(`taken back, not sent: ${row(clean(text))}`);
@@ -251,7 +252,7 @@ export function makeScreen(o: ScreenOptions) {
 
   const sent = (text: string): Action => {
     const id = crypto.randomUUID();
-    mine.push(id);
+    mine.set(id, open ? "wire" : "outbox");
     busy = true;
     return model === null ? { id, text, type: "send" } : { engine: model, id, text, type: "send" };
   };
@@ -265,7 +266,7 @@ export function makeScreen(o: ScreenOptions) {
     // going. One counts as answered when the run that logged it ends (or the session goes idle after
     // logging it), never by the session's phase alone: the server may not have read it yet.
     get unanswered() {
-      return mine.length + logging;
+      return mine.size + logging;
     },
 
     // messages sent from here that were not answered: not logged, or their run ended in an error
@@ -324,6 +325,7 @@ export function makeScreen(o: ScreenOptions) {
           if (stuck) return;
           failed += logging; // ours that this run logged ended unanswered with it
           logging = 0;
+          thinking = false;
           note(`error: ${clean(e.message)}`);
           return;
         case "CUSTOM":
@@ -409,11 +411,12 @@ export function makeScreen(o: ScreenOptions) {
           return sent(text);
         }
         case "interrupt":
+          // the second in a row exits, whatever the turn does: a cancel that isn't taking is no trap
+          if (wasArmed) return { type: "exit" };
           if (busy) {
             armed = true;
             return { type: "abort" }; // `cancel` says whether it went out
           }
-          if (wasArmed) return { type: "exit" };
           armed = true;
           hidePrompt();
           input = "";
@@ -452,8 +455,10 @@ export function makeScreen(o: ScreenOptions) {
 
     // the socket went away, or could not be opened: said once per outage
     disconnected(retrying: boolean) {
+      open = false;
       busy = false;
-      mine.length = 0;
+      thinking = false;
+      for (const [id, where] of mine) if (where === "wire") mine.delete(id);
       own.clear();
       logging = 0;
       users.clear();
@@ -464,6 +469,8 @@ export function makeScreen(o: ScreenOptions) {
 
     // the socket is open again after an outage
     connected() {
+      open = true;
+      for (const id of mine.keys()) mine.set(id, "wire"); // the link sends its outbox as it opens
       if (!offline) return;
       offline = false;
       note("connected to the server again");

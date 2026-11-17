@@ -26,6 +26,11 @@ test("a value is read as far as the text goes: a string cut short as it has come
   expect(readPartial(raw('{"a":"x~'))).toEqual({ a: "x" });
   expect(readPartial(raw('{"a":"x~uzzzz"}'))).toEqual({ a: "x\uFFFD" });
   expect(readPartial('{"n":12')).toEqual({}); // a number that may go on
+  // cut at its point or in its exponent: not the number before it
+  expect(readPartial('{"a":1,"n":12.')).toEqual({ a: 1 });
+  expect(readPartial("[1,12e")).toEqual([1]);
+  expect(readPartial("[1,12e+")).toEqual([1]);
+  expect(readPartial("[1,12.5e3,2]")).toEqual([1, 12_500, 2]);
   expect(readPartial('{"edits":[{"old_string":"a","new_string":"b"},{"old_string":"c')).toEqual({ edits: [{ new_string: "b", old_string: "a" }, { old_string: "c" }] });
   expect(readPartial("")).toBeUndefined();
 });

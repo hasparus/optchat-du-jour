@@ -52,6 +52,8 @@ export function stringAt(raw: string, pos: number): StringRead {
 
 const LITERAL = /^(?:-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/;
 const SPACE = " \t\n\r";
+// what follows a number that isn't whole yet ("12." and "12e" match as 12)
+const CONTINUES = ".eE+-";
 
 // The value at the start of `s`, read as far as the text goes: a string cut short is what it has
 // so far, an object or an array cut short has the members that began in it, and a value that
@@ -75,7 +77,8 @@ export function readPartial(s: string): Schema.Json | undefined {
     if (c === "{") return object();
     if (c === "[") return array();
     const m = LITERAL.exec(s.slice(i));
-    if (!m || i + m[0].length >= s.length) {
+    // cut short: at the end of the text, or a number stopped at its point or its exponent
+    if (!m || i + m[0].length >= s.length || CONTINUES.includes(s[i + m[0].length] ?? "")) {
       i = s.length;
       return undefined;
     }

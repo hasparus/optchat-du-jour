@@ -159,6 +159,14 @@ describe("repl screen", () => {
     expect(t.s.key({ type: "interrupt" })).toEqual({ type: "exit" });
   });
 
+  test("a second Ctrl-C in a row exits while the turn is still busy, as the first one's note says", () => {
+    const t = screen();
+    t.feed({ snapshot: { ...IDLE, phase: "running" }, type: "STATE_SNAPSHOT" });
+    expect(t.s.key({ type: "interrupt" })).toEqual({ type: "abort" });
+    expect(t.s.busy).toBe(true); // the turn is still winding down
+    expect(t.s.key({ type: "interrupt" })).toEqual({ type: "exit" });
+  });
+
   test("model text can't drive the terminal", () => {
     const t = screen();
     t.feed(...said("7", "assistant", "a\u001B]52;c;Zm9v\u0007b\u009Bc"));
@@ -224,6 +232,24 @@ describe("repl screen", () => {
     t.s.cancel(false);
     expect(t.out()).toContain("cancel sent; a second Ctrl-C exits\n");
     expect(t.out()).toContain("not connected: the cancel was not sent\n");
+  });
+
+  test("a message typed with no connection is still ours when it goes out: its entry isn't shown as another client's", () => {
+    const t = screen();
+    t.s.connected();
+    t.s.disconnected(true);
+    for (const ch of "hello") t.s.key({ text: ch, type: "text" });
+    const typed = idOf(t.s.key({ type: "enter" })); // it waits in the link's outbox
+    t.s.disconnected(true); // a retry that failed
+    expect(t.s.unanswered).toBe(1);
+    t.s.connected();
+    t.feed({ snapshot: IDLE, type: "STATE_SNAPSHOT" }, ack(typed, "4"), ...said("4", "user", "hello"));
+    expect(t.out().match(/> hello/g)).toHaveLength(1); // as it was typed, not again
+    // one that went out, and whose connection was then lost, may be lost with it: no longer counted
+    for (const ch of "again") t.s.key({ text: ch, type: "text" });
+    t.s.key({ type: "enter" });
+    t.s.disconnected(true);
+    expect(t.s.unanswered).toBe(0);
   });
 
   test("a lost connection is told once, and so is its return", () => {
