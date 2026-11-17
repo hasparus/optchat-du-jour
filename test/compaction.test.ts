@@ -9,7 +9,7 @@ import { CompactError, type Job, makeJob, makePump, NoLine } from "../src/compac
 import { AHEAD, NODE, REFUSALS } from "../src/config.ts";
 import { makeGate, type Prefix } from "../src/engines/inflight.ts";
 import * as K from "../src/kernel.ts";
-import { newMsg, newNode } from "../src/store.ts";
+import { newMsg, newNode, StoreError } from "../src/store.ts";
 import { RULER, retryText, sizeRetries, task } from "../src/summarize/step.ts";
 import { built, bytes, type Coord, cut, end, getNode, label, type Marks, type Mem, newMem, nodes, ready, setNode } from "../src/tree.ts";
 import { addMessage, addNode, compactionContext, PLACEHOLDER } from "../src/view.ts";
@@ -501,6 +501,45 @@ test("the in-flight gate: one call writes a prefix, the others wait for its resp
         expect(yield* Fiber.join(first)).toBe("refused");
         yield* Fiber.join(next);
         expect(seen).toEqual(["next"]);
+      }),
+    ),
+  );
+});
+
+test("a free node whose commit keeps failing costs no other node its place: every failed node is tried, and the message that came is queued all the same", async () => {
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const mem = newMem();
+        const said: string[] = [];
+        const stuck = { all: true, first: true }; // which commits fail: every one, or node 0+1's
+        const pump = yield* makePump({
+          commit: (n) =>
+            stuck.all || (stuck.first && n.l === 0 && n.i === 0)
+              ? Effect.fail(new StoreError({ message: `cannot write ${label(n)}` }))
+              : Effect.sync(() => {
+                  addNode(mem, n);
+                }),
+          mem,
+          report: (m) => Effect.sync(() => void said.push(m)),
+          summarize: () => Effect.fail(new CompactError({ message: "no call is made here" })),
+        });
+        yield* pump.kick;
+        // every message here is free (its node is its text), so each is committed as it is logged
+        addMessage(mem, newMsg(0, "user", "zero"));
+        yield* pump.logged(0);
+        addMessage(mem, newMsg(1, "user", "one"));
+        yield* pump.logged(1); // node 0 is tried again first, and fails again: message 1 still has its place
+        expect(pump.activity()).toEqual([{ failed: 2, level: 0, queued: 0, running: 0 }]);
+        // node 0 still cannot be written; node 1 can, and is not held back by it
+        stuck.all = false;
+        yield* pump.retry;
+        expect([built(mem, { i: 0, l: 0 }), built(mem, { i: 1, l: 0 })]).toEqual([false, true]);
+        expect(pump.activity()).toEqual([{ failed: 1, level: 0, queued: 0, running: 0 }]);
+        stuck.first = false;
+        yield* pump.retry;
+        expect([...nodes(mem.root.length)].filter((c) => ready(mem, c) && !built(mem, c))).toEqual([]);
+        expect(pump.activity()).toEqual([]);
       }),
     ),
   );

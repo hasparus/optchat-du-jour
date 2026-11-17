@@ -83,6 +83,20 @@ class Line<A> {
 // the next message. Nodes not ready yet (a merge whose halves aren't built) are in none of these.
 export type Activity = { readonly level: number; readonly running: number; readonly queued: number; readonly failed: number };
 
+// Where a node that is ready to build, and isn't built, is: waiting for a free call, in a call, or
+// failed and waiting to be tried again (`at`: when it failed; `wait`: how long it rests).
+type Place = Data.TaggedEnum<{
+  Queued: { readonly c: Coord };
+  Running: { readonly c: Coord };
+  Failed: { readonly c: Coord; readonly at: number; readonly wait: number };
+}>;
+const Place = Data.taggedEnum<Place>();
+// Both changes are made, whatever the first comes to; what failed is failed after them.
+const both = (first: Effect.Effect<void, StoreError>, then: Effect.Effect<void, StoreError>) =>
+  Effect.exit(first).pipe(Effect.flatMap((exit) => Effect.andThen(then, exit)));
+// each place's count in an Activity
+const COUNTED = { Failed: "failed", Queued: "queued", Running: "running" } as const satisfies Record<Place["_tag"], keyof Activity>;
+
 export type Pump = {
   // what the pump has to start at all: at startup, one scan of the tree into the queues
   readonly kick: Effect.Effect<void, StoreError>;
@@ -124,16 +138,27 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
     // it: a turn's request logs its items and so starts jobs, and its fiber-local services (the
     // turn's RetryPauses listener, E43) must not follow them in.
     const context = yield* Effect.context();
-    // The queues: the unbuilt messages, in order, and the ready merges of each level. A node is in
-    // at most one of: a queue, `running`, `failed` (waiting for the next message). `told`: the
-    // nodes whose failure was reported already.
+    // The queues: the unbuilt messages, in order, and the ready merges of each level, which give
+    // the order nodes start in. Where a node is, is `placed`: every ready node that isn't built has
+    // exactly one place there, so it cannot be both queued and failed, and none is forgotten.
+    // `told`: the nodes whose failure was reported already.
     const leaves = new Line<number>();
     const merges: (Line<Coord> | undefined)[] = [];
-    // `queued` and `running` keep each node's level, for `activity`; `failed`, each failed node,
-    // when it failed and how long it rests; `refused`, how many of its calls the model answered with
-    // no line (E33); `rested`, how long each node rested after its last failure in a row
-    const queued = new Map<string, number>(), running = new Map<string, number>(), told = new Set<string>();
-    const failed = new Map<string, { readonly c: Coord; readonly at: number; readonly wait: number }>();
+    const placed = new Map<string, Place>(), told = new Set<string>();
+    let busy = 0; // the nodes placed Running
+    const put = (name: string, to: Place | null) => {
+      if (placed.get(name)?._tag === "Running") busy--;
+      if (to === null) placed.delete(name);
+      else placed.set(name, to);
+      if (to?._tag === "Running") busy++;
+    };
+    const isQueued = (c: Coord) => placed.get(label(c))?._tag === "Queued";
+    // a job is over: its node leaves Running, unless its failure placed it elsewhere already
+    const leave = (name: string) => {
+      if (placed.get(name)?._tag === "Running") put(name, null);
+    };
+    // `refused`, how many of a node's calls the model answered with no line (E33); `rested`, how
+    // long each node rested after its last failure in a row
     const refused = new Map<string, number>(), rested = new Map<string, number>();
     // Node c failed: it waits for the next message, rested. Each failure in a row doubles its rest,
     // from `rest` up to `most` (REST_MOST): a long outage or a spent plan settles to one call per
@@ -142,8 +167,9 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
       const before = rested.get(name);
       const wait = before === undefined ? rest : Math.min(before * 2, most);
       rested.set(name, wait);
-      failed.set(name, { at: clock.currentTimeMillisUnsafe(), c, wait });
+      put(name, Place.Failed({ at: clock.currentTimeMillisUnsafe(), c, wait }));
     };
+    const failures = () => [...placed].flatMap(([name, at]) => (at._tag === "Failed" ? [{ ...at, name }] : []));
     // While anything has failed, and failed calls rest (`rest`), one fiber tries each again as it
     // has rested, so a node that failed near the end of a turn isn't left until the next message,
     // and the idle view can be primed (E17, E33). Never a hot loop; with no rest (as docs/optchat.md
@@ -155,7 +181,7 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
       const loop = Effect.gen(function* () {
         for (;;) {
           let due = Number.POSITIVE_INFINITY;
-          for (const f of failed.values()) due = Math.min(due, f.at + f.wait);
+          for (const f of failures()) due = Math.min(due, f.at + f.wait);
           if (due === Number.POSITIVE_INFINITY) {
             waking = false; // in the same step as the decision, so a park after it starts a new fiber
             return;
@@ -178,7 +204,7 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
     const consider = (c: Coord): Effect.Effect<void, StoreError> =>
       Effect.suspend(() => {
         const name = label(c);
-        if (built(mem, c) || queued.has(name) || running.has(name) || failed.has(name)) return Effect.void;
+        if (built(mem, c) || placed.has(name)) return Effect.void;
         const text = freeText(mem, c);
         if (text !== null)
           return commit(newNode(c.l, c.i, text)).pipe(
@@ -189,7 +215,7 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
             ),
             Effect.andThen(Effect.suspend(() => done(c))),
           );
-        queued.set(name, c.l);
+        put(name, Place.Queued({ c }));
         if (c.l > 0) (merges[c.l] ??= new Line<Coord>()).push(c);
         return Effect.void;
       });
@@ -213,12 +239,11 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
       for (const i of leaves.from((k) => built(mem, { i: k, l: 0 }))) {
         if (built(mem, { i, l: 0 })) continue;
         if (++seen > ahead) break;
-        const name = label({ i, l: 0 });
-        if (queued.has(name)) return { i, l: 0 };
+        if (isQueued({ i, l: 0 })) return { i, l: 0 };
       }
       for (const level of merges) {
         if (!level) continue;
-        for (const c of level.from((m) => !queued.has(label(m)))) if (queued.has(label(c))) return c;
+        for (const c of level.from((m) => !isQueued(m))) if (isQueued(c)) return c;
       }
       return null;
     };
@@ -265,36 +290,43 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
           Effect.flatMap((exit) =>
             restore(
               Exit.isSuccess(exit)
-                ? guarded(Effect.suspend(() => (running.delete(name), refused.delete(name), rested.delete(name), done(c))))
-                : Effect.andThen(one.withPermit(Effect.suspend(() => (running.delete(name), fail(exit.cause)))), nudge),
+                ? guarded(Effect.suspend(() => (leave(name), refused.delete(name), rested.delete(name), done(c))))
+                : Effect.andThen(one.withPermit(Effect.suspend(() => (leave(name), fail(exit.cause)))), nudge),
             ),
           ),
         ),
       );
-      return once.pipe(Effect.ensuring(Effect.sync(() => void running.delete(name))));
+      return once.pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            leave(name);
+          }),
+        ),
+      );
     };
 
     // start what may start, up to `limit` at once; each job's context is taken now
     const start = Effect.gen(function* () {
-      while (running.size < limit) {
+      while (busy < limit) {
         const c = next();
         if (c === null) return;
-        const name = label(c);
-        queued.delete(name);
         // if making the context throws, that is the job's failure and goes the same way
         const call = yield* Effect.exit(Effect.sync(() => makeJob(mem, c)));
-        running.set(name, c.l);
+        put(label(c), Place.Running({ c }));
         yield* Effect.forkIn(Effect.updateContext(job(c, call), (_: Context.Context<never>) => context), scope);
       }
     });
 
-    // the failed nodes, ready again: every one (`all`), or those that have rested
+    // The failed nodes, ready again: every one (`all`), or those that have rested. Each gives up
+    // its place only as it is looked at again, and one that fails again (a free node that still
+    // cannot be committed) is failed anew without costing the ones after it their turn.
     const again = (all: boolean) =>
       Effect.suspend(() => {
         const now = clock.currentTimeMillisUnsafe();
-        const waiting = [...failed].filter(([, f]) => all || now - f.at >= f.wait);
-        for (const [name] of waiting) failed.delete(name);
-        return Effect.forEach(waiting, ([, f]) => consider(f.c), { discard: true });
+        const waiting = failures().filter((f) => all || now - f.at >= f.wait);
+        let tries: Effect.Effect<void, StoreError> = Effect.void;
+        for (const f of waiting) tries = both(tries, Effect.suspend(() => (put(f.name, null), consider(f.c))));
+        return tries;
       });
 
     // A change of the queues that comes after other work (a job, a logged message) is no part of
@@ -324,17 +356,14 @@ export const makePump = ({ commit, mem, summarize, ...o }: PumpOptions & { reado
     const kick: Effect.Effect<void, StoreError> = one.withPermit(Effect.andThen(scan, start)).pipe(Effect.ensuring(PubSub.publish(changes, true)));
     const activity = (): readonly Activity[] => {
       const at = new Map<number, { running: number; queued: number; failed: number }>();
-      const count = (level: number, key: "running" | "queued" | "failed") => {
-        const row = at.get(level) ?? { failed: 0, queued: 0, running: 0 };
-        row[key]++;
-        at.set(level, row);
-      };
-      for (const level of running.values()) count(level, "running");
-      for (const level of queued.values()) count(level, "queued");
-      for (const { c } of failed.values()) count(c.l, "failed");
+      for (const place of placed.values()) {
+        const row = at.get(place.c.l) ?? { failed: 0, queued: 0, running: 0 };
+        row[COUNTED[place._tag]]++;
+        at.set(place.c.l, row);
+      }
       return [...at].toSorted(([a], [b]) => a - b).map(([level, row]) => ({ level, ...row }));
     };
-    const logged = (i: number) => guarded(Effect.andThen(again(false), arrived(i)));
+    const logged = (i: number) => guarded(both(again(false), arrived(i)));
     const retry = guarded(again(true));
     return { activity, changes, kick, logged, retry } satisfies Pump;
   });
