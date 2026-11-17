@@ -667,7 +667,9 @@ export const makeSession = (o: {
         const cancelled = Cause.hasInterruptsOnly(cause);
         const refused = cancelled || Cause.hasDies(cause) ? Option.none() : Cause.findErrorOption(cause);
         const why = cancelled ? "cancelled" : Option.match(refused, { onNone: () => `the turn stopped: ${thrown(cause)}`, onSome: (e) => e.message });
-        stalled = null; // no longer waiting for a resume
+        // no longer waiting for a resume: the two go together, so no state says "needs a model" with none named
+        stalled = null;
+        if (phase === "needs-model") phase = "running";
         yield* giveBack(device);
         const inRun = run.inRun();
         yield* run.end(why); // the run's end says it
