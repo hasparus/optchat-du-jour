@@ -53,20 +53,27 @@ import {
   agentOf,
   cwdOf,
   decodeMeta,
+  type Ended,
+  endedAt,
   history,
   infoOf,
   intro,
+  isLive,
+  isStopping,
+  Life,
   lineOf,
   metaOf,
   type Pending,
   readLog,
   shownEntry,
   SIDE_PAGE,
+  stateOf,
   type SubagentHost,
   SUBAGENTS_SHOWN,
   type Tell,
   USER_STOP,
   userStopped,
+  whyOf,
 } from "./subagents/agent.ts";
 import { makeReports, reportOf } from "./subagents/reports.ts";
 
@@ -104,10 +111,10 @@ export type Subagents = {
 };
 
 const bareOf = (ref: string) => effortSplit(ref)[0];
-// a run interrupted, and its end handed on (`launch`): what a stop waits for
-const stopped = (a: Pick<Agent, "fiber" | "watcher">) => {
-  const { fiber, watcher } = a;
-  return Effect.andThen(fiber === null ? Effect.void : Fiber.interrupt(fiber), watcher === null ? Effect.void : Fiber.await(watcher));
+// the user stops its run: said on its place, for its end to read
+const mark = (a: Agent) => {
+  if (a.life._tag === "Starting") a.life = Life.Starting({ stopping: true });
+  else if (a.life._tag === "Running") a.life = Life.Running({ ...a.life, stopping: true });
 };
 // a message for a subagent as its call is offered it
 const asMid = (t: Tell): Mid => ({ media: [], seq: t.seq, text: t.text });
@@ -247,7 +254,8 @@ export const makeSubagents = (o: {
       }
     const agents = new Map<string, Agent>(loaded.map((a) => [a.name.toLowerCase(), a]));
     const find = (name: string) => agents.get(name.trim().toLowerCase());
-    const running = () => [...agents.values()].filter((a) => a.state === "running");
+    // the ones the cap counts: a run of theirs is on, or being started
+    const running = () => [...agents.values()].filter(isLive);
     const capText = (names: readonly string[]) => `${names.length} subagents run already (${names.join(", ")}), at most ${o.max} at once`;
     // the others working directly in the same folder as `a` right now, or in one inside the other
     const sharing = (a: Agent) =>
@@ -259,8 +267,8 @@ export const makeSubagents = (o: {
     // every running one, then the newest others, up to SUBAGENTS_SHOWN
     const shown = () => {
       const all = [...agents.values()].toSorted((x, y) => y.started - x.started);
-      const live = all.filter((a) => a.state === "running");
-      const others = all.filter((a) => a.state !== "running").slice(0, Math.max(0, SUBAGENTS_SHOWN - live.length));
+      const live = all.filter((a) => stateOf(a) === "running");
+      const others = all.filter((a) => stateOf(a) !== "running").slice(0, Math.max(0, SUBAGENTS_SHOWN - live.length));
       return [...live, ...others];
     };
     const list = () => shown().map(infoNow);
@@ -298,37 +306,38 @@ export const makeSubagents = (o: {
     // own subagents it never took go to the chat, so none waits on a run that won't come.
     const ended = (a: Agent, runId: string, exit: Exit.Exit<void, EngineError | StoreError>): Effect.Effect<void> =>
       Effect.suspend(() => {
-        a.fiber = null;
         a.offerTo = null;
         for (const t of a.tells) t.state = "held";
         // a message that came as its last call ended: one more call, as if it had come a moment sooner
         if (Exit.isSuccess(exit) && a.tells.length > 0) return launch(a, runId);
-        if (Exit.isSuccess(exit)) {
-          a.state = "done";
-          a.why = null;
-        } else if (Cause.hasInterruptsOnly(exit.cause)) {
-          // the server is going down: left "running" on disk, for the next start to resume
-          if (!a.stopping) return Effect.void;
-          a.state = "stopped";
-          a.why = USER_STOP;
-        } else {
-          const failure = Cause.findErrorOption(exit.cause);
-          const defect = Cause.squash(exit.cause);
-          a.state = "failed";
-          a.why = Option.isSome(failure) ? failureText(failure.value) : `error: ${defect instanceof Error ? defect.message : String(defect)}`;
+        if (Exit.isSuccess(exit)) return finish(a, runId, Life.Ended({ at: now(), state: "done", why: null }));
+        if (Cause.hasInterruptsOnly(exit.cause)) {
+          if (isStopping(a)) return finish(a, runId, Life.Ended({ at: now(), state: "stopped", why: USER_STOP }));
+          // the server is going down: "running" on disk, for the next start to resume
+          a.life = Life.Cut();
+          return Effect.void;
         }
-        a.stopping = false;
-        a.ended = now();
-        if (a.state === "done") a.resumes = 0;
+        const failure = Cause.findErrorOption(exit.cause);
+        const defect = Cause.squash(exit.cause);
+        const why = Option.isSome(failure) ? failureText(failure.value) : `error: ${defect instanceof Error ? defect.message : String(defect)}`;
+        return finish(a, runId, Life.Ended({ at: now(), state: "failed", why }));
+      });
+
+    // Its run is over, as `end` says: its report is made in the same step, then saved, committed
+    // and delivered.
+    const finish = (a: Agent, runId: string, end: Ended): Effect.Effect<void> =>
+      Effect.suspend(() => {
+        a.life = end;
+        if (end.state === "done") a.resumes = 0;
         // a run the user stopped wakes no one: the stop is a decision, not news to act on (E39)
-        const report: Pending = a.why === USER_STOP ? { run: a.runs, text: reportOf(a, a.ended, entriesOf(a)), wake: false } : { run: a.runs, text: reportOf(a, a.ended, entriesOf(a)) };
+        const report: Pending = end.why === USER_STOP ? { run: a.runs, text: reportOf(a, end, entriesOf(a)), wake: false } : { run: a.runs, text: reportOf(a, end, entriesOf(a)) };
         a.pending = report;
         const orphans = a.tells.flatMap((t) => (t.report === undefined ? [] : [t.report]));
         a.tells = a.tells.filter((t) => t.report === undefined);
         const told: SessionEvent =
-          a.state === "done"
+          end.state === "done"
             ? { name: a.name, report: report.text, runId, type: "subagent-finished" }
-            : { code: a.state === "stopped" ? "stopped" : "failed", message: a.why ?? a.state, name: a.name, runId, type: "subagent-error" };
+            : { code: end.state === "stopped" ? "stopped" : "failed", message: end.why ?? end.state, name: a.name, runId, type: "subagent-error" };
         return Effect.gen(function* () {
           yield* saveOrSay(a);
           yield* o.publish(told);
@@ -379,6 +388,18 @@ export const makeSubagents = (o: {
     // a message it was sent, in its side log now; a report from its own subagent is delivered then
     const logTell = (a: Agent, t: Tell) => append(a, "user", t.text, t.client === undefined ? {} : { client: t.client }).pipe(Effect.andThen(t.report === undefined ? Effect.void : delivered(t.report.child, t.report.run)));
 
+    // A message leaves `tells` once it is in the side log, in one step: one that can't be logged,
+    // or whose run is stopped just then, is still held, for the next call or the run's end to place
+    const taken = (a: Agent, t: Tell) =>
+      logTell(a, t).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            a.tells = a.tells.filter((x) => x !== t);
+          }),
+        ),
+        Effect.uninterruptible,
+      );
+
     const run = (a: Agent): Effect.Effect<void, EngineError | StoreError> =>
       Effect.gen(function* () {
         let drops = 0; // calls a dropped link cut short in this run
@@ -391,8 +412,7 @@ export const makeSubagents = (o: {
           a.view = view;
           // what was sent since its last call: logged now, and part of this call's opening
           const sent = a.tells.filter((t) => t.state === "held");
-          a.tells = a.tells.filter((t) => !sent.includes(t));
-          for (const t of sent) yield* logTell(a, t);
+          for (const t of sent) yield* taken(a, t);
           const before = entriesOf(a);
           const opening = [intro(a, sharing(a)), `Task: ${a.task}`, ...(fresh ? [] : [history(a.name, before.slice(0, before.length - sent.length))]), ...sent.map((t) => t.text)].join("\n\n");
           const q = yield* Queue.unbounded<Tell>();
@@ -408,9 +428,7 @@ export const makeSubagents = (o: {
             took: (m) =>
               Effect.suspend(() => {
                 const t = a.tells.find((x) => x.seq === m.seq);
-                if (!t) return Effect.void;
-                a.tells = a.tells.filter((x) => x !== t);
-                return logTell(a, t);
+                return t ? taken(a, t) : Effect.void;
               }),
             usage: (record) => {
               const own: UsageRecord = { ...record, ref, role: "subagent", subagent: a.name };
@@ -450,34 +468,48 @@ export const makeSubagents = (o: {
     // A run in a fiber of its own, and a watcher that hands its end to `ended`, however it ends:
     // also when it is interrupted before it ever ran (Stop all as it starts), when an onExit of its
     // own would never be registered. A stop that came while it was being started finds it now.
-    const launch = (a: Agent, runId: string) =>
+    // The run waits at `go` until its place says it runs, so its end can never come first; and
+    // no interrupt of the caller splits the fibers from that place.
+    const launch = (a: Agent, runId: string): Effect.Effect<void> =>
       Effect.gen(function* () {
-        const fiber = yield* Effect.forkIn(run(a), scope);
-        a.fiber = fiber;
-        a.watcher = yield* Fiber.await(fiber).pipe(
+        const stopping = isStopping(a);
+        const go = yield* Deferred.make<null>();
+        const fiber = yield* Effect.forkIn(Effect.andThen(Deferred.await(go), run(a)), scope);
+        const watcher = yield* Fiber.await(fiber).pipe(
           Effect.flatMap((exit) => ended(a, runId, exit)),
           Effect.forkIn(scope),
         );
-        if (a.stopping) yield* Fiber.interrupt(fiber);
-      });
+        a.life = Life.Running({ fiber, stopping, watcher });
+        yield* stopping ? Fiber.interrupt(fiber) : Deferred.succeed(go, null);
+      }).pipe(Effect.uninterruptible);
 
-    // a run starts (spawned, told after it ended, or resumed after a restart), counted against the
-    // cap by the caller
+    // A run starts (spawned, told after it ended, or resumed after a restart), counted against the
+    // cap by the caller. One step: it is saved as running and runs, or (its agent.json can't be
+    // written) it is as it was before, whatever that was.
     const begin = (a: Agent, view: string | null) =>
-      Effect.gen(function* () {
+      Effect.suspend(() => {
+        const was = { life: a.life, merge: a.merge, runs: a.runs, started: a.started, view: a.view };
         a.runs += 1;
-        a.state = "running";
+        a.life = Life.Starting({ stopping: isStopping(a) });
         a.started = now();
-        a.ended = null;
-        a.why = null;
         a.merge = null;
         a.view = view;
         const runId = `${a.name}+${a.runs}`;
-        yield* save(a);
-        yield* o.publish({ name: a.name, runId, task: a.task, type: "subagent-started" });
-        yield* launch(a, runId);
-        yield* changed;
-      });
+        return save(a).pipe(
+          Effect.tapError(() =>
+            Effect.sync(() => {
+              a.life = was.life;
+              a.merge = was.merge;
+              a.runs = was.runs;
+              a.started = was.started;
+              a.view = was.view;
+            }),
+          ),
+          Effect.andThen(o.publish({ name: a.name, runId, task: a.task, type: "subagent-started" })),
+          Effect.andThen(launch(a, runId)),
+          Effect.andThen(changed),
+        );
+      }).pipe(Effect.uninterruptible);
 
     // ---- the tools ----
 
@@ -506,11 +538,11 @@ export const makeSubagents = (o: {
         const turn = host.turnNow();
         const parent = caller === "master" ? null : find(caller.agent);
         if (caller === "master" && turn === null) return yield* refused("spawn: only a turn can start a subagent");
-        if (caller !== "master" && parent?.state !== "running") return yield* refused("spawn: only a running subagent can start one");
+        if (caller !== "master" && (parent === undefined || parent === null || !isLive(parent))) return yield* refused("spawn: only a running subagent can start one");
         const from = parent === null || parent === undefined ? turn : { on: parent.device, ref: parent.ref, view: parent.view ?? "" };
         if (from === null) return yield* refused("spawn: only a turn can start a subagent");
         const taken = find(name);
-        if (taken) return yield* refused(`spawn: there is a subagent called ${taken.name} already (${taken.state}): tell("${taken.name}", …) gives it more work, or pick another name`);
+        if (taken) return yield* refused(`spawn: there is a subagent called ${taken.name} already (${stateOf(taken)}): tell("${taken.name}", …) gives it more work, or pick another name`);
         const live = running().map((a) => a.name);
         if (live.length >= o.max) return yield* refused(`spawn: ${capText(live)}. Their reports will come; or ask the user to stop one`);
         const picked = resolve(model ?? from.ref);
@@ -530,6 +562,7 @@ export const makeSubagents = (o: {
         if (isolate && trees === undefined) return yield* refused(`spawn: ${device} can't make worktrees`);
         const meta = { effort: effort ?? null, ended: null, folder: checked.success, isolate, name, parent: parent?.name ?? null, ref: ref.ref, runs: 0, started: new Date(now()).toISOString(), state: "running", task, why: null, device } as const;
         const a = agentOf(meta, { device, entries: [], folder: checked.success, key: newKey(name), model: { effort, ref } });
+        a.life = Life.Starting({ stopping: false });
         agents.set(name.toLowerCase(), a); // at once: a second spawn in the same step finds it, and the cap counts it
         const started = Effect.gen(function* () {
           // an isolated one's worktree before anything is written: a folder that can't be isolated is the tool's error
@@ -573,7 +606,7 @@ export const makeSubagents = (o: {
         if (sender !== "user" && sender !== "master" && userStopped(a)) return Result.fail(`the user stopped ${a.name}, and a subagent's message doesn't start it again. Say it in your final reply instead, which your report carries`);
         const told: Tell = { seq: ++seq, state: "held", text: `[from ${from}] ${text}` };
         const t: Tell = client === undefined ? told : { ...told, client };
-        if (a.state === "running") {
+        if (isLive(a)) {
           a.tells.push(t);
           if (a.offerTo) {
             t.state = "offered";
@@ -582,15 +615,14 @@ export const makeSubagents = (o: {
           return Result.succeed(`Sent to ${a.name}; it reads it between its tool calls.`);
         }
         const why = cannotStart(a);
-        if (why !== null) return Result.fail(`${a.name} has ended (${a.state}) and can't start again now: ${why}`);
+        const was = a.life._tag === "Ended" ? a.life.state : "cut short";
+        if (why !== null) return Result.fail(`${a.name} has ended (${was}) and can't start again now: ${why}`);
         a.tells.push(t);
         a.resumes = 0;
         const host = yield* Deferred.await(o.host);
-        const was = a.state;
         const started = yield* Effect.result(begin(a, host.turnNow()?.view ?? null));
         if (Result.isFailure(started)) {
           a.tells = a.tells.filter((x) => x !== t);
-          a.state = was;
           return Result.fail(started.failure.message);
         }
         return Result.succeed(`${a.name} had ended (${was}); it starts again with your message.`);
@@ -601,7 +633,8 @@ export const makeSubagents = (o: {
       if (!a) return `No subagent ${name}.${agents.size === 0 ? "" : ` Subagents: ${[...agents.values()].map((x) => x.name).join(", ")}.`}`;
       const start = Number.isSafeInteger(from) && from > 0 ? from : 0;
       const entries = entriesOf(a);
-      const head = `${a.name}: ${a.state}${a.why === null ? "" : ` (${a.why})`}, on ${a.ref}, ${entries.length} entries; its task is entry 0.`;
+      const why = whyOf(a);
+      const head = `${a.name}: ${stateOf(a)}${why === null ? "" : ` (${why})`}, on ${a.ref}, ${entries.length} entries; its task is entry 0.`;
       const lines: string[] = [];
       let size = 0;
       let k = start;
@@ -622,7 +655,8 @@ export const makeSubagents = (o: {
         const told = Schema.decodeUnknownOption(Told)(args);
         if (told._tag === "None") return refused("tell: give a name and a text");
         // a subagent's key tells only while it runs, as it spawns only then
-        if (caller !== "master" && find(caller.agent)?.state !== "running") return refused("tell: only a running subagent can tell one");
+        const teller = caller === "master" ? undefined : find(caller.agent);
+        if (caller !== "master" && (teller === undefined || !isLive(teller))) return refused("tell: only a running subagent can tell one");
         if (caller !== "master" && told.value.name.trim().toLowerCase() === caller.agent.toLowerCase()) return refused("tell: that is you");
         return send(told.value.name, told.value.text, caller).pipe(
           Effect.map((r) => (Result.isSuccess(r) ? { error: false, text: r.success } : { error: true, text: `tell: ${r.failure}` })),
@@ -644,21 +678,35 @@ export const makeSubagents = (o: {
       Effect.gen(function* () {
         const a = find(name);
         if (!a) return `stop: no subagent called ${name}`;
-        if (a.state !== "running") return `stop: ${a.name} is not running (${a.state})`;
-        a.stopping = true;
-        // one still being started has no fiber yet: it stops as it starts (`launch`); else its end
-        // is waited for, report and all
-        yield* stopped(a);
+        if (a.life._tag === "Ended") return `stop: ${a.name} is not running (${a.life.state})`;
+        mark(a);
+        yield* halted(a);
         return null;
+      });
+
+    // the user stops its run: said first (`mark`), then done (`halted`)
+    // One still being started has no fiber yet: it stops as it starts (`launch`). A running one is
+    // interrupted and its end waited for, report and all. One cut short has no run to interrupt: it
+    // is stopped here and now, and reports it.
+    const halted = (a: Agent): Effect.Effect<void> =>
+      Life.$match(a.life, {
+        Cut: () => finish(a, `${a.name}+${a.runs}`, Life.Ended({ at: now(), state: "stopped", why: USER_STOP })),
+        Ended: () => Effect.void,
+        // its end may have started one more call (a message came as it ended), which stops in turn
+        Running: ({ fiber, watcher }) =>
+          Fiber.interrupt(fiber).pipe(
+            Effect.andThen(Fiber.await(watcher)),
+            Effect.andThen(Effect.suspend(() => (a.life._tag === "Running" ? halted(a) : Effect.void))),
+          ),
+        Starting: () => Effect.void,
       });
 
     // Every running one: all are marked stopping before any is interrupted, so a child's report as it
     // ends never starts a parent that is about to stop (src/subagents/reports.ts)
     const stopAll = Effect.suspend(() => {
-      const live = running();
-      for (const a of live) a.stopping = true;
-      // one still being started has no fiber yet: it stops as it starts (begin)
-      return Effect.forEach(live, stopped, { concurrency: "unbounded", discard: true }).pipe(Effect.as(live.map((a) => a.name)));
+      const live = [...agents.values()].filter((a) => a.life._tag !== "Ended");
+      for (const a of live) mark(a);
+      return Effect.forEach(live, halted, { concurrency: "unbounded", discard: true }).pipe(Effect.as(live.map((a) => a.name)));
     });
 
     // the model of its next call: the running one, if any, keeps its own
@@ -691,9 +739,9 @@ export const makeSubagents = (o: {
     // its reader holds it already.
     const restore = Effect.gen(function* () {
       for (const p of problems) yield* info(p);
-      const cut = [...agents.values()].filter((a) => a.state === "running" && a.fiber === null).toSorted((x, y) => x.started - y.started);
-      for (const a of cut) a.state = "stopped"; // not running until resumed: the cap counts the resumed ones only
+      const cut = [...agents.values()].filter((a) => a.life._tag === "Cut").toSorted((x, y) => x.started - y.started);
       for (const a of cut) {
+        if (a.life._tag !== "Cut") continue; // the user stopped it meanwhile
         const looping = a.resumes >= RESUMES_MAX;
         const why = looping ? null : cannotStart(a);
         if (!looping && why === null) {
@@ -702,19 +750,23 @@ export const makeSubagents = (o: {
           const resumed = yield* Effect.result(begin(a, null));
           if (Result.isSuccess(resumed)) continue;
           a.tells = [];
-          a.state = "stopped";
         }
         const last = entriesOf(a).at(-1);
-        a.why = looping
-          ? `the server restarted ${a.resumes + 1} times while it ran, with no call of it completing since`
-          : `the server restarted while it ran, and it could not go on: ${why ?? "its state could not be saved"}`;
-        a.ended = last === undefined ? now() : Date.parse(last.date) || now();
+        const end = Life.Ended({
+          at: last === undefined ? now() : Date.parse(last.date) || now(),
+          state: "stopped",
+          why: looping
+            ? `the server restarted ${a.resumes + 1} times while it ran, with no call of it completing since`
+            : `the server restarted while it ran, and it could not go on: ${why ?? "its state could not be saved"}`,
+        });
+        a.life = end;
         a.resumes = 0;
-        a.pending = { run: a.runs, text: reportOf(a, a.ended, entriesOf(a)) };
+        a.pending = { run: a.runs, text: reportOf(a, end, entriesOf(a)) };
         yield* saveOrSay(a);
       }
       for (const a of agents.values()) {
-        const { ended, pending } = a;
+        const { pending } = a;
+        const ended = endedAt(a);
         if (pending === null) continue; // a resumed one's too: the report of a run before the one cut short
         if (ended !== null && reports.readerHolds(a, pending.text, ended)) {
           a.pending = null;

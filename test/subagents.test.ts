@@ -1296,3 +1296,45 @@ test("a run cut short goes on after at most RESUMES_MAX restarts in a row with n
     }),
   );
 });
+
+test("a run that can't be started leaves its subagent as it was: a child's report then goes to the chat, a tell is refused, and the next tell starts it", async () => {
+  await scoped((scope) =>
+    Effect.gen(function* () {
+      let tools: ((caller: Caller) => AgentTools) | null = null;
+      const gate = yield* Deferred.make<null>();
+      const r = yield* rig({
+        child: {
+          boss: (_input, out, call) =>
+            Effect.gen(function* () {
+              if (call === 1) yield* tools?.({ agent: "boss" }).call("spawn", { name: "worker", task: "count the files" }) ?? Effect.die(new Error("no tools"));
+              yield* out.log("talk", call === 1 ? "worker is on it" : "boss again");
+            }).pipe(Effect.orDie),
+          worker: (_input, out) => Deferred.await(gate).pipe(Effect.andThen(out.log("talk", "12 files")), Effect.orDie),
+        },
+        master: (call, turn) => (turn === 1 ? Effect.asVoid(call("spawn", { name: "boss", task: "delegate the count" })) : Effect.void),
+        scope,
+      });
+      tools = r.tools;
+      yield* r.session.input("go", { clientId: "c1" });
+      yield* until("boss's first report", () => r.log().includes("user: [boss] worker is on it"));
+      const before = r.stateOf("boss");
+      expect(before).toMatchObject({ state: "done" });
+      // boss's agent.json can't be replaced now: a run of it can't be started
+      const blocker = `${r.dir}/agents/boss/agent.json.tmp`;
+      mkdirSync(blocker);
+      // the user's tell is refused, and boss is as it was: ended, at the same time, for the same reason
+      expect(yield* r.subagents.tell("boss", "carry on")).toContain("tell boss: cannot save");
+      expect(r.stateOf("boss")).toEqual(before);
+      // worker's report can't start boss either: it goes to the chat, and boss is not left running with no run
+      yield* Deferred.succeed(gate, null);
+      yield* until("worker's report in the chat", () => r.log().some((l) => l.startsWith("user: [worker] 12 files\n[for boss, which could not take it: cannot save")));
+      expect(r.stateOf("boss")).toEqual(before);
+      expect(yield* r.subagents.stop("boss")).toBe("stop: boss is not running (done)");
+      // once it can be saved again, a tell starts it
+      rmSync(blocker, { recursive: true });
+      expect(yield* r.subagents.tell("boss", "carry on")).toBeNull();
+      yield* until("boss's second report", () => r.log().includes("user: [boss] boss again"));
+      expect(r.stateOf("boss")).toMatchObject({ state: "done" });
+    }),
+  );
+});

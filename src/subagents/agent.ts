@@ -1,7 +1,7 @@
 // One subagent as the supervisor (../subagents.ts) holds it (SPEC "Subagents"): the record in
 // memory, its agent.json, its card's info, the side log as its file holds it, and what each call's
 // opening says. `agentOf` is the one place a record is made, from agent.json or from a spawn.
-import { type Effect, type Fiber, type Queue, Schema } from "effect";
+import { Data, type Effect, type Fiber, type Queue, Schema } from "effect";
 import { existsSync, readFileSync } from "node:fs";
 import { type Effort, entryLabel, isEffort, type Ref } from "../config.ts";
 import type { EngineError } from "../engines/errors.ts";
@@ -83,26 +83,40 @@ const decodeEntry = Schema.decodeUnknownOption(Schema.fromJsonString(Msg));
 // sent again, after a restart too, is answered and not told twice
 export type Tell = { readonly seq: number; readonly text: string; state: "held" | "offered"; readonly report?: { readonly child: string; readonly run: number }; readonly client?: string };
 
+// Where a subagent is in its life. Each place holds only what is true there: a run's fibers exist
+// while it runs and no longer, an end has its time and its reason together, and a stop the user
+// asked for is part of the run it stops.
+export type Life = Data.TaggedEnum<{
+  // a run is being started (spawned, told, resumed): counted against the cap, no fiber yet.
+  // `stopping`: the user stopped it meanwhile, so it stops as it starts
+  Starting: { readonly stopping: boolean };
+  // `fiber` runs its calls; `watcher` hands the run's end on, and is what a stop waits for.
+  // `stopping`: the user stopped it, so an interrupt is that, not the server going down
+  Running: { readonly fiber: Fiber.Fiber<void, EngineError | StoreError>; readonly watcher: Fiber.Fiber<void>; readonly stopping: boolean };
+  // "running" on disk with no run behind it: the server went down, or came up, in the middle of
+  // one. A restart goes on with it (E40); it doesn't count against the cap
+  Cut: {};
+  // `why`: null for a run that finished
+  Ended: { readonly state: Exclude<SubagentState, "running">; readonly at: number; readonly why: string | null };
+}>;
+export const Life = Data.taggedEnum<Life>();
+export type Ended = Extract<Life, { readonly _tag: "Ended" }>;
+
 export type Agent = {
   readonly name: string;
   readonly task: string;
   ref: string; // as the master's chain spells it (canonicalRef)
   engineRef: Ref | null; // null: a ref the config no longer has (after a restart)
   effort: Effort | undefined;
-  state: SubagentState;
+  life: Life;
   started: number;
-  ended: number | null;
-  why: string | null;
   runs: number;
   pending: Pending | null; // the report not delivered yet
   entries: Entry[] | null; // its side log, while in memory (`entriesOf` reads it again)
   count: number; // its side log's length
   lastLine: string | null; // its newest line, as the state shows it
   tells: Tell[];
-  offerTo: Queue.Queue<Tell> | null;
-  fiber: Fiber.Fiber<void, EngineError | StoreError> | null;
-  watcher: Fiber.Fiber<void> | null; // what hands its run's end on (`launch`): a stop waits for it
-  stopping: boolean; // the user stopped it: an interrupt is that, not the server going down
+  offerTo: Queue.Queue<Tell> | null; // the call running now, while one does: it is offered what comes
   view: string | null;
   readonly device: string; // where its calls run
   readonly folder: string; // where it works, the device's own path; an isolated one's worktree is made from it
@@ -114,8 +128,17 @@ export type Agent = {
   resumes: number; // restarts in a row that resumed it with no call completing since (E40)
 };
 
+type Lived = Pick<Agent, "life">;
+// a run of it is on, or being started: what the cap counts, and what a message can reach
+export const isLive = ({ life }: Lived) => life._tag === "Starting" || life._tag === "Running";
+// the user is stopping the run that is on
+export const isStopping = ({ life }: Lived) => (life._tag === "Starting" || life._tag === "Running") && life.stopping;
+// its state as clients and agent.json have it: one cut short is still "running" there
+export const stateOf = ({ life }: Lived): SubagentState => (life._tag === "Ended" ? life.state : "running");
+export const endedAt = ({ life }: Lived) => (life._tag === "Ended" ? life.at : null);
+export const whyOf = ({ life }: Lived) => (life._tag === "Ended" ? life.why : null);
 // the user stopped it, or is stopping it: neither a report nor a tell from a child starts it again
-export const userStopped = (a: Pick<Agent, "stopping" | "state" | "why">) => a.stopping || (a.state === "stopped" && a.why === USER_STOP);
+export const userStopped = (a: Lived) => isStopping(a) || (a.life._tag === "Ended" && a.life.state === "stopped" && a.life.why === USER_STOP);
 
 // The record of a subagent, from what agent.json says (a spawn's is a fresh one): `model` is its
 // ref as the chain reads it now (null: no longer in the chain), `entries` its side log when it
@@ -131,18 +154,19 @@ export const agentOf = (
   },
 ): Agent => {
   const last = o.entries?.at(-1);
+  const started = Date.parse(m.started);
   return {
     count: o.entries?.length ?? m.entries ?? 0,
     device: m.device ?? o.device,
     effort: o.model === null ? (m.effort !== null && isEffort(m.effort) ? m.effort : undefined) : o.model.effort,
-    ended: m.ended === null ? null : Date.parse(m.ended),
     engineRef: o.model?.ref ?? null,
     entries: o.entries,
-    fiber: null,
     folder: m.folder ?? o.folder,
     isolate: m.isolate ?? false,
     key: o.key,
     lastLine: o.entries === null ? (m.lastLine ?? null) : last === undefined ? null : lineOf(last),
+    // an end with no time on disk (a file an older build left) ended as it started
+    life: m.state === "running" ? Life.Cut() : Life.Ended({ at: m.ended === null ? started : Date.parse(m.ended), state: m.state, why: m.why }),
     merge: m.merge ?? null,
     name: m.name,
     offerTo: null,
@@ -151,14 +175,10 @@ export const agentOf = (
     ref: m.ref,
     resumes: m.resumes ?? 0,
     runs: m.runs,
-    started: Date.parse(m.started),
-    state: m.state,
-    stopping: false,
+    started,
     task: m.task,
     tells: [],
     view: null,
-    watcher: null,
-    why: m.why,
     worktree: m.worktree ?? null,
   };
 };
@@ -166,27 +186,30 @@ export const agentOf = (
 const iso = (ms: number) => new Date(ms).toISOString();
 
 // what agent.json keeps of it
-export const metaOf = (a: Agent): Meta => ({
-  device: a.device,
-  effort: a.effort ?? null,
-  ended: a.ended === null ? null : iso(a.ended),
-  entries: a.count,
-  folder: a.folder,
-  isolate: a.isolate,
-  lastLine: a.lastLine,
-  merge: a.merge,
-  name: a.name,
-  parent: a.parent,
-  pending: a.pending,
-  ref: a.ref,
-  resumes: a.resumes,
-  runs: a.runs,
-  started: iso(a.started),
-  state: a.state,
-  task: a.task,
-  why: a.why,
-  worktree: a.worktree,
-});
+export const metaOf = (a: Agent): Meta => {
+  const ended = endedAt(a);
+  return {
+    device: a.device,
+    effort: a.effort ?? null,
+    ended: ended === null ? null : iso(ended),
+    entries: a.count,
+    folder: a.folder,
+    isolate: a.isolate,
+    lastLine: a.lastLine,
+    merge: a.merge,
+    name: a.name,
+    parent: a.parent,
+    pending: a.pending,
+    ref: a.ref,
+    resumes: a.resumes,
+    runs: a.runs,
+    started: iso(a.started),
+    state: stateOf(a),
+    task: a.task,
+    why: whyOf(a),
+    worktree: a.worktree,
+  };
+};
 
 // the optional fields of a subagent's info, filled one by one
 type InfoExtras = { -readonly [K in "lastLine" | "why" | "isolated" | "worktree" | "merge" | "parent"]?: NonNullable<SubagentInfo[K]> };
@@ -196,19 +219,20 @@ export const infoOf = (a: Agent, now: number, masterEffort: Effort): SubagentInf
   const base: SubagentInfo = {
     device: a.device,
     effort: a.effort ?? null,
-    elapsed: Math.max(0, (a.ended ?? now) - a.started),
+    elapsed: Math.max(0, (endedAt(a) ?? now) - a.started),
     entries: a.count,
     folder: a.folder,
     label: a.engineRef ? entryLabel(a.engineRef, masterEffort) : a.ref,
     name: a.name,
     ref: a.ref,
     started: iso(a.started),
-    state: a.state,
+    state: stateOf(a),
     task: a.task,
   };
   const more: InfoExtras = {};
+  const why = whyOf(a);
   if (a.lastLine !== null) more.lastLine = a.lastLine;
-  if (a.why !== null) more.why = a.why;
+  if (why !== null) more.why = why;
   if (a.isolate) more.isolated = true;
   if (a.worktree !== null) more.worktree = a.worktree;
   if (a.merge !== null) more.merge = a.merge;

@@ -8,27 +8,27 @@ import { Deferred, Effect, Queue, type Scope } from "effect";
 import { headOf } from "../text.ts";
 import type { Entry } from "../tree.ts";
 import { type Merge, reportHead } from "../wire.ts";
-import { type Agent, type Pending, REPORT_MAX, type SubagentHost, type Tell, took, userStopped } from "./agent.ts";
+import { type Agent, type Ended, isLive, type Pending, REPORT_MAX, stateOf, type SubagentHost, type Tell, took, userStopped } from "./agent.ts";
 
 // the line a report ends with for an isolated run: how its branch went back
 const mergeLine = (m: Merge) => `\n[${m.detail}${m.files > 0 ? `; ${m.files} files changed, +${m.insertions} -${m.deletions}` : ""}]`;
 
 // What its reader gets when a run ends: its final reply, or why there is none, and for an isolated
-// run how its branch went back (as its run ends: `ended` is when; `entries` its side log)
-export const reportOf = (a: Agent, ended: number, entries: readonly Entry[]) => {
+// run how its branch went back (as its run ends: `end` is how and when; `entries` its side log)
+export const reportOf = (a: Agent, end: Ended, entries: readonly Entry[]) => {
   const head = reportHead(a.name);
-  const ran = took(ended - a.started);
+  const ran = took(end.at - a.started);
   const more = `zoom("${a.name}") reads its log (${a.count} entries)`;
   const keptNote = a.worktree === null ? "" : ` Its worktree ${a.worktree.path} (branch ${a.worktree.branch}) is kept: tell("${a.name}", …) goes on there.`;
-  if (a.state === "done") {
+  if (end.state === "done") {
     const merged = a.merge === null ? "" : mergeLine(a.merge);
     const reply = entries.findLast((e) => e.kind === "talk")?.text.trim() ?? "";
     if (reply === "") return `${head}finished after ${ran} without a reply; ${more}.${merged}`;
     const cut = headOf(reply, REPORT_MAX);
     return cut === reply ? `${head}${reply}${merged}` : `${head}${cut}\n[… ${reply.length - cut.length} characters cut: ${more}]${merged}`;
   }
-  if (a.state === "failed") return `${head}failed after ${ran} (${a.why ?? "no reason given"}) on ${a.ref}; ${more}.${keptNote}`;
-  return `${head}stopped after ${ran}: ${a.why ?? "stopped"}. ${more}; tell("${a.name}", …) starts it again.${keptNote}`;
+  if (end.state === "failed") return `${head}failed after ${ran} (${end.why ?? "no reason given"}) on ${a.ref}; ${more}.${keptNote}`;
+  return `${head}stopped after ${ran}: ${end.why ?? "stopped"}. ${more}; tell("${a.name}", …) starts it again.${keptNote}`;
 };
 
 // Whether a log holds this report already, since the run ended: a restart between the reader's
@@ -51,6 +51,7 @@ export const makeReports = (o: {
   readonly chat: () => readonly Entry[];
   // why one that has ended can't start again now (null: it can), and starting it again
   readonly cannotStart: (a: Agent) => string | null;
+  // a failure leaves it as it was
   readonly begin: (a: Agent, view: string | null) => Effect.Effect<void, { readonly message: string }>;
   readonly nextSeq: () => number;
 }) => {
@@ -81,7 +82,7 @@ export const makeReports = (o: {
       if (parent === undefined) return toChat(a, report, a.parent === null ? "" : `\n[for ${a.parent}, which is gone]`);
       if (userStopped(parent)) return toChat(a, report, `\n[for ${parent.name}, which the user stopped]`);
       const t: Tell = { report: { child: a.name, run: report.run }, seq: o.nextSeq(), state: "held", text: report.text };
-      if (parent.state === "running") {
+      if (isLive(parent)) {
         parent.tells.push(t);
         if (parent.offerTo) {
           t.state = "offered";
@@ -108,7 +109,7 @@ export const makeReports = (o: {
       held,
       (r) => {
         const child = o.find(r.child);
-        return child?.pending?.run === r.run ? toChat(child, child.pending, `\n[for ${parent.name}, which ended (${parent.state}) before it took this]`) : Effect.void;
+        return child?.pending?.run === r.run ? toChat(child, child.pending, `\n[for ${parent.name}, which ended (${stateOf(parent)}) before it took this]`) : Effect.void;
       },
       { discard: true },
     );
